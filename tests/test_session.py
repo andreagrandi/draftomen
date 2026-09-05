@@ -5,6 +5,7 @@ import http.client
 import io
 import json
 import threading
+import urllib.error
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -103,7 +104,10 @@ from draftomen.seventeen import (
     SeventeenCardStats,
     SeventeenLandsData,
     SeventeenLandsDownloadProgress,
+    SeventeenLandsError,
     SeventeenLandsFormatData,
+    load_or_refresh_17lands_data,
+    save_17lands_format_data,
 )
 from draftomen.set_profile import (
     SetProfile,
@@ -713,7 +717,6 @@ def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
         scored_pack=scored_pack,
         profile=profile,
         event=event,
-        expect_identity=True,
     )
     scored_cards = _assert_recommendation_context_parity(
         snapshot=snapshot,
@@ -765,7 +768,7 @@ def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
     )
 
 
-def test_live_session_auto_loads_conventional_profile_for_default_entry(
+def test_live_session_preloads_profile_before_first_score(
     tmp_path: Path,
 ) -> None:
     profile = _fixture_set_profile()
@@ -782,10 +785,12 @@ def test_live_session_auto_loads_conventional_profile_for_default_entry(
         pack_number=CONTEXT_PACK_NUMBER,
         pick_number=CONTEXT_PICK_NUMBER,
     )
+    published: list[LiveSessionSnapshot] = []
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=app_dir,
         card_database=_fixture_card_database(),
+        snapshot_publisher=published.append,
     )
 
     snapshot = session.process_lines(
@@ -797,6 +802,17 @@ def test_live_session_auto_loads_conventional_profile_for_default_entry(
     assert event is not None
     assert scored_pack is not None
     _assert_profile_context(scored_pack=scored_pack, profile=profile, event=event)
+    first_scored_index = next(
+        index
+        for index, published_snapshot in enumerate(published)
+        if published_snapshot.current_scored_pack is not None
+    )
+    assert any(
+        published_snapshot.set_profile.set_code == event.set_code
+        and published_snapshot.set_profile.phase is DataLoadPhase.READY
+        for published_snapshot in published[:first_scored_index]
+    )
+    assert snapshot.set_profile.source == "local-mature"
     _assert_recommendation_context_parity(
         snapshot=snapshot,
         scored_pack=scored_pack,
@@ -809,14 +825,12 @@ def test_live_session_auto_profile_is_cached_per_set_across_clear(
 ) -> None:
     profile = _fixture_set_profile()
     app_dir = tmp_path / "app"
-    dump_set_profile(
-        profile,
-        set_profile_path(
-            set_code="TST",
-            event_format=QUICK_DRAFT_FORMAT,
-            app_dir=app_dir,
-        ),
+    profile_path = set_profile_path(
+        set_code="TST",
+        event_format=QUICK_DRAFT_FORMAT,
+        app_dir=app_dir,
     )
+    dump_set_profile(profile, profile_path)
     load_calls: list[tuple[str, str, Path]] = []
     real_loader = session_module.load_scoring_profile
 
@@ -830,21 +844,48 @@ def test_live_session_auto_profile_is_cached_per_set_across_clear(
         return real_loader(set_code, event_format, app_dir=app_dir)
 
     monkeypatch.setattr(session_module, "load_scoring_profile", load_profile)
-    session = LiveSession(log_path=tmp_path / "Player.log", app_dir=app_dir)
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_fixture_card_database(),
+    )
 
     session._set_active_set_code(set_code="tst")
-    loaded = session._set_profile
+    assert session.snapshot.set_profile.set_code == "TST"
+    assert session.snapshot.set_profile.phase is DataLoadPhase.READY
+    profile_path.unlink()
     session._set_active_set_code(set_code=None)
-    assert session._set_profile is None
     session._set_active_set_code(set_code="TST")
+    assert session.snapshot.set_profile.source == "local-mature"
+    assert session.snapshot.set_profile.phase is DataLoadPhase.READY
 
     assert load_calls == [("TST", QUICK_DRAFT_FORMAT, app_dir)]
-    assert loaded is not None
-    assert session._set_profile is not None
-    assert session._set_profile == loaded
-    assert session._set_profile.fingerprint == loaded.fingerprint
-    assert session._set_profile.source == loaded.source
-    assert session._set_profiles_by_set == {"TST": profile}
+    snapshot = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+    event = snapshot.current_pack_event
+    scored_pack = snapshot.current_scored_pack
+    assert event is not None
+    assert scored_pack is not None
+    _assert_profile_context(
+        scored_pack=scored_pack,
+        profile=profile,
+        event=event,
+    )
+    assert any(
+        recommendation.contextual_pair == "WU"
+        and recommendation.contextual_theme == "tempo flyers"
+        and recommendation.contextual_profile_maturity == "mature"
+        and recommendation.contextual_profile_confidence == pytest.approx(0.91)
+        for recommendation in snapshot.recommendations.cards
+    )
 
 
 def test_live_session_explicit_profile_remains_authoritative_over_local_profile(
@@ -1176,7 +1217,6 @@ def test_live_session_recovered_profiled_pack_uses_shared_context(
         scored_pack=scored_pack,
         profile=profile,
         event=event,
-        expect_identity=True,
     )
     assert snapshot.recommendations.cards
     assert snapshot.recommendations.cards[0].contextual_pair == (
@@ -1215,7 +1255,6 @@ def test_live_session_accountless_profiled_pack_uses_shared_context(
         scored_pack=scored_pack,
         profile=profile,
         event=event,
-        expect_identity=True,
     )
     assert snapshot.recommendations.cards
     assert any(
@@ -1808,6 +1847,221 @@ def test_live_session_loads_cached_ratings_scores_all_ranking_modes_and_audits_c
     assert records[-1]["evaluation_id"] == records[-2]["evaluation_id"]
 
 
+@pytest.mark.parametrize(
+    "materialized_pair",
+    (False, True),
+    ids=("absent-pair-data", "materialized-pair-data"),
+)
+def test_live_session_locked_pair_scoring_never_invokes_lazy_loader(
+    tmp_path: Path,
+    materialized_pair: bool,
+) -> None:
+    lazy_calls: list[str] = []
+    ratings_data = _fixture_ratings_data(set_code="TST")
+    pair_card_ratings: dict[str, SeventeenLandsFormatData] = {}
+    if materialized_pair:
+        pair_card_ratings["WU"] = replace(
+            ratings_data.primary,
+            card_ratings={
+                104894: _fixture_stats(
+                    grp_id=104894,
+                    color="WU",
+                    gih_win_rate=0.40,
+                    average_last_seen_at=3.0,
+                ),
+                104976: _fixture_stats(
+                    grp_id=104976,
+                    color="WU",
+                    gih_win_rate=0.90,
+                    average_last_seen_at=1.0,
+                ),
+            },
+        )
+
+    def lazy_pair_loader(pair: str) -> SeventeenLandsFormatData:
+        lazy_calls.append(pair)
+        raise SeventeenLandsError(f"lazy pair loader invoked for {pair}")
+
+    input_ratings = replace(
+        ratings_data,
+        pair_card_ratings=pair_card_ratings,
+        pair_card_ratings_loader=lazy_pair_loader,
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        card_database=_fixture_card_database(),
+        ratings_loader=lambda _set_code: input_ratings,
+    )
+
+    snapshot = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+
+    scored_pack = snapshot.current_scored_pack
+    assert scored_pack is not None
+    assert scored_pack.commitment.phase == "locked"
+    assert scored_pack.commitment.inferred_pair == "WU"
+    assert lazy_calls == []
+    if materialized_pair:
+        assert snapshot.recommendations.cards[0].card.grp_id == 104976
+    else:
+        assert snapshot.recommendations.cards[0].card.grp_id == 104894
+
+
+def test_live_session_locked_pair_refresh_never_restores_lazy_loader(
+    tmp_path: Path,
+) -> None:
+    lazy_calls: list[tuple[int, str]] = []
+    loaded_ratings: list[SeventeenLandsData] = []
+
+    def ratings_loader(set_code: str) -> SeventeenLandsData:
+        load_number = len(loaded_ratings) + 1
+        ratings_data = _fixture_ratings_data(set_code=set_code)
+        if load_number == 2:
+            ratings_data = replace(
+                ratings_data,
+                primary=replace(
+                    ratings_data.primary,
+                    card_ratings={
+                        104894: _fixture_stats(
+                            grp_id=104894,
+                            color="WU",
+                            gih_win_rate=0.40,
+                            average_last_seen_at=3.0,
+                        ),
+                        104976: _fixture_stats(
+                            grp_id=104976,
+                            color="WU",
+                            gih_win_rate=0.90,
+                            average_last_seen_at=1.0,
+                        ),
+                    },
+                ),
+            )
+
+        def lazy_pair_loader(pair: str) -> SeventeenLandsFormatData:
+            lazy_calls.append((load_number, pair))
+            raise SeventeenLandsError(f"lazy pair loader invoked for {pair}")
+
+        ratings_data = replace(
+            ratings_data,
+            pair_card_ratings_loader=lazy_pair_loader,
+        )
+        loaded_ratings.append(ratings_data)
+        return ratings_data
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        card_database=_fixture_card_database(),
+        ratings_loader=ratings_loader,
+    )
+    locked_pool = _fixture_pool_before_pick(
+        pack_number=CONTEXT_PACK_NUMBER,
+        pick_number=CONTEXT_PICK_NUMBER,
+    )
+    initial = session.process_lines(
+        lines=(_profiled_pack_line(pool_before_pick=locked_pool),)
+    )
+
+    assert initial.current_scored_pack is not None
+    assert initial.current_scored_pack.commitment.phase == "locked"
+    assert initial.recommendations.cards[0].card.grp_id == 104894
+
+    refreshed = session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+
+    assert len(loaded_ratings) == 2
+    assert refreshed.current_scored_pack is not None
+    assert refreshed.current_scored_pack.commitment.phase == "locked"
+    assert refreshed.recommendations.cards[0].card.grp_id == 104976
+    assert lazy_calls == []
+
+
+def test_live_session_locked_pair_scoring_does_not_open_scryfall_or_17lands_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    ratings_data = _fixture_ratings_data(
+        set_code="TST",
+        fetched_at=datetime.now(tz=UTC),
+    )
+    save_17lands_format_data(ratings_data.primary, app_dir=app_dir)
+    network_calls: list[str] = []
+
+    def unexpected_network(
+        request: object,
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
+        network_calls.append(getattr(request, "full_url", str(request)))
+        raise urllib.error.URLError("locked pair scoring network blocked")
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_fixture_card_database(),
+        ratings_loader=lambda set_code: load_or_refresh_17lands_data(
+            set_code=set_code,
+            app_dir=app_dir,
+            premier_fallback_enabled=False,
+        ),
+    )
+    detected = QuickDraftDetectedEvent(
+        event_name=CONTEXT_EVENT_NAME,
+        set_code="TST",
+        account_id=None,
+    )
+    session._consume_detected_event(event=detected)
+    assert session.snapshot.ratings.phase is DataLoadPhase.READY
+    session._consume_event(
+        event=DraftStartedEvent(
+            event_name=detected.event_name,
+            set_code=detected.set_code,
+            course_id="course-tst",
+            account_id=None,
+        ),
+        state=None,
+    )
+
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        unexpected_network,
+    )
+    monkeypatch.setattr(
+        "draftomen.seventeen.urllib.request.urlopen",
+        unexpected_network,
+    )
+    session._consume_event(
+        event=PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            offered_grp_ids=CONTEXT_OFFERED_GRP_IDS,
+            pool_grp_ids=_fixture_pool_before_pick(
+                pack_number=CONTEXT_PACK_NUMBER,
+                pick_number=CONTEXT_PICK_NUMBER,
+            ),
+            account_id=None,
+        ),
+        state=None,
+    )
+
+    snapshot = session.snapshot
+    assert snapshot.current_scored_pack is not None
+    assert snapshot.current_scored_pack.commitment.phase == "locked"
+    assert snapshot.current_scored_pack.commitment.inferred_pair == "WU"
+    assert snapshot.recommendations.cards[0].card.grp_id == 104894
+    assert network_calls == []
+
+
 def test_live_session_uses_one_based_later_pick_index_in_scores_and_audit(
     tmp_path: Path,
 ) -> None:
@@ -2041,6 +2295,7 @@ def test_live_session_failed_ratings_download_is_recoverable_and_retry_rescores(
     tmp_path: Path,
 ) -> None:
     attempts = 0
+    lazy_calls: list[str] = []
 
     def ratings_loader(set_code: str) -> SeventeenLandsData:
         nonlocal attempts
@@ -2048,7 +2303,14 @@ def test_live_session_failed_ratings_download_is_recoverable_and_retry_rescores(
         if attempts == 1:
             raise RuntimeError("temporary service failure")
 
-        return _fixture_ratings_data(set_code=set_code)
+        def lazy_pair_loader(pair: str) -> SeventeenLandsFormatData:
+            lazy_calls.append(pair)
+            raise SeventeenLandsError(f"lazy pair loader invoked for {pair}")
+
+        return replace(
+            _fixture_ratings_data(set_code=set_code),
+            pair_card_ratings_loader=lazy_pair_loader,
+        )
 
     session = LiveSession(
         log_path=tmp_path / "Player.log",
@@ -2057,32 +2319,45 @@ def test_live_session_failed_ratings_download_is_recoverable_and_retry_rescores(
         ratings_loader=ratings_loader,
         ratings_cache_checker=lambda set_code: False,
     )
-    _process_until_recommendations(
-        session=session,
-        lines=FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines(),
+    initial = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
     )
+    assert initial.current_scored_pack is not None
+    assert initial.current_scored_pack.commitment.phase == "locked"
+    assert initial.current_scored_pack.commitment.inferred_pair == "WU"
 
-    failed = session.dispatch(command=RequestRatingsDownload(set_code="MSH"))
+    failed = session.dispatch(command=RequestRatingsDownload(set_code="TST"))
 
     assert failed.ratings.phase == DataLoadPhase.FAILED
     assert failed.progress is None
     assert failed.errors == (
         SessionError(
-            error_id="ratings:MSH",
+            error_id="ratings:TST",
             code="ratings_unavailable",
-            message="17Lands ratings failed for MSH: temporary service failure.",
+            message="17Lands ratings failed for TST: temporary service failure.",
             recoverable=True,
             operation=OperationKind.RATINGS,
         ),
     )
     assert failed.recommendations.source_summary == "neutral prior"
 
-    recovered = session.dispatch(command=RetryError(error_id="ratings:MSH"))
+    recovered = session.dispatch(command=RetryError(error_id="ratings:TST"))
 
     assert attempts == 2
     assert recovered.ratings.phase == DataLoadPhase.READY
     assert recovered.errors == ()
+    assert recovered.current_scored_pack is not None
+    assert recovered.current_scored_pack.commitment.phase == "locked"
+    assert recovered.current_scored_pack.commitment.inferred_pair == "WU"
     assert recovered.recommendations.cards[0].card.grp_id == 104894
+    assert lazy_calls == []
 
 
 def test_live_session_card_data_load_failure_and_retry_publish_complete_states(
@@ -4388,6 +4663,7 @@ def _fixture_ratings_data(
             card_ratings={
                 104894: _fixture_stats(
                     grp_id=104894,
+                    color="WU",
                     gih_win_rate=0.65,
                     average_last_seen_at=3.0,
                 ),
@@ -4401,6 +4677,7 @@ def _fixture_ratings_data(
             card_ratings={
                 104976: _fixture_stats(
                     grp_id=104976,
+                    color="WU",
                     gih_win_rate=0.60,
                     average_last_seen_at=1.0,
                 ),
@@ -4413,13 +4690,14 @@ def _fixture_ratings_data(
 def _fixture_stats(
     *,
     grp_id: int,
+    color: str,
     gih_win_rate: float,
     average_last_seen_at: float,
 ) -> SeventeenCardStats:
     return SeventeenCardStats(
         grp_id=grp_id,
         name=f"Fixture Card {grp_id}",
-        color="",
+        color=color,
         rarity="common",
         average_last_seen_at=average_last_seen_at,
         gih_win_rate=gih_win_rate,
@@ -4501,14 +4779,10 @@ def _assert_profile_context(
     scored_pack: ScoredPack,
     profile: SetProfile,
     event: PackOfferedEvent,
-    expect_identity: bool = False,
 ) -> PickScoringContext:
     context = scored_pack.scoring_context
     assert context is not None
-    if expect_identity:
-        assert context.set_profile is profile
-    else:
-        assert context.set_profile == profile
+    assert context.set_profile == profile
     assert context.set_profile.fingerprint == profile.fingerprint
     assert context.set_profile.source == profile.source
     assert context.stage.pack_number == event.pack_number

@@ -96,7 +96,6 @@ class PlainLogWatcher:
             event_publisher=self._capture_event,
             profile_client=profile_client,
             ratings_loader=ratings_loader,
-            lazy_pair_card_ratings=True,
             splash_enabled=splash_enabled,
         )
         self.log_path = self.session.log_path

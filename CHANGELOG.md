@@ -2,6 +2,7 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Use cached ratings or a local fallback for live locked-pair scoring without lazy 17Lands requests, while retaining the current-pack individual win-rate display and visible 17Lands attribution. (#339)
 - Add the local `refresh-profile-data` producer command for deterministic set
   selection, cached aggregate 17Lands ratings, validated content-addressed
   profile publication, and bounded partial-failure reporting. (#338)

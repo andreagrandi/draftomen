@@ -8,18 +8,26 @@ from threading import Event, Thread
 import time
 from types import SimpleNamespace
 from typing import NoReturn
-from draftomen.profile_client import ProfileRefreshOutcome, ProfileRefreshResult
+import urllib.request
+
+import pytest
 
 from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import CardDatabase, CardInfo, build_card_database_from_bulk_file
+from draftomen.events import EXPECTED_PICKS_PER_PACK
 from draftomen.pool import draft_state_path, load_draft_state
+from draftomen.profile_client import ProfileRefreshOutcome, ProfileRefreshResult
 from draftomen.seventeen import (
     QUICK_DRAFT_FORMAT,
+    PREMIER_DRAFT_FORMAT,
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsData,
     SeventeenLandsError,
     SeventeenLandsFormatData,
+    load_or_refresh_17lands_data,
+    save_17lands_format_data,
+    seventeen_lands_pair_card_cache_path,
 )
 from draftomen.set_profile import (
     SetProfile,
@@ -468,7 +476,7 @@ def test_plain_watch_loads_locked_pair_ratings_through_shared_session(
     tmp_path: Path,
 ) -> None:
     pair_loads: list[str] = []
-    ratings_data = _lazy_pair_ratings_data(pair_loads=pair_loads)
+    ratings_data = _aggregate_ratings_data(pair_loads=pair_loads)
     watcher = PlainLogWatcher(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
@@ -489,12 +497,93 @@ def test_plain_watch_loads_locked_pair_ratings_through_shared_session(
         ]
     )
 
-    assert pair_loads == ["WU"]
+    assert pair_loads == []
     assert "commitment 100% (locked)" in output
-    assert "80.0%" in output
-    assert output.index("Pair Upgrade (grpId 3)") < output.index(
-        "All-Decks Leader (grpId 4)"
+    assert "65.0%" in output
+    assert "Data source: QuickDraft" in output
+    assert "GIH WR" in output
+    assert output.index("All-Decks Leader (grpId 4)") < output.index(
+        "Pair Upgrade (grpId 3)"
+)
+
+
+def test_plain_watch_scoring_never_requests_network_with_real_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    fetched_at = datetime.now(tz=UTC)
+    aggregate = _aggregate_ratings_data(pair_loads=[]).primary
+    save_17lands_format_data(
+        replace(aggregate, fetched_at=fetched_at),
+        app_dir=app_dir,
     )
+    save_17lands_format_data(
+        replace(
+            aggregate,
+            event_format=PREMIER_DRAFT_FORMAT,
+            fetched_at=fetched_at,
+        ),
+        app_dir=app_dir,
+    )
+    pair_cache_path = seventeen_lands_pair_card_cache_path(
+        set_code="TST",
+        event_format=QUICK_DRAFT_FORMAT,
+        pair="WU",
+        app_dir=app_dir,
+    )
+    assert not pair_cache_path.exists()
+
+    attempted_urls: list[str] = []
+
+    def fail_urlopen(
+        request: object,
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
+        attempted_urls.append(getattr(request, "full_url", str(request)))
+        raise AssertionError("network request during pack scoring")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("", encoding="utf-8")
+    watcher = PlainLogWatcher(
+        log_path=log_path,
+        app_dir=app_dir,
+        card_database=_pair_ratings_card_database(),
+        poll_interval=0.01,
+        ratings_loader=lambda set_code: load_or_refresh_17lands_data(
+            set_code=set_code,
+            app_dir=app_dir,
+        ),
+    )
+    try:
+        _append_lines(
+            path=log_path,
+            lines=_locked_pair_setup_lines(),
+        )
+        first_output = watcher.poll_once()
+        _append_lines(
+            path=log_path,
+            lines=_locked_pair_continuation_lines(),
+        )
+        second_output = watcher.poll_once()
+    finally:
+        watcher.close()
+
+    output = first_output + second_output
+    assert attempted_urls == []
+    assert "commitment 100% (locked)" in first_output
+    assert "All-Decks Leader (grpId 4)" in first_output
+    assert first_output.index("All-Decks Leader (grpId 4)") < first_output.index(
+        "Pair Upgrade (grpId 3)"
+    )
+    assert "65.0%" in first_output
+    assert "Data source: QuickDraft" in first_output
+    assert "Pack 2 Pick 3" in second_output
+    assert "commitment 100% (locked)" in second_output
+    assert "All-Decks Leader (grpId 4)" in output
+    assert not pair_cache_path.exists()
 
 
 def test_plain_watch_recovers_rotation_tail_without_loss_or_duplication(
@@ -680,15 +769,91 @@ def _pair_ratings_card_database() -> CardDatabase:
     )
 
 
-def _lazy_pair_ratings_data(*, pair_loads: list[str]) -> SeventeenLandsData:
+def _locked_pair_setup_lines() -> list[str]:
+    event_name = "QuickDraft_TST_20260905"
+    lines = [
+        _auth_line(client_id="watch-account", screen_name="Watch"),
+        _course_line(event_name=event_name, course_id="watch-draft"),
+    ]
+    pool: tuple[int, ...] = ()
+    for pick_index in range(15):
+        pack_number, pick_number = divmod(
+            pick_index,
+            EXPECTED_PICKS_PER_PACK,
+        )
+        chosen_card = 1 if pick_index % 2 == 0 else 2
+        lines.extend(
+            (
+                _pack_line(
+                    event_name=event_name,
+                    pack_number=pack_number,
+                    pick_number=pick_number,
+                    draft_pack=(1, 2),
+                    picked_cards=pool,
+                ),
+                _pick_request_line(
+                    event_name=event_name,
+                    request_id=f"watch-pick-{pick_index}",
+                    card_id=chosen_card,
+                    pack_number=pack_number,
+                    pick_number=pick_number,
+                ),
+            )
+        )
+        pool += (chosen_card,)
+
+    lines.append(
+        _pack_line(
+            event_name=event_name,
+            pack_number=1,
+            pick_number=1,
+            draft_pack=(3, 4),
+            picked_cards=pool,
+        )
+    )
+    return lines
+
+
+def _locked_pair_continuation_lines() -> list[str]:
+    event_name = "QuickDraft_TST_20260905"
+    pool = tuple(1 if pick_index % 2 == 0 else 2 for pick_index in range(15))
+    return [
+        _pick_request_line(
+            event_name=event_name,
+            request_id="watch-target-pick",
+            card_id=3,
+            pack_number=1,
+            pick_number=1,
+        ),
+        _pack_line(
+            event_name=event_name,
+            pack_number=1,
+            pick_number=2,
+            draft_pack=(3, 4),
+            picked_cards=(*pool, 3),
+        ),
+    ]
+
+
+def _aggregate_ratings_data(*, pair_loads: list[str]) -> SeventeenLandsData:
     fetched_at = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
     pair_data = SeventeenLandsFormatData(
         set_code="TST",
         event_format=QUICK_DRAFT_FORMAT,
         fetched_at=fetched_at,
         card_ratings={
-            3: _ratings_stats(grp_id=3, name="Pair Upgrade", win_rate=0.80),
-            4: _ratings_stats(grp_id=4, name="All-Decks Leader", win_rate=0.60),
+            3: _ratings_stats(
+                grp_id=3,
+                name="Pair Upgrade",
+                color="W",
+                win_rate=0.80,
+            ),
+            4: _ratings_stats(
+                grp_id=4,
+                name="All-Decks Leader",
+                color="U",
+                win_rate=0.60,
+            ),
         },
         pair_win_rates={},
     )
@@ -705,10 +870,16 @@ def _lazy_pair_ratings_data(*, pair_loads: list[str]) -> SeventeenLandsData:
             event_format=QUICK_DRAFT_FORMAT,
             fetched_at=fetched_at,
             card_ratings={
-                3: _ratings_stats(grp_id=3, name="Pair Upgrade", win_rate=0.50),
+                3: _ratings_stats(
+                    grp_id=3,
+                    name="Pair Upgrade",
+                    color="W",
+                    win_rate=0.50,
+                ),
                 4: _ratings_stats(
                     grp_id=4,
                     name="All-Decks Leader",
+                    color="U",
                     win_rate=0.65,
                 ),
             },
@@ -719,11 +890,17 @@ def _lazy_pair_ratings_data(*, pair_loads: list[str]) -> SeventeenLandsData:
     )
 
 
-def _ratings_stats(*, grp_id: int, name: str, win_rate: float) -> SeventeenCardStats:
+def _ratings_stats(
+    *,
+    grp_id: int,
+    name: str,
+    color: str,
+    win_rate: float,
+) -> SeventeenCardStats:
     return SeventeenCardStats(
         grp_id=grp_id,
         name=name,
-        color="",
+        color=color,
         rarity="common",
         average_last_seen_at=3.0,
         gih_win_rate=win_rate,
