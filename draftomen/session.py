@@ -698,7 +698,6 @@ class LiveSession:
         ratings_progress_loader: RatingsProgressLoader | None = None,
         ratings_progress_loader_factory: RatingsProgressLoaderFactory | None = None,
         ratings_cache_checker: RatingsCacheChecker | None = None,
-        lazy_pair_card_ratings: bool = False,
         card_image_service: CardImageService | None = None,
         splash_enabled: bool = SPLASH.enabled_by_default,
         set_profile: SetProfile | None = None,
@@ -753,7 +752,6 @@ class LiveSession:
         self._ratings_progress_loader = ratings_progress_loader
         self._ratings_progress_loader_factory = ratings_progress_loader_factory
         self._ratings_cache_checker = ratings_cache_checker
-        self._lazy_pair_card_ratings = lazy_pair_card_ratings
         self._ratings_data_by_set: dict[str, SeventeenLandsData | None] = {}
         self._ratings_state_by_set: dict[str, RatingsState] = {}
         self._ratings_progress_by_set: dict[str, ProgressState] = {}
@@ -2284,6 +2282,8 @@ class LiveSession:
                 self._publish(snapshot=failed_snapshot)
             return
 
+        if ratings_data.pair_card_ratings_loader is not None:
+            ratings_data = replace(ratings_data, pair_card_ratings_loader=None)
         self._ratings_data_by_set[set_code] = ratings_data
         state = RatingsState(
             set_code=set_code,
@@ -2868,13 +2868,7 @@ class LiveSession:
         return next_state
 
     def _ratings_data_for_scoring(self, *, set_code: str) -> SeventeenLandsData | None:
-        ratings_data = self._ratings_data_by_set.get(set_code.upper())
-        if ratings_data is None:
-            return None
-        if self._lazy_pair_card_ratings:
-            return ratings_data
-
-        return replace(ratings_data, pair_card_ratings_loader=None)
+        return self._ratings_data_by_set.get(set_code.upper())
 
     def _change_ranking(self, *, ranking_mode: str) -> None:
         with self._state_lock:

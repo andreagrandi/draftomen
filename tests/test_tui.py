@@ -1056,30 +1056,39 @@ async def _assert_pack_rows_show_17lands_stats(tmp_path: Path) -> None:
 
     async with app.run_test(size=(140, 24)) as pilot:
         app.process_lines(lines=_first_pack_lines())
+        table = app.query_one("#pack-table", DataTable)
+        card_index = app.visible_column_keys.index("card")
+        win_rate_index = app.visible_column_keys.index("win_rate")
+        grade_index = app.visible_column_keys.index("grade")
+        score_index = app.visible_column_keys.index("score")
+        split_card_row: list[object] | None = None
         for _ in range(40):
             await pilot.pause(0.05)
             if (
                 app.session.snapshot.ratings.phase == DataLoadPhase.READY
                 and app.session.snapshot.ratings.total_cards == 14
             ):
-                break
+                rows = [
+                    table.get_row_at(index) for index in range(table.row_count)
+                ]
+                split_card_row = next(
+                    (
+                        row
+                        for row in rows
+                        if str(row[card_index]) == "Fixture Split Card"
+                    ),
+                    None,
+                )
+                if split_card_row is not None:
+                    break
 
         assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
         assert app.session.snapshot.ratings.total_cards == 14
-        table = app.query_one("#pack-table", DataTable)
-        rows = [table.get_row_at(index) for index in range(table.row_count)]
-        card_index = app.visible_column_keys.index("card")
-        win_rate_index = app.visible_column_keys.index("win_rate")
-        grade_index = app.visible_column_keys.index("grade")
-        score_index = app.visible_column_keys.index("score")
-        split_card_row = next(
-            row for row in rows if str(row[card_index]) == "Fixture Split Card"
-        )
+        assert split_card_row is not None
 
         assert str(split_card_row[win_rate_index]) == "62.0%"
         assert str(split_card_row[grade_index]) == "B+"
         assert str(split_card_row[score_index]).isdigit()
-
 
 def test_tui_render_ignores_publications_during_screen_teardown(
     tmp_path: Path,
