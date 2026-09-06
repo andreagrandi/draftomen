@@ -342,6 +342,169 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
         watcher.close()
 
 
+def test_plain_watch_hands_off_obsolete_refresh_to_same_set_lifecycle(
+    tmp_path: Path,
+) -> None:
+    obsolete_profile = load_set_profile(
+        Path(__file__).parent / "fixtures" / "set-profiles" / "early.json",
+        expected_set_code="TST",
+        expected_format=QUICK_DRAFT_FORMAT,
+    )
+    replacement_profile = load_set_profile(
+        Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json",
+        expected_set_code="TST",
+        expected_format=QUICK_DRAFT_FORMAT,
+    )
+    first_event_name = "QuickDraft_TST_20260905"
+    first_course_id = "draft-a"
+    replacement_event_name = "QuickDraft_TST_20260906"
+    replacement_course_id = "draft-b"
+    first_started = Event()
+    first_release = Event()
+    replacement_started = Event()
+    replacement_release = Event()
+    replacement_published = Event()
+    refresh_count = 0
+
+    class BlockingProfileClient:
+        manifest_url = "https://profiles.example.test/m.json"
+        network_policy = "allowed"
+
+        def load_cached(self, set_code: str, event_format: str, **kwargs):
+            del kwargs
+            return SimpleNamespace(
+                profile=SetProfile.generic(
+                    set_code=set_code,
+                    event_format=event_format,
+                ),
+                source="generic",
+            )
+
+        def refresh(self, set_code: str, event_format: str):
+            nonlocal refresh_count
+            assert (set_code, event_format) == ("TST", QUICK_DRAFT_FORMAT)
+            refresh_count += 1
+            if refresh_count == 1:
+                first_started.set()
+                assert first_release.wait(timeout=5.0)
+                return ProfileRefreshResult(
+                    profile=obsolete_profile,
+                    outcome=ProfileRefreshOutcome.UPDATED,
+                )
+            assert refresh_count == 2
+            replacement_started.set()
+            assert replacement_release.wait(timeout=5.0)
+            return ProfileRefreshResult(
+                profile=replacement_profile,
+                outcome=ProfileRefreshOutcome.UPDATED,
+            )
+
+    watcher = PlainLogWatcher(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_small_card_database(),
+        profile_client=BlockingProfileClient(),
+    )
+    published_snapshots = []
+
+    def capture_snapshot(snapshot) -> None:
+        published_snapshots.append(snapshot)
+        if snapshot.set_profile.profile_version == replacement_profile.profile_version:
+            replacement_published.set()
+
+    watcher.session._snapshot_publisher = capture_snapshot
+    rendered_outputs: list[str] = []
+    try:
+        rendered_outputs.append(
+            watcher.process_lines(
+                lines=[
+                    _auth_line(client_id="ACCOUNT-A", screen_name="First"),
+                    _course_line(
+                        event_name=first_event_name,
+                        course_id=first_course_id,
+                    ),
+                ]
+            )
+        )
+        assert first_started.wait(timeout=5.0)
+        first_request = watcher.profile_refresh_in_flight
+        assert first_request is not None
+
+        rendered_outputs.append(
+            watcher.process_lines(
+                lines=[
+                    _course_line(
+                        event_name=replacement_event_name,
+                        course_id=replacement_course_id,
+                    ),
+                    _pack_line(
+                        event_name=replacement_event_name,
+                        pack_number=0,
+                        pick_number=0,
+                        draft_pack=(101, 102),
+                        picked_cards=(),
+                    ),
+                ]
+            )
+        )
+        pending_request = watcher.session.profile_refresh_request()
+        assert pending_request is not None
+        assert pending_request != first_request
+        assert watcher.session.snapshot.draft is not None
+        assert watcher.session.snapshot.draft.event_name == replacement_event_name
+        assert watcher.session.snapshot.draft.draft_id == replacement_course_id
+
+        first_release.set()
+        assert replacement_started.wait(timeout=5.0)
+        assert not replacement_published.is_set()
+
+        stale_snapshot = watcher.session.snapshot
+        assert stale_snapshot.set_profile.profile_version != obsolete_profile.profile_version
+        assert stale_snapshot.set_profile.maturity != obsolete_profile.maturity.value
+        assert all(
+            snapshot.set_profile.profile_version != obsolete_profile.profile_version
+            and all(
+                recommendation.contextual_profile_maturity
+                != obsolete_profile.maturity.value
+                for recommendation in snapshot.recommendations.cards
+            )
+            for snapshot in published_snapshots
+        )
+        assert all(
+            recommendation.contextual_profile_maturity
+            != obsolete_profile.maturity.value
+            for recommendation in stale_snapshot.recommendations.cards
+        )
+        rendered_outputs.append(watcher.process_lines(lines=[]))
+        assert f"Profile: {obsolete_profile.maturity.value}" not in rendered_outputs[-1]
+
+        replacement_release.set()
+        assert replacement_published.wait(timeout=5.0)
+
+        replacement_snapshot = watcher.session.snapshot
+        assert replacement_snapshot.set_profile.profile_version == (
+            replacement_profile.profile_version
+        )
+        assert replacement_snapshot.set_profile.maturity == (
+            replacement_profile.maturity.value
+        )
+        assert replacement_snapshot.recommendations.cards
+        assert all(
+            recommendation.contextual_profile_maturity
+            != obsolete_profile.maturity.value
+            for recommendation in replacement_snapshot.recommendations.cards
+        )
+        rendered_outputs.append(watcher.process_lines(lines=[]))
+        assert f"Profile: {obsolete_profile.maturity.value}" not in "".join(
+            rendered_outputs
+        )
+        assert f"Profile: {replacement_profile.maturity.value}" in rendered_outputs[-1]
+    finally:
+        first_release.set()
+        replacement_release.set()
+        watcher.close()
+
+
 def test_plain_watch_close_quiesces_blocked_refresh_without_late_publication(
     tmp_path: Path,
 ) -> None:

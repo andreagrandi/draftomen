@@ -90,6 +90,12 @@ from draftomen.seventeen import (
 PathInput: TypeAlias = str | PathLike[str]
 SnapshotPublisher: TypeAlias = Callable[["LiveSessionSnapshot"], None]
 EventPublisher: TypeAlias = Callable[["LiveSessionEvent"], None]
+_ProfileLifecycleIdentity: TypeAlias = tuple[
+    str | None,
+    str | None,
+    str | None,
+    bool,
+]
 
 
 class SetCardDataLoader(Protocol):
@@ -753,11 +759,14 @@ class LiveSession:
         self._ratings_progress_loader_factory = ratings_progress_loader_factory
         self._ratings_cache_checker = ratings_cache_checker
         self._ratings_data_by_set: dict[str, SeventeenLandsData | None] = {}
+        self._profile_refresh_lifecycle_identity: _ProfileLifecycleIdentity | None = None
+
         self._ratings_state_by_set: dict[str, RatingsState] = {}
         self._ratings_progress_by_set: dict[str, ProgressState] = {}
         self._ratings_errors_by_set: dict[str, SessionError] = {}
         self._loading_rating_sets: set[str] = set()
         self._active_set_code_value: str | None = None
+        self._transition_generation = 0
         self._profile_refresh_generation = 0
         self._profile_refresh_request: ProfileRefreshRequest | None = None
         self._current_pack_event: PackOfferedEvent | None = None
@@ -920,12 +929,15 @@ class LiveSession:
                         refresh_outcome=outcome,
                     )
                 )
+                transition_generation = self._transition_generation
                 self._publish(
                     snapshot=replace(
                         self.snapshot,
                         set_profile=self._set_profile_states_by_set[active_set_code],
                     )
                 )
+                if self._transition_generation != transition_generation:
+                    return
                 self._score_current_pack_locked()
                 return
 
@@ -1751,9 +1763,13 @@ class LiveSession:
         *,
         set_code: str,
         allow_network: bool,
+        transition_generation: int | None = None,
     ) -> bool:
         """Synchronously load one selected set and publish readiness state."""
 
+        if transition_generation is None:
+            with self._state_lock:
+                transition_generation = self._transition_generation
         normalized_set_code = set_code.upper()
         if self._card_database is not None and (
             self._set_card_data_loader is None
@@ -1766,6 +1782,10 @@ class LiveSession:
             and self._card_database_set_code != normalized_set_code
         ):
             self._prepare_card_database_for_set(set_code=normalized_set_code)
+            if not self._transition_is_current(
+                generation=transition_generation
+            ):
+                return False
         loader = self._set_card_data_loader
         if loader is None:
             return False
@@ -1789,6 +1809,8 @@ class LiveSession:
                 ),
             )
         )
+        if not self._transition_is_current(generation=transition_generation):
+            return False
         try:
             database = loader(
                 normalized_set_code,
@@ -1799,19 +1821,23 @@ class LiveSession:
                 set_code=normalized_set_code,
             )
         except Exception as error:
-            self._finish_card_data_load(
+            if not self._transition_is_current(generation=transition_generation):
+                return False
+            return self._finish_card_data_load(
                 database=None,
                 set_code=normalized_set_code,
                 error_message=str(error),
+                transition_generation=transition_generation,
             )
-            return False
 
-        self._finish_card_data_load(
+        if not self._transition_is_current(generation=transition_generation):
+            return False
+        return self._finish_card_data_load(
             database=database,
             set_code=normalized_set_code,
             error_message=None,
+            transition_generation=transition_generation,
         )
-        return True
 
     def stop(self) -> LiveSessionSnapshot:
         """Publish the terminal stopped state without owning process shutdown.
@@ -1819,10 +1845,11 @@ class LiveSession:
         """
 
         with self._state_lock:
-            self._profile_refresh_generation += 1
-            self._profile_refresh_request = None
+            self._retire_profile_refresh_locked()
+            self._profile_refresh_lifecycle_identity = None
             self._card_image_generation += 1
             self._card_image_request = None
+            self._transition_generation += 1
             self._retire_recommendation_images()
             self._retire_recent_pick_images()
             card_image = self.snapshot.card_image
@@ -1949,20 +1976,33 @@ class LiveSession:
             )
         )
 
-    def _prepare_card_data_for_draft_start(self, *, set_code: str) -> None:
+    def _prepare_card_data_for_draft_start(
+        self,
+        *,
+        set_code: str,
+        transition_generation: int | None = None,
+    ) -> bool:
         """Close static networking and make one local-only late-load attempt."""
 
+        if transition_generation is None:
+            with self._state_lock:
+                transition_generation = self._transition_generation
         self._prepare_card_database_for_set(set_code=set_code)
+        if not self._transition_is_current(generation=transition_generation):
+            return False
         self._card_data_network_open = False
         if (
             self._card_database is not None
             or self._set_card_data_loader is None
             or self._card_data_local_lookup_attempted
         ):
-            return
+            return True
         self._card_data_local_lookup_attempted = True
-        self._load_card_data_for_set(set_code=set_code, allow_network=False)
-
+        return self._load_card_data_for_set(
+            set_code=set_code,
+            allow_network=False,
+            transition_generation=transition_generation,
+        )
 
     def _finish_card_data_load(
         self,
@@ -1970,7 +2010,11 @@ class LiveSession:
         database: CardDatabase | None,
         set_code: str,
         error_message: str | None,
-    ) -> None:
+        transition_generation: int | None = None,
+    ) -> bool:
+        if transition_generation is None:
+            with self._state_lock:
+                transition_generation = self._transition_generation
         if database is None:
             if self._set_card_data_loader is not None:
                 self._card_database = None
@@ -1995,7 +2039,7 @@ class LiveSession:
                     errors=self._with_error(error=session_error),
                 )
             )
-            return
+            return self._transition_is_current(generation=transition_generation)
 
         self._card_database = database
         self._card_database_set_code = set_code.upper()
@@ -2015,10 +2059,15 @@ class LiveSession:
                 pool=self._pool_state_from_active_draft(),
             )
         )
+        if not self._transition_is_current(generation=transition_generation):
+            return False
         set_code = self._active_set_code()
         if set_code is not None:
             self._ensure_ratings_loaded(set_code=set_code)
+            if not self._transition_is_current(generation=transition_generation):
+                return False
         self._score_current_pack()
+        return self._transition_is_current(generation=transition_generation)
 
     def _ensure_ratings_loaded(self, *, set_code: str) -> None:
         normalized_set_code = set_code.upper()
@@ -3067,16 +3116,183 @@ class LiveSession:
         with self._state_lock:
             return self._active_set_code_value
 
-    def _clear_active_set_code_locked(self) -> None:
+    def _transition_is_current(self, *, generation: int) -> bool:
+        with self._state_lock:
+            return generation == self._transition_generation
+
+    def _retire_profile_refresh_locked(self) -> None:
         self._profile_refresh_generation += 1
         self._profile_refresh_request = None
+
+    def _profile_lifecycle_identity_changed_locked(
+        self,
+        *,
+        identity: _ProfileLifecycleIdentity,
+    ) -> bool:
+        previous = self._profile_refresh_lifecycle_identity
+        if previous is None:
+            changed = True
+        elif previous[3] and identity[3]:
+            changed = (
+                (
+                    previous[0] is not None
+                    and identity[0] is not None
+                    and previous[0] != identity[0]
+                )
+                or (
+                    previous[2] is not None
+                    and identity[2] is not None
+                    and previous[2] != identity[2]
+                )
+            )
+        else:
+            changed = any(
+                left is not None
+                and right is not None
+                and left != right
+                for left, right in zip(previous[:3], identity[:3])
+            )
+
+        if changed:
+            self._profile_refresh_lifecycle_identity = identity
+        else:
+            self._profile_refresh_lifecycle_identity = (
+                previous[0] or identity[0],
+                previous[1] or identity[1],
+                previous[2] or identity[2],
+                previous[3] or identity[3],
+            )
+        return changed
+
+    def _clear_active_set_code_locked(self) -> None:
+        self._transition_generation += 1
+        self._retire_profile_refresh_locked()
+        self._profile_refresh_lifecycle_identity = None
         self._active_set_code_value = None
         self._set_profile = None
+        self._current_pack_event = None
+        self._current_scored_pack = None
+        self._transient_pool_grp_ids = ()
 
-    def _set_active_set_code(self, *, set_code: str | None) -> None:
+    def _prepare_set_profile(
+        self,
+        *,
+        set_code: str,
+    ) -> tuple[SetProfile, str]:
+        normalized_set_code = set_code.upper()
+        if self._configured_set_profile is not None:
+            return self._configured_set_profile, "injected"
+        return self._load_local_profile_for_set(set_code=normalized_set_code)
+
+    def _activate_set_code_locked(
+        self,
+        *,
+        set_code: str,
+        lifecycle_identity: _ProfileLifecycleIdentity | None,
+        prepared_profile: tuple[SetProfile, str],
+        force_lifecycle_change: bool = False,
+    ) -> tuple[bool, SetProfileState | None]:
+        normalized_set_code = set_code.upper()
+        set_changed = normalized_set_code != self._active_set_code_value
+        lifecycle_changed = force_lifecycle_change
+        if lifecycle_identity is not None:
+            lifecycle_changed = (
+                self._profile_lifecycle_identity_changed_locked(
+                    identity=lifecycle_identity,
+                )
+                or lifecycle_changed
+            )
+        elif set_changed:
+            self._profile_refresh_lifecycle_identity = None
+
+        transitioned = set_changed or lifecycle_changed
+        if transitioned:
+            self._transition_generation += 1
+            self._retire_profile_refresh_locked()
+            self._current_pack_event = None
+            self._current_scored_pack = None
+        if not set_changed:
+            return transitioned, None
+
+        self._active_set_code_value = normalized_set_code
+        profile, source = prepared_profile
+        authoritative_state = None
+        if self._configured_set_profile is None:
+            if normalized_set_code in self._set_profiles_by_set:
+                cached_profile = self._set_profiles_by_set[normalized_set_code]
+                if cached_profile is None and profile.maturity is not ProfileMaturity.GENERIC:
+                    profile = SetProfile.generic(
+                        set_code=normalized_set_code,
+                        event_format=QUICK_DRAFT_FORMAT,
+                    )
+                    source = "generic"
+                    authoritative_state = self._set_profile_states_by_set.get(
+                        normalized_set_code
+                    )
+                elif cached_profile is not None and cached_profile != profile:
+                    profile = cached_profile
+                    authoritative_state = self._set_profile_states_by_set.get(
+                        normalized_set_code
+                    )
+                    source = (
+                        authoritative_state.source
+                        if authoritative_state is not None
+                        else f"local-{profile.maturity.value}"
+                    )
+
+            self._set_profiles_by_set[normalized_set_code] = (
+                None
+                if profile.maturity is ProfileMaturity.GENERIC
+                else profile
+            )
+        self._set_profile = (
+            None
+            if profile.maturity is ProfileMaturity.GENERIC
+            else profile
+        )
+        profile_state = (
+            authoritative_state
+            if authoritative_state is not None
+            else self._profile_state_for_profile(
+                profile=profile,
+                set_code=normalized_set_code,
+                source=source,
+                phase=DataLoadPhase.READY,
+                refresh_outcome=(
+                    ProfileRefreshOutcome.CACHED.value
+                    if (
+                        profile.maturity is not ProfileMaturity.GENERIC
+                        and source != "injected"
+                    )
+                    else None
+                ),
+            )
+        )
+        self._set_profile_states_by_set[normalized_set_code] = profile_state
+        return transitioned, profile_state
+
+
+    def _queue_profile_refresh_locked(self) -> None:
+        if (
+            self._active_set_code_value is not None
+            and self._configured_set_profile is None
+            and self._profile_refresh_allowed()
+        ):
+            self._profile_refresh_request = ProfileRefreshRequest(
+                generation=self._profile_refresh_generation,
+                set_code=self._active_set_code_value,
+                event_format=QUICK_DRAFT_FORMAT,
+            )
+
+    def _set_active_set_code(
+        self,
+        *,
+        set_code: str | None,
+        lifecycle_identity: _ProfileLifecycleIdentity | None = None,
+    ) -> None:
         normalized_set_code = None if set_code is None else set_code.upper()
-        with self._state_lock:
-            if normalized_set_code is None:
+        if normalized_set_code is None:
+            with self._state_lock:
                 self._clear_active_set_code_locked()
                 self._publish(
                     snapshot=replace(
@@ -3084,65 +3300,28 @@ class LiveSession:
                         set_profile=SetProfileState(),
                     )
                 )
-                return
-            if normalized_set_code == self._active_set_code_value:
-                return
+            return
 
-            self._profile_refresh_generation += 1
-            generation = self._profile_refresh_generation
-            self._profile_refresh_request = None
-            self._active_set_code_value = normalized_set_code
-
-            if self._configured_set_profile is not None:
-                self._set_profile = self._configured_set_profile
-                profile_state = self._profile_state_for_profile(
-                    profile=self._configured_set_profile,
-                    set_code=normalized_set_code,
-                    source="injected",
-                    phase=DataLoadPhase.READY,
-                )
-            else:
-                profile, source = self._load_local_profile_for_set(
-                    set_code=normalized_set_code,
-                )
-                self._set_profile = (
-                    None
-                    if profile.maturity is ProfileMaturity.GENERIC
-                    else profile
-                )
-                self._set_profiles_by_set[normalized_set_code] = (
-                    None
-                    if profile.maturity is ProfileMaturity.GENERIC
-                    else profile
-                )
-                profile_state = self._profile_state_for_profile(
-                    profile=profile,
-                    set_code=normalized_set_code,
-                    source=source,
-                    phase=DataLoadPhase.READY,
-                    refresh_outcome=(
-                        ProfileRefreshOutcome.CACHED.value
-                        if profile.maturity is not ProfileMaturity.GENERIC
-                        else None
-                    ),
-                )
-
-            self._set_profile_states_by_set[normalized_set_code] = profile_state
-            if (
-                self._configured_set_profile is None
-                and self._profile_refresh_allowed()
-            ):
-                self._profile_refresh_request = ProfileRefreshRequest(
-                    generation=generation,
-                    set_code=normalized_set_code,
-                    event_format=QUICK_DRAFT_FORMAT,
-                )
-            self._publish(
-                snapshot=replace(
-                    self.snapshot,
-                    set_profile=profile_state,
-                )
+        prepared_profile = self._prepare_set_profile(set_code=normalized_set_code)
+        with self._state_lock:
+            transitioned, profile_state = self._activate_set_code_locked(
+                set_code=normalized_set_code,
+                lifecycle_identity=lifecycle_identity,
+                prepared_profile=prepared_profile,
             )
+            if transitioned:
+                self._queue_profile_refresh_locked()
+            if profile_state is not None or transitioned:
+                self._publish(
+                    snapshot=replace(
+                        self.snapshot,
+                        set_profile=(
+                            self.snapshot.set_profile
+                            if profile_state is None
+                            else profile_state
+                        ),
+                    )
+                )
 
     def _load_local_profile_for_set(
         self,
@@ -3392,20 +3571,38 @@ class LiveSession:
         )
 
     def _select_recovered_state(self, *, state: DraftState) -> None:
-        self._current_pack_event = _pending_pack_event(state=state)
-        self._current_scored_pack = None
+        pending_pack = _pending_pack_event(state=state)
+        with self._state_lock:
+            transition_generation = self._transition_generation
         self._card_data_local_lookup_attempted = False
         self._prepare_card_database_for_set(set_code=state.set_code)
+        if not self._transition_is_current(generation=transition_generation):
+            return
         self._card_data_network_open = False
-        self._select_state(state=state, recovered=True)
+        selection_generation = self._select_state(
+            state=state,
+            recovered=True,
+            current_pack_event=pending_pack,
+        )
+        if selection_generation is None:
+            return
         if (
             self._card_database is None
             and self._set_card_data_loader is not None
             and not self._card_data_local_lookup_attempted
         ):
             self._card_data_local_lookup_attempted = True
-            self._load_card_data_for_set(set_code=state.set_code, allow_network=False)
+            if not self._load_card_data_for_set(
+                set_code=state.set_code,
+                allow_network=False,
+                transition_generation=selection_generation,
+            ):
+                return
+        if not self._transition_is_current(generation=selection_generation):
+            return
         self._ensure_ratings_loaded(set_code=state.set_code)
+        if not self._transition_is_current(generation=selection_generation):
+            return
         self._score_current_pack()
 
     def _discard_previous_login_account_context(self) -> None:
@@ -3472,25 +3669,29 @@ class LiveSession:
             return
 
         if isinstance(event, DraftStartedEvent):
-            self._current_pack_event = None
-            self._current_scored_pack = None
             self.audit_store.record_draft_started(state=state)
-            self._select_state(
+            transition_generation = self._select_state(
                 state=state,
                 recovered=False,
                 event=event,
                 message=f"Draft started for {event.set_code}.",
             )
-            self._prepare_card_data_for_draft_start(set_code=event.set_code)
-            if self._card_database is not None:
+            if transition_generation is None:
+                return
+            if not self._prepare_card_data_for_draft_start(
+                set_code=event.set_code,
+                transition_generation=transition_generation,
+            ):
+                return
+            if (
+                self._card_database is not None
+                and self._transition_is_current(generation=transition_generation)
+            ):
                 self._ensure_ratings_loaded(set_code=event.set_code)
             return
 
         if isinstance(event, PackOfferedEvent):
-            self._current_pack_event = event
-            self._current_scored_pack = None
-            self._prepare_card_database_for_set(set_code=event.set_code)
-            self._select_state(
+            transition_generation = self._select_state(
                 state=state,
                 recovered=False,
                 event=event,
@@ -3498,7 +3699,13 @@ class LiveSession:
                     f"Pack {event.pack_number + 1}, pick {event.pick_number + 1}."
                 ),
             )
+            if transition_generation is None:
+                return
+            if not self._transition_is_current(generation=transition_generation):
+                return
             self._ensure_ratings_loaded(set_code=event.set_code)
+            if not self._transition_is_current(generation=transition_generation):
+                return
             self._score_current_pack()
             return
 
@@ -3520,77 +3727,100 @@ class LiveSession:
             return
 
         if isinstance(event, DraftCompletedEvent):
-            self._current_pack_event = None
-            self._current_scored_pack = None
             self.audit_store.record_draft_completed(state=state, event=event)
-            self._select_state(
+            transition_generation = self._select_state(
                 state=state,
                 recovered=False,
                 event=event,
                 message="Draft complete.",
             )
+            if transition_generation is None:
+                return
             self._ensure_ratings_loaded(set_code=event.set_code)
 
     def _consume_accountless_event(self, *, event: DraftEvent) -> None:
-        if isinstance(event, DraftStartedEvent):
-            self._current_pack_event = None
-            self._current_scored_pack = None
-            self._transient_pool_grp_ids = ()
-            self._set_active_set_code(set_code=event.set_code)
-            self._publish_accountless_state(
-                event=event,
-                phase=ApplicationPhase.WAITING_FOR_DRAFT,
-                message="Draft detected; waiting for an Arena account ID.",
-                keep_recommendations=False,
-            )
-            self._prepare_card_data_for_draft_start(set_code=event.set_code)
-            if self._card_database is not None:
-                self._ensure_ratings_loaded(set_code=event.set_code)
-            return
+        prepared_profile = self._prepare_set_profile(set_code=event.set_code)
+        account_id = event.account_id or self._log_account_id
+        lifecycle_identity = (
+            account_id,
+            event.event_name,
+            event.course_id if isinstance(event, DraftStartedEvent) else None,
+            False,
+        )
 
-        if isinstance(event, PackOfferedEvent):
-            self._current_pack_event = event
-            self._current_scored_pack = None
-            self._transient_pool_grp_ids = event.pool_grp_ids
-            self._set_active_set_code(set_code=event.set_code)
-            self._prepare_card_database_for_set(set_code=event.set_code)
-            self._publish_accountless_state(
-                event=event,
-                phase=ApplicationPhase.DRAFTING,
-                message=(
+        with self._state_lock:
+            if isinstance(event, (DraftStartedEvent, DraftCompletedEvent)):
+                self._current_pack_event = None
+                self._current_scored_pack = None
+            if isinstance(event, DraftStartedEvent):
+                self._transient_pool_grp_ids = ()
+                phase = ApplicationPhase.WAITING_FOR_DRAFT
+                message = "Draft detected; waiting for an Arena account ID."
+                keep_recommendations = False
+            elif isinstance(event, PackOfferedEvent):
+                self._transient_pool_grp_ids = event.pool_grp_ids
+                phase = ApplicationPhase.DRAFTING
+                message = (
                     f"Pack {event.pack_number + 1}, pick "
                     f"{event.pick_number + 1}; waiting for an account ID."
-                ),
-                keep_recommendations=False,
-            )
-            self._ensure_ratings_loaded(set_code=event.set_code)
-            self._score_current_pack()
-            return
-
-        if isinstance(event, PickMadeEvent):
-            self._transient_pool_grp_ids += (event.chosen_grp_id,)
-            self._publish_accountless_state(
-                event=event,
-                phase=ApplicationPhase.DRAFTING,
-                message=(
+                )
+                keep_recommendations = False
+            elif isinstance(event, PickMadeEvent):
+                self._transient_pool_grp_ids += (event.chosen_grp_id,)
+                phase = ApplicationPhase.DRAFTING
+                message = (
                     f"Pack {event.pack_number + 1}, pick "
                     f"{event.pick_number + 1} recorded without an account ID."
-                ),
-                keep_recommendations=True,
-            )
-            return
+                )
+                keep_recommendations = True
+            elif isinstance(event, DraftCompletedEvent):
+                self._transient_pool_grp_ids = event.picked_grp_ids
+                phase = ApplicationPhase.DRAFT_COMPLETE
+                message = "Draft complete without an account ID."
+                keep_recommendations = False
+            else:
+                return
 
-        if isinstance(event, DraftCompletedEvent):
-            self._current_pack_event = None
-            self._current_scored_pack = None
-            self._transient_pool_grp_ids = event.picked_grp_ids
-            self._set_active_set_code(set_code=event.set_code)
+            transitioned, profile_state = self._activate_set_code_locked(
+                set_code=event.set_code,
+                lifecycle_identity=lifecycle_identity,
+                prepared_profile=prepared_profile,
+            )
+            transition_generation = self._transition_generation
+            if isinstance(event, PackOfferedEvent):
+                self._prepare_card_database_for_set(set_code=event.set_code)
+                if self._transition_generation != transition_generation:
+                    return
+                self._current_pack_event = event
+                self._current_scored_pack = None
+            if self._transition_generation != transition_generation:
+                return
+            if transitioned:
+                self._queue_profile_refresh_locked()
             self._publish_accountless_state(
                 event=event,
-                phase=ApplicationPhase.DRAFT_COMPLETE,
-                message="Draft complete without an account ID.",
-                keep_recommendations=False,
+                phase=phase,
+                message=message,
+                keep_recommendations=keep_recommendations,
+                set_profile=profile_state,
             )
+
+        if not self._transition_is_current(generation=transition_generation):
+            return
+        if isinstance(event, DraftStartedEvent):
+            if not self._prepare_card_data_for_draft_start(
+                set_code=event.set_code,
+                transition_generation=transition_generation,
+            ):
+                return
+            if self._card_database is not None:
+                self._ensure_ratings_loaded(set_code=event.set_code)
+        elif isinstance(event, PackOfferedEvent):
+            self._ensure_ratings_loaded(set_code=event.set_code)
+            if not self._transition_is_current(generation=transition_generation):
+                return
+            self._score_current_pack()
+        elif isinstance(event, DraftCompletedEvent):
             self._ensure_ratings_loaded(set_code=event.set_code)
 
     def _publish_accountless_state(
@@ -3600,6 +3830,7 @@ class LiveSession:
         phase: ApplicationPhase,
         message: str,
         keep_recommendations: bool,
+        set_profile: SetProfileState | None = None,
     ) -> None:
         set_code = event.set_code.upper()
         ratings = self._ratings_state_by_set.get(
@@ -3623,6 +3854,11 @@ class LiveSession:
                     active_account=None,
                     draft=None,
                     ratings=ratings,
+                    set_profile=(
+                        self.snapshot.set_profile
+                        if set_profile is None
+                        else set_profile
+                    ),
                     recommendations=(
                         self.snapshot.recommendations
                         if keep_recommendations
@@ -3680,14 +3916,30 @@ class LiveSession:
         if new_lifecycle:
             self._card_data_network_open = True
             self._card_data_local_lookup_attempted = False
-        self._current_pack_event = None
-        self._current_scored_pack = None
-        self._transient_pool_grp_ids = ()
-        self._set_active_set_code(set_code=normalized_set_code)
-        self._prepare_card_database_for_set(set_code=normalized_set_code)
+        prepared_profile = self._prepare_set_profile(set_code=normalized_set_code)
         account_id = event.account_id or self._log_account_id
         active_account = self._identity_for(account_id=account_id)
         with self._state_lock:
+            self._current_pack_event = None
+            self._current_scored_pack = None
+            self._transient_pool_grp_ids = ()
+            transitioned, profile_state = self._activate_set_code_locked(
+                set_code=normalized_set_code,
+                lifecycle_identity=(
+                    account_id,
+                    event.event_name,
+                    None,
+                    False,
+                ),
+                prepared_profile=prepared_profile,
+                force_lifecycle_change=new_lifecycle,
+            )
+            transition_generation = self._transition_generation
+            self._prepare_card_database_for_set(set_code=normalized_set_code)
+            if self._transition_generation != transition_generation:
+                return
+            if transitioned:
+                self._queue_profile_refresh_locked()
             errors = self._retire_derived_operations()
             self._retire_recent_pick_images()
             card_image = self._retire_card_image()
@@ -3708,6 +3960,11 @@ class LiveSession:
                         ),
                     ),
                     draft=None,
+                    set_profile=(
+                        self.snapshot.set_profile
+                        if profile_state is None
+                        else profile_state
+                    ),
                     recommendations=RecommendationState(
                         ranking_mode=self._ranking_mode,
                         splash_enabled=self._splash_enabled,
@@ -3720,12 +3977,19 @@ class LiveSession:
                     backtest=None,
                 )
             )
+            if self._transition_generation != transition_generation:
+                return
         if new_lifecycle:
-            self._load_card_data_for_set(
+            if not self._load_card_data_for_set(
                 set_code=normalized_set_code,
                 allow_network=True,
-            )
-        if self._card_database is not None:
+                transition_generation=transition_generation,
+            ):
+                return
+        if (
+            self._card_database is not None
+            and self._transition_is_current(generation=transition_generation)
+        ):
             self._ensure_ratings_loaded(set_code=normalized_set_code)
 
     def _choose_account(self, *, account_id: str) -> None:
@@ -3751,9 +4015,6 @@ class LiveSession:
             account_id=account_id,
             screen_name=identity.screen_name,
         )
-        self._current_pack_event = None
-        self._current_scored_pack = None
-        self._transient_pool_grp_ids = ()
         with self._state_lock:
             self._clear_active_set_code_locked()
             self._retire_recent_pick_images()
@@ -3791,10 +4052,10 @@ class LiveSession:
         recovered: bool,
         event: DraftEvent | None = None,
         message: str | None = None,
-    ) -> None:
+        current_pack_event: PackOfferedEvent | None = None,
+    ) -> int | None:
+        prepared_profile = self._prepare_set_profile(set_code=state.set_code)
         self._remember_state(state=state)
-        self._transient_pool_grp_ids = state.pool_grp_ids
-        self._set_active_set_code(set_code=state.set_code)
         self.store.set_active_account(
             account_id=state.account_id,
             screen_name=state.account_screen_name,
@@ -3812,7 +4073,43 @@ class LiveSession:
             if state.completed
             else ApplicationPhase.DRAFTING
         )
+        reset_current = recovered or isinstance(
+            event,
+            (DraftStartedEvent, PackOfferedEvent, DraftCompletedEvent),
+        )
         with self._state_lock:
+            if reset_current:
+                self._current_pack_event = None
+                self._current_scored_pack = None
+            self._transient_pool_grp_ids = state.pool_grp_ids
+            transitioned, profile_state = self._activate_set_code_locked(
+                set_code=state.set_code,
+                lifecycle_identity=(
+                    state.account_id,
+                    state.event_name,
+                    state.draft_id,
+                    True,
+                ),
+                prepared_profile=prepared_profile,
+            )
+            transition_generation = self._transition_generation
+            if isinstance(event, PackOfferedEvent):
+                self._prepare_card_database_for_set(set_code=event.set_code)
+                if self._transition_generation != transition_generation:
+                    return None
+            if reset_current:
+                self._current_pack_event = (
+                    current_pack_event
+                    if recovered
+                    else (
+                        event if isinstance(event, PackOfferedEvent) else None
+                    )
+                )
+                self._current_scored_pack = None
+            if self._transition_generation != transition_generation:
+                return None
+            if transitioned:
+                self._queue_profile_refresh_locked()
             errors = self._retire_derived_operations()
             previous_draft = self.snapshot.draft
             switches_context = (
@@ -3848,6 +4145,11 @@ class LiveSession:
                         pick_number=pick_number,
                         completed=state.completed,
                     ),
+                    set_profile=(
+                        self.snapshot.set_profile
+                        if profile_state is None
+                        else profile_state
+                    ),
                     recommendations=(
                         self.snapshot.recommendations
                         if isinstance(event, PickMadeEvent)
@@ -3871,6 +4173,9 @@ class LiveSession:
                     backtest=None,
                 )
             )
+            if self._transition_generation != transition_generation:
+                return None
+            return transition_generation
 
     def _remember_state(self, *, state: DraftState) -> None:
         self._states_by_key[(state.account_id, state.draft_id)] = state
