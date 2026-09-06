@@ -1,29 +1,14 @@
 # Pick scoring
 
-Draft Omen keeps the raw 17Lands GIH win rate visible for every resolved card rating. The Textual watch table ranks by DO Score by default after TMT PremierDraft, TMT TradDraft, and SOS PremierDraft trophy benchmarks showed better top-1/top-3/top-5 match rates and average actual-pick rank than raw 17L WR. It also keeps raw 17L WR visible and switchable for comparison.
+Draft Omen keeps the resolved GIH win rate visible when available. QuickDraft and Premier rows retain raw 17Lands GIH WR; EARLY and MATURE profile rows show the published, already-shrunk profile value instead. The Textual watch table ranks by DO Score by default after TMT PremierDraft, TMT TradDraft, and SOS PremierDraft trophy benchmarks showed better top-1/top-3/top-5 match rates and average actual-pick rank than raw 17L WR. It also keeps the resolved GIH rate visible and switchable for comparison.
 
-The base rating for `DO` is 17Lands GIH WR when the card has enough games-in-hand samples. If QuickDraft data is missing or thin, the resolver falls back to PremierDraft. If neither format has a strong GIH sample, the card uses a neutral prior, adjusted by ALSA when ALSA is available: earlier ALSA raises the prior, later ALSA lowers it.
+EARLY and MATURE profiles are first for empirical card ratings: the loaded database card must match a profile card by its single canonical producer key exactly. On a match, the profile's published `RateEstimate.value` is the score's card estimate; it is already shrunk, while its GIH sample count and optional ALSA are preserved. Provider-only metrics and grades remain unavailable and the row source is `Profile`. Unmatched cards use deterministic local fallback—an already-loaded legacy pair rating when locked and applicable, otherwise the local global/format rating (QuickDraft, then Premier fallback), then the neutral prior with ALSA adjustment—without alias or name borrowing. `GENERIC`, `METADATA_ONLY`, and `SEMANTIC_ONLY` profiles do not activate empirical estimates.
 
-Scores are normalized against the set rating distribution and centered so the neutral prior displays as 50 before color logic. The five basic lands that can be added freely during deck building instead receive 0 DO points and rank after draftable cards; drafted nonbasic and special lands keep their normal ratings. Color commitment then multiplies the normalized score: on-color cards rise gradually, ordinary off-color cards are penalized gradually, supported splash cards receive a smaller penalty, and colorless cards stay neutral.
+Scores are normalized against the unique resolved empirical-profile estimate distribution when an EARLY or MATURE profile contributes card ratings; each canonical profile estimate enters that distribution once even if multiple runtime IDs resolve to it. Without such profile ratings, normalization uses the local rating distribution. Scores are centered so the neutral prior displays as 50 before color logic. The five basic lands that can be added freely during deck building instead receive 0 DO points and rank after draftable cards; drafted nonbasic and special lands keep their normal ratings. Color commitment then multiplies the normalized score: on-color cards rise gradually, ordinary off-color cards are penalized gradually, supported splash cards receive a smaller penalty, and colorless cards stay neutral.
 
 Pool color weights come from picked cards. Each colored picked card contributes a quality-weighted amount to each of its colors, so a strong card pulls harder than filler. The highest-weighted two-color pair is the inferred pair once at least two colors have material weight.
 
-During open picks, set/format-specific 17Lands deck color win rates are used as
-a close-pick tiebreaker. If cards are within `3.0` DO points and the
-hypothetical color-pair weights after taking each card are also close, a
-non-generic profile's shrinkage-controlled pair rates must differ by more than
-`1pp` before the recommendation prefers the card leading toward the
-higher-evidence pair performance. Otherwise, the base comparator retains the
-ordering. For a profile-backed pair with observed rate `p`, the tiebreaker
-uses `p_prior + w × (p − p_prior)`, where `p_prior` is the neutral pair rate
-and `0 ≤ w ≤ 1`. The influence is the product of maturity/confidence, profile
-total and per-pair sample support, and aggregate pair-game support. Each
-sample factor is `n / (n + k)` and missing evidence contributes zero, so thin
-evidence cannot create a material pair-rate margin or overturn base ordering.
-This is deliberately disabled once the color ramp starts, so pair win rate
-does not override later commitment signals. With no profile or a generic
-profile, rates remain raw and the legacy any-nonzero-rate comparison is
-preserved, so even a sub-`1pp` difference can resolve a close pick.
+During open picks, set/format-specific pair performance is used as a close-pick tiebreaker. If cards are within `3.0` DO points and the hypothetical color-pair weights after taking each card are also close, an empirical-profile pair rate must differ by more than `1pp` before the recommendation prefers the card leading toward the higher-rate pair. Otherwise, the base comparator retains the ordering. For an EARLY or MATURE profile, a published `PairProfile.performance.value` directly supplies the pair tiebreaker rate; that value is already shrunk and receives no second shrinkage. If published performance is absent, the preloaded local aggregate pair rate remains the fallback and keeps the existing evidence/sample shrinkage. Only for that fallback aggregate rate, the tiebreaker uses `p_prior + w × (p − p_prior)`, where `p_prior` is the neutral pair rate and `0 ≤ w ≤ 1`. The influence is the product of profile maturity/confidence, profile total and per-pair sample support, and aggregate pair-game support. Each sample factor is `n / (n + k)` and missing evidence contributes zero, so thin fallback evidence cannot create a material pair-rate margin or overturn base ordering. This is deliberately disabled once the color ramp starts, so pair win rate does not override later commitment signals. Without an empirical profile—including generic, metadata-only, or semantic-only profiles—local rates retain the legacy any-nonzero-rate comparison, so even a sub-`1pp` difference can resolve a close pick.
 
 Commitment is controlled by documented defaults in `config.py`:
 
@@ -36,7 +21,7 @@ Commitment is controlled by documented defaults in `config.py`:
 - open-pick pair-win-rate tiebreaker: within `3.0` DO points and `0.25` pair-weight points
 - neutral aggregate pair prior: `neutral_pair_win_rate = 0.5` (independent of the `0.55` card prior)
 
-Rows show a `Fit` marker: `On` for cards inside the inferred pair, `Off!` for off-color cards, `Any` for colorless cards, and `Open` before the ramp starts or before a pair is available. Once locked, pair-filtered 17Lands ratings are used when present with adequate or thin samples. The raw pair rating remains available for `17L WR`, grade, samples, and source metadata; only the score-only base rating is shrunk toward the resolved all-decks card rating. Pair-card influence is bounded by profile maturity/confidence, profile total/per-pair samples, and the pair row's GIH sample count; missing evidence falls back safely toward global evidence rather than inventing certainty.
+Rows show a `Fit` marker: `On` for cards inside the inferred pair, `Off!` for off-color cards, `Any` for colorless cards, and `Open` before the ramp starts or before a pair is available. Once locked, a matched empirical profile card keeps its profile/global estimate as authoritative. An unmatched card may use only already-materialized legacy pair-card data; scoring makes no provider or lazy pair-card requests. When a legacy pair rating is used, its raw pair rating remains available for `17L WR`, grade, samples, and source metadata; only the score-only base rating is shrunk toward the resolved all-decks card rating. If pair data is absent, scoring uses the deterministic global/neutral fallback. Profile rows expose the published GIH value, sample count, and optional ALSA with source `Profile`, but do not fabricate provider-only metrics or grades. Pair-card influence is bounded by profile maturity/confidence, profile total/per-pair samples, and the pair row's GIH sample count; missing evidence falls back safely toward global evidence rather than inventing certainty.
 
 ## Pre-pick scoring context
 
@@ -50,13 +35,14 @@ context is authoritative: conflicting coordinates are rejected and the same
 context is returned unchanged. `PickEngine.score_pack` resolves stage and
 commitment once, then uses the same private validated construction path.
 Offline, recovered, accountless, replay, backtest, and benchmark entry points
-call `load_scoring_profile` for the active set/format before scoring. It
-selects a conventional local non-generic profile from the flat cache path,
-while an explicitly supplied profile remains authoritative. A live session
-without a configured `ProfileClient` uses the same local loader.
-Live sessions with a configured `ProfileClient` read that cache first and
-refresh asynchronously; they never make network access part of score
-construction.
+call `load_scoring_profile` for the active set/format before scoring. They score
+from the loaded profile and local ratings snapshot only. An explicitly supplied
+profile remains authoritative, and a live session without a configured
+`ProfileClient` uses the same local loader. A live session with a configured
+`ProfileClient` reads that cache first and refreshes asynchronously; network is
+never part of score construction. In particular, locked scoring uses only
+already-materialized legacy pair-card data and makes no provider or lazy
+pair-card request.
 
 ### Cached profile selection
 
@@ -154,7 +140,7 @@ The splash policy is deliberately narrower than general three-color drafting:
 
 The `Fit` column uses `Splash X` for a supported splash, `Splash? X` for a speculative one, and `Fix X` when a fixing land directly supports the active splash color. Focused card details show the source count and the exact acceptance or rejection reason. Once a splash color has been established, cards of any other third color remain ordinary off-color cards.
 
-The TUI pack table shows `17L WR` and `17L Grade` as primary columns. `17L WR` is the raw Games-in-Hand win rate from the resolved 17Lands source. `17L Grade` follows the methodology published on the 17Lands Card Data page for the Grades view: grades are centered at `C` on the selected win-rate metric distribution, and each grade step is a deterministic `0.33` standard-deviation band. Draft Omen computes those grades from the cached 17Lands GIH distribution for the same source and format/filter context the row uses (QuickDraft for Quick Drafts, PremierDraft when the row is a Premier fallback, or pair-filtered data when used); cards without a resolved GIH win rate show `—`.
+The TUI pack table shows `17L WR` and `17L Grade` as primary columns. For QuickDraft and Premier rows, `17L WR` is the raw Games-in-Hand win rate from the resolved 17Lands source. `17L Grade` follows the methodology published on the 17Lands Card Data page for the Grades view: grades are centered at `C` on the selected win-rate metric distribution, and each grade step is a deterministic `0.33` standard-deviation band. Draft Omen computes those grades from the cached 17Lands GIH distribution for the same source and format/filter context the row uses (QuickDraft for Quick Drafts, PremierDraft when the row is a Premier fallback, or pair-filtered data when used). Profile rows instead show the published `RateEstimate.value` (already shrunk), preserve its GIH sample count and optional ALSA, and leave provider-only metrics and `17L Grade` unavailable (`—`). Cards without a resolved GIH win rate show `—`.
 
 Displayed `DO` scores are whole-number integers. We do not show one decimal for ties because the plain draft table should stay easy to scan; after the open-pick pair-win-rate tiebreaker, remaining DO ties are resolved deterministically by raw score, base rating, and original pack order.
 
@@ -162,4 +148,4 @@ The TUI is explicit about the active ranking in the title and status bar. Press 
 
 See [benchmarking.md](benchmarking.md) for the offline 17Lands public-data workflow and current calibration evidence. The known non-ML follow-up is reviewing building/locked DO Score misses where trophy drafters still took off-color cards, which may indicate set-specific color-ramp or off-color-penalty tuning.
 
-Rows marked `Prior*` did not have a strong GIH sample. The `Source` column shows whether a row used QuickDraft, Premier fallback, or the prior.
+Rows marked `Prior*` did not have a strong GIH sample. The `Source` column shows whether a row used `Profile`, `Quick Draft`, `Premier Draft fallback`, `Prior*`, or `Basic`.

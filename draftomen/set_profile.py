@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from draftomen.config import COLOR_PAIRS
 from draftomen.paths import app_data_dir
@@ -31,11 +31,28 @@ from draftomen.semantic_roles import (
     ResolutionResult,
 )
 
+if TYPE_CHECKING:
+    from draftomen.carddb import CardInfo
+
 SET_PROFILE_SCHEMA_VERSION = 1
 SET_PROFILE_DIRECTORY_NAME = "set-profiles"
 GENERIC_PROFILE_GENERATED_AT = "1970-01-01T00:00:00+00:00"
 
 PathInput: TypeAlias = str | os.PathLike[str]
+
+
+def profile_card_key(card: CardInfo) -> str:
+    """Return the canonical identity key used by generated profile data."""
+
+    if card.oracle_id:
+        key = f"oracle_id:{card.oracle_id}"
+    elif card.set_code and card.collector_number:
+        key = f"set:{card.set_code}:{card.collector_number}"
+    elif card.arena_id is not None:
+        key = f"arena_id:{card.arena_id}"
+    else:
+        key = f"grp_id:{card.grp_id}"
+    return key.casefold()
 
 
 class SetProfileError(ValueError):

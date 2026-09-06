@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime
 
@@ -33,8 +34,10 @@ from draftomen.ranking import RANKING_MODES, rank_scored_cards
 from draftomen.replay import format_pack_offered_event
 from draftomen.set_profile import (
     CardPairSynergy,
+    CardRating,
     PairProfile,
     ProfileMaturity,
+    RateEstimate,
     RoleTarget,
     SampleSummary,
     SetProfile,
@@ -131,6 +134,203 @@ def test_missing_ratings_data_still_scores_every_card_with_marked_prior() -> Non
     assert [card.score for card in scored_pack.cards] == [50, 50, 50]
     assert all(card.source_label == "Prior*" for card in scored_pack.cards)
     assert scored_pack.source_summary == "neutral prior"
+
+
+def test_profile_identity_precedence_casefolding_and_zero_arena_id() -> None:
+    database = CardDatabase(
+        cards={
+            1: _card(
+                grp_id=1,
+                name="Card 1",
+                colors=("W",),
+                set_code="tSt",
+                collector_number="1",
+                arena_id=0,
+                oracle_id="ORACLE-1",
+            ),
+            2: _card(
+                grp_id=2,
+                name="Card 2",
+                colors=("U",),
+                set_code="tSt",
+                collector_number="2",
+                arena_id=2,
+            ),
+            3: _card(
+                grp_id=3,
+                name="Card 3",
+                colors=("B",),
+                set_code="TST",
+                arena_id=0,
+            ),
+            4: _card(
+                grp_id=4,
+                name="Card 4",
+                colors=("R",),
+                set_code="TST",
+            ),
+            5: _card(
+                grp_id=5,
+                name="Card 5",
+                colors=("G",),
+                set_code="TST",
+                collector_number="5",
+                arena_id=5,
+            ),
+            6: _card(
+                grp_id=6,
+                name="Card 6",
+                colors=("W",),
+                set_code="TST",
+                collector_number="6",
+                oracle_id="ORACLE-1",
+            ),
+        }
+    )
+    profile = _test_profile(
+        card_ratings=tuple(
+            _profile_card(*item)
+            for item in (
+                ("ORACLE_ID:ORACLE-1", 0.71),
+                ("SET:TST:1", 0.72),
+                ("ARENA_ID:0", 0.63),
+                ("GRP_ID:1", 0.74),
+                ("SET:TST:2", 0.64),
+                ("ARENA_ID:2", 0.73),
+                ("GRP_ID:4", 0.59),
+                ("ARENA_ID:5", 0.99),
+            )
+        )
+    )
+    ratings = _ratings_variant(
+        card_ratings={
+            5: _stats(
+                grp_id=5,
+                name="Card 5",
+                color="G",
+                gih=0.10,
+                games_in_hand=900,
+            )
+        }
+    )
+    scored = PickEngine(ratings_data=ratings, set_profile=profile).score_pack(
+        offered_grp_ids=(5, 4, 3, 2, 1, 6),
+        card_database=database,
+    )
+    by_id = {card.card.grp_id: card for card in scored.cards}
+
+    assert [
+        by_id[grp_id].rating.gih_win_rate for grp_id in (1, 2, 3, 4, 5, 6)
+    ] == [
+        pytest.approx(value)
+        for value in (0.71, 0.64, 0.63, 0.59, 0.10, 0.71)
+    ]
+    assert by_id[5].source_label == "Quick"
+    assert scored.normalization.lower_rating == pytest.approx(0.4005)
+    assert scored.normalization.upper_rating == pytest.approx(0.6995)
+
+
+def test_profile_rating_preserves_gih_samples_alsa_and_missing_provider_fields() -> None:
+    database = _contextual_database()
+    profile = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        card_ratings=(
+            CardRating(
+                card_key="ARENA_ID:1",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.64,
+                    value=0.61,
+                    samples=7,
+                    prior_value=0.50,
+                    source="test",
+                ),
+                average_last_seen_at=3.5,
+            ),
+            CardRating(
+                card_key="ARENA_ID:2",
+                gih_win_rate=RateEstimate(
+                    raw_value=None,
+                    value=0.52,
+                    samples=0,
+                    prior_value=0.50,
+                    source="test",
+                ),
+                average_last_seen_at=2.0,
+            ),
+        ),
+    )
+    scored = PickEngine(set_profile=profile).score_pack(
+        offered_grp_ids=(1, 2),
+        card_database=database,
+    )
+    by_id = {card.card.grp_id: card for card in scored.cards}
+    positive = by_id[1].rating
+    zero = by_id[2].rating
+
+    assert positive.gih_win_rate == pytest.approx(0.61)
+    assert positive.sample_counts.games_in_hand == 7
+    assert positive.average_last_seen_at == pytest.approx(3.5)
+    assert zero.gih_win_rate == pytest.approx(0.52)
+    assert zero.sample_counts.games_in_hand == 0
+    assert zero.average_last_seen_at == pytest.approx(2.0)
+    for rating in (positive, zero):
+        assert rating.opening_hand_win_rate is None
+        assert rating.drawn_improvement_win_rate is None
+        assert rating.letter_grade is None
+        assert rating.neutral_prior_score is None
+        assert rating.metadata.fallback_reason is None
+        assert rating.metadata.source == "profile"
+        assert rating.neutral_prior is False
+
+
+def test_non_empirical_profiles_preserve_deterministic_fallback_and_partial_legacy() -> None:
+    database, ratings = _card_database(), _ratings_data()
+    profiles = (
+        None,
+        SetProfile.generic(set_code="TST", event_format="quickdraft"),
+        _test_profile(maturity=ProfileMaturity.METADATA_ONLY, total_samples=None),
+        _test_profile(
+            maturity=ProfileMaturity.SEMANTIC_ONLY,
+            total_samples=None,
+            role_profile=CompiledRoleProfile(set_code="TST", cards=()),
+        ),
+    )
+    expected = None
+    for profile in profiles:
+        for _ in range(2):
+            scored = PickEngine(
+                ratings_data=ratings,
+                set_profile=profile,
+            ).score_pack(
+                offered_grp_ids=(4, 3, 2, 1),
+                card_database=database,
+            )
+            current = tuple(
+                (card.card.grp_id, card.score, card.source_label)
+                for card in scored.cards
+            )
+            if expected is None:
+                expected = current
+            assert current == expected
+    partial = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        card_ratings=(_profile_card("ARENA_ID:1", 0.51, samples=1),),
+    )
+    scored = PickEngine(
+        ratings_data=ratings,
+        set_profile=partial,
+    ).score_pack(
+        offered_grp_ids=(2, 1),
+        card_database=_contextual_database(),
+    )
+    by_id = {card.card.grp_id: card for card in scored.cards}
+    assert {
+        grp_id: (card.source_label, card.rating.gih_win_rate)
+        for grp_id, card in by_id.items()
+    } == {
+        1: ("Profile", pytest.approx(0.51)),
+        2: ("Premier", pytest.approx(0.58)),
+    }
 
 
 def test_freely_available_basic_land_scores_zero_and_ranks_last() -> None:
@@ -403,6 +603,68 @@ def test_pool_weight_uses_card_quality_when_inferring_pair() -> None:
     assert scored_pack.commitment.inferred_pair == "WR"
 
 
+def test_profile_ratings_drive_pool_pair_inference_and_public_context() -> None:
+    database = CardDatabase(
+        cards={
+            1: _card(
+                grp_id=1,
+                name="White Pool Card",
+                colors=("W",),
+                set_code="TST",
+                arena_id=1,
+            ),
+            2: _card(
+                grp_id=2,
+                name="Blue Pool Card",
+                colors=("U",),
+                set_code="TST",
+                arena_id=2,
+            ),
+            3: _card(
+                grp_id=3,
+                name="Red Pool Card",
+                colors=("R",),
+                set_code="TST",
+                arena_id=3,
+            ),
+        }
+    )
+    profile = _test_profile(
+        total_samples=10_000,
+        card_ratings=(
+            _profile_card("ARENA_ID:1", 0.50),
+            _profile_card("ARENA_ID:2", 0.50),
+            _profile_card("ARENA_ID:3", 0.90),
+        ),
+    )
+    context = build_pick_scoring_context(
+        pool_grp_ids=(1, 2, 3),
+        card_database=database,
+        set_profile=profile,
+        pick_index=16,
+    )
+    assert context is not None
+
+    neutral = PickEngine().score_pack(
+        offered_grp_ids=(1,),
+        card_database=database,
+        pool_grp_ids=(1, 2, 3),
+        pick_index=16,
+    )
+    scored = PickEngine(set_profile=profile).score_pack(
+        offered_grp_ids=(1,),
+        card_database=database,
+        pool_grp_ids=(1, 2, 3),
+        pick_index=16,
+    )
+
+    assert context.role_ledger.likely_pair == "WR"
+    assert neutral.commitment.inferred_pair == "WU"
+    assert scored.commitment.inferred_pair == "WR"
+    assert scored.scoring_context == context
+    assert scored.cards[0].contextual_pair == "WR"
+
+
 def test_open_pick_pair_win_rate_tiebreaker_prefers_higher_rate_pair() -> None:
     engine = PickEngine(ratings_data=_msh_pair_tiebreaker_data())
 
@@ -423,6 +685,36 @@ def test_open_pick_pair_win_rate_tiebreaker_prefers_higher_rate_pair() -> None:
     assert by_id[31].raw_score < by_id[32].raw_score
     assert scored_pack.cards[0].card.grp_id == 31
     assert ranked_cards[0].card.grp_id == 31
+
+
+def test_profile_pair_performance_changes_open_pick_order_without_legacy_ratings() -> None:
+    profile = _test_profile(
+        total_samples=10_000,
+        by_pair=(("WU", 10_000), ("BR", 10_000)),
+        pairs=tuple(
+            PairProfile(pair=pair, performance=_profile_rate(rate, samples=10_000))
+            for pair, rate in (("WU", 0.90), ("BR", 0.40))
+        ),
+    )
+    kwargs = {
+        "offered_grp_ids": (32, 31),
+        "card_database": _msh_pair_tiebreaker_database(),
+        "pool_grp_ids": (20, 21),
+        "pick_index": 3,
+    }
+    baseline = PickEngine().score_pack(**kwargs)
+    scored = PickEngine(set_profile=profile).score_pack(**kwargs)
+    by_id = {card.card.grp_id: card for card in scored.cards}
+
+    assert baseline.cards[0].card.grp_id == 32
+    assert scored.cards[0].card.grp_id == 31
+    assert {
+        grp_id: (card.pair_tiebreaker_pair, card.pair_tiebreaker_win_rate)
+        for grp_id, card in by_id.items()
+    } == {
+        31: ("WU", pytest.approx(0.90)),
+        32: ("BR", pytest.approx(0.40)),
+    }
 
 def test_open_pair_rate_tiebreaker_preserves_legacy_subpp_ordering_without_profile() -> None:
     engine = PickEngine(
@@ -553,6 +845,65 @@ def test_locked_pair_uses_pair_filtered_rating_when_samples_are_adequate() -> No
 
     assert scored_pack.commitment.inferred_pair == "WU"
     assert scored_pack.cards[0].base_rating == 0.64
+
+
+
+def test_scoring_never_lazily_fetches_pair_cards_for_profile_and_legacy_cards() -> None:
+    database = CardDatabase(
+        cards={
+            **_contextual_database().cards,
+            2: replace(_contextual_database().cards[2], colors=("U",)),
+        }
+    )
+    profile = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        card_ratings=(_profile_card("ARENA_ID:1", 0.70, samples=1),),
+    )
+    for legacy_cards, expected in (
+        ({}, ("Prior*", None)),
+        (
+            {
+                2: _stats(
+                    grp_id=2,
+                    name="Context Card 2",
+                    color="W",
+                    gih=0.58,
+                    games_in_hand=900,
+                )
+            },
+            ("Quick", 0.58),
+        ),
+    ):
+        calls: list[str] = []
+
+        def forbidden_loader(pair: str) -> SeventeenLandsFormatData | None:
+            calls.append(pair)
+            raise AssertionError(f"unexpected lazy pair-card load for {pair}")
+
+        ratings = _ratings_variant(
+            card_ratings=legacy_cards,
+            pair_card_ratings_loader=forbidden_loader,
+        )
+        for pick_index, phase in ((3, "open"), (16, "locked")):
+            scored = PickEngine(
+                ratings_data=ratings,
+                set_profile=profile,
+            ).score_pack(
+                offered_grp_ids=(1, 2),
+                card_database=database,
+                pool_grp_ids=(1, 2),
+                pick_index=pick_index,
+            )
+            by_id = {card.card.grp_id: card for card in scored.cards}
+            assert scored.commitment.phase == phase
+            assert {
+                grp_id: (card.source_label, card.rating.gih_win_rate)
+                for grp_id, card in by_id.items()
+            } == {
+                1: ("Profile", pytest.approx(0.70)),
+                2: (expected[0], expected[1]),
+            }
+        assert calls == []
 
 
 def test_open_pair_rate_shrinks_toward_neutral_with_thin_profile_evidence() -> None:
@@ -1466,7 +1817,9 @@ def _card(
     mana_value: float | None = 2.0,
     produced_mana: tuple[str, ...] = (),
     set_code: str | None = None,
+    collector_number: str | None = None,
     arena_id: int | None = None,
+    oracle_id: str | None = None,
 ) -> CardInfo:
     return CardInfo(
         grp_id=grp_id,
@@ -1478,7 +1831,79 @@ def _card(
         mana_cost=mana_cost,
         produced_mana=produced_mana,
         set_code=set_code,
+        collector_number=collector_number,
         arena_id=arena_id,
+        oracle_id=oracle_id,
+    )
+
+
+def _profile_rate(
+    value: float,
+    *,
+    samples: int = 100,
+    prior_value: float = 0.50,
+) -> RateEstimate:
+    return RateEstimate(
+        raw_value=value,
+        value=value,
+        samples=samples,
+        prior_value=prior_value,
+        source="test",
+    )
+
+
+def _profile_card(key: str, value: float, *, samples: int = 100) -> CardRating:
+    return CardRating(
+        card_key=key,
+        gih_win_rate=_profile_rate(value, samples=samples),
+    )
+
+
+def _test_profile(
+    *,
+    set_code: str = "TST",
+    maturity: ProfileMaturity = ProfileMaturity.MATURE,
+    total_samples: int | None = 1,
+    by_pair: tuple[tuple[str, int], ...] = (("WU", 1),),
+    pairs: tuple[PairProfile, ...] = (),
+    card_ratings: tuple[CardRating, ...] = (),
+    role_profile: CompiledRoleProfile | None = None,
+) -> SetProfile:
+    return SetProfile(
+        set_code=set_code,
+        event_format="quickdraft",
+        profile_version="test",
+        generated_at="1970-01-01T00:00:00+00:00",
+        source=SourceMetadata(provider="test"),
+        maturity=maturity,
+        samples=(
+            None
+            if total_samples is None
+            else SampleSummary(total=total_samples, by_pair=by_pair)
+        ),
+        confidence=1.0,
+        pairs=pairs,
+        role_profile=role_profile,
+        card_ratings=card_ratings,
+    )
+
+
+def _ratings_variant(
+    *,
+    card_ratings: dict[int, SeventeenCardStats],
+    pair_card_ratings_loader: Callable[[str], SeventeenLandsFormatData | None]
+    | None = None,
+) -> SeventeenLandsData:
+    base = _ratings_data()
+    return replace(
+        base,
+        primary=replace(
+            base.primary,
+            card_ratings=card_ratings,
+            pair_win_rates={},
+        ),
+        fallback=None,
+        pair_card_ratings_loader=pair_card_ratings_loader,
     )
 
 
@@ -1605,6 +2030,47 @@ def test_build_pick_scoring_context_keeps_explicit_context_authoritative() -> No
             pick_index=34,
             global_pick_index=35,
         )
+
+
+def test_call_scoring_context_overrides_constructor_profile_and_normalization() -> None:
+    database = _contextual_database()
+    constructor_profile = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        card_ratings=(_profile_card("ARENA_ID:1", 0.60),),
+    )
+    call_profile = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        card_ratings=(_profile_card("ARENA_ID:1", 0.90),),
+    )
+    context = build_pick_scoring_context(
+        pool_grp_ids=(1, 2),
+        card_database=database,
+        set_profile=call_profile,
+        pick_index=35,
+    )
+    assert context is not None
+
+    engine = PickEngine(set_profile=constructor_profile)
+    constructor = engine.score_pack(
+        offered_grp_ids=(1,),
+        card_database=database,
+    )
+    scored = engine.score_pack(
+        offered_grp_ids=(1,),
+        card_database=database,
+        pool_grp_ids=(1, 2),
+        pick_index=35,
+        scoring_context=context,
+    )
+
+    assert constructor.cards[0].rating.gih_win_rate == pytest.approx(0.60)
+    assert constructor.normalization.lower_rating == pytest.approx(0.50)
+    assert constructor.normalization.upper_rating == pytest.approx(0.60)
+    assert scored.cards[0].rating.gih_win_rate == pytest.approx(0.90)
+    assert scored.cards[0].source_label == "Profile"
+    assert scored.normalization.lower_rating == pytest.approx(0.20)
+    assert scored.normalization.upper_rating == pytest.approx(0.90)
+    assert scored.scoring_context is context
 
 
 def test_generic_profile_is_normalized_to_no_context_with_stage_ledger() -> None:

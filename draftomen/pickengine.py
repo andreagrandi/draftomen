@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from functools import cmp_to_key
+from types import MappingProxyType
 from typing import Mapping
 
 from draftomen.carddb import CardDatabase, CardInfo
@@ -22,7 +23,12 @@ from draftomen.pool_ledger import (
     project_pool_role_ledger,
 )
 from draftomen.semantic_roles import Role, RoleAssignment, resolve_card_roles
-from draftomen.set_profile import ProfileMaturity, SetProfile
+from draftomen.set_profile import (
+    CardRating,
+    ProfileMaturity,
+    SetProfile,
+    profile_card_key,
+)
 from draftomen.seventeen import (
     FORMAT_RATING_SOURCE,
     NEUTRAL_PRIOR_SOURCE,
@@ -80,6 +86,27 @@ _TERM_BOUNDS: Mapping[str, tuple[float, float]] = {
 PAIR_PROFILE_SAMPLE_SCALE = 100.0
 PAIR_GAME_SAMPLE_SCALE = 500.0
 PAIR_CARD_GIH_SAMPLE_SCALE = 500.0
+PROFILE_RATING_SOURCE = "profile"
+PROFILE_SOURCE_LABEL = "Profile"
+
+
+@dataclass(frozen=True, slots=True)
+class _ProfileRatingLookup:
+    """Immutable runtime-card and canonical profile-rating views."""
+
+    ratings_by_grp_id: Mapping[int, ResolvedCardRating]
+    distribution: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "ratings_by_grp_id",
+            MappingProxyType(dict(self.ratings_by_grp_id)),
+        )
+        object.__setattr__(self, "distribution", tuple(self.distribution))
+
+    def rating_for(self, *, grp_id: int) -> ResolvedCardRating | None:
+        return self.ratings_by_grp_id.get(grp_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +207,86 @@ def _normalize_scoring_profile(
     if profile is None or profile.maturity is ProfileMaturity.GENERIC:
         return None
     return profile
+
+
+def _is_empirical_profile(*, profile: SetProfile | None) -> bool:
+    return profile is not None and profile.maturity in {
+        ProfileMaturity.EARLY,
+        ProfileMaturity.MATURE,
+    }
+
+
+def _resolved_profile_rating(
+    *,
+    card: CardInfo,
+    profile: SetProfile,
+    card_rating: CardRating,
+) -> ResolvedCardRating:
+    gih_rate = card_rating.gih_win_rate
+    return ResolvedCardRating(
+        grp_id=card.grp_id,
+        name=card.name,
+        color="".join(card.colors) or "C",
+        rarity=card.rarity,
+        average_last_seen_at=card_rating.average_last_seen_at,
+        gih_win_rate=gih_rate.value,
+        opening_hand_win_rate=None,
+        drawn_improvement_win_rate=None,
+        sample_counts=RatingSampleCounts(
+            seen=0,
+            picked=0,
+            games_played=0,
+            opening_hand=0,
+            games_in_hand=gih_rate.samples,
+        ),
+        letter_grade=None,
+        neutral_prior_score=None,
+        metadata=RatingSourceMetadata(
+            requested_format=profile.event_format,
+            source=PROFILE_RATING_SOURCE,
+            source_format=profile.event_format,
+            fallback_reason=None,
+        ),
+    )
+
+
+def _profile_rating_lookup(
+    *,
+    profile: SetProfile | None,
+    card_database: CardDatabase,
+) -> _ProfileRatingLookup:
+    if not _is_empirical_profile(profile=profile):
+        return _ProfileRatingLookup(ratings_by_grp_id={}, distribution=())
+
+    assert profile is not None
+    profile_ratings = {rating.card_key: rating for rating in profile.card_ratings}
+    runtime_ratings: dict[int, ResolvedCardRating] = {}
+    distribution: list[float] = []
+    matched_keys: set[str] = set()
+    for grp_id, card in sorted(card_database.cards.items()):
+        if (
+            card.unknown
+            or card.set_code is None
+            or card.set_code.casefold() != profile.set_code
+        ):
+            continue
+        card_key = profile_card_key(card)
+        card_rating = profile_ratings.get(card_key)
+        if card_rating is None:
+            continue
+        runtime_ratings[grp_id] = _resolved_profile_rating(
+            card=card,
+            profile=profile,
+            card_rating=card_rating,
+        )
+        if card_key not in matched_keys:
+            distribution.append(card_rating.gih_win_rate.value)
+            matched_keys.add(card_key)
+
+    return _ProfileRatingLookup(
+        ratings_by_grp_id=runtime_ratings,
+        distribution=tuple(distribution),
+    )
 
 
 def _normalize_scoring_context(
@@ -441,7 +548,7 @@ class ScoredPack:
 
 
 class PickEngine:
-    """Score offered cards using 17Lands data and configured priors.
+    """Score offered cards using set-profile or 17Lands evidence and priors.
     Pool color weights progressively bias scores toward an inferred pair.
     """
 
@@ -487,6 +594,20 @@ class PickEngine:
         candidate_context = _normalize_scoring_context(
             self.scoring_context if scoring_context is None else scoring_context
         )
+        active_profile = (
+            candidate_context.set_profile
+            if candidate_context is not None
+            else self.set_profile
+        )
+        profile_lookup = _profile_rating_lookup(
+            profile=active_profile,
+            card_database=card_database,
+        )
+        normalization = _normalization_from_data(
+            ratings_data=self.ratings_data,
+            config=self.config,
+            profile_lookup=profile_lookup,
+        )
         resolved_stage = _resolve_pre_pick_stage(
             pick_index=pick_index,
             pack_number=pack_number,
@@ -510,6 +631,7 @@ class PickEngine:
             card_database=card_database,
             ratings_data=self.ratings_data,
             config=self.config,
+            profile_lookup=profile_lookup,
         )
         splash_state = infer_splash_state(
             pool_grp_ids=pool_grp_ids,
@@ -528,7 +650,7 @@ class PickEngine:
                 pool_grp_ids=pool_grp_ids,
                 card_database=card_database,
                 ratings_data=self.ratings_data,
-                set_profile=self.set_profile,
+                set_profile=active_profile,
                 stage=resolved_stage,
                 likely_pair=commitment.inferred_pair,
             )
@@ -545,22 +667,19 @@ class PickEngine:
                 estimated_remaining_picks=resolved_stage.estimated_remaining_picks,
                 card_database=card_database,
                 ratings_data=self.ratings_data,
-                set_profile=self.set_profile,
+                set_profile=active_profile,
                 likely_pair=commitment.inferred_pair,
             )
-        if active_context is None:
-            active_profile = self.set_profile
-        else:
-            active_profile = active_context.set_profile
-        require_material_rate_margin = (
-            active_profile is not None
-            and active_profile.maturity.value != "generic"
+        require_material_rate_margin = _is_empirical_profile(
+            profile=active_profile,
         )
         best_on_color_score = self._best_on_color_score(
             offered_grp_ids=offered_grp_ids,
             card_database=card_database,
             commitment=commitment,
             profile=active_profile,
+            normalization=normalization,
+            profile_lookup=profile_lookup,
         )
         scored_cards = tuple(
             self._score_card(
@@ -572,6 +691,8 @@ class PickEngine:
                 best_on_color_score=best_on_color_score,
                 scoring_context=active_context,
                 profile=active_profile,
+                normalization=normalization,
+                profile_lookup=profile_lookup,
             )
             for index, grp_id in enumerate(offered_grp_ids)
         )
@@ -579,13 +700,14 @@ class PickEngine:
             cards=scored_cards,
             commitment=commitment,
             ratings_data=self.ratings_data,
+            profile=active_profile,
             offered_count=len(offered_grp_ids),
             config=self.config,
             require_material_rate_margin=require_material_rate_margin,
         )
         return ScoredPack(
             cards=sorted_cards,
-            normalization=self.normalization,
+            normalization=normalization,
             source_summary=_source_summary(cards=sorted_cards),
             commitment=commitment,
             splash_state=splash_state,
@@ -600,6 +722,8 @@ class PickEngine:
         card_database: CardDatabase,
         commitment: ColorCommitment,
         profile: SetProfile | None,
+        normalization: ScoreNormalization,
+        profile_lookup: _ProfileRatingLookup,
     ) -> float | None:
         pair = commitment.inferred_pair
         if pair is None:
@@ -619,6 +743,7 @@ class PickEngine:
                 config=self.config,
                 commitment=commitment,
                 profile=profile,
+                profile_lookup=profile_lookup,
             )
             scores.append(
                 _normalized_score(
@@ -630,7 +755,7 @@ class PickEngine:
                         commitment=commitment,
                         profile=profile,
                     ),
-                    normalization=self.normalization,
+                    normalization=normalization,
                 )
             )
 
@@ -647,6 +772,8 @@ class PickEngine:
         best_on_color_score: float | None,
         scoring_context: PickScoringContext | None,
         profile: SetProfile | None,
+        normalization: ScoreNormalization,
+        profile_lookup: _ProfileRatingLookup,
     ) -> ScoredCard:
         card = card_database.lookup(grp_id=grp_id)
         freely_available_basic = _is_freely_available_basic_land(card=card)
@@ -656,9 +783,10 @@ class PickEngine:
             config=self.config,
             profile=profile,
             commitment=commitment,
+            profile_lookup=profile_lookup,
         )
         base_rating = (
-            self.normalization.lower_rating
+            normalization.lower_rating
             if freely_available_basic
             else _effective_base_rating_for(
                 rating=rating,
@@ -671,12 +799,13 @@ class PickEngine:
         )
         base_score = _normalized_score(
             adjusted_rating=base_rating,
-            normalization=self.normalization,
+            normalization=normalization,
         )
         global_rating = _rating_for(
             ratings_data=self.ratings_data,
             grp_id=grp_id,
             config=self.config,
+            profile_lookup=profile_lookup,
         )
         splash = assess_splash_card(
             card=card,
@@ -1146,9 +1275,8 @@ def score_pack(
     estimated_remaining_picks: int | None = None,
 ) -> ScoredPack:
     """Convenience wrapper for callers that do not keep an engine instance.
-    The reusable PickEngine class avoids rebuilding normalization per pack.
+    The reusable PickEngine class retains configuration between pack scores.
     """
-
     return PickEngine(
         ratings_data=ratings_data,
         config=config,
@@ -1208,12 +1336,17 @@ def build_pick_scoring_context(
         return scoring_context
     if set_profile is None or resolved_stage is None:
         return None
+    profile_lookup = _profile_rating_lookup(
+        profile=set_profile,
+        card_database=card_database,
+    )
     inferred_pair = _inferred_pair(
         weights=_pool_color_weights(
             pool_grp_ids=pool_grp_ids,
             card_database=card_database,
             ratings_data=ratings_data,
             config=config,
+            profile_lookup=profile_lookup,
         ),
         config=config,
     )
@@ -1329,12 +1462,14 @@ def _color_commitment(
     card_database: CardDatabase,
     ratings_data: SeventeenLandsData | None,
     config: PickEngineConfig,
+    profile_lookup: _ProfileRatingLookup | None = None,
 ) -> ColorCommitment:
     weights = _pool_color_weights(
         pool_grp_ids=pool_grp_ids,
         card_database=card_database,
         ratings_data=ratings_data,
         config=config,
+        profile_lookup=profile_lookup,
     )
     inferred_pair = _inferred_pair(weights=weights, config=config)
     level = _commitment_level(pick_index=pick_index, config=config)
@@ -1356,6 +1491,7 @@ def _pool_color_weights(
     card_database: CardDatabase,
     ratings_data: SeventeenLandsData | None,
     config: PickEngineConfig,
+    profile_lookup: _ProfileRatingLookup | None = None,
 ) -> dict[str, float]:
     weights = _empty_color_weights()
     for grp_id in pool_grp_ids:
@@ -1367,6 +1503,7 @@ def _pool_color_weights(
             ratings_data=ratings_data,
             grp_id=grp_id,
             config=config,
+            profile_lookup=profile_lookup,
         )
         base_rating = _base_rating(rating=rating, config=config)
         weight = _pool_card_weight(base_rating=base_rating, config=config)
@@ -1475,6 +1612,7 @@ def _score_sorted_cards(
     cards: tuple[ScoredCard, ...],
     commitment: ColorCommitment,
     ratings_data: SeventeenLandsData | None,
+    profile: SetProfile | None,
     offered_count: int,
     config: PickEngineConfig,
     require_material_rate_margin: bool,
@@ -1483,6 +1621,7 @@ def _score_sorted_cards(
     if not _early_pair_tiebreaker_enabled(
         commitment=commitment,
         ratings_data=ratings_data,
+        profile=profile,
         offered_count=offered_count,
         config=config,
     ):
@@ -1495,15 +1634,18 @@ def _score_sorted_cards(
     )
     return _with_score_sort_indexes(cards=sorted_cards)
 
-
 def _early_pair_tiebreaker_enabled(
     *,
     commitment: ColorCommitment,
     ratings_data: SeventeenLandsData | None,
+    profile: SetProfile | None,
     offered_count: int,
     config: PickEngineConfig,
 ) -> bool:
-    if ratings_data is None or not ratings_data.pair_win_rates:
+    if not _pair_performance_available(
+        ratings_data=ratings_data,
+        profile=profile,
+    ):
         return False
 
     if commitment.level > 0.0 or commitment.pick_index > config.open_pick_count:
@@ -1640,7 +1782,10 @@ def _pair_tiebreaker_for_card(
     config: PickEngineConfig,
     profile: SetProfile | None,
 ) -> tuple[str | None, float | None, float | None]:
-    if ratings_data is None or not ratings_data.pair_win_rates:
+    if not _pair_performance_available(
+        ratings_data=ratings_data,
+        profile=profile,
+    ):
         return (None, None, None)
 
     colors = _recognized_card_colors(card=card)
@@ -1715,7 +1860,7 @@ def _best_tiebreaker_pair(
     *,
     pairs: tuple[str, ...],
     weights: dict[str, float],
-    ratings_data: SeventeenLandsData,
+    ratings_data: SeventeenLandsData | None,
     config: PickEngineConfig,
     profile: SetProfile | None,
 ) -> str | None:
@@ -1745,7 +1890,7 @@ def _tiebreaker_pair_sort_key(
     *,
     pair: str,
     weights: dict[str, float],
-    ratings_data: SeventeenLandsData,
+    ratings_data: SeventeenLandsData | None,
     config: PickEngineConfig,
     profile: SetProfile | None,
 ) -> tuple[bool, float, float, int]:
@@ -1775,6 +1920,19 @@ def _sample_influence(*, samples: int | None, scale: float) -> float:
     )
 
 
+def _pair_performance_available(
+    *,
+    ratings_data: SeventeenLandsData | None,
+    profile: SetProfile | None,
+) -> bool:
+    if ratings_data is not None and ratings_data.pair_win_rates:
+        return True
+    return _is_empirical_profile(profile=profile) and any(
+        pair.performance is not None
+        for pair in profile.pairs
+    )
+
+
 def _profile_pair_influence(
     *,
     profile: SetProfile | None,
@@ -1782,7 +1940,7 @@ def _profile_pair_influence(
 ) -> float | None:
     """Return profile evidence weight, or None for legacy raw behavior."""
 
-    if profile is None or profile.maturity.value == "generic":
+    if not _is_empirical_profile(profile=profile):
         return None
     samples = profile.samples
     if samples is None:
@@ -1819,7 +1977,12 @@ def _pair_performance_rate(
     profile: SetProfile | None,
     config: PickEngineConfig,
 ) -> float | None:
-    """Resolve aggregate pair performance with profile-aware shrinkage."""
+    """Resolve pair performance with profile precedence and legacy fallback."""
+
+    if _is_empirical_profile(profile=profile):
+        pair_profile = profile.pair(pair) if profile is not None else None
+        if pair_profile is not None and pair_profile.performance is not None:
+            return pair_profile.performance.value
 
     if ratings_data is None:
         return None
@@ -1844,8 +2007,13 @@ def _normalization_from_data(
     *,
     ratings_data: SeventeenLandsData | None,
     config: PickEngineConfig,
+    profile_lookup: _ProfileRatingLookup | None = None,
 ) -> ScoreNormalization:
-    distribution = _strong_rating_distribution(ratings_data=ratings_data)
+    distribution = (
+        profile_lookup.distribution
+        if profile_lookup is not None and profile_lookup.distribution
+        else _strong_rating_distribution(ratings_data=ratings_data)
+    )
     lower_percentile = _percentile(
         values=distribution,
         percentile=config.normalization_lower_percentile,
@@ -1890,18 +2058,25 @@ def _rating_for(
     config: PickEngineConfig,
     commitment: ColorCommitment | None = None,
     profile: SetProfile | None = None,
+    profile_lookup: _ProfileRatingLookup | None = None,
 ) -> ResolvedCardRating:
+    if profile_lookup is not None:
+        profile_rating = profile_lookup.rating_for(grp_id=grp_id)
+        if profile_rating is not None:
+            return profile_rating
+
     if ratings_data is None:
         return _neutral_rating(grp_id=grp_id, config=config)
 
     if commitment is not None and commitment.locked and commitment.inferred_pair is not None:
         pair = commitment.inferred_pair
-        profile_influence = _profile_pair_influence(profile=profile, pair=pair)
-        return ratings_data.pair_rating_for(
-            grp_id=grp_id,
-            pair=pair,
-            allow_thin=profile_influence is not None,
-        )
+        if ratings_data.pair_card_ratings.get(pair) is not None:
+            profile_influence = _profile_pair_influence(profile=profile, pair=pair)
+            return ratings_data.pair_rating_for(
+                grp_id=grp_id,
+                pair=pair,
+                allow_thin=profile_influence is not None,
+            )
 
     return ratings_data.rating_for(grp_id=grp_id)
 
@@ -1915,7 +2090,9 @@ def _effective_base_rating_for(
     commitment: ColorCommitment | None,
     profile: SetProfile | None,
 ) -> float:
-    """Return the score-only base rating, shrinking locked pair evidence."""
+    """Return the score-only base rating, shrinking legacy pair evidence."""
+    if rating.metadata.source == PROFILE_RATING_SOURCE:
+        return _base_rating(rating=rating, config=config)
     if (
         ratings_data is None
         or commitment is None
@@ -2019,6 +2196,8 @@ def _integer_score(*, raw_score: float) -> int:
 
 
 def _source_label(*, rating: ResolvedCardRating) -> str:
+    if rating.metadata.source == PROFILE_RATING_SOURCE:
+        return PROFILE_SOURCE_LABEL
     if rating.metadata.source == NEUTRAL_PRIOR_SOURCE:
         return "Prior*"
 
@@ -2045,11 +2224,14 @@ def _source_summary(*, cards: tuple[ScoredCard, ...]) -> str:
     if not cards:
         return "none"
 
+    uses_profile = any(card.source_label == PROFILE_SOURCE_LABEL for card in cards)
     uses_quick = any(card.source_label == "Quick" for card in cards)
     uses_premier = any(card.source_label == "Premier" for card in cards)
     uses_prior = any(card.no_data for card in cards)
     uses_basic_policy = any(card.freely_available_basic for card in cards)
     parts: list[str] = []
+    if uses_profile:
+        parts.append("set profile")
     if uses_quick:
         parts.append("QuickDraft")
 

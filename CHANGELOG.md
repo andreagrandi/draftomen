@@ -2,6 +2,7 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Use hosted card and aggregate pair estimates in recommendation scoring, with exact canonical matching, deterministic legacy fallback, and no provider or lazy scoring requests. (#351)
 - Add guarded profile-refresh generation-artifact publication with validated
   full-success automatic merges, immutable partial review snapshots, and
   stale-base, failure, and unchanged-run safeguards. (#345)
