@@ -1662,6 +1662,17 @@ Activation and rescoring remain local-only: they use the already validated cache
 or in-memory authority, perform no network I/O, and do not reload the profile
 cache for every score.
 
+An adoptable hosted result is one atomic authority publication: profile
+identity, `generated_at`-derived ratings freshness, current-pack scores and
+scoring context, and recommendations advance together. A remote outage, invalid
+artifact, or weaker result retains the strongest usable in-memory authority
+and its freshness. Equal or unchanged results update refresh status without
+replacing authority or rescoring. A newer cached profile, including one
+installed concurrently, wins the same non-regression comparison and cannot be
+overwritten by an older completion. Refresh completion consumes only its
+supplied result and in-memory state; it performs no network or profile-cache
+load.
+
 When networking is allowed, the client reuses a validated manifest for its
 default 24-hour TTL unless `force=True`, then selects the exact normalized
 set/format artifact. It accepts only a newer maturity or timestamp; an

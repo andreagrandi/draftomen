@@ -908,20 +908,30 @@ class LiveSession:
                 return
 
             current_profile = self._set_profile
+            current_profiles = tuple(
+                candidate
+                for candidate in (
+                    current_profile,
+                    self._set_profiles_by_set.get(active_set_code),
+                )
+                if candidate is not None
+            )
             profile_changed = (
-                profile.maturity is not ProfileMaturity.GENERIC
+                self._configured_set_profile is None
+                and profile.maturity is not ProfileMaturity.GENERIC
                 and profile != current_profile
-                and _profile_refresh_profile_is_adoptable(
-                    profile=profile,
-                    current_profile=current_profile,
-                    outcome=outcome,
+                and all(
+                    _profile_refresh_profile_is_adoptable(
+                        profile=profile,
+                        current_profile=candidate,
+                        outcome=outcome,
+                    )
+                    for candidate in current_profiles
                 )
             )
             if profile_changed:
-                self._set_profile = profile
-                self._set_profiles_by_set[active_set_code] = profile
-                self._set_profile_states_by_set[active_set_code] = (
-                    self._profile_state_for_profile(
+                profile_state, ratings_state, authority_changed = (
+                    self._adopt_profile_locked(
                         profile=profile,
                         set_code=active_set_code,
                         source="remote",
@@ -929,17 +939,21 @@ class LiveSession:
                         refresh_outcome=outcome,
                     )
                 )
-                transition_generation = self._transition_generation
-                self._publish(
-                    snapshot=replace(
+                if authority_changed:
+                    candidate_snapshot = replace(
                         self.snapshot,
-                        set_profile=self._set_profile_states_by_set[active_set_code],
+                        set_profile=profile_state,
+                        ratings=ratings_state,
                     )
-                )
-                if self._transition_generation != transition_generation:
+                    transition_generation = self._transition_generation
+                    if self._score_current_pack_locked(
+                        snapshot=candidate_snapshot
+                    ):
+                        return
+                    if self._transition_generation != transition_generation:
+                        return
+                    self._publish(snapshot=candidate_snapshot)
                     return
-                self._score_current_pack_locked()
-                return
 
             if outcome == ProfileRefreshOutcome.UPDATED.value:
                 outcome = ProfileRefreshOutcome.UNCHANGED.value
@@ -3249,6 +3263,74 @@ class LiveSession:
             ),
         )
 
+    def _adopt_profile_locked(
+        self,
+        *,
+        profile: SetProfile,
+        set_code: str,
+        source: str | None,
+        phase: DataLoadPhase,
+        refresh_outcome: str | None = None,
+        existing_profile_state: SetProfileState | None = None,
+        memoize: bool = True,
+    ) -> tuple[SetProfileState, RatingsState, bool]:
+        """Adopt one in-memory profile and its derived public projections.
+
+        Callers hold ``_state_lock`` and have already validated the profile's
+        identity and authority.  This method performs no I/O or publication.
+        """
+
+        normalized_set_code = set_code.upper()
+        previous_profile = self._set_profile
+        authority_changed = (
+            profile.maturity is not ProfileMaturity.GENERIC
+            and profile != previous_profile
+        )
+        if memoize:
+            self._set_profiles_by_set[normalized_set_code] = (
+                None
+                if profile.maturity is ProfileMaturity.GENERIC
+                else profile
+            )
+        self._set_profile = (
+            None
+            if profile.maturity is ProfileMaturity.GENERIC
+            else profile
+        )
+        profile_state = (
+            existing_profile_state
+            if existing_profile_state is not None
+            else self._profile_state_for_profile(
+                profile=profile,
+                set_code=normalized_set_code,
+                source=source,
+                phase=phase,
+                refresh_outcome=refresh_outcome,
+            )
+        )
+        self._set_profile_states_by_set[normalized_set_code] = profile_state
+        if (
+            profile.maturity is ProfileMaturity.GENERIC
+            and self._configured_set_profile is None
+            and self._profile_client is None
+        ):
+            ratings_state = self._ratings_state_by_set.get(
+                normalized_set_code,
+                replace(
+                    self._initial_ratings_state(),
+                    set_code=normalized_set_code,
+                ),
+            )
+        else:
+            ratings_state = self._ratings_state_for_profile(
+                profile=profile,
+                set_code=normalized_set_code,
+            )
+        self._ratings_state_by_set[normalized_set_code] = ratings_state
+        if self._profile_managed_for_set_locked(set_code=normalized_set_code):
+            self._ratings_data_by_set[normalized_set_code] = None
+        return profile_state, ratings_state, authority_changed
+
     def _activate_set_code_locked(
         self,
         *,
@@ -3308,55 +3390,22 @@ class LiveSession:
                         else f"local-{profile.maturity.value}"
                     )
 
-            self._set_profiles_by_set[normalized_set_code] = (
-                None
-                if profile.maturity is ProfileMaturity.GENERIC
-                else profile
-            )
-        self._set_profile = (
-            None
-            if profile.maturity is ProfileMaturity.GENERIC
-            else profile
+        profile_state, ratings_state, _ = self._adopt_profile_locked(
+            profile=profile,
+            set_code=normalized_set_code,
+            source=source,
+            phase=DataLoadPhase.READY,
+            refresh_outcome=(
+                ProfileRefreshOutcome.CACHED.value
+                if (
+                    profile.maturity is not ProfileMaturity.GENERIC
+                    and source != "injected"
+                )
+                else None
+            ),
+            existing_profile_state=authoritative_state,
+            memoize=self._configured_set_profile is None,
         )
-        profile_state = (
-            authoritative_state
-            if authoritative_state is not None
-            else self._profile_state_for_profile(
-                profile=profile,
-                set_code=normalized_set_code,
-                source=source,
-                phase=DataLoadPhase.READY,
-                refresh_outcome=(
-                    ProfileRefreshOutcome.CACHED.value
-                    if (
-                        profile.maturity is not ProfileMaturity.GENERIC
-                        and source != "injected"
-                    )
-                    else None
-                ),
-            )
-        )
-        self._set_profile_states_by_set[normalized_set_code] = profile_state
-        if (
-            profile.maturity is ProfileMaturity.GENERIC
-            and self._configured_set_profile is None
-            and self._profile_client is None
-        ):
-            ratings_state = self._ratings_state_by_set.get(
-                normalized_set_code,
-                replace(
-                    self._initial_ratings_state(),
-                    set_code=normalized_set_code,
-                ),
-            )
-        else:
-            ratings_state = self._ratings_state_for_profile(
-                profile=profile,
-                set_code=normalized_set_code,
-            )
-        self._ratings_state_by_set[normalized_set_code] = ratings_state
-        if self._profile_managed_for_set_locked(set_code=normalized_set_code):
-            self._ratings_data_by_set[normalized_set_code] = None
         return transitioned, profile_state, ratings_state
 
 
@@ -4479,6 +4528,8 @@ def _profile_refresh_outcome_value(
     outcome: ProfileRefreshOutcome | str,
 ) -> str:
     return outcome.value if isinstance(outcome, ProfileRefreshOutcome) else str(outcome)
+
+
 def _profile_refresh_profile_is_adoptable(
     *,
     profile: SetProfile,
@@ -4488,9 +4539,9 @@ def _profile_refresh_profile_is_adoptable(
     """Accept only a non-regressing profile from an adapter refresh.
 
     Cached and unchanged results can carry a cache entry installed by another
-    client, so they are eligible when their validated content is newer.  An
-    explicit updated result may also replace a same-timestamp profile version,
-    preserving the existing refresh contract.
+    client, so they are eligible when their validated content is genuinely
+    newer.  An explicit updated result may also replace a same-timestamp
+    profile version.
     """
 
     if profile.maturity is ProfileMaturity.GENERIC:
@@ -4507,9 +4558,6 @@ def _profile_refresh_profile_is_adoptable(
     }
     profile_rank = maturity_rank[profile.maturity]
     current_rank = maturity_rank[current_profile.maturity]
-    if profile_rank > current_rank:
-        return False
-
     def profile_time(candidate: SetProfile) -> datetime:
         try:
             parsed = datetime.fromisoformat(
@@ -4523,15 +4571,13 @@ def _profile_refresh_profile_is_adoptable(
 
     candidate_time = profile_time(profile)
     current_time = profile_time(current_profile)
+    if profile_rank > current_rank:
+        return False
     if candidate_time < current_time:
         return False
-    if profile_rank < current_rank or candidate_time > current_time:
-        return True
-    return outcome not in {
-        ProfileRefreshOutcome.CACHED.value,
-        ProfileRefreshOutcome.UNCHANGED.value,
-    }
-
+    if candidate_time == current_time:
+        return outcome == ProfileRefreshOutcome.UPDATED.value
+    return True
 
 
 def _ratings_last_successful_update(

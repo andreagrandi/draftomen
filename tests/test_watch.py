@@ -283,14 +283,78 @@ def test_plain_watch_auto_loads_conventional_profile_through_shared_session(
     )
 def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profile = load_set_profile(
+    base_profile = load_set_profile(
         Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json",
         expected_set_code="TST",
         expected_format=QUICK_DRAFT_FORMAT,
     )
+
+    def empirical_profile(
+        *,
+        first_rate: float,
+        second_rate: float,
+        profile_version: str,
+        generated_at: str,
+    ) -> SetProfile:
+        data = base_profile.to_json()
+        data.update(profile_version=profile_version, generated_at=generated_at)
+        data["card_ratings"] = [
+            {
+                "card_key": f"oracle_id:{card_key}",
+                "gih_win_rate": {
+                    "raw_value": rate,
+                    "value": rate,
+                    "samples": 100,
+                    "prior_value": 0.5,
+                    "source": "fixture",
+                },
+            }
+            for card_key, rate in (
+                ("cached-first", first_rate),
+                ("cached-second", second_rate),
+            )
+        ]
+        return SetProfile.from_json(data)
+
+    cached_profile = empirical_profile(
+        first_rate=0.72,
+        second_rate=0.58,
+        profile_version="1.0-cached",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
+    refreshed_profile = empirical_profile(
+        first_rate=0.41,
+        second_rate=0.83,
+        profile_version="2.0-refreshed",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    base_database = _small_card_database()
+    card_database = replace(
+        base_database,
+        cards={
+            1: replace(
+                base_database.cards[101],
+                grp_id=1,
+                name="Cached First",
+                set_code="tst",
+                oracle_id="cached-first",
+            ),
+            2: replace(
+                base_database.cards[102],
+                grp_id=2,
+                name="Cached Second",
+                set_code="tst",
+                oracle_id="cached-second",
+            ),
+        },
+    )
     started = Event()
     release = Event()
+    refreshed = Event()
+    cached_calls: list[tuple[str, str]] = []
+    refresh_calls: list[tuple[str, str]] = []
 
     class BlockingProfileClient:
         manifest_url = "https://profiles.example.test/m.json"
@@ -298,45 +362,71 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
 
         def load_cached(self, set_code: str, event_format: str, **kwargs):
             del kwargs
-            return SimpleNamespace(
-                profile=SetProfile.generic(
-                    set_code=set_code,
-                    event_format=event_format,
-                ),
-                source="generic",
-            )
+            cached_calls.append((set_code, event_format))
+            return SimpleNamespace(profile=cached_profile, source="cache")
 
         def refresh(self, set_code: str, event_format: str):
-            assert (set_code, event_format) == ("TST", QUICK_DRAFT_FORMAT)
+            refresh_calls.append((set_code, event_format))
             started.set()
             assert release.wait(timeout=5.0)
             return ProfileRefreshResult(
-                profile=profile,
+                profile=refreshed_profile,
                 outcome=ProfileRefreshOutcome.UPDATED,
             )
 
+    def fail_urlopen(request: object, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError(f"unexpected provider request: {request!r}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
     watcher = PlainLogWatcher(
         log_path=tmp_path / "Player.log",
-        card_database=_fixture_card_database(),
+        card_database=card_database,
         profile_client=BlockingProfileClient(),
     )
+
+    def capture_snapshot(snapshot) -> None:
+        if (
+            snapshot.set_profile.profile_version == refreshed_profile.profile_version
+            and snapshot.current_scored_pack is not None
+            and tuple(card.card.grp_id for card in snapshot.current_scored_pack.cards)
+            == (2, 1)
+        ):
+            refreshed.set()
+
+    watcher.session._snapshot_publisher = capture_snapshot
     try:
         watcher.session._set_active_set_code(set_code="TST")
         watcher._schedule_profile_refresh()
         assert started.wait(timeout=5.0)
-
-        # A blocked refresh must not prevent the normal polling call.
         poll_started = time.monotonic()
-        blocked_output = watcher.poll_once()
+        cached_status = watcher.poll_once()
         assert time.monotonic() - poll_started < 1.0
-        assert "Status: Profile: generic" in blocked_output
+        assert "Profile: mature (cached)" in cached_status
+        blocked_output = watcher.process_lines(
+            lines=[
+                _pack_line(
+                    event_name="QuickDraft_TST_20260905",
+                    pack_number=0,
+                    pick_number=0,
+                    draft_pack=(1, 2),
+                    picked_cards=(),
+                )
+            ]
+        )
+        assert cached_calls == [("TST", QUICK_DRAFT_FORMAT)]
+        assert refresh_calls == [("TST", QUICK_DRAFT_FORMAT)]
+        assert "Data source: set profile" in blocked_output
+        assert blocked_output.index("Cached First") < blocked_output.index("Cached Second")
 
         release.set()
-        deadline = time.monotonic() + 5.0
-        while watcher.profile_refresh_in_flight is not None and time.monotonic() < deadline:
-            time.sleep(0.01)
+        assert refreshed.wait(timeout=5.0)
+        snapshot = watcher.session.snapshot
+        assert snapshot.current_scored_pack is not None
+        assert tuple(card.card.grp_id for card in snapshot.current_scored_pack.cards) == (2, 1)
+        assert tuple(card.card.grp_id for card in snapshot.recommendations.cards) == (2, 1)
         refreshed_output = watcher.process_lines(lines=[])
         assert "Status: Profile: mature (updated)" in refreshed_output
+        assert snapshot.set_profile.profile_version == refreshed_profile.profile_version
     finally:
         release.set()
         watcher.close()
