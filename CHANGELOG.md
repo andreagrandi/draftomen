@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
 - Keep hosted-profile refresh generations scoped to the active lifecycle, rejecting obsolete completions on set/account/draft changes, clear, and stop without restarting on ordinary picks or repeated same-lifecycle detection. (#360)
+- Use cached empirical profile ratings immediately for live scoring and keep
+  deterministic fallback scoring provider-independent. (#361)
 - Use hosted card and aggregate pair estimates in recommendation scoring, with exact canonical matching, deterministic legacy fallback, and no provider or lazy scoring requests. (#351)
 - Keep profile-refresh publication checks deterministic by evaluating fixture
   ratings against their frozen test clock. (#351)

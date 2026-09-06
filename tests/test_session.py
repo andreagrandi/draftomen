@@ -110,6 +110,8 @@ from draftomen.seventeen import (
     save_17lands_format_data,
 )
 from draftomen.set_profile import (
+    CardRating,
+    RateEstimate,
     SetProfile,
     dump_set_profile,
     load_set_profile,
@@ -977,25 +979,137 @@ def test_live_session_cold_start_loads_bundled_profile_without_network(
 def test_live_session_profile_activation_is_local_first_and_queues_one_request(
     tmp_path: Path,
 ) -> None:
-    profile = _fixture_set_profile()
+    profile = _fixture_empirical_profile()
     client = _ProfileClientStub({"TST": profile})
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
+        card_database=_fixture_set_card_database(set_code="TST"),
         profile_client=client,
     )
 
     session._set_active_set_code(set_code="tst")
+    snapshot = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
     request = session.profile_refresh_request()
 
     assert client.load_calls == [("TST", QUICK_DRAFT_FORMAT)]
-    assert session.snapshot.set_profile.maturity == "mature"
-    assert session.snapshot.set_profile.profile_version == profile.profile_version
+    assert snapshot.set_profile.maturity == "mature"
+    assert snapshot.set_profile.profile_version == profile.profile_version
+    assert snapshot.set_profile.source == "local-mature"
+    assert snapshot.set_profile.phase is DataLoadPhase.READY
     assert request is not None
     assert request.set_code == "TST"
     assert request.event_format == QUICK_DRAFT_FORMAT
     assert session.profile_refresh_request() is request
+    assert snapshot.ratings.phase is DataLoadPhase.READY
+    assert snapshot.ratings.rated_cards == 2
+    assert snapshot.ratings.total_cards == 2
+    assert snapshot.ratings.last_successful_update == profile.generated_at
+    assert snapshot.current_scored_pack is not None
+    assert [
+        recommendation.card.grp_id for recommendation in snapshot.recommendations.cards
+    ] == [104894, 104976]
+    assert all(
+        recommendation.source_label == "Profile"
+        for recommendation in snapshot.recommendations.cards
+    )
+    assert {
+        recommendation.card.grp_id: recommendation.win_rate
+        for recommendation in snapshot.recommendations.cards
+    } == {104894: 0.90, 104976: 0.10}
 
+
+@pytest.mark.parametrize("maturity", ("semantic-only", "metadata-only", "generic"))
+def test_live_session_non_empirical_profiles_use_deterministic_offline_fallbacks(
+    tmp_path: Path,
+    maturity: str,
+) -> None:
+    app_dir = tmp_path / "app"
+    fallback = _fixture_fallback_profile(maturity=maturity)
+    opener_calls: list[object] = []
+
+    def guarded_opener(request: object, *, timeout: float) -> None:
+        del timeout
+        opener_calls.append(request)
+        raise AssertionError("fallback scoring must not access the provider")
+
+    client = ProfileClient(app_dir=app_dir, opener=guarded_opener)
+    if maturity != "generic":
+        dump_set_profile(fallback, client.profile_path("TST", QUICK_DRAFT_FORMAT))
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_fixture_set_card_database(set_code="TST"),
+        profile_client=client,
+    )
+    snapshot = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+
+    assert snapshot.ratings.phase is DataLoadPhase.UNAVAILABLE
+    assert snapshot.ratings.last_successful_update is None
+    assert snapshot.ratings.rated_cards == 0
+    assert snapshot.ratings.total_cards == 2
+    assert snapshot.recommendations.cards
+    assert all(
+        recommendation.no_data
+        and recommendation.win_rate is None
+        and recommendation.source_label != "Profile"
+        for recommendation in snapshot.recommendations.cards
+    )
+    assert opener_calls == []
+
+
+def test_live_session_activation_and_repeated_scoring_do_not_reload_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _fixture_empirical_profile()
+    client = _ProfileClientStub({"TST": profile})
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_set_card_database(set_code="TST"),
+        profile_client=client,
+    )
+    snapshot = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+    assert snapshot.current_scored_pack is not None
+    assert client.load_calls == [("TST", QUICK_DRAFT_FORMAT)]
+
+    def forbidden_reload(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("profile cache must not reload after activation")
+
+    monkeypatch.setattr(client, "load_cached", forbidden_reload)
+    session._score_current_pack()
+    session._score_current_pack()
+    assert session.snapshot.current_scored_pack is not None
+    assert client.load_calls == [("TST", QUICK_DRAFT_FORMAT)]
 
 def test_live_session_profile_switch_retires_stale_refresh_request(
     tmp_path: Path,
@@ -5226,6 +5340,73 @@ def _fixture_set_profile() -> SetProfile:
         expected_set_code="TST",
         expected_format=QUICK_DRAFT_FORMAT,
     )
+
+
+def _fixture_empirical_profile(
+    *,
+    profile_version: str = "empirical-1.0",
+    generated_at: str = "2026-08-29T00:00:00+00:00",
+    first_gih: float = 0.90,
+    second_gih: float = 0.10,
+) -> SetProfile:
+    profile = _fixture_set_profile()
+    return replace(
+        profile,
+        profile_version=profile_version,
+        generated_at=generated_at,
+        card_ratings=(
+            CardRating(
+                card_key="grp_id:104894",
+                gih_win_rate=RateEstimate(
+                    raw_value=first_gih,
+                    value=first_gih,
+                    samples=2_000,
+                    prior_value=0.50,
+                    source="17lands",
+                ),
+                average_last_seen_at=3.0,
+            ),
+            CardRating(
+                card_key="grp_id:104976",
+                gih_win_rate=RateEstimate(
+                    raw_value=second_gih,
+                    value=second_gih,
+                    samples=2_000,
+                    prior_value=0.50,
+                    source="17lands",
+                ),
+                average_last_seen_at=1.0,
+            ),
+        ),
+    )
+
+
+def _fixture_fallback_profile(*, maturity: str) -> SetProfile:
+    profile = _fixture_set_profile()
+    if maturity == "semantic-only":
+        return replace(
+            profile,
+            maturity=maturity,
+            samples=None,
+            card_ratings=(),
+            pairs=tuple(
+                replace(
+                    pair,
+                    structural_targets=(),
+                    role_targets=(),
+                    removal_targets=(),
+                    synergy=(),
+                    scarcity=(),
+                    performance=None,
+                )
+                for pair in profile.pairs
+            ),
+        )
+    if maturity == "metadata-only":
+        return replace(profile, maturity=maturity, samples=None, pairs=(), role_profile=None)
+    if maturity == "generic":
+        return SetProfile.generic(set_code="TST", event_format=QUICK_DRAFT_FORMAT)
+    raise AssertionError(f"unsupported fallback maturity: {maturity}")
 
 
 def _fixture_set_profile_for_set(
