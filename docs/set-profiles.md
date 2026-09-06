@@ -1155,17 +1155,57 @@ identical eligible payload bytes; the report itself does not include
 
 ## Run the CI profile-refresh workflow
 
-`.github/workflows/profile-refresh.yml` is the generation-only CI entry point.
-It checks out the requested commit, discovers missing or invalid static card-data
-artifacts, refreshes selected profile pairs, and uploads a run-evidence bundle.
-It does not create a branch or pull request, commit files, deploy a website, or
-make a publication decision. Generated files are written to the checkout for
-the run and copied into the bundle; nothing is committed.
+`.github/workflows/profile-refresh.yml` has two deliberately separate stages:
+read-only generation and guarded publication. Generation checks out the requested
+commit, discovers missing or invalid static card-data artifacts, refreshes the
+selected profile pairs, and uploads one run-evidence bundle. It never commits,
+pushes, creates a branch, creates a pull request, or deploys a website. The
+publication job runs only for a non-cancelled run on `master`, and consumes the
+exact artifact ID uploaded by that generation attempt; it does not download a
+latest-name match or rerun generation.
 
-The job has `contents: read` permission, checks out with credential persistence
-disabled, and runs one generation job sequentially. The temporary cache and
-bundle are under the runner's temporary directory. No GitHub Actions cache,
-repository credential, deployment credential, or publication secret is used.
+Generation has only `contents: read` permission and checkout credential
+persistence is disabled. Publication uses the built-in `GITHUB_TOKEN` only, with
+job-scoped `actions: read`, `contents: write`, and `pull-requests: write`
+permissions. The workflow defaults remain read-only. No personal access token,
+GitHub App credential, deployment credential, or stored login is used. The
+publisher validates the bundle in a disposable worktree based on the current
+master commit, then uses an exact master compare-and-swap (CAS); it does not
+bypass branch protections.
+
+### Publication outcomes
+
+The report and the complete generated delta are validated before any branch,
+pull-request, or master write.
+A full-success report has no failures. Any changed successful static card data,
+including a static-only change, is eligible for the same automatic fast-forward
+as changed successful profile data. The publisher creates a ready snapshot PR
+whose body uses the required `## Summary`, `## Changes`, `## Scope notes`, and
+`## Verification` template sections; the generated producer summary may add
+subsections. It includes the workflow URL, generation and checked-master SHAs,
+validated asset paths, selected and successful work, provider attribution, and
+every failure. For a full success, it fast-forwards `master` to that PR's one
+validated commit. GitHub then records the PR as
+merged when the head becomes reachable from `master`; the publisher does not
+invoke `gh pr merge`.
+
+
+| Generation result | Snapshot PR | `master` | Exit |
+| --- | --- | --- | --- |
+| Full success with changed static and/or profile data | Ready PR, then automatic fast-forward and indirect merge | Updated once by the exact CAS | `0` |
+| Partial success, including static success with failed profile work or profile success with failed static work | One immutable ready PR left open for review | Unchanged | `1` |
+| Valid success with no changed assets, including zero selected work and already-valid static data | None | Unchanged | `0` |
+| All-failed result: status `failed` with no successful static code or profile pair | None | Unchanged | `1` |
+| Invalid evidence or stale protected data | No branch, PR, or master write; any existing reviewed PR is left untouched | Unchanged | `1` |
+| Publication error or a rejected CAS | A snapshot branch or PR may already exist; no master write unless a prior CAS succeeded | Unchanged unless a prior CAS already succeeded | `1` |
+
+An empty delta does not by itself mean all-failed: a valid `success` report with
+an empty delta is unchanged, while a `failed` report with an empty delta exits
+`1` without a PR. Reserve all-failed for status `failed` with no successful
+static code or profile pair. Nonempty assets without corresponding successful
+work are inconsistent evidence and are rejected. Every failure is retained in
+the report, the generated PR body, and the Actions summary; a partial PR is
+never silently promoted to a full success.
 
 ### Schedules and dispatch
 
@@ -1186,9 +1226,9 @@ dispatch exposes these inputs:
 | `set` | Optional exact set code or full name; required only when the mode is `one` |
 
 `set` is rejected for `all`, `active`, and `historical`. A one-set profile
-selection does not narrow static discovery: static discovery always uses the
-complete inventory so every missing or invalid card-data artifact can be
-reported and generated without rewriting an already-valid sibling.
+selection does not narrow static discovery: discovery always uses the complete
+inventory so every missing or invalid card-data artifact can be reported and
+generated without rewriting an already-valid sibling.
 
 The profile selection is derived from the current 17Lands `/data/filters`
 availability. `all` selects every supported available pair, `active` selects
@@ -1205,21 +1245,168 @@ workflow form:
 gh workflow run profile-refresh.yml \
   --ref master \
   -f selection_mode=one \
-  -f set=TST
+  -f set=TLA
 ```
 
 Omit `-f set=...` for `all`, `active`, or `historical`. The scheduled event
-mapping is fixed by the cron expression; an unknown schedule value fails
-rather than silently selecting a different mode.
+mapping is fixed by the cron expression; an unknown schedule value fails rather
+than silently selecting a different mode. `TLA` is an existing set code; use
+another exact code or full name when needed.
 
+### Publication safety and immutable snapshots
+
+The protected generated roots are exactly:
+
+```text
+website/public/card-data
+website/public/profiles
+```
+
+Before staging, the publisher resolves the trusted generation `base_commit`,
+requires it to be an ancestor of the checked master, and compares the *whole*
+protected roots, not merely paths listed in the artifact:
+
+```sh
+git diff --quiet EXPECTED_BASE MASTER_COMMIT -- \
+  website/public/card-data website/public/profiles
+```
+
+Any changed, added, deleted, or type-changed path in either root is stale and
+aborts publication. Unrelated master changes are allowed and remain in the
+candidate because the candidate starts from that current master tree. A
+successful publication commit contains only the fully validated descriptor
+paths, is regular non-executable data, has exactly one parent, and has that
+captured master commit as its parent.
+
+Each publication branch is immutable and unique to its source evidence:
+
+```text
+automation/profile-refresh-<run-id>-<artifact-id>
+```
+
+The artifact ID comes from the generation upload, not from report metadata.
+The publisher queries all PRs for the exact branch and `master` base. A
+same-artifact rerun reuses and verifies its existing snapshot rather than
+replacing the branch or creating a rolling branch. A concurrent branch
+creation is a collision, not permission to update an existing ref. Maintainer-
+changed branches and closed-unmerged PRs are conflicts; a maintainer-closed PR
+is never reopened.
+
+The final full-success write is an exact remote lease using the validated commit
+SHA, not a movable branch:
+
+```sh
+git push \
+  --force-with-lease=refs/heads/master:MASTER_COMMIT \
+  origin VALIDATED_HEAD_SHA:refs/heads/master
+```
+
+If `master` advances, even with an unrelated change, the lease rejects and the
+publisher does not retry against a new base. After a successful lease, it
+fetches master and checks reachability, then reads the PR state. If GitHub has
+not yet confirmed the indirect merge, the factual outcome is
+`master updated; merge confirmation unavailable` with the PR URL. No second
+merge operation is attempted. The uploaded artifact and its evidence are
+retained for seven days.
+
+### Re-runs, stale data, and source outages
+
+Use the exact run and artifact as follows:
+
+* When generation succeeded but publication failed, `gh run rerun RUN_ID
+  --failed` retries the failed publication with the same artifact ID and
+  immutable snapshot. It does not repeat the merge. If that snapshot is
+  already reachable from `master`, the retry only records the merged state or
+  reports `master updated; merge confirmation unavailable`; it never creates a
+  duplicate PR.
+* A complete all-job rerun, or a fresh workflow dispatch, generates a new
+  artifact ID and may create a new partial snapshot. If generation itself
+  failed, a failed-job rerun regenerates it; use the fresh evidence rather than
+  treating the old bundle as authoritative.
+* An expired or missing seven-day artifact requires a new full dispatch. Do not
+  substitute a latest artifact or rerun with guessed metadata.
+* After a Scryfall or 17Lands outage, rerun after the source recovers. An
+  incomplete report is not zero work, and an outage must not be reinterpreted
+  as an unchanged success.
+* A stale-base or failed master CAS requires a new run from the current
+  `master`, not a publication-only retry of the old base. Review or close any
+  superseded partial snapshot manually; retain its successful data evidence and
+  all recorded failures. The publisher never overwrites a reviewed partial PR.
+
+To inspect a run and its evidence:
+
+```sh
+gh run view RUN_ID --json url,status,conclusion,jobs
+gh run download RUN_ID \
+  --name "profile-refresh-generation-RUN_ID-RUN_ATTEMPT" \
+  --dir "$PWD/.draftomen/profile-refresh-evidence"
+```
+
+The artifact layout is:
+
+```text
+result.json
+summary.md
+generated/website/public/card-data/<set>.json.gz
+generated/website/public/profiles/manifest.json
+generated/website/public/profiles/objects/<sha256>.json.gz
+```
+
+Only successful changed assets are copied into `generated/`; caches, planning
+directories, old unrelated objects, and orphan objects are excluded. The
+publisher uses the producer's rendered summary and includes every selected
+item, successful item, attribution, validated path, checked-master SHA,
+generation SHA, workflow URL, and failure in the PR and Actions summary. The
+uploaded Markdown is display evidence only and cannot authorize publication.
+
+### Provider, cache, and attribution policy
+
+Static discovery uses the existing Scryfall card-data exporter and its
+configured inventory/bulk sources. A valid existing
+`website/public/card-data/<set>.json.gz` is not rewritten. Discovery may still
+read and validate the complete source before classifying candidates; this is
+why a run can report a source outage even when no static file needs changing.
+
+Profile generation uses the existing aggregate 17Lands provider and its
+runner-temporary cache. A cache entry is fresh for 24 hours. For each cache
+miss, the producer makes one aggregate full-set card-ratings request and one
+aggregate color-ratings request per selected pair; it does not make per-card or
+pair-filtered requests. Requests are sequential, use positive 60-second
+timeouts and an identifying user agent, and do not add retries, backoff, or an
+invented numeric throttle. A fresh cache hit avoids those ratings requests.
+The cache is discarded with the runner and is never uploaded or reused through
+`actions/cache`.
+
+Generated profiles retain the visible attribution `Card data from 17Lands
+(17lands.com)`. Provider outages, stale or unusable cache data, timeout
+failures, and malformed filter responses remain categorized failures in the
+report; they are not converted into successful empty profiles.
+
+### Required Actions setting and rollback
+
+Before enabling publication, an owner must enable **Settings → Actions →
+General → Allow GitHub Actions to create and approve pull requests**. Keep the
+default workflow token permissions read-only; the workflow grants write
+permissions only to the publication job. The publisher creates ready PRs but
+never approves them and does not need the repository `allow_auto_merge` setting:
+the validated single-parent commit is fast-forwarded with the master CAS.
+
+To roll back generated data, revert the generated PR's single commit through
+the normal reviewed PR process. Revert the manifest and its associated static
+card-data and profile-object changes together; never edit hosted files directly
+or remove only one content-addressed object.
+
+PR checks created with `GITHUB_TOKEN` may await maintainer approval, and pushes
+made with that token do not trigger another Actions run. This automation does
+not wait for those checks, bypass branch protections, or claim that an existing
+Cloudflare integration has deployed the website. Deployment and external-host
+recovery are outside this procedure.
 
 ### Re-run the helper locally
 
-Run the helper from a dedicated generation checkout, such as a disposable
-worktree with no unrelated edits. It writes successful generated files into that
-checkout before copying their base-relative delta into the evidence bundle; it
-does not commit or publish anything. Define every path that Actions normally
-provides:
+Run the generation helper from a dedicated checkout, such as a disposable
+worktree with no unrelated edits. This exercises read-only generation only; it
+does not create publication branches or PRs:
 
 ```sh
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -1251,99 +1438,10 @@ cat "$BUNDLE_DIR/summary.md"
 exit "$generation_status"
 ```
 
-`TLA` is an existing set code; replace it with another exact code or full set
-name when needed. Re-run with the same `BASE_COMMIT`, `CACHE_DIR`, and
-`BUNDLE_DIR` to reuse cached provider inputs against the same declared base.
-Each rerun overwrites this dedicated bundle's `generated/`, `result.json`, and
-`summary.md`; it does not use a prior bundle as authority. Inspect both files
-after each run. A nonzero run can still leave successful static or profile
-updates in the generation checkout and their corresponding generated bundle
-entries; preserve those successful updates while reviewing `failures` and
-`status` in `result.json`.
-
-### Provider, cache, and attribution policy
-
-Static discovery uses the existing Scryfall card-data exporter and its
-configured inventory/bulk sources. A valid existing
-`website/public/card-data/<set>.json.gz` is not rewritten. Discovery may still
-read and validate the complete source before classifying candidates; this is
-why a run can report a source outage even when no static file needs changing.
-
-Profile generation uses the existing aggregate 17Lands provider and its
-runner-temporary cache. A cache entry is fresh for 24 hours. For each cache
-miss, the producer makes one aggregate full-set card-ratings request and one
-aggregate color-ratings request per selected pair; it does not make per-card or
-pair-filtered requests. Requests are sequential, use positive 60-second
-timeouts and an identifying user agent, and do not add retries, backoff, or an
-invented numeric throttle. A fresh cache hit avoids those ratings requests.
-The cache is discarded with the runner and is never uploaded or reused through
-`actions/cache`.
-
-Generated profiles retain the visible attribution `Card data from 17Lands
-(17lands.com)`. Provider outages, stale or unusable cache data, timeout
-failures, and malformed filter responses remain categorized failures in the
-report; they are not converted into successful empty profiles.
-
-### Bundle and report
-
 The helper writes `result.json` and `summary.md` before returning a failure
-status whenever it can persist evidence. The report has schema version `1`,
-the checked-out base commit, the requested selection, static discovery counts
-and outcomes, profile planning and execution outcomes, categorized failures,
-and a delta list of successful changed generated assets. The summary lists
-every selected profile pair, every pending static set, each outcome, and each
-failure without raw payloads, credentials, absolute paths, or exception text.
-
-The uploaded artifact is named with both the run ID and run attempt. Its
-allowed layout is:
-
-```text
-result.json
-summary.md
-generated/website/public/card-data/<set>.json.gz
-generated/website/public/profiles/manifest.json
-generated/website/public/profiles/objects/<sha256>.json.gz
-```
-
-Only successful changed assets are copied into `generated/`; caches, planning
-directories, old unrelated profile objects, and orphan objects are excluded.
-The artifact is retained for seven days. It is run evidence, not a website
-publication channel.
-
-### Partial failures, reruns, and outages
-
-Generation runs with failure capture enabled so the summary and artifact steps
-are attempted even when one static write or profile pair fails. Successful
-siblings remain in the report and bundle. A static atomic-write failure keeps
-the affected profile pairs visible as failures rather than silently dropping
-them. A source or filters outage records an incomplete discovery or planning
-result when that state is known; it does not fabricate zero selected items.
-The final workflow step fails if generation, summary append, or artifact upload
-fails. A failed or all-failed run can therefore still provide `result.json` and
-`summary.md`, while an infrastructure failure before those files can be
-written is reported by the failed step itself.
-
-To rerun, use the Actions **Re-run failed jobs** control or:
-
-```sh
-gh run rerun RUN_ID
-```
-
-Each attempt has a distinct artifact name. The cache remains runner-temporary,
-so a rerun must be prepared for fresh provider requests. To inspect evidence:
-
-```sh
-gh run download RUN_ID \
-  --name "profile-refresh-generation-RUN_ID-RUN_ATTEMPT" \
-  --dir "$PWD/.draftomen/profile-refresh-evidence"
-```
-
-If the run failed because Scryfall or 17Lands was unavailable, rerun after the
-source recovers; do not treat an incomplete report as a successful refresh.
-No CI run changes the checked-out branch or the hosted website. Local
-`plan-profile-refresh`, `execute-profile-refresh`, and batch commands above
-remain separate workflows and retain their existing inputs and behavior.
-
+status whenever it can persist evidence. Re-running this local helper with the
+same declared base and dedicated bundle replaces that local evidence; it is
+not a publication retry and it does not make an uploaded artifact current.
 
 ## Select a profile-generation stage
 
