@@ -1720,6 +1720,14 @@ Without `--profile-manifest-url`, TUI, plain-watch, and desktop live scoring
 remain offline and use local/historical caches only. TUI and desktop expose
 compact maturity/outcome status (for example `mature · updated`); failure
 status does not discard the profile already used for scoring.
+The refresh generation is the lifecycle authority for live hosted-profile
+refreshes: set, account, or draft identity changes, along with clear or stop,
+make obsolete completions no-ops before they can clear the pending request,
+mutate the profile cache, publish profile/status/error state, or trigger
+rescoring. Ordinary picks and repeated detection of the same lifecycle do not
+restart the refresh. This is logical stale-result rejection only; it does not
+promise to cancel worker threads, network requests, or cache writes already
+underway.
 
 ## Semantic-role compatibility
 

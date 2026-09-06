@@ -1028,6 +1028,513 @@ def test_live_session_profile_switch_retires_stale_refresh_request(
     assert session.profile_refresh_request() is new_request
 
 
+def test_live_session_same_set_lifecycle_switch_retires_stale_profile_result(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_set_profile()
+    published: list[LiveSessionSnapshot] = []
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"TST": profile}),
+        snapshot_publisher=published.append,
+    )
+    first_state = _draft_state(
+        account_id="account-a",
+        screen_name="Alpha",
+        draft_id="draft-a",
+        updated_at="2026-08-30T10:00:00+00:00",
+        pool_grp_ids=(),
+    )
+    first_event = PackOfferedEvent(
+        event_name=first_state.event_name,
+        set_code=first_state.set_code,
+        pack_number=CONTEXT_PACK_NUMBER,
+        pick_number=CONTEXT_PICK_NUMBER,
+        offered_grp_ids=CONTEXT_OFFERED_GRP_IDS,
+        pool_grp_ids=_fixture_pool_before_pick(
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+        ),
+        account_id=first_state.account_id,
+    )
+    session._select_state(
+        state=first_state,
+        recovered=False,
+        event=first_event,
+    )
+    session._score_current_pack()
+    first_snapshot = session.snapshot
+    first_request = session.profile_refresh_request()
+    assert first_request is not None
+    assert first_snapshot.current_scored_pack is not None
+    _assert_profile_context(
+        scored_pack=first_snapshot.current_scored_pack,
+        profile=profile,
+        event=first_event,
+    )
+    assert first_snapshot.set_profile.source == "local-mature"
+    assert any(
+        recommendation.contextual_pair == "WU"
+        and recommendation.contextual_theme == "tempo flyers"
+        and recommendation.contextual_profile_maturity == "mature"
+        and recommendation.contextual_profile_confidence == pytest.approx(0.91)
+        for recommendation in first_snapshot.recommendations.cards
+    )
+
+    second_state = replace(
+        first_state,
+        account_id="account-b",
+        account_screen_name="Beta",
+        draft_id="draft-b",
+        course_id="draft-b",
+    )
+    session._select_state(state=second_state, recovered=False)
+    second_request = session.profile_refresh_request()
+    assert second_request is not None
+    assert second_request != first_request
+
+    session._select_state(
+        state=first_state,
+        recovered=False,
+        event=first_event,
+    )
+    replacement_snapshot = session.snapshot
+    replacement_request = session.profile_refresh_request()
+    assert replacement_request is not None
+    assert replacement_request != first_request
+    assert replacement_request != second_request
+    assert replacement_snapshot.active_account == AccountIdentity(
+        account_id="account-a",
+        screen_name="Alpha",
+    )
+    assert replacement_snapshot.draft is not None
+    assert replacement_snapshot.draft.account_id == "account-a"
+    assert replacement_snapshot.draft.draft_id == "draft-a"
+    assert replacement_snapshot.current_scored_pack is None
+
+    publication_count = len(published)
+    session.complete_profile_refresh(
+        request=first_request,
+        result=ProfileRefreshResult(
+            profile=replace(profile, profile_version="stale-success"),
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    session.fail_profile_refresh(
+        request=first_request,
+        error_message="stale failure",
+    )
+
+    assert session.snapshot is replacement_snapshot
+    assert len(published) == publication_count
+    assert session.profile_refresh_request() is replacement_request
+    assert session.snapshot.set_profile.profile_version == profile.profile_version
+    assert session.snapshot.current_scored_pack is None
+
+    newer = replace(
+        profile,
+        profile_version="2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    session.complete_profile_refresh(
+        request=replacement_request,
+        result=ProfileRefreshResult(
+            profile=newer,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+
+    final_snapshot = session.snapshot
+    assert final_snapshot.set_profile.profile_version == "2.0"
+    assert final_snapshot.current_scored_pack is not None
+    final_context = _assert_profile_context(
+        scored_pack=final_snapshot.current_scored_pack,
+        profile=newer,
+        event=first_event,
+    )
+    assert final_context.set_profile == newer
+    assert any(
+        recommendation.contextual_profile_maturity == "mature"
+        and recommendation.contextual_profile_confidence == pytest.approx(0.91)
+        for recommendation in final_snapshot.recommendations.cards
+    )
+
+
+def test_live_session_stale_prepared_profile_cannot_replace_newer_cached_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older = _fixture_set_profile()
+    newer = replace(
+        older,
+        profile_version="2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    msh_profile = _fixture_set_profile_for_set(
+        set_code="MSH",
+        profile_version="msh-1.0",
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"TST": older, "MSH": msh_profile}),
+    )
+    first_state = _draft_state(
+        account_id="account-a",
+        screen_name="Alpha",
+        draft_id="draft-a",
+        updated_at="2026-08-30T10:00:00+00:00",
+        pool_grp_ids=(),
+    )
+    session._select_state(state=first_state, recovered=False)
+    first_request = session.profile_refresh_request()
+    assert first_request is not None
+
+    preparation_started = threading.Event()
+    resume_preparation = threading.Event()
+    tst_preparation_count = 0
+
+    def controlled_profile_load(*, set_code: str) -> tuple[SetProfile, str]:
+        nonlocal tst_preparation_count
+        if set_code == "TST":
+            tst_preparation_count += 1
+            if tst_preparation_count == 1:
+                preparation_started.set()
+                if not resume_preparation.wait(timeout=5):
+                    raise AssertionError("stale profile preparation did not resume")
+                return older, "local-mature"
+            return newer, "local-mature"
+        return msh_profile, "local-mature"
+
+    monkeypatch.setattr(
+        session,
+        "_load_local_profile_for_set",
+        controlled_profile_load,
+    )
+    returning_state = replace(
+        first_state,
+        draft_id="draft-a-replacement",
+        course_id="draft-a-replacement",
+        updated_at="2026-08-30T11:00:00+00:00",
+    )
+    returning_event = PackOfferedEvent(
+        event_name=returning_state.event_name,
+        set_code=returning_state.set_code,
+        pack_number=CONTEXT_PACK_NUMBER,
+        pick_number=CONTEXT_PICK_NUMBER,
+        offered_grp_ids=CONTEXT_OFFERED_GRP_IDS,
+        pool_grp_ids=_fixture_pool_before_pick(
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+        ),
+        account_id=returning_state.account_id,
+    )
+    preparation_errors: list[BaseException] = []
+
+    def resume_return_to_tst() -> None:
+        try:
+            session._select_state(
+                state=returning_state,
+                recovered=False,
+                event=returning_event,
+            )
+        except BaseException as error:
+            preparation_errors.append(error)
+
+    preparation_thread = threading.Thread(target=resume_return_to_tst)
+    preparation_thread.start()
+    try:
+        assert preparation_started.wait(timeout=5)
+        session.complete_profile_refresh(
+            request=first_request,
+            result=ProfileRefreshResult(
+                profile=newer,
+                outcome=ProfileRefreshOutcome.UPDATED,
+            ),
+        )
+        assert session.snapshot.set_profile.profile_version == "2.0"
+        assert session._set_profiles_by_set["TST"] is newer
+
+        intervening_state = replace(
+            first_state,
+            account_id="account-b",
+            account_screen_name="Beta",
+            draft_id="draft-b",
+            course_id="draft-b",
+            set_code="MSH",
+            event_name="QuickDraft_MSH_20260830",
+        )
+        session._select_state(state=intervening_state, recovered=False)
+    finally:
+        resume_preparation.set()
+        preparation_thread.join(timeout=5)
+
+    assert not preparation_thread.is_alive()
+    assert preparation_errors == []
+    assert session.snapshot.active_account == AccountIdentity(
+        account_id="account-a",
+        screen_name="Alpha",
+    )
+    assert session.snapshot.draft is not None
+    assert session.snapshot.draft.draft_id == "draft-a-replacement"
+    assert session.snapshot.set_profile.profile_version == "2.0"
+    assert session._set_profiles_by_set["TST"] is newer
+
+    session._score_current_pack()
+    final_snapshot = session.snapshot
+    assert final_snapshot.current_scored_pack is not None
+    _assert_profile_context(
+        scored_pack=final_snapshot.current_scored_pack,
+        profile=newer,
+        event=returning_event,
+    )
+    assert any(
+        recommendation.contextual_profile_maturity == "mature"
+        and recommendation.contextual_profile_confidence == pytest.approx(0.91)
+        for recommendation in final_snapshot.recommendations.cards
+    )
+
+
+def test_live_session_reentrant_card_data_publication_stop_remains_terminal(
+    tmp_path: Path,
+) -> None:
+    profiles = {
+        "TST": _fixture_set_profile(),
+        "MSH": _fixture_set_profile_for_set(set_code="MSH"),
+    }
+    card_data_loads: list[tuple[str, bool]] = []
+
+    def card_data_loader(set_code: str, *, allow_network: bool) -> CardDatabase:
+        card_data_loads.append((set_code, allow_network))
+        return _fixture_set_card_database(set_code=set_code)
+
+    published: list[LiveSessionSnapshot] = []
+    session_holder: dict[str, LiveSession] = {}
+    stop_triggered = False
+    terminal_index: int | None = None
+
+    def publish(snapshot: LiveSessionSnapshot) -> None:
+        nonlocal stop_triggered, terminal_index
+        published.append(snapshot)
+        if (
+            not stop_triggered
+            and snapshot.set_profile.set_code == "MSH"
+            and snapshot.card_data.phase is DataLoadPhase.IDLE
+        ):
+            stop_triggered = True
+            session_holder["session"].stop()
+        if snapshot.status.phase is ApplicationPhase.STOPPED:
+            terminal_index = len(published) - 1
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        set_card_data_loader=card_data_loader,
+        profile_client=_ProfileClientStub(profiles),
+        snapshot_publisher=publish,
+    )
+    session_holder["session"] = session
+
+    session._consume_detected_event(
+        event=QuickDraftDetectedEvent(
+            event_name="QuickDraft_TST_20260830",
+            set_code="TST",
+            account_id=None,
+        )
+    )
+    session._consume_detected_event(
+        event=QuickDraftDetectedEvent(
+            event_name="QuickDraft_MSH_20260830",
+            set_code="MSH",
+            account_id=None,
+        )
+    )
+
+    assert stop_triggered
+    assert terminal_index is not None
+    terminal_snapshot = published[terminal_index]
+    assert terminal_snapshot.status.phase is ApplicationPhase.STOPPED
+    assert session.snapshot is terminal_snapshot
+    assert session.profile_refresh_request() is None
+    assert card_data_loads == [("TST", True)]
+    assert all(
+        snapshot.status.phase is ApplicationPhase.STOPPED
+        for snapshot in published[terminal_index:]
+    )
+    assert all(snapshot.current_scored_pack is None for snapshot in published)
+
+
+def test_live_session_stale_profile_failures_cannot_replace_current_request(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_set_profile()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=_ProfileClientStub({"TST": profile}),
+    )
+    first_state = _draft_state(
+        account_id="account-a",
+        screen_name="Alpha",
+        draft_id="draft-a",
+        updated_at="2026-08-30T10:00:00+00:00",
+        pool_grp_ids=(),
+    )
+    session._select_state(state=first_state, recovered=False)
+    first_request = session.profile_refresh_request()
+    assert first_request is not None
+    second_state = replace(
+        first_state,
+        account_id="account-b",
+        account_screen_name="Beta",
+        draft_id="draft-b",
+        course_id="draft-b",
+    )
+    session._select_state(state=second_state, recovered=False)
+    second_request = session.profile_refresh_request()
+    assert second_request is not None
+    current = session.snapshot
+
+    session.fail_profile_refresh(
+        request=first_request,
+        error_message="stale exception",
+    )
+    session.complete_profile_refresh(
+        request=first_request,
+        result=ProfileRefreshResult(
+            profile=profile,
+            outcome=ProfileRefreshOutcome.REMOTE_FAILED,
+        ),
+    )
+
+    assert session.snapshot is current
+    assert session.profile_refresh_request() is second_request
+
+    session.complete_profile_refresh(
+        request=second_request,
+        result=ProfileRefreshResult(
+            profile=replace(profile, profile_version="2.0"),
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    assert session.snapshot.set_profile.profile_version == "2.0"
+
+
+def test_live_session_profile_refresh_completion_after_clear_and_stop_is_noop(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_set_profile()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=_ProfileClientStub({"TST": profile}),
+    )
+    session._set_active_set_code(set_code="TST")
+    first_request = session.profile_refresh_request()
+    assert first_request is not None
+    session._set_active_set_code(set_code=None)
+    cleared = session.snapshot
+
+    session.fail_profile_refresh(request=first_request, error_message="stale")
+    session.complete_profile_refresh(
+        request=first_request,
+        result=ProfileRefreshResult(
+            profile=replace(profile, profile_version="stale"),
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    assert session.snapshot is cleared
+
+    session._set_active_set_code(set_code="TST")
+    second_request = session.profile_refresh_request()
+    assert second_request is not None
+    stopped = session.stop()
+    session.fail_profile_refresh(request=second_request, error_message="stale")
+    session.complete_profile_refresh(
+        request=second_request,
+        result=ProfileRefreshResult(
+            profile=replace(profile, profile_version="stale-again"),
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    assert session.snapshot is stopped
+    assert session.profile_refresh_request() is None
+
+
+def test_live_session_ordinary_draft_progression_keeps_profile_request(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_set_profile()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"TST": profile}),
+    )
+    detected = QuickDraftDetectedEvent(
+        event_name=CONTEXT_EVENT_NAME,
+        set_code="TST",
+        account_id=None,
+    )
+    session._consume_detected_event(event=detected)
+    request = session.profile_refresh_request()
+    assert request is not None
+    session._consume_detected_event(event=detected)
+    assert session.profile_refresh_request() is request
+
+    session._consume_event(
+        event=DraftStartedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            course_id="course-tst",
+            account_id=None,
+        ),
+        state=None,
+    )
+    session._consume_event(
+        event=PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            offered_grp_ids=CONTEXT_OFFERED_GRP_IDS,
+            pool_grp_ids=_fixture_pool_before_pick(
+                pack_number=CONTEXT_PACK_NUMBER,
+                pick_number=CONTEXT_PICK_NUMBER,
+            ),
+            account_id=None,
+        ),
+        state=None,
+    )
+    session._consume_event(
+        event=PickMadeEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            chosen_grp_id=CONTEXT_OFFERED_GRP_IDS[0],
+            account_id=None,
+        ),
+        state=None,
+    )
+    assert session.profile_refresh_request() is request
+
+    state = _draft_state(
+        account_id="account-a",
+        screen_name="Alpha",
+        draft_id="course-tst",
+        updated_at="2026-08-30T10:00:00+00:00",
+        pool_grp_ids=(),
+        event_name=CONTEXT_EVENT_NAME,
+    )
+    session._select_state(state=state, recovered=False)
+    session._select_state(state=state, recovered=True)
+    assert session.profile_refresh_request() is request
+
+
 def test_live_session_newer_profile_result_updates_state_and_scores_current_pack(
     tmp_path: Path,
 ) -> None:
@@ -4721,6 +5228,22 @@ def _fixture_set_profile() -> SetProfile:
     )
 
 
+def _fixture_set_profile_for_set(
+    *,
+    set_code: str,
+    profile_version: str = "alternate-set-1.0",
+) -> SetProfile:
+    profile = _fixture_set_profile()
+    role_profile = profile.role_profile
+    assert role_profile is not None
+    return replace(
+        profile,
+        set_code=set_code,
+        profile_version=profile_version,
+        role_profile=replace(role_profile, set_code=set_code),
+    )
+
+
 def _fixture_pool_before_pick(
     *,
     pack_number: int,
@@ -4915,12 +5438,13 @@ def _draft_state(
     draft_id: str,
     updated_at: str,
     pool_grp_ids: tuple[int, ...],
+    event_name: str = "QuickDraft_TST_20260823",
 ) -> DraftState:
     return DraftState(
         account_id=account_id,
         account_screen_name=screen_name,
         draft_id=draft_id,
-        event_name="QuickDraft_TST_20260823",
+        event_name=event_name,
         set_code="TST",
         course_id=draft_id,
         started_at="2026-08-20T10:00:00+00:00",
