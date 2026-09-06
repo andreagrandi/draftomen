@@ -64,6 +64,7 @@ from draftomen.set_profile import (
     SET_PROFILE_SCHEMA_VERSION,
     SetProfile,
     SourceMetadata,
+    profile_card_key,
 )
 
 
@@ -882,7 +883,7 @@ def _classifications(*, card_database: CardDatabase):
         except (TypeError, ValueError):
             continue
         if not classified.is_unknown:
-            result[_card_key(card)] = classified.assignments
+            result[profile_card_key(card)] = classified.assignments
     return result
 
 
@@ -960,7 +961,7 @@ def _deck_semantics(*, deck: _Deck, assignments: Mapping[str, Sequence[Any]]):
     roles: Counter[Role] = Counter()
     removals: Counter[str] = Counter()
     for card in deck.cards:
-        for assignment in assignments.get(_card_key(card), ()):
+        for assignment in assignments.get(profile_card_key(card), ()):
             roles[assignment.role] += 1
             if assignment.removal is not None:
                 removals[assignment.removal.kind] += 1
@@ -987,7 +988,7 @@ def _card_ratings(
         if card.set_code.casefold() != set_code:
             skip_counts["card_rating_out_of_set"] += 1
             continue
-        key = _card_key(card)
+        key = profile_card_key(card)
         if key in seen:
             skip_counts["duplicate_card_rating_key"] += 1
             continue
@@ -1173,14 +1174,6 @@ def _normalize_name(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-def _card_key(card: CardInfo) -> str:
-    if card.oracle_id:
-        return f"oracle_id:{card.oracle_id}".casefold()
-    if card.set_code and card.collector_number:
-        return f"set:{card.set_code}:{card.collector_number}".casefold()
-    if card.arena_id is not None:
-        return f"arena_id:{card.arena_id}".casefold()
-    return f"grp_id:{card.grp_id}".casefold()
 
 
 def _pair_for_cards(cards: Sequence[CardInfo]) -> str | None:
@@ -1210,7 +1203,7 @@ def _curve_bucket(*, card: CardInfo, config: DeckBuilderConfig) -> str:
 
 
 def _deck_sort_key(deck: _Deck) -> tuple[str, tuple[str, ...]]:
-    return (deck.pair, tuple(sorted(_card_key(card) for card in deck.cards)))
+    return (deck.pair, tuple(sorted(profile_card_key(card) for card in deck.cards)))
 
 
 def _text(value: Any) -> str | None:

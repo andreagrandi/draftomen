@@ -10,6 +10,7 @@ import pytest
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DeckBuilderConfig
+from draftomen.pickengine import PickEngine
 from draftomen.profile_generation import (
     ProfileGenerationConfig,
     ProfileGenerationError,
@@ -149,6 +150,42 @@ def test_early_stage_has_all_pairs_and_beta_binomial_rates() -> None:
     assert card.gih_win_rate.samples == 10
     assert card.gih_win_rate.value == pytest.approx((6 + 250) / 510)
     assert SetProfile.from_json(json.loads(result.profile.to_bytes())) == result.profile
+
+
+def test_generated_early_profile_changes_public_pick_order_with_published_rate() -> None:
+    generated = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage=ProfileGenerationStage.EARLY,
+        card_database=_database(),
+        source_manifest=PublicDumpManifest(sources=(_source("no-data.csv"),)),
+        generated_at=GENERATED_AT,
+        ratings=_ratings(),
+        config=replace(
+            _config(),
+            card_prior=BetaPrior(mean=0.55, strength=10.0),
+        ),
+    )
+    loaded = SetProfile.from_json(json.loads(generated.profile.to_bytes()))
+
+    baseline = PickEngine().score_pack(
+        offered_grp_ids=(2, 1),
+        card_database=_database(),
+    )
+    scored = PickEngine(set_profile=loaded).score_pack(
+        offered_grp_ids=(2, 1),
+        card_database=_database(),
+    )
+    published = loaded.card_ratings[0].gih_win_rate
+    profile_card = next(card for card in scored.cards if card.card.grp_id == 1)
+
+    assert baseline.cards[0].card.grp_id == 2
+    assert scored.cards[0].card.grp_id == 1
+    assert published.value == pytest.approx((6 + (0.55 * 10)) / 20)
+    assert published.raw_value == pytest.approx(0.60)
+    assert published.samples == 10
+    assert profile_card.rating.gih_win_rate == pytest.approx(published.value)
+    assert profile_card.rating.sample_counts.games_in_hand == published.samples
 
 
 def test_ratings_require_requested_set_metadata_and_bounded_rates() -> None:
