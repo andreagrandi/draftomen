@@ -1614,15 +1614,23 @@ configured. `load_cached(set_code, event_format)` performs local I/O only and
 never constructs a request. `refresh(set_code, event_format, force=False,
 network_policy=...)` returns a `ProfileRefreshResult` containing the usable
 profile, optional diagnostics/manifest, and a compact `status`.
+Live session activation is cache-first: it loads and validates the local profile
+before queuing any explicitly permitted refresh. A cached EARLY or MATURE profile
+with empirical card ratings is immediately usable for scoring and recommendations;
+the pending refresh does not block the current pack. For such a profile, its
+published card ratings are the live authority, rather than a separately loaded
+provider-ratings snapshot. An EARLY or MATURE profile is empirical only when
+provider-backed evidence was available during generation; without valid provider
+evidence, scoring uses deterministic fallback and never fabricates an empirical
+profile.
 
 For ordinary candidate loading, `safe_load_set_profile(...)` never raises for
 missing, corrupt, future-schema, malformed, or wrong-target candidates. Its
 deterministic fallback hierarchy is mature, then early, semantic-only, and
-metadata-only (the evidence-backed shorthand is mature → semantic/early →
-generic), then a supplied `last_valid_profile` whose set and format match, and
-finally a zero-confidence generic profile for exactly the requested target.
-`load_scoring_profile(...)` returns `None` instead of exposing that generic
-fallback to scoring.
+metadata-only, then a supplied `last_valid_profile` whose set and format match,
+and finally a zero-confidence generic profile for exactly the requested target.
+The fallback hierarchy's generic result is never exposed to scoring:
+`load_scoring_profile()` returns `None`.
 
 `ProfileClient.load_cached()` first uses a valid non-generic flat profile. If
 that destination is missing, corrupt, future-schema, wrong-target, or generic,
@@ -1633,6 +1641,9 @@ it checks historical locations from earlier versions:
 <app-data>/set-profiles/v1/profiles/<set>-<format>.json
 <app-data>/set-profiles/v1/<set>-<format>.json
 ```
+After those flat and historical candidates, `ProfileClient.load_cached()`
+considers a matching bundled baseline where applicable, then a matching
+`last_valid_profile`, and finally generic.
 
 A valid non-generic historical profile is reused offline and, when the flat
 destination is writable, migrated there under the per-profile lock; the
@@ -1642,6 +1653,14 @@ reported as diagnostics and are not automatically deleted. A refresh failure
 never deletes or replaces the last-good flat profile (or generic fallback); a
 newly fetched valid manifest may still be cached independently before an
 artifact failure is reported.
+
+For empirical profile ratings, freshness comes from the profile's validated
+`generated_at` generation timestamp. Adoption projects that timestamp into the
+live ratings state; provider fetch or refresh-completion time is not a substitute.
+
+Activation and rescoring remain local-only: they use the already validated cache
+or in-memory authority, perform no network I/O, and do not reload the profile
+cache for every score.
 
 When networking is allowed, the client reuses a validated manifest for its
 default 24-hour TTL unless `force=True`, then selects the exact normalized

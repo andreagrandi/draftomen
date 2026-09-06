@@ -979,7 +979,6 @@ class LiveSession:
                 phase=DataLoadPhase.FAILED,
             )
 
-
     def selected_card_image_request(self) -> CardImageRequest | None:
         """Return the current selected-image fetch for an active frontend.
         Calling this method has no network or publication side effects.
@@ -2082,6 +2081,18 @@ class LiveSession:
         ):
             self._publish_active_ratings_state(state=existing)
             return
+        with self._state_lock:
+            profile_managed = self._profile_managed_for_set_locked(
+                set_code=normalized_set_code
+            )
+            profile_ratings_state = self._ratings_state_by_set.get(
+                normalized_set_code
+            )
+        if profile_managed:
+            if profile_ratings_state is not None:
+                self._publish_active_ratings_state(state=profile_ratings_state)
+            return
+
 
         if not self._ratings_configured():
             state = RatingsState(
@@ -2200,6 +2211,8 @@ class LiveSession:
 
     def _begin_ratings_load(self, *, set_code: str) -> bool:
         with self._state_lock:
+            if self._profile_managed_for_set_locked(set_code=set_code):
+                return False
             if set_code in self._loading_rating_sets:
                 return False
 
@@ -2246,6 +2259,8 @@ class LiveSession:
         progress: SeventeenLandsDownloadProgress,
     ) -> None:
         with self._state_lock:
+            if self._profile_managed_for_set_locked(set_code=set_code):
+                return
             state = self._ratings_state_by_set.get(set_code)
             if state is None or state.phase != DataLoadPhase.LOADING:
                 return
@@ -2270,6 +2285,7 @@ class LiveSession:
                 )
             )
 
+
     def _finish_ratings_load(
         self,
         *,
@@ -2292,6 +2308,9 @@ class LiveSession:
         error_message: str | None,
     ) -> None:
         self._loading_rating_sets.discard(set_code)
+        if self._profile_managed_for_set_locked(set_code=set_code):
+            self._ratings_progress_by_set.pop(set_code, None)
+            return
         previous_state = self._ratings_state_by_set.get(set_code)
         if ratings_data is None:
             detail = error_message or "no ratings were returned"
@@ -2917,7 +2936,11 @@ class LiveSession:
         return next_state
 
     def _ratings_data_for_scoring(self, *, set_code: str) -> SeventeenLandsData | None:
-        return self._ratings_data_by_set.get(set_code.upper())
+        normalized_set_code = set_code.upper()
+        with self._state_lock:
+            if self._profile_managed_for_set_locked(set_code=normalized_set_code):
+                return None
+            return self._ratings_data_by_set.get(normalized_set_code)
 
     def _change_ranking(self, *, ranking_mode: str) -> None:
         with self._state_lock:
@@ -3184,6 +3207,48 @@ class LiveSession:
             return self._configured_set_profile, "injected"
         return self._load_local_profile_for_set(set_code=normalized_set_code)
 
+    def _profile_managed_for_set_locked(self, *, set_code: str) -> bool:
+        normalized_set_code = set_code.upper()
+        if self._configured_set_profile is not None:
+            return self._configured_set_profile.set_code.upper() == normalized_set_code
+        if self._profile_client is not None and normalized_set_code in self._set_profiles_by_set:
+            return True
+        profile = self._set_profiles_by_set.get(normalized_set_code)
+        return profile is not None and profile.maturity is not ProfileMaturity.GENERIC
+
+    @staticmethod
+    def _ratings_state_for_profile(
+        *,
+        profile: SetProfile,
+        set_code: str,
+    ) -> RatingsState:
+        """Project validated empirical profile ratings into local state."""
+
+        normalized_set_code = set_code.upper()
+        generated_at = _profile_generated_at(profile=profile)
+        has_positive_samples = any(
+            rating.gih_win_rate.samples > 0 for rating in profile.card_ratings
+        )
+        if (
+            profile.maturity in {ProfileMaturity.EARLY, ProfileMaturity.MATURE}
+            and has_positive_samples
+            and generated_at is not None
+        ):
+            return RatingsState(
+                set_code=normalized_set_code,
+                phase=DataLoadPhase.READY,
+                message=f"Profile ratings are ready for {normalized_set_code}.",
+                last_successful_update=generated_at,
+            )
+        return RatingsState(
+            set_code=normalized_set_code,
+            phase=DataLoadPhase.UNAVAILABLE,
+            message=(
+                f"Profile ratings are not empirical for {normalized_set_code}; "
+                "deterministic fallback scores are active."
+            ),
+        )
+
     def _activate_set_code_locked(
         self,
         *,
@@ -3191,7 +3256,7 @@ class LiveSession:
         lifecycle_identity: _ProfileLifecycleIdentity | None,
         prepared_profile: tuple[SetProfile, str],
         force_lifecycle_change: bool = False,
-    ) -> tuple[bool, SetProfileState | None]:
+    ) -> tuple[bool, SetProfileState | None, RatingsState | None]:
         normalized_set_code = set_code.upper()
         set_changed = normalized_set_code != self._active_set_code_value
         lifecycle_changed = force_lifecycle_change
@@ -3212,7 +3277,7 @@ class LiveSession:
             self._current_pack_event = None
             self._current_scored_pack = None
         if not set_changed:
-            return transitioned, None
+            return transitioned, None, None
 
         self._active_set_code_value = normalized_set_code
         profile, source = prepared_profile
@@ -3220,7 +3285,10 @@ class LiveSession:
         if self._configured_set_profile is None:
             if normalized_set_code in self._set_profiles_by_set:
                 cached_profile = self._set_profiles_by_set[normalized_set_code]
-                if cached_profile is None and profile.maturity is not ProfileMaturity.GENERIC:
+                if (
+                    cached_profile is None
+                    and profile.maturity is not ProfileMaturity.GENERIC
+                ):
                     profile = SetProfile.generic(
                         set_code=normalized_set_code,
                         event_format=QUICK_DRAFT_FORMAT,
@@ -3269,7 +3337,28 @@ class LiveSession:
             )
         )
         self._set_profile_states_by_set[normalized_set_code] = profile_state
-        return transitioned, profile_state
+        if (
+            profile.maturity is ProfileMaturity.GENERIC
+            and self._configured_set_profile is None
+            and self._profile_client is None
+        ):
+            ratings_state = self._ratings_state_by_set.get(
+                normalized_set_code,
+                replace(
+                    self._initial_ratings_state(),
+                    set_code=normalized_set_code,
+                ),
+            )
+        else:
+            ratings_state = self._ratings_state_for_profile(
+                profile=profile,
+                set_code=normalized_set_code,
+            )
+        self._ratings_state_by_set[normalized_set_code] = ratings_state
+        if self._profile_managed_for_set_locked(set_code=normalized_set_code):
+            self._ratings_data_by_set[normalized_set_code] = None
+        return transitioned, profile_state, ratings_state
+
 
 
     def _queue_profile_refresh_locked(self) -> None:
@@ -3304,10 +3393,12 @@ class LiveSession:
 
         prepared_profile = self._prepare_set_profile(set_code=normalized_set_code)
         with self._state_lock:
-            transitioned, profile_state = self._activate_set_code_locked(
-                set_code=normalized_set_code,
-                lifecycle_identity=lifecycle_identity,
-                prepared_profile=prepared_profile,
+            transitioned, profile_state, ratings_state = (
+                self._activate_set_code_locked(
+                    set_code=normalized_set_code,
+                    lifecycle_identity=lifecycle_identity,
+                    prepared_profile=prepared_profile,
+                )
             )
             if transitioned:
                 self._queue_profile_refresh_locked()
@@ -3319,6 +3410,11 @@ class LiveSession:
                             self.snapshot.set_profile
                             if profile_state is None
                             else profile_state
+                        ),
+                        ratings=(
+                            self.snapshot.ratings
+                            if ratings_state is None
+                            else ratings_state
                         ),
                     )
                 )
@@ -3781,10 +3877,12 @@ class LiveSession:
             else:
                 return
 
-            transitioned, profile_state = self._activate_set_code_locked(
-                set_code=event.set_code,
-                lifecycle_identity=lifecycle_identity,
-                prepared_profile=prepared_profile,
+            transitioned, profile_state, _ratings_state = (
+                self._activate_set_code_locked(
+                    set_code=event.set_code,
+                    lifecycle_identity=lifecycle_identity,
+                    prepared_profile=prepared_profile,
+                )
             )
             transition_generation = self._transition_generation
             if isinstance(event, PackOfferedEvent):
@@ -3923,16 +4021,18 @@ class LiveSession:
             self._current_pack_event = None
             self._current_scored_pack = None
             self._transient_pool_grp_ids = ()
-            transitioned, profile_state = self._activate_set_code_locked(
-                set_code=normalized_set_code,
-                lifecycle_identity=(
-                    account_id,
-                    event.event_name,
-                    None,
-                    False,
-                ),
-                prepared_profile=prepared_profile,
-                force_lifecycle_change=new_lifecycle,
+            transitioned, profile_state, ratings_state = (
+                self._activate_set_code_locked(
+                    set_code=normalized_set_code,
+                    lifecycle_identity=(
+                        account_id,
+                        event.event_name,
+                        None,
+                        False,
+                    ),
+                    prepared_profile=prepared_profile,
+                    force_lifecycle_change=new_lifecycle,
+                )
             )
             transition_generation = self._transition_generation
             self._prepare_card_database_for_set(set_code=normalized_set_code)
@@ -3952,12 +4052,10 @@ class LiveSession:
                     ),
                     accounts=self._known_accounts(),
                     active_account=active_account,
-                    ratings=self._ratings_state_by_set.get(
-                        normalized_set_code,
-                        replace(
-                            self._initial_ratings_state(),
-                            set_code=normalized_set_code,
-                        ),
+                    ratings=(
+                        self.snapshot.ratings
+                        if ratings_state is None
+                        else ratings_state
                     ),
                     draft=None,
                     set_profile=(
@@ -4082,15 +4180,17 @@ class LiveSession:
                 self._current_pack_event = None
                 self._current_scored_pack = None
             self._transient_pool_grp_ids = state.pool_grp_ids
-            transitioned, profile_state = self._activate_set_code_locked(
-                set_code=state.set_code,
-                lifecycle_identity=(
-                    state.account_id,
-                    state.event_name,
-                    state.draft_id,
-                    True,
-                ),
-                prepared_profile=prepared_profile,
+            transitioned, profile_state, ratings_state = (
+                self._activate_set_code_locked(
+                    set_code=state.set_code,
+                    lifecycle_identity=(
+                        state.account_id,
+                        state.event_name,
+                        state.draft_id,
+                        True,
+                    ),
+                    prepared_profile=prepared_profile,
+                )
             )
             transition_generation = self._transition_generation
             if isinstance(event, PackOfferedEvent):
@@ -4144,6 +4244,11 @@ class LiveSession:
                         pack_number=pack_number,
                         pick_number=pick_number,
                         completed=state.completed,
+                    ),
+                    ratings=(
+                        self.snapshot.ratings
+                        if ratings_state is None
+                        else ratings_state
                     ),
                     set_profile=(
                         self.snapshot.set_profile
@@ -4358,6 +4463,17 @@ class LiveSession:
             )
         )
 
+
+def _profile_generated_at(*, profile: SetProfile) -> str | None:
+    try:
+        generated_at = datetime.fromisoformat(
+            profile.generated_at.replace("Z", "+00:00")
+        )
+        if generated_at.tzinfo is None or generated_at.utcoffset() is None:
+            return None
+        return generated_at.astimezone(UTC).isoformat()
+    except (AttributeError, OverflowError, OSError, TypeError, ValueError):
+        return None
 
 def _profile_refresh_outcome_value(
     outcome: ProfileRefreshOutcome | str,
