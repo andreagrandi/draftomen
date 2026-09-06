@@ -475,6 +475,7 @@ def test_execute_reads_only_exact_static_artifact_and_never_scryfall(
         plan,
         profiles_dir=profiles_dir,
         cache_dir=tmp_path / "cache",
+        clock=FrozenClock(NOW),
     )
 
     assert result.failures == ()
@@ -710,6 +711,7 @@ def test_execute_reports_content_object_conflict_without_manifest_mutation(
         plan,
         profiles_dir=profiles_dir,
         cache_dir=tmp_path / "cache",
+        clock=FrozenClock(NOW),
     )
 
     assert result.successful_pairs == ()
@@ -767,6 +769,7 @@ def test_execute_manifest_failure_preserves_old_manifest_and_leaves_valid_object
         plan,
         profiles_dir=profiles_dir,
         cache_dir=tmp_path / "cache",
+        clock=FrozenClock(NOW),
     )
 
     assert result.successful_pairs == ()
@@ -807,6 +810,7 @@ def test_published_profile_preserves_empirical_17lands_sources_and_attribution(
         plan,
         profiles_dir=profiles_dir,
         cache_dir=tmp_path / "cache",
+        clock=FrozenClock(NOW),
     )
 
     assert result.failures == ()
