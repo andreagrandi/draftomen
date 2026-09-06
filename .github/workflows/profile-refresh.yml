@@ -1,46 +1,38 @@
 name: Profile Refresh
 
 on:
+  schedule:
+    # GitHub Actions evaluates schedules in UTC.
+    - cron: "17 6 * * *"
+    - cron: "47 6 * * 0"
   workflow_dispatch:
     inputs:
       selection_mode:
-        description: Selection mode for the bounded refresh plan.
+        description: Generation selection mode.
         required: true
         type: choice
         options:
-          - manual
-          - history
-        default: manual
-      set_code:
-        description: Inventory set code for manual selection.
+          - one
+          - all
+          - active
+          - historical
+        default: all
+      set:
+        description: Exact set code or name; required only for one.
         required: false
         type: string
-      event_format:
-        description: Event format paired with every selected environment.
-        required: true
-        type: string
-      max_environments:
-        description: Positive history bound; use 0 for manual selection.
-        required: true
-        type: number
-        default: 0
-      lifecycle_url:
-        description: Public HTTPS lifecycle metadata URL for history selection.
-        required: false
-        type: string
-      generated_at:
-        description: Timezone-aware ISO-8601 generation timestamp.
-        required: true
-        type: string
+
 permissions:
   contents: read
 
 jobs:
-  refresh:
+  generate:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -50,240 +42,124 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked
 
-      - name: Validate dispatch and cache policy
-        env:
-          SELECTION_MODE: ${{ inputs.selection_mode }}
-          SET_CODE: ${{ inputs.set_code }}
-          EVENT_FORMAT: ${{ inputs.event_format }}
-          MAX_ENVIRONMENTS: ${{ inputs.max_environments }}
-          LIFECYCLE_URL: ${{ inputs.lifecycle_url }}
-          GENERATED_AT: ${{ inputs.generated_at }}
-        run: |
-          set -euo pipefail
-          WORK_DIR="$RUNNER_TEMP/draftomen-profile-refresh-$GITHUB_RUN_ID"
-          LIFECYCLE_FILE="$WORK_DIR/lifecycle.json"
-          mkdir -p "$WORK_DIR"
-
-          dispatch_args=(
-            validate-dispatch
-            --selection-mode "$SELECTION_MODE"
-            --event-format "$EVENT_FORMAT"
-            --generated-at "$GENERATED_AT"
-          )
-          if [[ "$SELECTION_MODE" == manual ]]; then
-            dispatch_args+=(--set-code "$SET_CODE")
-            if [[ "$MAX_ENVIRONMENTS" != 0 ]]; then
-              dispatch_args+=(--max-environments "$MAX_ENVIRONMENTS")
-            fi
-          else
-            dispatch_args+=(
-              --max-environments "$MAX_ENVIRONMENTS"
-              --lifecycle-url "$LIFECYCLE_URL"
-            )
-            if [[ -n "$SET_CODE" ]]; then
-              dispatch_args+=(--set-code "$SET_CODE")
-            fi
-          fi
-          uv run python scripts/profile_refresh_workflow.py "${dispatch_args[@]}"
-
-          uv run python scripts/profile_refresh_workflow.py validate-cache-policy \
-            --freshness-days 7 \
-            --max-entry-bytes 134217728 \
-            --max-total-bytes 536870912 \
-            --max-records 256 \
-            --max-versions-per-source 3
-
-          if [[ "$SELECTION_MODE" == history ]]; then
-            uv run python scripts/profile_refresh_workflow.py fetch-lifecycle \
-              --lifecycle-url "$LIFECYCLE_URL" \
-              --output "$LIFECYCLE_FILE"
-          fi
-
-      - name: Plan, execute, and generate profile refresh
-        if: ${{ success() }}
+      - name: Generate website data
+        id: generate
         continue-on-error: true
         env:
-          SELECTION_MODE: ${{ inputs.selection_mode }}
-          SET_CODE: ${{ inputs.set_code }}
-          EVENT_FORMAT: ${{ inputs.event_format }}
-          MAX_ENVIRONMENTS: ${{ inputs.max_environments }}
-          GENERATED_AT: ${{ inputs.generated_at }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
+          INPUT_SELECTION_MODE: ${{ inputs.selection_mode || '' }}
+          INPUT_SET: ${{ inputs.set || '' }}
+          BASE_COMMIT: ${{ github.sha }}
+          REPO_ROOT: ${{ github.workspace }}
+          WORK_DIR: ${{ runner.temp }}/draftomen-profile-refresh-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -u
-          WORK_DIR="$RUNNER_TEMP/draftomen-profile-refresh-$GITHUB_RUN_ID"
-          LIFECYCLE_FILE="$WORK_DIR/lifecycle.json"
-          PLAN_PATH="$WORK_DIR/refresh-plan.json"
-          CACHE_DIR="$WORK_DIR/profile-input-cache"
-          STAGED_DIR="$WORK_DIR/staged"
-          REPORT_DIR="$WORK_DIR/reports"
-          mkdir -p "$CACHE_DIR" "$STAGED_DIR" "$REPORT_DIR"
+          BUNDLE_DIR="$WORK_DIR/bundle"
+          CACHE_DIR="$WORK_DIR/cache"
+          mkdir -p "$BUNDLE_DIR" "$CACHE_DIR"
 
-          plan_status=0
-          plan_command=(
-            uv run draftomen-tui plan-profile-refresh
-            --event-format "$EVENT_FORMAT"
-            --output-plan "$PLAN_PATH"
+          selection_mode=""
+          selector=""
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              selection_mode="$INPUT_SELECTION_MODE"
+              selector="$INPUT_SET"
+              ;;
+            schedule)
+              case "$EVENT_SCHEDULE" in
+                "17 6 * * *") selection_mode="active" ;;
+                "47 6 * * 0") selection_mode="historical" ;;
+                *)
+                  printf '%s\n' "Unknown scheduled event." >&2
+                  exit 2
+                  ;;
+              esac
+              ;;
+            *)
+              printf '%s\n' "Unsupported workflow event." >&2
+              exit 2
+              ;;
+          esac
+
+          generation_args=(
+            run python scripts/profile_refresh_workflow.py generate
+            --selection-mode "$selection_mode"
+            --base-commit "$BASE_COMMIT"
+            --bundle-dir "$BUNDLE_DIR"
+            --cache-dir "$CACHE_DIR"
+            --repo-root "$REPO_ROOT"
           )
-          if [[ "$SELECTION_MODE" == manual ]]; then
-            plan_command+=(--set-code "$SET_CODE")
-          else
-            plan_command+=(
-              --history
-              --max-environments "$MAX_ENVIRONMENTS"
-              --lifecycle-file "$LIFECYCLE_FILE"
-            )
-          fi
-          if "${plan_command[@]}"; then
+          case "$selection_mode" in
+            one)
+              if [[ -z "$selector" ]]; then
+                printf '%s\n' "The one selection requires a set." >&2
+                exit 2
+              fi
+              generation_args+=(--set "$selector")
+              ;;
+            all|active|historical)
+              if [[ -n "$selector" ]]; then
+                printf '%s\n' "A set is allowed only for one selection." >&2
+                exit 2
+              fi
+              ;;
+            *)
+              printf '%s\n' "Unknown selection mode." >&2
+              exit 2
+              ;;
+          esac
+
+          generation_status=0
+          if uv "${generation_args[@]}"; then
             :
           else
-            plan_status=$?
+            generation_status=$?
           fi
-          if (( plan_status == 0 )) && [[ -s "$PLAN_PATH" ]]; then
-            if cp "$PLAN_PATH" "$REPORT_DIR/refresh-plan.json"; then
-              :
-            else
-              plan_status=1
-            fi
-          else
-            plan_status=1
-          fi
+          exit "$generation_status"
 
-          execution_status=1
-          batch_status=1
-          if (( plan_status == 0 )); then
-            execution_command=(
-              uv run draftomen-tui execute-profile-refresh
-              --plan "$PLAN_PATH"
-              --cache-dir "$CACHE_DIR"
-              --output-dir "$STAGED_DIR"
-            )
-            if "${execution_command[@]}" > "$WORK_DIR/execution.stdout"; then
-              execution_status=0
-            else
-              execution_status=$?
-            fi
-            if [[ -s "$STAGED_DIR/execution.json" ]]; then
-              if cp "$STAGED_DIR/execution.json" "$REPORT_DIR/execution.json"; then
-                :
-              else
-                execution_status=1
-              fi
-            elif (( execution_status == 0 )); then
-              execution_status=1
-            fi
-
-            batch_report_tmp="$WORK_DIR/batch-report.json.partial"
-            batch_command=(
-              uv run draftomen-tui generate-profile-refresh-batch
-              --plan "$PLAN_PATH"
-              --staged-dir "$STAGED_DIR"
-              --generated-at "$GENERATED_AT"
-            )
-            if "${batch_command[@]}" > "$batch_report_tmp"; then
-              batch_status=0
-            else
-              batch_status=$?
-            fi
-            if [[ -s "$batch_report_tmp" ]]; then
-              if mv "$batch_report_tmp" "$REPORT_DIR/batch-report.json"; then
-                :
-              else
-                batch_status=1
-              fi
-            elif (( batch_status == 0 )); then
-              batch_status=1
-            fi
-          fi
-
-          printf 'plan_status=%s\nexecution_status=%s\nbatch_status=%s\n' \
-            "$plan_status" "$execution_status" "$batch_status" > "$WORK_DIR/stage-status"
-
-      - name: Render and validate canonical evidence
-        id: evidence
+      - name: Append generation summary
+        id: summary
         if: ${{ always() }}
+        continue-on-error: true
+        env:
+          WORK_DIR: ${{ runner.temp }}/draftomen-profile-refresh-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -u
-          WORK_DIR="$RUNNER_TEMP/draftomen-profile-refresh-$GITHUB_RUN_ID"
-          REPORT_DIR="$WORK_DIR/reports"
-          mkdir -p "$REPORT_DIR"
-
-          plan_status=1
-          execution_status=1
-          batch_status=1
-          if [[ -r "$WORK_DIR/stage-status" ]]; then
-            while IFS='=' read -r key value; do
-              case "$key" in
-                plan_status) plan_status="$value" ;;
-                execution_status) execution_status="$value" ;;
-                batch_status) batch_status="$value" ;;
-              esac
-            done < "$WORK_DIR/stage-status"
-          fi
-
-          render_status=1
-          if [[ -s "$REPORT_DIR/batch-report.json" ]]; then
-            if uv run python scripts/profile_refresh_workflow.py render-summary \
-              --batch-report "$REPORT_DIR/batch-report.json" \
-              --output "$REPORT_DIR/summary.md"; then
-              render_status=0
+          BUNDLE_DIR="$WORK_DIR/bundle"
+          summary_status=0
+          if [[ -s "$BUNDLE_DIR/summary.md" ]]; then
+            if cat "$BUNDLE_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"; then
+              :
             else
-              render_status=$?
+              summary_status=$?
             fi
-          fi
-
-          summary_status=1
-          if (( render_status == 0 )) && [[ -f "$REPORT_DIR/summary.md" ]]; then
-            if cat "$REPORT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"; then
-              summary_status=0
-            else
-              summary_status=1
-            fi
-          fi
-
-          bundle_status=1
-          if uv run python scripts/profile_refresh_workflow.py check-report-bundle \
-            --report-dir "$REPORT_DIR" \
-            --max-bytes 10485760; then
-            bundle_status=0
           else
-            bundle_status=$?
+            summary_status=1
           fi
+          exit "$summary_status"
 
-          final_status=0
-          for status in "$plan_status" "$execution_status" "$batch_status" "$summary_status" "$bundle_status"; do
-            if [[ "$status" != 0 ]]; then
-              final_status=1
-            fi
-          done
-          bundle_valid=false
-          if (( render_status == 0 )) && (( summary_status == 0 )) && (( bundle_status == 0 )); then
-            bundle_valid=true
-          fi
-          printf 'bundle_valid=%s\n' "$bundle_valid" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$final_status" > "$WORK_DIR/final-status"
-
-      - name: Upload canonical profile refresh reports
-        id: upload-reports
-        if: ${{ always() && steps.evidence.outputs.bundle_valid == 'true' }}
+      - name: Upload generation bundle
+        id: upload
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: profile-refresh-reports-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/draftomen-profile-refresh-${{ github.run_id }}/reports
+          name: profile-refresh-generation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/draftomen-profile-refresh-${{ github.run_id }}-${{ github.run_attempt }}/bundle
           retention-days: 7
           if-no-files-found: error
 
-      - name: Propagate profile refresh status
+      - name: Propagate generation status
         if: ${{ always() }}
         env:
-          UPLOAD_OUTCOME: ${{ steps.upload-reports.outcome }}
+          GENERATION_OUTCOME: ${{ steps.generate.outcome }}
+          SUMMARY_OUTCOME: ${{ steps.summary.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
         run: |
           set -u
-          WORK_DIR="$RUNNER_TEMP/draftomen-profile-refresh-$GITHUB_RUN_ID"
-          final_status=1
-          if [[ -r "$WORK_DIR/final-status" ]]; then
-            read -r final_status < "$WORK_DIR/final-status"
+          if [[ "$GENERATION_OUTCOME" == success ]] \
+            && [[ "$SUMMARY_OUTCOME" == success ]] \
+            && [[ "$UPLOAD_OUTCOME" == success ]]; then
+            exit 0
           fi
-          if [[ "$UPLOAD_OUTCOME" != success ]]; then
-            final_status=1
-          fi
-          exit "$final_status"
+          exit 1

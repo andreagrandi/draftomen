@@ -2,16 +2,15 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Add the generation-only scheduled and manually dispatched profile-refresh
+  workflow with read-only execution, structured failure evidence, and
+  successful generated-asset bundles. (#344)
 - Use cached ratings or a local fallback for live locked-pair scoring without lazy 17Lands requests, while retaining the current-pack individual win-rate display and visible 17Lands attribution. (#339)
 - Add the local `refresh-profile-data` producer command for deterministic set
   selection, cached aggregate 17Lands ratings, validated content-addressed
   profile publication, and bounded partial-failure reporting. (#338)
-- Add deterministic per-set Scryfall card-data export, static hosting headers,
-  and offline-first hosted artifact loading for live drafts. (#334)
-- Add the read-only, bounded CI profile-refresh workflow with explicit
-  manual/history dispatch validation, ephemeral cache policy, report-only
-  evidence, and privacy-safe summaries; active selection remains local-only
-  and no generated profile payload is published. (#303)
+- Add the initial read-only CI profile-refresh evidence workflow as a
+  generation-only, publication-independent baseline. (#303)
 - Bundle the immutable HOB/QuickDraft metadata-only baseline in native
   applications with validated offline fallback and hosted refresh
   supersession. (#313)

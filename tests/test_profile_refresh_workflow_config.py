@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
+import subprocess
 
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "profile-refresh.yml"
@@ -11,161 +13,215 @@ def _text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
-def _between(text: str, start: str, end: str) -> str:
-    return text[text.index(start) : text.index(end, text.index(start))]
+def _run_block(text: str, step_name: str) -> str:
+    marker = f"      - name: {step_name}\n"
+    start = text.index(marker)
+    run_start = text.index("        run: |\n", start) + len("        run: |\n")
+    end = text.find("\n      - name:", run_start)
+    if end == -1:
+        end = len(text)
+    lines = text[run_start:end].splitlines()
+    return "\n".join(line[10:] for line in lines)
 
 
-def test_dispatch_has_only_bounded_manual_and_history_choices() -> None:
+def _run_shell(
+    script: str,
+    *,
+    env: dict[str, str],
+    cwd: Path,
+) -> subprocess.CompletedProcess[str]:
+    shell_env = os.environ.copy()
+    shell_env.update(env)
+    return subprocess.run(
+        ["bash"],
+        cwd=cwd,
+        env=shell_env,
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _fake_uv(tmp_path: Path) -> tuple[Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_file = tmp_path / "uv-args"
+    uv = bin_dir / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$@" > "$ARGS_FILE"\n'
+        'exit "${UV_STATUS:-0}"\n',
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    return bin_dir, args_file
+
+
+def _generation_env(
+    tmp_path: Path,
+    *,
+    event_name: str,
+    schedule: str = "",
+    mode: str = "",
+    selector: str = "",
+    uv_status: str = "0",
+) -> tuple[dict[str, str], Path]:
+    bin_dir, args_file = _fake_uv(tmp_path)
+    work_dir = tmp_path / "work"
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    return (
+        {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "ARGS_FILE": str(args_file),
+            "UV_STATUS": uv_status,
+            "EVENT_NAME": event_name,
+            "EVENT_SCHEDULE": schedule,
+            "INPUT_SELECTION_MODE": mode,
+            "INPUT_SET": selector,
+            "BASE_COMMIT": "0123456789abcdef",
+            "REPO_ROOT": str(repo_root),
+            "WORK_DIR": str(work_dir),
+        },
+        work_dir,
+    )
+
+
+def test_dispatch_and_schedule_policy_is_explicit() -> None:
     text = _text()
-    dispatch = _between(text, "on:\n", "permissions:\n")
-    input_names = set(re.findall(r"^      ([a-z_]+):$", dispatch, flags=re.MULTILINE))
-    assert input_names == {
-        "selection_mode",
-        "set_code",
-        "event_format",
-        "max_environments",
-        "lifecycle_url",
-        "generated_at",
-    }
-    choices = _between(dispatch, "        options:\n", "        default: manual")
-    assert re.findall(r"^          - (.+)$", choices, flags=re.MULTILINE) == ["manual", "history"]
-    assert "active" not in dispatch
-    assert "all" not in dispatch
-    assert "profile_version" not in dispatch
+    trigger = text[text.index("on:\n") : text.index("permissions:\n")]
+    assert re.findall(r'^    - cron: "([^"]+)"$', trigger, flags=re.MULTILINE) == [
+        "17 6 * * *",
+        "47 6 * * 0",
+    ]
+    inputs = set(re.findall(r"^      ([a-z_]+):$", trigger, flags=re.MULTILINE))
+    assert inputs == {"selection_mode", "set"}
+    assert re.findall(
+        r"^          - (one|all|active|historical)$",
+        trigger,
+        flags=re.MULTILINE,
+    ) == ["one", "all", "active", "historical"]
     assert re.search(
-        r"max_environments:\n(?:        [^\n]+\n)+        type: number\n        default: 0",
-        dispatch,
+        r"selection_mode:\n(?:        [^\n]+\n)+        default: all",
+        trigger,
     )
+    assert re.search(r"set:\n(?:        [^\n]+\n)+        required: false", trigger)
 
 
-def test_manual_zero_sentinel_is_not_a_history_bound() -> None:
-    text = _text()
-    manual_validation = _between(text, "if [[ \"$SELECTION_MODE\" == manual ]]; then", "else")
-    assert 'if [[ "$MAX_ENVIRONMENTS" != 0 ]]; then' in manual_validation
-    assert 'dispatch_args+=(--max-environments "$MAX_ENVIRONMENTS")' in manual_validation
-    assert 'uv run python scripts/profile_refresh_workflow.py "${dispatch_args[@]}"' in text
-
-
-def test_validation_helpers_run_before_any_planning_command() -> None:
-    text = _text()
-    first_plan = text.index("draftomen-tui plan-profile-refresh")
-    assert text.index("            validate-dispatch\n") < first_plan
-    assert text.index('uv run python scripts/profile_refresh_workflow.py "${dispatch_args[@]}"') < first_plan
-    assert text.index("scripts/profile_refresh_workflow.py validate-cache-policy") < first_plan
-    for value in ("--freshness-days 7", "--max-entry-bytes 134217728", "--max-total-bytes 536870912", "--max-records 256", "--max-versions-per-source 3"):
-        assert value in text
-
-def test_validation_shell_fails_fast_but_later_shells_capture_status() -> None:
-    text = _text()
-    validation = _between(text, "- name: Validate dispatch and cache policy", "- name: Plan, execute, and generate profile refresh")
-    pipeline = _between(text, "- name: Plan, execute, and generate profile refresh", "- name: Render and validate canonical evidence")
-    evidence = _between(text, "- name: Render and validate canonical evidence", "- name: Upload canonical profile refresh reports")
-
-    assert re.search(r"^          set -euo pipefail$", validation, flags=re.MULTILINE)
-    assert "validate-dispatch" in validation
-    assert "validate-cache-policy" in validation
-    for later_shell in (pipeline, evidence):
-        assert re.search(r"^          set -u$", later_shell, flags=re.MULTILINE)
-        assert not re.search(r"^          set -e", later_shell, flags=re.MULTILINE)
-    assert "continue-on-error: true" in pipeline
-    assert "if: ${{ always() }}" in evidence
-
-
-def test_planning_selection_and_stage_order_are_explicit() -> None:
-    text = _text()
-    plan = text.index("draftomen-tui plan-profile-refresh")
-    execute = text.index("draftomen-tui execute-profile-refresh")
-    batch = text.index("draftomen-tui generate-profile-refresh-batch")
-    assert plan < execute < batch
-    assert "plan_command+=(--set-code \"$SET_CODE\")" in text
-    assert (
-        "--history\n"
-        "              --max-environments \"$MAX_ENVIRONMENTS\"\n"
-        "              --lifecycle-file \"$LIFECYCLE_FILE\""
-    ) in text
-    assert "fetch-lifecycle" in text
-    assert text.index("fetch-lifecycle") < plan
-    assert "--cache-dir \"$CACHE_DIR\"" in text
-    assert "--output-dir \"$STAGED_DIR\"" in text
-    assert "--generated-at \"$GENERATED_AT\"" in text
-    assert "--profile-version" not in text
-    assert "PROFILE_VERSION" not in text
-    assert "--active" not in text
-    plan_step = _between(
-        text,
-        "- name: Plan, execute, and generate profile refresh",
-        "- name: Render and validate canonical evidence",
+def test_generation_shell_maps_events_and_quotes_helper_arguments(tmp_path: Path) -> None:
+    script = _run_block(_text(), "Generate website data")
+    env, work_dir = _generation_env(
+        tmp_path,
+        event_name="workflow_dispatch",
+        mode="one",
+        selector='Set "with spaces" $HOME',
     )
-    assert '--lifecycle-url "$LIFECYCLE_URL"' not in plan_step
-    assert '--lifecycle-file "$LIFECYCLE_FILE"' in plan_step
+    result = _run_shell(script, env=env, cwd=tmp_path)
+    assert result.returncode == 0
+    args = Path(env["ARGS_FILE"]).read_text(encoding="utf-8").splitlines()
+    assert args[:2] == ["run", "python"]
+    assert "--selection-mode" in args
+    assert args[args.index("--selection-mode") + 1] == "one"
+    assert args[args.index("--set") + 1] == 'Set "with spaces" $HOME'
+    assert args[args.index("--base-commit") + 1] == env["BASE_COMMIT"]
+    assert args[args.index("--bundle-dir") + 1] == str(work_dir / "bundle")
+    assert args[args.index("--cache-dir") + 1] == str(work_dir / "cache")
 
 
-def test_runner_temp_cache_and_report_only_upload_are_bounded() -> None:
+def test_generation_shell_maps_both_schedules_and_rejects_unknown_schedule(
+    tmp_path: Path,
+) -> None:
+    script = _run_block(_text(), "Generate website data")
+    for schedule, expected in (
+        ("17 6 * * *", "active"),
+        ("47 6 * * 0", "historical"),
+    ):
+        case_dir = tmp_path / expected
+        case_dir.mkdir()
+        env, _ = _generation_env(
+            case_dir,
+            event_name="schedule",
+            schedule=schedule,
+        )
+        result = _run_shell(script, env=env, cwd=case_dir)
+        assert result.returncode == 0
+        args = Path(env["ARGS_FILE"]).read_text(encoding="utf-8").splitlines()
+        assert args[args.index("--selection-mode") + 1] == expected
+        assert "--set" not in args
+
+    unknown_dir = tmp_path / "unknown"
+    unknown_dir.mkdir()
+    env, work_dir = _generation_env(
+        unknown_dir,
+        event_name="schedule",
+        schedule="0 0 * * *",
+    )
+    result = _run_shell(script, env=env, cwd=unknown_dir)
+    assert result.returncode == 2
+    assert not Path(env["ARGS_FILE"]).exists()
+
+
+def test_generation_shell_rejects_invalid_set_combinations(tmp_path: Path) -> None:
+    script = _run_block(_text(), "Generate website data")
+    for mode, selector in (("one", ""), ("all", "TST")):
+        case_dir = tmp_path / mode
+        case_dir.mkdir()
+        env, work_dir = _generation_env(
+            case_dir,
+            event_name="workflow_dispatch",
+            mode=mode,
+            selector=selector,
+        )
+        result = _run_shell(script, env=env, cwd=case_dir)
+        assert result.returncode == 2
+        assert not Path(env["ARGS_FILE"]).exists()
+
+
+def test_read_only_checkout_and_ephemeral_bundle_policy() -> None:
     text = _text()
-    assert "$RUNNER_TEMP/draftomen-profile-refresh-$GITHUB_RUN_ID" in text
-    assert "CACHE_DIR=\"$WORK_DIR/profile-input-cache\"" in text
-    assert "REPORT_DIR=\"$WORK_DIR/reports\"" in text
-    assert "--max-bytes 10485760" in text
+    assert "permissions:\n  contents: read\n" in text
+    assert "persist-credentials: false" in text
+    assert "enable-cache: false" in text
+    assert "actions/cache" not in text
     assert "retention-days: 7" in text
     assert "if-no-files-found: error" in text
-    upload = text[text.index("uses: actions/upload-artifact@v7") :]
-    assert "name: profile-refresh-reports-${{ github.run_id }}-${{ github.run_attempt }}" in upload
-    assert "${{ github.run_id }}" in upload
-    assert "${{ github.run_attempt }}" in upload
-    assert "profile-input-cache" not in upload
-    assert "staged" not in upload
-    assert "execution.stdout" not in upload
-    assert all(name in text for name in ("refresh-plan.json", "execution.json", "batch-report.json", "summary.md"))
+    assert re.search(
+        r"path: \$\{\{ runner\.temp \}\}/draftomen-profile-refresh-.*?/bundle",
+        text,
+    )
+    for forbidden in ("cloudflare", "wrangler", "pull_request", "secrets.", "token:"):
+        assert forbidden not in text.lower()
 
 
-def test_canonical_evidence_and_summary_failure_statuses_are_propagated() -> None:
+def test_failure_evidence_steps_are_always_attempted_and_status_is_propagated(
+    tmp_path: Path,
+) -> None:
     text = _text()
-    evidence = _between(text, "- name: Render and validate canonical evidence", "- name: Upload canonical profile refresh reports")
-    assert "render-summary" in evidence
-    assert 'cat "$REPORT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"' in evidence
-    assert "check-report-bundle" in evidence
-    assert "stage-status" in evidence
-    assert "final-status" in evidence
-    assert "plan_status" in evidence
-    assert "execution_status" in evidence
-    assert "batch_status" in evidence
-    assert "bundle_valid" in evidence
-    assert 'exit "$final_status"' in text
-    assert "continue-on-error: true" in text
-    assert "if: ${{ always() }}" in text
-    assert "steps.upload-reports.outcome" in text
+    generation = _run_block(text, "Generate website data")
+    summary = _run_block(text, "Append generation summary")
+    final = _run_block(text, "Propagate generation status")
+    assert "continue-on-error: true" in text[text.index("- name: Generate website data") :]
+    assert text.count("if: ${{ always() }}") >= 3
 
+    env, work_dir = _generation_env(tmp_path, event_name="workflow_dispatch", mode="all", uv_status="7")
+    result = _run_shell(generation, env=env, cwd=tmp_path)
+    assert result.returncode == 7
+    bundle = work_dir / "bundle"
+    (bundle / "summary.md").write_text("# summary\n", encoding="utf-8")
+    summary_env = {
+        "WORK_DIR": str(work_dir),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary"),
+    }
+    result = _run_shell(summary, env=summary_env, cwd=tmp_path)
+    assert result.returncode == 0
+    assert (tmp_path / "step-summary").read_text(encoding="utf-8") == "# summary\n"
 
-def test_read_only_and_non_publication_boundaries_are_textually_enforced() -> None:
-    text = _text()
-    assert text.count("permissions:\n") == 1
-    assert "permissions:\n  contents: read\n" in text
-    for forbidden in (
-        "permissions: write",
-        "actions/cache",
-        "enable-cache: true",
-        "secrets.",
-        "GITHUB_TOKEN",
-        "token:",
-        "password:",
-        "publish",
-        "release",
-        "deploy",
-        "environment:",
-        "twine",
-        "gh release",
-    ):
-        assert forbidden.lower() not in text.lower()
-
-
-def test_summary_is_rendered_from_helper_without_dispatch_metadata_or_extra_payloads() -> None:
-    text = _text()
-    summary = _between(text, "- name: Render and validate canonical evidence", "- name: Upload canonical profile refresh reports")
-    assert "render-summary" in summary
-    assert "batch-report.json" in summary
-    assert 'GENERATED_AT" >> "$GITHUB_STEP_SUMMARY"' not in summary
-    assert 'PROFILE_VERSION" >> "$GITHUB_STEP_SUMMARY"' not in summary
-    assert "jq " not in summary
-    assert "payload" not in summary.lower()
-    assert "source_url" not in summary
-    assert "diagnostic" not in summary.lower()
+    final_env = {
+        "GENERATION_OUTCOME": "failure",
+        "SUMMARY_OUTCOME": "success",
+        "UPLOAD_OUTCOME": "success",
+    }
+    assert _run_shell(final, env=final_env, cwd=tmp_path).returncode == 1
+    final_env["GENERATION_OUTCOME"] = "success"
+    assert _run_shell(final, env=final_env, cwd=tmp_path).returncode == 0

@@ -1155,153 +1155,194 @@ identical eligible payload bytes; the report itself does not include
 
 ## Run the CI profile-refresh workflow
 
-The repository's CI entry point is
-`.github/workflows/profile-refresh.yml`. Its workflow name is `Profile Refresh`. It is a manually
-dispatched, read-only evidence workflow. It composes the same three commands described
-above, in this order:
+`.github/workflows/profile-refresh.yml` is the generation-only CI entry point.
+It checks out the requested commit, discovers missing or invalid static card-data
+artifacts, refreshes selected profile pairs, and uploads a run-evidence bundle.
+It does not create a branch or pull request, commit files, deploy a website, or
+make a publication decision. Generated files are written to the checkout for
+the run and copied into the bundle; nothing is committed.
 
-1. `plan-profile-refresh`
-2. `execute-profile-refresh`
-3. `generate-profile-refresh-batch`
+The job has `contents: read` permission, checks out with credential persistence
+disabled, and runs one generation job sequentially. The temporary cache and
+bundle are under the runner's temporary directory. No GitHub Actions cache,
+repository credential, deployment credential, or publication secret is used.
 
-The dispatch form deliberately exposes exactly two selection choices:
-`manual` and `history`. It has no `active` choice and no implicit
-full/all-environments choice. `active` remains available for the local
-three-stage workflow only; it is never a CI fallback.
+### Schedules and dispatch
 
-### Dispatch inputs
+GitHub Actions evaluates both schedules in UTC:
 
-The workflow accepts these exact inputs:
+| Schedule | Selection |
+| --- | --- |
+| `17 6 * * *` | `active` every day |
+| `47 6 * * 0` | `historical` on Sundays |
 
-| Input | Manual selection | History selection |
-| --- | --- | --- |
-| `selection_mode` | `manual` | `history` |
-| `set_code` | Required and non-empty | Must be empty |
-| `event_format` | Required and non-empty | Required and non-empty |
-| `max_environments` | `0` sentinel; no history count | Integer `>= 1` |
-| `lifecycle_url` | Optional | Required public HTTPS URL |
-| `generated_at` | Required timezone-aware ISO-8601 timestamp | Required timezone-aware ISO-8601 timestamp |
+Both schedules perform missing-only static discovery before profile generation.
+The workflow never infers a schedule selection for a manual run. Manual
+dispatch exposes these inputs:
 
-The selection columns are validation matrices, not suggestions for mixing
-fields. Manual mode plans exactly the one inventory environment named by its
-non-empty `set_code`; its `max_environments` input must remain the `0`
-sentinel and is not a history bound. History mode does not accept a
-`set_code`, requires a public `https://` lifecycle document in
-`lifecycle_url`, and plans no more than the explicitly supplied positive
-`max_environments` bound. The URL must be a public HTTPS URL, rather than a
-local file, a URL-only private endpoint, or an HTTP endpoint.
+| Input | Values |
+| --- | --- |
+| `selection_mode` | `one`, `all`, `active`, or `historical`; defaults to `all` |
+| `set` | Optional exact set code or full name; required only when the mode is `one` |
 
-Both modes require `event_format` and `generated_at` before planning starts.
-`generated_at` must include a timezone offset (for example,
-`2026-08-30T12:00:00+00:00`); a timezone-naive timestamp is rejected.
-The batch generator uses the existing fixed profile artifact version default,
-`1.0`; the workflow does not expose or pass a profile-version setting. The batch
-report and step summary intentionally do not expose either `generated_at` or
-`profile_version`.
+`set` is rejected for `all`, `active`, and `historical`. A one-set profile
+selection does not narrow static discovery: static discovery always uses the
+complete inventory so every missing or invalid card-data artifact can be
+reported and generated without rewriting an already-valid sibling.
 
-For history selection, validation is followed by the helper's
-`fetch-lifecycle` boundary. It resolves the URL before every request,
-requires every resolved address to be globally routable, and connects to the
-validated address while retaining the original hostname for HTTPS
-certificate/SNI checks. Every redirect is independently required to remain
-public HTTPS; HTTP downgrades, private or non-global DNS answers, malformed
-locations, and more than five redirects are rejected. Responses are bounded
-to `1 MiB` and must be a JSON object. The fetched document is written under
-the runner's temporary directory and planning consumes that file with
-`--lifecycle-file`; the planner never fetches the operator URL itself.
+The profile selection is derived from the current 17Lands `/data/filters`
+availability. `all` selects every supported available pair, `active` selects
+available and live pairs, and `historical` selects available pairs that are not
+live. The supported formats remain `PremierDraft`, `TradDraft`, `QuickDraft`,
+and `PickTwoDraft`; other formats are ignored. The helper receives the full
+checked-out `github.sha` as `base_commit`, which identifies the source used for
+generation.
 
-The workflow validates the inputs before invoking the planner and then passes
-the canonical plan to execution and batch generation. Consequently, a
-successful manual run has exactly one environment, while a successful history
-run has at most its supplied history bound. The plan, execution authority, and
-batch report remain the canonical authorities; later stages do not rediscover
-inventory or lifecycle metadata.
+For a manual run from the command line, use the same four-mode contract as the
+workflow form:
 
-### Read-only and ephemeral execution boundary
-
-The workflow declares top-level `permissions: contents: read` and does not
-elevate permissions at the job level. It declares or consumes no secrets,
-publication credentials, deployment environments, release actions, or
-write-capable token. The only remote write is the GitHub Actions run-evidence
-artifact described below. CI does not publish a generated profile, manifest,
-website asset, package, or release, and it does not upload generated profile
-payloads.
-
-Execution uses a runner-temporary profile-input cache. Before running, the
-workflow checks the repository's explicit cache policy:
-
-- freshness: `7 days`;
-- maximum entry: `134217728` bytes (`128 MiB`);
-- maximum total: `536870912` bytes (`512 MiB`);
-- maximum records: `256`;
-- maximum versions per source: `3`.
-
-The check must match `DEFAULT_PROFILE_REFRESH_CACHE_POLICY`. Neither
-`actions/cache` nor `setup-uv` caching is enabled. Raw acquisition data is
-therefore not retained across workflow runs, and runner teardown bounds the
-cache lifetime further. The cache and staged raw bundles are never included
-in run evidence.
-
-### Report-only evidence and failure handling
-
-The uploaded evidence bundle is report-only and contains exactly these four
-files:
-
-```text
-refresh-plan.json
-execution.json
-batch-report.json
-summary.md
+```sh
+gh workflow run profile-refresh.yml \
+  --ref master \
+  -f selection_mode=one \
+  -f set=TST
 ```
 
-The workflow fails its pre-upload check if any expected file is absent, if an
-unexpected file, directory, or symlink is present, or if the aggregate
-uncompressed size exceeds `10485760` bytes (`10 MiB`). A passing bundle is
-uploaded with `retention-days: 7`; its artifact name contains both the GitHub
-run ID and run attempt, so reruns receive distinct evidence names.
-Profile-input cache entries, staged bundle
-objects, raw acquisition payloads, and generated profile/gzip payloads are
-excluded.
+Omit `-f set=...` for `all`, `active`, or `historical`. The scheduled event
+mapping is fixed by the cron expression; an unknown schedule value fails
+rather than silently selecting a different mode.
 
-Evidence collection is attempted even when planning, execution, or batch
-generation reports failure. Per-environment execution failures still leave
-their canonical execution authority for batch reporting; a batch can therefore
-produce a complete report containing successful siblings and failed
-environments, while its command exits non-zero. The workflow preserves such
-produced reports and runs the summary and exact-bundle checks. A fatal failure
-that prevents one of the four expected reports from being produced causes the
-pre-upload check to fail rather than fabricating an incomplete report or
-uploading partial evidence.
 
-Failed environments retain these labels with `not reported` when the canonical
-value is unavailable; any approved skip/error reason counts remain visible.
+### Re-run the helper locally
 
-### Step summary and privacy allowlist
+Run the helper from a dedicated generation checkout, such as a disposable
+worktree with no unrelated edits. It writes successful generated files into that
+checkout before copying their base-relative delta into the evidence bundle; it
+does not commit or publish anything. Define every path that Actions normally
+provides:
 
-`$GITHUB_STEP_SUMMARY` is rendered from the canonical `batch-report.json`
-through an exact field allowlist with Markdown escaping. For every selected
-environment it lists:
+```sh
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+BASE_COMMIT="$(git rev-parse HEAD)"
+TEMP_DIR="${TMPDIR:-/tmp}/draftomen-profile-refresh-local"
+EVIDENCE_DIR="$TEMP_DIR/evidence"
+CACHE_DIR="$TEMP_DIR/cache"
+BUNDLE_DIR="$EVIDENCE_DIR/bundle"
+mkdir -p "$EVIDENCE_DIR" "$CACHE_DIR"
+cd "$REPO_ROOT"
 
-- set code, event format, lifecycle, outcome, and generation stage when one was
-  selected;
-- sample totals, including card-game and pair-game counts;
-- skip and error totals, with their reason counts when present;
-- approved logical source metadata: source name, SHA-256 digest, and safe
-  attribution/license fields when present; and
-- profile, gzip, and generation-report SHA-256 hashes and byte counts.
+generation_status=0
+if uv run python "$REPO_ROOT/scripts/profile_refresh_workflow.py" generate \
+  --selection-mode one \
+  --set TLA \
+  --base-commit "$BASE_COMMIT" \
+  --bundle-dir "$BUNDLE_DIR" \
+  --cache-dir "$CACHE_DIR" \
+  --repo-root "$REPO_ROOT"
+then
+  :
+else
+  generation_status=$?
+fi
 
-It also lists aggregate planned, publication-eligible, and failed run counts,
-plus the batch `schema_version`, generator version, profile-generation schema
-and execution-schema versions, set-profile schema version, public-dump-manifest
-schema version, and statistics version. It does not invent or expose
-`generated_at` or `profile_version`.
+printf 'helper exit status: %s\n' "$generation_status"
+cat "$BUNDLE_DIR/result.json"
+cat "$BUNDLE_DIR/summary.md"
+exit "$generation_status"
+```
 
-Unknown report keys are ignored, even when they contain hostile or irrelevant
-values. The summary is free of raw datasets and payload bytes, card names,
-retrieval URLs, local paths, source payloads, diagnostics, exception text,
-secrets, and workflow inputs other than the fields explicitly listed above.
-The report and summary are run evidence only; neither is a publication
-channel.
+`TLA` is an existing set code; replace it with another exact code or full set
+name when needed. Re-run with the same `BASE_COMMIT`, `CACHE_DIR`, and
+`BUNDLE_DIR` to reuse cached provider inputs against the same declared base.
+Each rerun overwrites this dedicated bundle's `generated/`, `result.json`, and
+`summary.md`; it does not use a prior bundle as authority. Inspect both files
+after each run. A nonzero run can still leave successful static or profile
+updates in the generation checkout and their corresponding generated bundle
+entries; preserve those successful updates while reviewing `failures` and
+`status` in `result.json`.
+
+### Provider, cache, and attribution policy
+
+Static discovery uses the existing Scryfall card-data exporter and its
+configured inventory/bulk sources. A valid existing
+`website/public/card-data/<set>.json.gz` is not rewritten. Discovery may still
+read and validate the complete source before classifying candidates; this is
+why a run can report a source outage even when no static file needs changing.
+
+Profile generation uses the existing aggregate 17Lands provider and its
+runner-temporary cache. A cache entry is fresh for 24 hours. For each cache
+miss, the producer makes one aggregate full-set card-ratings request and one
+aggregate color-ratings request per selected pair; it does not make per-card or
+pair-filtered requests. Requests are sequential, use positive 60-second
+timeouts and an identifying user agent, and do not add retries, backoff, or an
+invented numeric throttle. A fresh cache hit avoids those ratings requests.
+The cache is discarded with the runner and is never uploaded or reused through
+`actions/cache`.
+
+Generated profiles retain the visible attribution `Card data from 17Lands
+(17lands.com)`. Provider outages, stale or unusable cache data, timeout
+failures, and malformed filter responses remain categorized failures in the
+report; they are not converted into successful empty profiles.
+
+### Bundle and report
+
+The helper writes `result.json` and `summary.md` before returning a failure
+status whenever it can persist evidence. The report has schema version `1`,
+the checked-out base commit, the requested selection, static discovery counts
+and outcomes, profile planning and execution outcomes, categorized failures,
+and a delta list of successful changed generated assets. The summary lists
+every selected profile pair, every pending static set, each outcome, and each
+failure without raw payloads, credentials, absolute paths, or exception text.
+
+The uploaded artifact is named with both the run ID and run attempt. Its
+allowed layout is:
+
+```text
+result.json
+summary.md
+generated/website/public/card-data/<set>.json.gz
+generated/website/public/profiles/manifest.json
+generated/website/public/profiles/objects/<sha256>.json.gz
+```
+
+Only successful changed assets are copied into `generated/`; caches, planning
+directories, old unrelated profile objects, and orphan objects are excluded.
+The artifact is retained for seven days. It is run evidence, not a website
+publication channel.
+
+### Partial failures, reruns, and outages
+
+Generation runs with failure capture enabled so the summary and artifact steps
+are attempted even when one static write or profile pair fails. Successful
+siblings remain in the report and bundle. A static atomic-write failure keeps
+the affected profile pairs visible as failures rather than silently dropping
+them. A source or filters outage records an incomplete discovery or planning
+result when that state is known; it does not fabricate zero selected items.
+The final workflow step fails if generation, summary append, or artifact upload
+fails. A failed or all-failed run can therefore still provide `result.json` and
+`summary.md`, while an infrastructure failure before those files can be
+written is reported by the failed step itself.
+
+To rerun, use the Actions **Re-run failed jobs** control or:
+
+```sh
+gh run rerun RUN_ID
+```
+
+Each attempt has a distinct artifact name. The cache remains runner-temporary,
+so a rerun must be prepared for fresh provider requests. To inspect evidence:
+
+```sh
+gh run download RUN_ID \
+  --name "profile-refresh-generation-RUN_ID-RUN_ATTEMPT" \
+  --dir "$PWD/.draftomen/profile-refresh-evidence"
+```
+
+If the run failed because Scryfall or 17Lands was unavailable, rerun after the
+source recovers; do not treat an incomplete report as a successful refresh.
+No CI run changes the checked-out branch or the hosted website. Local
+`plan-profile-refresh`, `execute-profile-refresh`, and batch commands above
+remain separate workflows and retain their existing inputs and behavior.
 
 
 ## Select a profile-generation stage
