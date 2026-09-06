@@ -19,6 +19,7 @@ from draftomen.profile_client import (
     ProfileRefreshOutcome,
     ProfileRefreshResult,
 )
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.audit import load_draft_audit_records
 from draftomen.backtest import (
     BacktestPickResult as DomainBacktestPickResult,
@@ -111,6 +112,7 @@ from draftomen.seventeen import (
 )
 from draftomen.set_profile import (
     CardRating,
+    ProfileMaturity,
     RateEstimate,
     SetProfile,
     dump_set_profile,
@@ -1099,6 +1101,8 @@ def test_live_session_activation_and_repeated_scoring_do_not_reload_profile(
         )
     )
     assert snapshot.current_scored_pack is not None
+    request = session.profile_refresh_request()
+    assert request is not None
     assert client.load_calls == [("TST", QUICK_DRAFT_FORMAT)]
 
     def forbidden_reload(*args: object, **kwargs: object) -> None:
@@ -1106,10 +1110,21 @@ def test_live_session_activation_and_repeated_scoring_do_not_reload_profile(
         raise AssertionError("profile cache must not reload after activation")
 
     monkeypatch.setattr(client, "load_cached", forbidden_reload)
+    session.complete_profile_refresh(
+        request=request,
+        result=ProfileRefreshResult(
+            profile=_fixture_empirical_profile(
+                profile_version="empirical-2.0",
+                generated_at="2026-08-30T00:00:00+00:00",
+            ),
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
     session._score_current_pack()
     session._score_current_pack()
     assert session.snapshot.current_scored_pack is not None
     assert client.load_calls == [("TST", QUICK_DRAFT_FORMAT)]
+
 
 def test_live_session_profile_switch_retires_stale_refresh_request(
     tmp_path: Path,
@@ -1652,12 +1667,23 @@ def test_live_session_ordinary_draft_progression_keeps_profile_request(
 def test_live_session_newer_profile_result_updates_state_and_scores_current_pack(
     tmp_path: Path,
 ) -> None:
-    client = _ProfileClientStub({})
+    older = _fixture_empirical_profile(
+        profile_version="empirical-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
+    newer = _fixture_empirical_profile(
+        profile_version="empirical-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+        first_gih=0.10,
+        second_gih=0.90,
+    )
+    published: list[LiveSessionSnapshot] = []
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
-        card_database=_fixture_card_database(),
-        profile_client=client,
+        card_database=_fixture_set_card_database(set_code="TST"),
+        profile_client=_ProfileClientStub({"TST": older}),
+        snapshot_publisher=published.append,
     )
     snapshot = session.process_lines(
         lines=_profiled_history_lines(
@@ -1669,8 +1695,11 @@ def test_live_session_newer_profile_result_updates_state_and_scores_current_pack
     )
     request = session.profile_refresh_request()
     assert request is not None
-    newer = _fixture_set_profile()
-    newer = replace(newer, profile_version="2.0")
+    assert snapshot.current_scored_pack is not None
+    assert [
+        recommendation.card.grp_id for recommendation in snapshot.recommendations.cards
+    ] == [104894, 104976]
+    publication_count = len(published)
 
     session.complete_profile_refresh(
         request=request,
@@ -1680,29 +1709,94 @@ def test_live_session_newer_profile_result_updates_state_and_scores_current_pack
         ),
     )
 
-    assert session.snapshot.set_profile.profile_version == "2.0"
-    assert session.snapshot.set_profile.refresh_outcome == "updated"
-    assert session.snapshot.current_scored_pack is not snapshot.current_scored_pack
-    assert session.snapshot.current_scored_pack is not None
-    assert session.snapshot.current_scored_pack.scoring_context is not None
-    assert session.snapshot.current_scored_pack.scoring_context.set_profile == newer
+    assert len(published) - publication_count == 1
+    authority_snapshot = published[-1]
+    assert authority_snapshot.set_profile.profile_version == newer.profile_version
+    assert session._set_profile == newer
+    assert session._set_profile.fingerprint == newer.fingerprint
+    assert authority_snapshot.set_profile.source == "remote"
+    assert authority_snapshot.set_profile.refresh_outcome == "updated"
+    assert authority_snapshot.ratings.phase is DataLoadPhase.READY
+    assert authority_snapshot.ratings.rated_cards == 2
+    assert authority_snapshot.ratings.total_cards == 2
+    assert authority_snapshot.ratings.last_successful_update == newer.generated_at
+    assert authority_snapshot.current_scored_pack is not snapshot.current_scored_pack
+    assert authority_snapshot.current_scored_pack is not None
+    assert authority_snapshot.current_pack_event is not None
+    _assert_profile_context(
+        scored_pack=authority_snapshot.current_scored_pack,
+        profile=newer,
+        event=authority_snapshot.current_pack_event,
+    )
+    assert [
+        recommendation.card.grp_id
+        for recommendation in authority_snapshot.recommendations.cards
+    ] == [104976, 104894]
+
+
+def test_live_session_profile_refresh_without_current_pack_publishes_atomically(
+    tmp_path: Path,
+) -> None:
+    older = _fixture_empirical_profile(
+        profile_version="empirical-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
+    newer = _fixture_empirical_profile(
+        profile_version="empirical-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    published: list[LiveSessionSnapshot] = []
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=_ProfileClientStub({"TST": older}),
+        snapshot_publisher=published.append,
+    )
+    session._set_active_set_code(set_code="TST")
+    request = session.profile_refresh_request()
+    assert request is not None
+    publication_count = len(published)
+
+    session.complete_profile_refresh(
+        request=request,
+        result=ProfileRefreshResult(
+            profile=newer,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+
+    assert len(published) - publication_count == 1
+    assert session.snapshot.set_profile.profile_version == newer.profile_version
+    assert session.snapshot.current_scored_pack is None
+    assert session.snapshot.recommendations.cards == ()
 
 
 @pytest.mark.parametrize(
-    "outcome",
-    (ProfileRefreshOutcome.UNCHANGED, ProfileRefreshOutcome.CACHED),
+    ("outcome", "candidate_kind", "should_adopt"),
+    (
+        (ProfileRefreshOutcome.CACHED, "newer", True),
+        (ProfileRefreshOutcome.UNCHANGED, "newer", True),
+        (ProfileRefreshOutcome.CACHED, "weaker", False),
+        (ProfileRefreshOutcome.CACHED, "older", False),
+        (ProfileRefreshOutcome.CACHED, "equal-time", False),
+        (ProfileRefreshOutcome.UNCHANGED, "equal-time", False),
+    ),
 )
-def test_live_session_adopts_newer_external_cached_profile_and_rescores(
+def test_live_session_external_profile_results_follow_authority_order(
     tmp_path: Path,
     outcome: ProfileRefreshOutcome,
+    candidate_kind: str,
+    should_adopt: bool,
 ) -> None:
-    profile = _fixture_set_profile()
-    client = _ProfileClientStub({"TST": profile})
+    profile = _fixture_empirical_profile(
+        profile_version="empirical-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
         card_database=_fixture_card_database(),
-        profile_client=client,
+        profile_client=_ProfileClientStub({"TST": profile}),
     )
     snapshot = session.process_lines(
         lines=_profiled_history_lines(
@@ -1714,62 +1808,227 @@ def test_live_session_adopts_newer_external_cached_profile_and_rescores(
     )
     request = session.profile_refresh_request()
     assert request is not None
-    newer = replace(
-        profile,
-        profile_version="2.0",
-        generated_at="2026-08-30T00:00:00+00:00",
-    )
+    scored_pack = snapshot.current_scored_pack
+    assert scored_pack is not None
+    recommendations = snapshot.recommendations.cards
+    if candidate_kind == "newer":
+        candidate = _fixture_empirical_profile(
+            profile_version="empirical-2.0",
+            generated_at="2026-08-30T00:00:00+00:00",
+        )
+    elif candidate_kind == "weaker":
+        candidate = replace(
+            profile,
+            maturity=ProfileMaturity.EARLY,
+            profile_version="early-2.0",
+            generated_at="2026-08-30T00:00:00+00:00",
+        )
+    elif candidate_kind == "older":
+        candidate = replace(
+            profile,
+            profile_version="empirical-0.9",
+            generated_at="2026-08-28T00:00:00+00:00",
+        )
+    else:
+        candidate = replace(profile, profile_version="empirical-equal")
 
-    session.complete_profile_refresh(
-        request=request,
-        result=ProfileRefreshResult(profile=newer, outcome=outcome),
-    )
+    if outcome is ProfileRefreshOutcome.CACHED and candidate_kind == "newer":
+        cached_client = ProfileClient(app_dir=tmp_path / "cached-client")
+        dump_set_profile(
+            candidate,
+            cached_client.profile_path("TST", QUICK_DRAFT_FORMAT),
+        )
+        result = cached_client.refresh(
+            "TST",
+            QUICK_DRAFT_FORMAT,
+            network_policy="offline",
+        )
+        assert result.outcome is ProfileRefreshOutcome.CACHED
+    else:
+        result = ProfileRefreshResult(profile=candidate, outcome=outcome)
 
-    assert session._set_profile is newer
-    assert session.snapshot.set_profile.profile_version == "2.0"
+    session.complete_profile_refresh(request=request, result=result)
+
     assert session.snapshot.set_profile.refresh_outcome == outcome.value
-    assert session.snapshot.current_scored_pack is not snapshot.current_scored_pack
-    assert session.snapshot.current_scored_pack is not None
-    assert session.snapshot.current_scored_pack.scoring_context is not None
-    assert session.snapshot.current_scored_pack.scoring_context.set_profile == newer
+    assert session._set_profile is not None
+    if should_adopt:
+        assert session._set_profile == candidate
+        assert session._set_profile.fingerprint == candidate.fingerprint
+        assert session.snapshot.current_scored_pack is not scored_pack
+        assert session.snapshot.current_scored_pack is not None
+        assert session.snapshot.current_scored_pack.scoring_context is not None
+        assert (
+            session.snapshot.current_scored_pack.scoring_context.set_profile
+            == candidate
+        )
+    else:
+        assert session._set_profile == profile
+        assert session._set_profile.fingerprint == profile.fingerprint
+        assert session.snapshot.current_scored_pack is scored_pack
+        assert session.snapshot.recommendations.cards == recommendations
 
 
+@pytest.mark.parametrize("refresh_path", ("unchanged", "failed"))
 def test_live_session_profile_unchanged_and_failed_refreshes_retain_last_good_state(
     tmp_path: Path,
+    refresh_path: str,
 ) -> None:
-    profile = _fixture_set_profile()
-    client = _ProfileClientStub({"TST": profile})
+    profile = _fixture_empirical_profile()
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
-        profile_client=client,
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"TST": profile}),
+    )
+    baseline = session.process_lines(
+        lines=_profiled_history_lines(
+            pool_before_pick=_fixture_pool_before_pick(
+                pack_number=CONTEXT_PACK_NUMBER,
+                pick_number=CONTEXT_PICK_NUMBER,
+            )
+        )
+    )
+    request = session.profile_refresh_request()
+    assert request is not None
+    scored_pack = baseline.current_scored_pack
+    assert scored_pack is not None
+    recommendations = baseline.recommendations.cards
+
+
+    records_before = load_draft_audit_records(
+        account_id="profiled-account",
+        draft_id="profiled-draft",
+        app_dir=tmp_path / "app",
+    )
+
+    if refresh_path == "unchanged":
+        session.complete_profile_refresh(
+            request=request,
+            result=ProfileRefreshResult(
+                profile=replace(profile),
+                outcome=ProfileRefreshOutcome.UNCHANGED,
+            ),
+        )
+        expected_phase = DataLoadPhase.READY
+        expected_outcome = "unchanged"
+    else:
+        session.fail_profile_refresh(request=request, error_message="private diagnostic")
+        expected_phase = DataLoadPhase.FAILED
+        expected_outcome = "remote-failed"
+
+    final = session.snapshot
+    assert session._set_profile == profile
+    assert session._set_profile.fingerprint == profile.fingerprint
+    assert final.set_profile.profile_version == profile.profile_version
+    assert final.set_profile.source == baseline.set_profile.source
+    assert final.set_profile.phase is expected_phase
+    assert final.set_profile.refresh_outcome == expected_outcome
+    assert final.ratings == baseline.ratings
+    assert final.current_scored_pack is scored_pack
+    assert final.current_scored_pack.cards == scored_pack.cards
+    assert final.recommendations.cards == recommendations
+    assert load_draft_audit_records(
+        account_id="profiled-account",
+        draft_id="profiled-draft",
+        app_dir=tmp_path / "app",
+    ) == records_before
+
+
+@pytest.mark.parametrize("failure", ("outage", "invalid-artifact"))
+def test_live_session_real_client_failures_retain_stronger_in_memory_profile(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    stronger = _fixture_empirical_profile(
+        profile_version="empirical-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    weaker = _fixture_empirical_profile(
+        profile_version="empirical-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
+    manifest_url = "https://profiles.example.test/manifest.json"
+
+    class _Response:
+        def __init__(self, payload: bytes, url: str) -> None:
+            self.payload = payload
+            self.url = url
+
+        def read(self, limit: int) -> bytes:
+            del limit
+            payload, self.payload = self.payload, b""
+            return payload
+
+        def close(self) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return self.url
+
+    if failure == "outage":
+        def opener(request: object, *, timeout: float) -> object:
+            del request, timeout
+            raise urllib.error.URLError("offline")
+
+        expected_outcome = ProfileRefreshOutcome.REMOTE_FAILED
+    else:
+        artifact = ProfileManifestArtifact(
+            set_code="tst",
+            event_format=QUICK_DRAFT_FORMAT,
+            set_profile_schema_version=1,
+            profile_version="empirical-2.0",
+            generated_at="2026-08-30T00:00:00+00:00",
+            url="https://profiles.example.test/profile.json.gz",
+            gzip_bytes=1,
+            profile_bytes=1,
+            gzip_sha256="0" * 64,
+            profile_sha256="0" * 64,
+            maturity=ProfileMaturity.MATURE,
+        )
+        manifest = ProfileManifest(
+            artifacts=(artifact,),
+            published_at="2026-08-30T00:00:00+00:00",
+        )
+
+        def opener(request: object, *, timeout: float) -> object:
+            del timeout
+            url = request.full_url
+            if url == manifest_url:
+                return _Response(manifest.to_bytes(), url)
+            return _Response(b"x", url)
+
+        expected_outcome = ProfileRefreshOutcome.ARTIFACT_INVALID
+
+    client = ProfileClient(
+        app_dir=tmp_path / "client",
+        manifest_url=manifest_url,
+        opener=opener,
+    )
+    dump_set_profile(weaker, client.profile_path("TST", QUICK_DRAFT_FORMAT))
+    result = client.refresh(
+        "TST",
+        QUICK_DRAFT_FORMAT,
+        force=True,
+    )
+    assert result.outcome is expected_outcome
+    assert result.profile == weaker
+    assert result.profile.fingerprint == weaker.fingerprint
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=_ProfileClientStub({"TST": stronger}),
     )
     session._set_active_set_code(set_code="TST")
     request = session.profile_refresh_request()
     assert request is not None
-    session.complete_profile_refresh(
-        request=request,
-        result=ProfileRefreshResult(
-            profile=profile,
-            outcome=ProfileRefreshOutcome.UNCHANGED,
-        ),
-    )
-    unchanged = session.snapshot
-    assert session._set_profile is profile
-    assert unchanged.set_profile.refresh_outcome == "unchanged"
-    assert unchanged.set_profile.phase is DataLoadPhase.READY
+    session.complete_profile_refresh(request=request, result=result)
 
-    session._set_active_set_code(set_code=None)
-    session._set_active_set_code(set_code="TST")
-    request = session.profile_refresh_request()
-    assert request is not None
-    session.fail_profile_refresh(request=request, error_message="private diagnostic")
-
-    assert session._set_profile is profile
-    assert session.snapshot.set_profile.profile_version == profile.profile_version
+    assert session._set_profile == stronger
+    assert session._set_profile.fingerprint == stronger.fingerprint
+    assert session.snapshot.set_profile.profile_version == stronger.profile_version
     assert session.snapshot.set_profile.phase is DataLoadPhase.FAILED
-    assert session.snapshot.set_profile.refresh_outcome == "remote-failed"
-    assert "private diagnostic" not in session.snapshot.set_profile.message
+    assert session.snapshot.set_profile.refresh_outcome == expected_outcome.value
 
 
 def test_live_session_explicit_profile_is_authoritative_without_refresh_request(
