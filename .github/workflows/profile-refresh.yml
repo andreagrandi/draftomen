@@ -27,6 +27,8 @@ permissions:
 
 jobs:
   generate:
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -163,3 +165,63 @@ jobs:
             exit 0
           fi
           exit 1
+
+  publish:
+    needs: generate
+    if: >-
+      ${{ !cancelled() &&
+          github.ref == 'refs/heads/master' &&
+          needs.generate.outputs.artifact-id != '' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: profile-refresh-publish
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Download generation bundle
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.generate.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/draftomen-profile-publication/bundle
+
+      - name: Publish generated website data
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_COMMIT: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ARTIFACT_ID: ${{ needs.generate.outputs.artifact-id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO_ROOT: ${{ github.workspace }}
+          BUNDLE_DIR: ${{ runner.temp }}/draftomen-profile-publication/bundle
+        run: |
+          set -euo pipefail
+          uv run python -m scripts.profile_refresh_publication \
+            --repo-root "$REPO_ROOT" \
+            --bundle-dir "$BUNDLE_DIR" \
+            --base-commit "$BASE_COMMIT" \
+            --repository "$REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --artifact-id "$ARTIFACT_ID" \
+            --run-url "$RUN_URL" \
+            --summary-file "$GITHUB_STEP_SUMMARY"

@@ -2,6 +2,9 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Add guarded profile-refresh generation-artifact publication with validated
+  full-success automatic merges, immutable partial review snapshots, and
+  stale-base, failure, and unchanged-run safeguards. (#345)
 - Add the generation-only scheduled and manually dispatched profile-refresh
   workflow with read-only execution, structured failure evidence, and
   successful generated-asset bundles. (#344)

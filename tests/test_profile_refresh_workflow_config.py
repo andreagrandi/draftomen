@@ -17,11 +17,22 @@ def _run_block(text: str, step_name: str) -> str:
     marker = f"      - name: {step_name}\n"
     start = text.index(marker)
     run_start = text.index("        run: |\n", start) + len("        run: |\n")
-    end = text.find("\n      - name:", run_start)
-    if end == -1:
-        end = len(text)
+    step_end = text.find("\n      - name:", run_start)
+    job_match = re.search(r"\n  [A-Za-z0-9_-]+:\n", text[run_start:])
+    job_end = -1 if job_match is None else run_start + job_match.start()
+    end_candidates = [end for end in (step_end, job_end) if end >= 0]
+    end = min(end_candidates, default=len(text))
     lines = text[run_start:end].splitlines()
     return "\n".join(line[10:] for line in lines)
+
+
+def _job_block(text: str, job_name: str) -> str:
+    marker = f"  {job_name}:\n"
+    start = text.index(marker)
+    remainder = text[start + len(marker) :]
+    next_job = re.search(r"\n  [A-Za-z0-9_-]+:\n", remainder)
+    end = len(text) if next_job is None else start + len(marker) + next_job.start()
+    return text[start:end]
 
 
 def _run_shell(
@@ -178,20 +189,111 @@ def test_generation_shell_rejects_invalid_set_combinations(tmp_path: Path) -> No
         assert not Path(env["ARGS_FILE"]).exists()
 
 
-def test_read_only_checkout_and_ephemeral_bundle_policy() -> None:
+def test_workflow_permissions_and_ephemeral_bundle_policy() -> None:
     text = _text()
+    generate = _job_block(text, "generate")
+    publish = _job_block(text, "publish")
     assert "permissions:\n  contents: read\n" in text
-    assert "persist-credentials: false" in text
-    assert "enable-cache: false" in text
+    assert not re.search(r"(?m)^\s+(?:actions|contents|pull-requests): write$", generate)
+    assert "permissions:" not in generate
+    assert re.search(
+        r"permissions:\n"
+        r"      actions: read\n"
+        r"      contents: write\n"
+        r"      pull-requests: write\n",
+        publish,
+    )
+    assert generate.count("persist-credentials: false") == 1
+    assert publish.count("persist-credentials: false") == 1
+    assert generate.count("enable-cache: false") == 1
+    assert publish.count("enable-cache: false") == 1
     assert "actions/cache" not in text
     assert "retention-days: 7" in text
     assert "if-no-files-found: error" in text
     assert re.search(
         r"path: \$\{\{ runner\.temp \}\}/draftomen-profile-refresh-.*?/bundle",
-        text,
+        generate,
     )
-    for forbidden in ("cloudflare", "wrangler", "pull_request", "secrets.", "token:"):
-        assert forbidden not in text.lower()
+    assert "cloudflare" not in text.lower()
+    assert "wrangler" not in text.lower()
+    assert "secrets." not in text.lower()
+    assert "GH_TOKEN: ${{ github.token }}" in publish
+    assert "GH_TOKEN" not in generate
+
+
+def test_publish_job_is_master_only_noncancelled_and_serialized() -> None:
+    text = _text()
+    generate = _job_block(text, "generate")
+    publish = _job_block(text, "publish")
+    assert "outputs:\n      artifact-id: ${{ steps.upload.outputs.artifact-id }}" in generate
+    assert "needs: generate" in publish
+    assert re.search(
+        r"if: >-\n"
+        r"      \$\{\{ !cancelled\(\) &&\n"
+        r"          github\.ref == 'refs/heads/master' &&\n"
+        r"          needs\.generate\.outputs\.artifact-id != '' \}\}",
+        publish,
+    )
+    assert re.search(
+        r"concurrency:\n"
+        r"      group: profile-refresh-publish\n"
+        r"      cancel-in-progress: false\n",
+        publish,
+    )
+    assert "artifact-ids: ${{ needs.generate.outputs.artifact-id }}" in publish
+    assert "merge-multiple: true" in publish
+    assert "name: profile-refresh-generation-" not in publish
+
+
+def test_publish_checkout_and_cli_use_trusted_ids_and_quoted_arguments(
+    tmp_path: Path,
+) -> None:
+    text = _text()
+    publish = _job_block(text, "publish")
+    checkout = publish[publish.index("- name: Check out repository") :]
+    assert "ref: ${{ github.sha }}" in checkout
+    assert "fetch-depth: 0" in checkout
+    script = _run_block(text, "Publish generated website data")
+    bin_dir, args_file = _fake_uv(tmp_path)
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "ARGS_FILE": str(args_file),
+        "UV_STATUS": "0",
+        "BASE_COMMIT": "a" * 40,
+        "REPOSITORY": "owner/repo",
+        "RUN_ID": "123",
+        "ARTIFACT_ID": "456",
+        "RUN_URL": "https://github.com/owner/repo/actions/runs/123?x=a b&y=$HOME",
+        "REPO_ROOT": str(tmp_path / "checkout with spaces"),
+        "BUNDLE_DIR": str(tmp_path / "bundle;printf unsafe"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary $HOME.md"),
+    }
+    result = _run_shell(script, env=env, cwd=tmp_path)
+    assert result.returncode == 0
+    assert Path(env["ARGS_FILE"]).read_text(encoding="utf-8").splitlines() == [
+        "run",
+        "python",
+        "-m",
+        "scripts.profile_refresh_publication",
+        "--repo-root",
+        env["REPO_ROOT"],
+        "--bundle-dir",
+        env["BUNDLE_DIR"],
+        "--base-commit",
+        env["BASE_COMMIT"],
+        "--repository",
+        env["REPOSITORY"],
+        "--run-id",
+        env["RUN_ID"],
+        "--artifact-id",
+        env["ARTIFACT_ID"],
+        "--run-url",
+        env["RUN_URL"],
+        "--summary-file",
+        env["GITHUB_STEP_SUMMARY"],
+    ]
+    env["UV_STATUS"] = "9"
+    assert _run_shell(script, env=env, cwd=tmp_path).returncode == 9
 
 
 def test_failure_evidence_steps_are_always_attempted_and_status_is_propagated(
@@ -201,9 +303,9 @@ def test_failure_evidence_steps_are_always_attempted_and_status_is_propagated(
     generation = _run_block(text, "Generate website data")
     summary = _run_block(text, "Append generation summary")
     final = _run_block(text, "Propagate generation status")
+    assert "publish:" not in final
     assert "continue-on-error: true" in text[text.index("- name: Generate website data") :]
     assert text.count("if: ${{ always() }}") >= 3
-
     env, work_dir = _generation_env(tmp_path, event_name="workflow_dispatch", mode="all", uv_status="7")
     result = _run_shell(generation, env=env, cwd=tmp_path)
     assert result.returncode == 7
