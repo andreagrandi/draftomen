@@ -82,12 +82,7 @@ from draftomen.set_profile import (
     SetProfileError,
     load_scoring_profile,
 )
-from draftomen.seventeen import (
-    QUICK_DRAFT_FORMAT,
-    DownloadProgressCallback,
-    SeventeenLandsData,
-    SeventeenLandsDownloadProgress,
-)
+from draftomen.seventeen import QUICK_DRAFT_FORMAT
 
 PathInput: TypeAlias = str | PathLike[str]
 SnapshotPublisher: TypeAlias = Callable[["LiveSessionSnapshot"], None]
@@ -107,29 +102,6 @@ class SetCardDataLoader(Protocol):
         ...
 
 
-RatingsLoader: TypeAlias = Callable[[str], SeventeenLandsData]
-RatingsLoaderFactory: TypeAlias = Callable[[CardDatabase], RatingsLoader]
-
-
-class RatingsProgressLoader(Protocol):
-    def __call__(
-        self,
-        set_code: str,
-        progress_callback: DownloadProgressCallback,
-        *,
-        refresh: bool,
-    ) -> SeventeenLandsData:
-        """Load ratings while reporting request progress.
-        The callback receives download progress updates during loading.
-        """
-        ...
-
-
-RatingsProgressLoaderFactory: TypeAlias = Callable[
-    [CardDatabase],
-    RatingsProgressLoader,
-]
-RatingsCacheChecker: TypeAlias = Callable[[str], bool]
 
 LOG_SETUP_GUIDANCE = (
     "No draft or readable Player.log was detected. Enable Detailed Logs "
@@ -702,11 +674,6 @@ class LiveSession:
         snapshot_publisher: SnapshotPublisher | None = None,
         event_publisher: EventPublisher | None = None,
         ranking_mode: RankingMode = DEFAULT_RANKING_MODE,
-        ratings_loader: RatingsLoader | None = None,
-        ratings_loader_factory: RatingsLoaderFactory | None = None,
-        ratings_progress_loader: RatingsProgressLoader | None = None,
-        ratings_progress_loader_factory: RatingsProgressLoaderFactory | None = None,
-        ratings_cache_checker: RatingsCacheChecker | None = None,
         card_image_service: CardImageService | None = None,
         splash_enabled: bool = SPLASH.enabled_by_default,
         set_profile: SetProfile | None = None,
@@ -716,17 +683,6 @@ class LiveSession:
             raise ValueError(
                 "card_database and set_card_data_loader are mutually exclusive."
             )
-        configured_ratings_loaders = sum(
-            loader is not None
-            for loader in (
-                ratings_loader,
-                ratings_loader_factory,
-                ratings_progress_loader,
-                ratings_progress_loader_factory,
-            )
-        )
-        if configured_ratings_loaders > 1:
-            raise ValueError("Configure exactly one ratings loader or loader factory.")
 
         self.log_path = Path(log_path).expanduser().resolve(strict=False)
         initial_log_readable = is_log_readable(path=self.log_path)
@@ -756,18 +712,10 @@ class LiveSession:
         self._profile_client = profile_client
         self._set_profiles_by_set: dict[str, SetProfile | None] = {}
         self._set_profile_states_by_set: dict[str, SetProfileState] = {}
-        self._ratings_loader = ratings_loader
-        self._ratings_loader_factory = ratings_loader_factory
-        self._ratings_progress_loader = ratings_progress_loader
-        self._ratings_progress_loader_factory = ratings_progress_loader_factory
-        self._ratings_cache_checker = ratings_cache_checker
-        self._ratings_data_by_set: dict[str, SeventeenLandsData | None] = {}
         self._profile_refresh_lifecycle_identity: _ProfileLifecycleIdentity | None = None
 
         self._ratings_state_by_set: dict[str, RatingsState] = {}
-        self._ratings_progress_by_set: dict[str, ProgressState] = {}
         self._ratings_errors_by_set: dict[str, SessionError] = {}
-        self._loading_rating_sets: set[str] = set()
         self._active_set_code_value: str | None = None
         self._transition_generation = 0
         self._profile_refresh_generation = 0
@@ -801,7 +749,6 @@ class LiveSession:
         self._recent_pick_image_requests: list[CardImageRequest] = []
         self._recent_pick_image_states: dict[int, CardImageState] = {}
         self._recent_pick_pool_grp_ids: tuple[int, ...] | None = None
-        self._configure_ratings_loader_for_card_database()
         if card_database is not None:
             card_data = CardDataState(
                 phase=DataLoadPhase.READY,
@@ -1293,12 +1240,6 @@ class LiveSession:
         self._card_image_request = None
         return CardImageState()
 
-    def ratings_data(self, *, set_code: str) -> SeventeenLandsData | None:
-        """Return loaded ratings for presentation-adjacent legacy services.
-        The live session remains the only owner of ratings loading and caching.
-        """
-
-        return self._ratings_data_by_set.get(set_code.upper())
 
     def known_accounts(self) -> tuple[AccountIdentity, ...]:
         """Return known accounts from current profiles and persisted drafts.
@@ -1559,7 +1500,7 @@ class LiveSession:
         selection, build_sheet = build_deck_from_pool(
             pool=pool,
             card_database=self._card_database,
-            ratings_data=self._ratings_data_for_scoring(set_code=set_code),
+            ratings_data=None,
             forced_pair=command.pair_override,
             allow_splash=command.allow_splash,
             set_profile=self._set_profile,
@@ -1760,7 +1701,7 @@ class LiveSession:
         report = generate_backtest_report(
             state=state,
             card_database=self._card_database,
-            ratings_data=self._ratings_data_for_scoring(set_code=state.set_code),
+            ratings_data=None,
             ranking_mode=self._ranking_mode,
             splash_enabled=self._splash_enabled,
             set_profile=self._set_profile,
@@ -1903,36 +1844,8 @@ class LiveSession:
         return self.snapshot
 
     def _initial_ratings_state(self) -> RatingsState:
-        if self._ratings_configured():
-            return RatingsState(
-                phase=DataLoadPhase.IDLE,
-                message="17Lands ratings are ready to load.",
-            )
-
         return RatingsState()
 
-    def _ratings_configured(self) -> bool:
-        return any(
-            loader is not None
-            for loader in (
-                self._ratings_loader,
-                self._ratings_loader_factory,
-                self._ratings_progress_loader,
-                self._ratings_progress_loader_factory,
-            )
-        )
-
-    def _configure_ratings_loader_for_card_database(self) -> None:
-        database = self._card_database
-        if database is None:
-            return
-
-        if self._ratings_loader_factory is not None:
-            self._ratings_loader = self._ratings_loader_factory(database)
-        if self._ratings_progress_loader_factory is not None:
-            self._ratings_progress_loader = self._ratings_progress_loader_factory(
-                database
-            )
 
     @staticmethod
     def _validate_card_database_for_set(
@@ -1990,10 +1903,6 @@ class LiveSession:
             return
         self._card_database = None
         self._card_database_set_code = None
-        if self._ratings_loader_factory is not None:
-            self._ratings_loader = None
-        if self._ratings_progress_loader_factory is not None:
-            self._ratings_progress_loader = None
         self._publish(
             snapshot=replace(
                 self.snapshot,
@@ -2073,7 +1982,6 @@ class LiveSession:
 
         self._card_database = database
         self._card_database_set_code = set_code.upper()
-        self._configure_ratings_loader_for_card_database()
         self._publish(
             snapshot=replace(
                 self.snapshot,
@@ -2091,98 +1999,8 @@ class LiveSession:
         )
         if not self._transition_is_current(generation=transition_generation):
             return False
-        set_code = self._active_set_code()
-        if set_code is not None:
-            self._ensure_ratings_loaded(set_code=set_code)
-            if not self._transition_is_current(generation=transition_generation):
-                return False
         self._score_current_pack()
         return self._transition_is_current(generation=transition_generation)
-
-    def _ensure_ratings_loaded(self, *, set_code: str) -> None:
-        normalized_set_code = set_code.upper()
-        existing = self._ratings_state_by_set.get(normalized_set_code)
-        waiting_for_card_data = (
-            existing is not None
-            and existing.phase == DataLoadPhase.IDLE
-            and self._card_database is None
-        )
-        if existing is not None and (
-            existing.phase != DataLoadPhase.IDLE or waiting_for_card_data
-        ):
-            self._publish_active_ratings_state(state=existing)
-            return
-        with self._state_lock:
-            profile_managed = self._profile_managed_for_set_locked(
-                set_code=normalized_set_code
-            )
-            profile_ratings_state = self._ratings_state_by_set.get(
-                normalized_set_code
-            )
-        if profile_managed:
-            if profile_ratings_state is not None:
-                self._publish_active_ratings_state(state=profile_ratings_state)
-            return
-
-
-        if not self._ratings_configured():
-            state = RatingsState(
-                set_code=normalized_set_code,
-                phase=DataLoadPhase.UNAVAILABLE,
-                message=(
-                    f"17Lands ratings are unavailable for {normalized_set_code}; "
-                    "neutral-prior scores are active."
-                ),
-            )
-            self._ratings_state_by_set[normalized_set_code] = state
-            self._publish_active_ratings_state(state=state)
-            return
-
-        if (
-            self._card_database is None
-            and (
-                self._ratings_loader_factory is not None
-                or self._ratings_progress_loader_factory is not None
-            )
-        ):
-            state = RatingsState(
-                set_code=normalized_set_code,
-                phase=DataLoadPhase.IDLE,
-                message=(
-                    f"17Lands ratings for {normalized_set_code} are waiting for "
-                    "card metadata."
-                ),
-            )
-            self._ratings_state_by_set[normalized_set_code] = state
-            self._publish_active_ratings_state(state=state)
-            return
-
-        if self._ratings_cache_checker is not None:
-            try:
-                cached = self._ratings_cache_checker(normalized_set_code)
-            except Exception as error:
-                self._finish_ratings_load(
-                    set_code=normalized_set_code,
-                    ratings_data=None,
-                    error_message=str(error),
-                )
-                return
-
-            if not cached:
-                state = RatingsState(
-                    set_code=normalized_set_code,
-                    phase=DataLoadPhase.MISSING,
-                    message=(
-                        f"No local 17Lands data for {normalized_set_code}; "
-                        "neutral-prior scores are active."
-                    ),
-                )
-                self._ratings_data_by_set[normalized_set_code] = None
-                self._ratings_state_by_set[normalized_set_code] = state
-                self._publish_active_ratings_state(state=state)
-                return
-
-        self._load_ratings(set_code=normalized_set_code, refresh=False)
 
     def _request_ratings_download(self, *, set_code: str) -> None:
         normalized_set_code = set_code.upper()
@@ -2197,252 +2015,10 @@ class LiveSession:
                 )
             self._queue_profile_refresh_locked(force=True)
 
-    def _load_ratings(self, *, set_code: str, refresh: bool) -> None:
-        if self._ratings_loader is None and self._ratings_progress_loader is None:
-            previous_state = self._ratings_state_by_set.get(set_code)
-            state = RatingsState(
-                set_code=set_code,
-                phase=DataLoadPhase.UNAVAILABLE,
-                message=f"No 17Lands ratings loader is available for {set_code}.",
-                last_successful_update=(
-                    None
-                    if previous_state is None
-                    else previous_state.last_successful_update
-                ),
-            )
-            self._ratings_state_by_set[set_code] = state
-            self._publish_active_ratings_state(state=state)
-            return
-
-        if not self._begin_ratings_load(set_code=set_code):
-            return
-
-        ratings_data = None
-        error_message = None
-        try:
-            if self._ratings_progress_loader is not None:
-                ratings_data = self._ratings_progress_loader(
-                    set_code,
-                    lambda progress: self._update_ratings_progress(
-                        set_code=set_code,
-                        progress=progress,
-                    ),
-                    refresh=refresh,
-                )
-            elif self._ratings_loader is not None:
-                ratings_data = self._ratings_loader(set_code)
-        except Exception as error:
-            error_message = str(error)
-
-        self._finish_ratings_load(
-            set_code=set_code,
-            ratings_data=ratings_data,
-            error_message=error_message,
-        )
-
-    def _begin_ratings_load(self, *, set_code: str) -> bool:
-        with self._state_lock:
-            if self._profile_managed_for_set_locked(set_code=set_code):
-                return False
-            if set_code in self._loading_rating_sets:
-                return False
-
-            previous_state = self._ratings_state_by_set.get(set_code)
-            loading_state = RatingsState(
-                set_code=set_code,
-                phase=DataLoadPhase.LOADING,
-                message=f"Checking 17Lands data for {set_code}.",
-                last_successful_update=(
-                    None
-                    if previous_state is None
-                    else previous_state.last_successful_update
-                ),
-            )
-            loading_progress = ProgressState(
-                operation=OperationKind.RATINGS,
-                message=f"Checking 17Lands data for {set_code}",
-                completed=0,
-            )
-
-            self._loading_rating_sets.add(set_code)
-            self._ratings_state_by_set[set_code] = loading_state
-            self._ratings_progress_by_set[set_code] = loading_progress
-            self._ratings_errors_by_set.pop(set_code, None)
-            if self._active_set_code_value == set_code:
-                self._publish(
-                    snapshot=replace(
-                        self.snapshot,
-                        ratings=loading_state,
-                        progress=loading_progress,
-                        errors=self._without_operation_error(
-                            operation=OperationKind.RATINGS,
-                        ),
-                    )
-                )
-                self._score_current_pack()
-
-        return True
-
-    def _update_ratings_progress(
-        self,
-        *,
-        set_code: str,
-        progress: SeventeenLandsDownloadProgress,
-    ) -> None:
-        with self._state_lock:
-            if self._profile_managed_for_set_locked(set_code=set_code):
-                return
-            state = self._ratings_state_by_set.get(set_code)
-            if state is None or state.phase != DataLoadPhase.LOADING:
-                return
-
-            next_state = replace(state, message=progress.message)
-            next_progress = ProgressState(
-                operation=OperationKind.RATINGS,
-                message=progress.message,
-                completed=progress.completed_requests,
-                total=progress.total_requests,
-            )
-            self._ratings_state_by_set[set_code] = next_state
-            self._ratings_progress_by_set[set_code] = next_progress
-            if self._active_set_code_value != set_code:
-                return
-
-            self._publish(
-                snapshot=replace(
-                    self.snapshot,
-                    ratings=next_state,
-                    progress=next_progress,
-                )
-            )
 
 
-    def _finish_ratings_load(
-        self,
-        *,
-        set_code: str,
-        ratings_data: SeventeenLandsData | None,
-        error_message: str | None,
-    ) -> None:
-        with self._state_lock:
-            self._finish_ratings_load_locked(
-                set_code=set_code,
-                ratings_data=ratings_data,
-                error_message=error_message,
-            )
 
-    def _finish_ratings_load_locked(
-        self,
-        *,
-        set_code: str,
-        ratings_data: SeventeenLandsData | None,
-        error_message: str | None,
-    ) -> None:
-        self._loading_rating_sets.discard(set_code)
-        if self._profile_managed_for_set_locked(set_code=set_code):
-            self._ratings_progress_by_set.pop(set_code, None)
-            return
-        previous_state = self._ratings_state_by_set.get(set_code)
-        if ratings_data is None:
-            detail = error_message or "no ratings were returned"
-            session_error = SessionError(
-                error_id=self._ratings_error_id(set_code=set_code),
-                code="ratings_unavailable",
-                message=f"17Lands ratings failed for {set_code}: {detail}.",
-                recoverable=True,
-                operation=OperationKind.RATINGS,
-            )
-            state = RatingsState(
-                set_code=set_code,
-                phase=DataLoadPhase.FAILED,
-                message=(
-                    f"{session_error.message} Neutral-prior scores remain active."
-                ),
-                last_successful_update=(
-                    None
-                    if previous_state is None
-                    else previous_state.last_successful_update
-                ),
-            )
-            self._ratings_data_by_set[set_code] = None
-            self._ratings_state_by_set[set_code] = state
-            self._ratings_progress_by_set.pop(set_code, None)
-            self._ratings_errors_by_set[set_code] = session_error
-            if self._active_set_code_value != set_code:
-                return
 
-            failed_snapshot = replace(
-                self.snapshot,
-                ratings=state,
-                progress=None,
-                errors=self._with_error(error=session_error),
-            )
-            if not self._score_current_pack_locked(snapshot=failed_snapshot):
-                self._publish(snapshot=failed_snapshot)
-            return
-
-        if ratings_data.pair_card_ratings_loader is not None:
-            ratings_data = replace(ratings_data, pair_card_ratings_loader=None)
-        self._ratings_data_by_set[set_code] = ratings_data
-        state = RatingsState(
-            set_code=set_code,
-            phase=DataLoadPhase.READY,
-            message=f"17Lands ratings are ready for {set_code}.",
-            last_successful_update=_ratings_last_successful_update(
-                ratings_data=ratings_data
-            ),
-        )
-        self._ratings_state_by_set[set_code] = state
-        self._ratings_progress_by_set.pop(set_code, None)
-        self._ratings_errors_by_set.pop(set_code, None)
-        if self._active_set_code_value != set_code:
-            return
-
-        ready_snapshot = replace(
-            self.snapshot,
-            ratings=state,
-            progress=None,
-            errors=self._without_error_id(
-                error_id=self._ratings_error_id(set_code=set_code),
-            ),
-        )
-        if not self._score_current_pack_locked(snapshot=ready_snapshot):
-            self._publish(snapshot=ready_snapshot)
-
-    def _publish_active_ratings_state(self, *, state: RatingsState) -> None:
-        with self._state_lock:
-            set_code = state.set_code
-            if set_code != self._active_set_code_value:
-                return
-            if (
-                set_code is not None
-                and self._ratings_state_by_set.get(set_code) != state
-            ):
-                return
-
-            progress = (
-                None
-                if set_code is None
-                else self._ratings_progress_by_set.get(set_code)
-            )
-            errors = self._without_operation_error(
-                operation=OperationKind.RATINGS
-            )
-            ratings_error = (
-                None
-                if set_code is None
-                else self._ratings_errors_by_set.get(set_code)
-            )
-            if ratings_error is not None:
-                errors += (ratings_error,)
-            self._publish(
-                snapshot=replace(
-                    self.snapshot,
-                    ratings=state,
-                    progress=progress,
-                    errors=errors,
-                )
-            )
 
     def _card_image_focuses_current_build(
         self,
@@ -2477,7 +2053,7 @@ class LiveSession:
         ):
             return False
 
-        ratings_data = self._ratings_data_for_scoring(set_code=event.set_code)
+        ratings_data = None
         engine = PickEngine(
             ratings_data=ratings_data,
             splash_enabled=self._splash_enabled,
@@ -2966,12 +2542,6 @@ class LiveSession:
         self._ratings_state_by_set[normalized_set_code] = next_state
         return next_state
 
-    def _ratings_data_for_scoring(self, *, set_code: str) -> SeventeenLandsData | None:
-        normalized_set_code = set_code.upper()
-        with self._state_lock:
-            if self._profile_managed_for_set_locked(set_code=normalized_set_code):
-                return None
-            return self._ratings_data_by_set.get(normalized_set_code)
 
     def _change_ranking(self, *, ranking_mode: str) -> None:
         with self._state_lock:
@@ -3093,15 +2663,30 @@ class LiveSession:
             self._score_current_pack_locked()
 
     def _dismiss_error(self, *, error_id: str) -> None:
-        if not any(error.error_id == error_id for error in self.snapshot.errors):
-            raise ValueError(f"Unknown session error {error_id!r}.")
+        with self._state_lock:
+            if not any(error.error_id == error_id for error in self.snapshot.errors):
+                raise ValueError(f"Unknown session error {error_id!r}.")
 
-        self._publish(
-            snapshot=replace(
-                self.snapshot,
-                errors=self._without_error_id(error_id=error_id),
+            error = next(
+                error
+                for error in self.snapshot.errors
+                if error.error_id == error_id
             )
-        )
+            if error.operation is OperationKind.RATINGS:
+                prefix = "ratings:"
+                if error_id.startswith(prefix):
+                    self._ratings_errors_by_set.pop(
+                        error_id.removeprefix(prefix).upper(),
+                        None,
+                    )
+
+            self._publish(
+                snapshot=replace(
+                    self.snapshot,
+                    errors=self._without_error_id(error_id=error_id),
+                )
+            )
+
 
     def _retry_error(self, *, error_id: str) -> None:
         error = next(
@@ -3165,6 +2750,42 @@ class LiveSession:
 
     def _ratings_error_id(self, *, set_code: str) -> str:
         return f"ratings:{set_code.upper()}"
+
+
+    def _project_ratings_errors_locked(
+        self,
+        *,
+        errors: tuple[SessionError, ...],
+    ) -> tuple[SessionError, ...]:
+        active_set_code = self._active_set_code_value
+        active_error = (
+            None
+            if active_set_code is None
+            else self._ratings_errors_by_set.get(active_set_code)
+        )
+        ratings_count = 0
+        matching_count = 0
+        for error in errors:
+            if error.operation is not OperationKind.RATINGS:
+                continue
+            ratings_count += 1
+            if active_error is not None and error == active_error:
+                matching_count += 1
+
+        if active_error is not None and ratings_count == 1 and matching_count == 1:
+            return errors
+        if active_error is None and ratings_count == 0:
+            return errors
+        if active_error is not None and ratings_count == 0:
+            return errors + (active_error,)
+
+        projected = tuple(
+            error for error in errors if error.operation is not OperationKind.RATINGS
+        )
+        if active_error is None:
+            return projected
+        return projected + (active_error,)
+
 
     def _active_set_code(self) -> str | None:
         with self._state_lock:
@@ -3238,14 +2859,6 @@ class LiveSession:
             return self._configured_set_profile, "injected"
         return self._load_local_profile_for_set(set_code=normalized_set_code)
 
-    def _profile_managed_for_set_locked(self, *, set_code: str) -> bool:
-        normalized_set_code = set_code.upper()
-        if self._configured_set_profile is not None:
-            return self._configured_set_profile.set_code.upper() == normalized_set_code
-        if self._profile_client is not None and normalized_set_code in self._set_profiles_by_set:
-            return True
-        profile = self._set_profiles_by_set.get(normalized_set_code)
-        return profile is not None and profile.maturity is not ProfileMaturity.GENERIC
 
     @staticmethod
     def _ratings_state_for_profile(
@@ -3326,26 +2939,11 @@ class LiveSession:
             )
         )
         self._set_profile_states_by_set[normalized_set_code] = profile_state
-        if (
-            profile.maturity is ProfileMaturity.GENERIC
-            and self._configured_set_profile is None
-            and self._profile_client is None
-        ):
-            ratings_state = self._ratings_state_by_set.get(
-                normalized_set_code,
-                replace(
-                    self._initial_ratings_state(),
-                    set_code=normalized_set_code,
-                ),
-            )
-        else:
-            ratings_state = self._ratings_state_for_profile(
-                profile=profile,
-                set_code=normalized_set_code,
-            )
+        ratings_state = self._ratings_state_for_profile(
+            profile=profile,
+            set_code=normalized_set_code,
+        )
         self._ratings_state_by_set[normalized_set_code] = ratings_state
-        if self._profile_managed_for_set_locked(set_code=normalized_set_code):
-            self._ratings_data_by_set[normalized_set_code] = None
         return profile_state, ratings_state, authority_changed
 
     def _activate_set_code_locked(
@@ -3815,9 +3413,6 @@ class LiveSession:
                 return
         if not self._transition_is_current(generation=selection_generation):
             return
-        self._ensure_ratings_loaded(set_code=state.set_code)
-        if not self._transition_is_current(generation=selection_generation):
-            return
         self._score_current_pack()
 
     def _discard_previous_login_account_context(self) -> None:
@@ -3898,11 +3493,6 @@ class LiveSession:
                 transition_generation=transition_generation,
             ):
                 return
-            if (
-                self._card_database is not None
-                and self._transition_is_current(generation=transition_generation)
-            ):
-                self._ensure_ratings_loaded(set_code=event.set_code)
             return
 
         if isinstance(event, PackOfferedEvent):
@@ -3916,9 +3506,6 @@ class LiveSession:
             )
             if transition_generation is None:
                 return
-            if not self._transition_is_current(generation=transition_generation):
-                return
-            self._ensure_ratings_loaded(set_code=event.set_code)
             if not self._transition_is_current(generation=transition_generation):
                 return
             self._score_current_pack()
@@ -3951,7 +3538,6 @@ class LiveSession:
             )
             if transition_generation is None:
                 return
-            self._ensure_ratings_loaded(set_code=event.set_code)
 
     def _consume_accountless_event(self, *, event: DraftEvent) -> None:
         prepared_profile = self._prepare_set_profile(set_code=event.set_code)
@@ -4030,15 +3616,10 @@ class LiveSession:
                 transition_generation=transition_generation,
             ):
                 return
-            if self._card_database is not None:
-                self._ensure_ratings_loaded(set_code=event.set_code)
         elif isinstance(event, PackOfferedEvent):
-            self._ensure_ratings_loaded(set_code=event.set_code)
             if not self._transition_is_current(generation=transition_generation):
                 return
             self._score_current_pack()
-        elif isinstance(event, DraftCompletedEvent):
-            self._ensure_ratings_loaded(set_code=event.set_code)
 
     def _publish_accountless_state(
         self,
@@ -4203,11 +3784,6 @@ class LiveSession:
                 transition_generation=transition_generation,
             ):
                 return
-        if (
-            self._card_database is not None
-            and self._transition_is_current(generation=transition_generation)
-        ):
-            self._ensure_ratings_loaded(set_code=normalized_set_code)
 
     def _choose_account(self, *, account_id: str) -> None:
         known_account_ids = {account.account_id for account in self._known_accounts()}
@@ -4548,6 +4124,7 @@ class LiveSession:
                 snapshot,
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,
+                errors=self._project_ratings_errors_locked(errors=snapshot.errors),
             )
             pack_key = self._recommendation_image_pack_key(
                 pack=self._current_pack_event,
@@ -4649,30 +4226,6 @@ def _profile_refresh_profile_is_adoptable(
         return outcome == ProfileRefreshOutcome.UPDATED.value
     return True
 
-
-def _ratings_last_successful_update(
-    *, ratings_data: SeventeenLandsData
-) -> str | None:
-    """Return primary ratings freshness as a QML-safe UTC ISO-8601 string.
-    Invalid or naive 17Lands cache metadata is treated as never updated.
-    """
-
-    fetched_at = getattr(
-        getattr(ratings_data, "primary", None),
-        "fetched_at",
-        None,
-    )
-    if (
-        not isinstance(fetched_at, datetime)
-        or fetched_at.tzinfo is None
-        or fetched_at.utcoffset() is None
-    ):
-        return None
-
-    try:
-        return fetched_at.astimezone(UTC).isoformat()
-    except (OverflowError, OSError, TypeError, ValueError):
-        return None
 
 
 def _last_successful_update(*, database: CardDatabase) -> str | None:

@@ -5,6 +5,24 @@
 - Report profile-refresh publication as successful after verifying the generated
   commit reached `master`, even when GitHub PR merge metadata is delayed or
   unavailable; keep master verification failures fatal.
+- Isolate recoverable ratings errors to the active set at snapshot publication:
+  hide inactive-set errors while retaining nondismissed errors for return,
+  remove dismissed errors, and make Retry queue the active set's forced
+  hosted-profile refresh without disturbing unrelated operation errors.
+- Remove direct provider-loader callbacks, cache/progress machinery, and raw
+  ratings surfaces from normal terminal and native live factories; TUI,
+  plain-watch, CLI `watch`, and Qt now use the shared hosted-profile lifecycle
+  while preserving explicit manifest overrides. The default URL and native
+  ratings-presentation work owned by #353 and #354 remain outside this change.
+  (#370, #371)
+- Complete the normal `LiveSession` provider cutover: profile state is the sole
+  live ratings authority, cache-first startup and deterministic no-provider
+  scoring/build/backtest fallback remain intact, and explicit producer plus
+  separate offline/domain cached-provider workflows remain supported. (#373)
+- Migrate shared-session regression fixtures to profile-backed inputs or
+  deterministic fallback and carry the lifecycle contract through end-to-end
+  adapter workflows, including refresh adoption, failure retention, and
+  shutdown guards. (#372, #374)
 - Propagate explicit hosted-profile refresh requests with `force=True`, bypassing
   only the manifest TTL while preserving offline, authority, validation, and
   non-regression safeguards and usable ratings during refresh. (#367)

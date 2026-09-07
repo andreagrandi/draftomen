@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from os import PathLike
@@ -39,10 +39,7 @@ from draftomen.session import (
     RequestBuild,
     SetCardDataLoader,
 )
-from draftomen.seventeen import SeventeenLandsData
-
 PathInput: TypeAlias = str | PathLike[str]
-RatingsLoader: TypeAlias = Callable[[str], SeventeenLandsData]
 
 
 class PlainLogWatcher:
@@ -60,7 +57,6 @@ class PlainLogWatcher:
         profile_client: ProfileClient | None = None,
         poll_interval: float = POLL_INTERVAL_SECONDS,
         previous_log_path: PathInput | None = None,
-        ratings_loader: RatingsLoader | None = None,
         splash_enabled: bool = True,
     ) -> None:
         if card_database is None and set_card_data_loader is None:
@@ -95,7 +91,6 @@ class PlainLogWatcher:
             previous_log_path=previous_log_path,
             event_publisher=self._capture_event,
             profile_client=profile_client,
-            ratings_loader=ratings_loader,
             splash_enabled=splash_enabled,
         )
         self.log_path = self.session.log_path
@@ -417,7 +412,6 @@ def run_plain_watch(
     once: bool = False,
     startup_scan: bool = False,
     stop_after_empty_polls: int | None = None,
-    ratings_loader: RatingsLoader | None = None,
     splash_enabled: bool = True,
     profile_client: ProfileClient | None = None,
 ) -> int:
@@ -434,7 +428,6 @@ def run_plain_watch(
         set_card_data_loader=set_card_data_loader,
         app_dir=app_dir,
         poll_interval=poll_interval,
-        ratings_loader=ratings_loader,
         splash_enabled=splash_enabled,
         profile_client=profile_client,
     )

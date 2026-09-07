@@ -57,13 +57,7 @@ from draftomen.set_profile import (
     load_set_profile,
     set_profile_path,
 )
-from draftomen.seventeen import (
-    QUICK_DRAFT_FORMAT,
-    RatingSampleCounts,
-    SeventeenCardStats,
-    SeventeenLandsData,
-    SeventeenLandsFormatData,
-)
+from draftomen.seventeen import QUICK_DRAFT_FORMAT
 from draftomen.splash import SplashAssessment
 from draftomen.tui import (
     MANA_CARD_TYPE_GLYPHS,
@@ -169,6 +163,38 @@ async def _assert_tui_auto_loads_conventional_profile(tmp_path: Path) -> None:
                 == scored_card.contextual_profile_confidence
             )
 
+
+def test_tui_pre_draft_readiness_uses_cached_profile_snapshot(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(
+        _assert_tui_pre_draft_readiness_uses_cached_profile_snapshot(
+            tmp_path=tmp_path,
+        )
+    )
+
+
+async def _assert_tui_pre_draft_readiness_uses_cached_profile_snapshot(
+    tmp_path: Path,
+) -> None:
+    _write_profile_with_card_ratings(
+        tmp_path=tmp_path,
+        card_ratings=_graded_profile_ratings(),
+    )
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        app.process_lines(lines=_first_pack_lines()[:3])
+        await pilot.pause()
+
+        snapshot = app.session.snapshot
+        readiness = app.query_one("#pre-draft-readiness", Static)
+        assert snapshot.set_profile.phase is DataLoadPhase.READY
+        assert snapshot.ratings.phase is DataLoadPhase.READY
+        assert snapshot.ratings.set_code == "MSH"
+        assert readiness.display
+
+
 def test_tui_profile_refresh_propagates_force_and_completes_through_session(
     tmp_path: Path,
 ) -> None:
@@ -182,6 +208,8 @@ def test_tui_profile_refresh_propagates_force_and_completes_through_session(
 async def _assert_tui_profile_refresh_propagates_force_and_completes_through_session(
     tmp_path: Path,
 ) -> None:
+    profile = _profile_with_card_ratings(card_ratings=_graded_profile_ratings())
+
     class ProfileClientFake:
         manifest_url = "https://profiles.example.test/manifest.json"
         network_policy = "allowed"
@@ -209,12 +237,10 @@ async def _assert_tui_profile_refresh_propagates_force_and_completes_through_ses
             *,
             force: bool,
         ) -> ProfileRefreshResult:
+            del set_code, event_format
             self.calls.append(force)
             return ProfileRefreshResult(
-                profile=SetProfile.generic(
-                    set_code=set_code,
-                    event_format=event_format,
-                ),
+                profile=profile,
                 outcome=ProfileRefreshOutcome.UPDATED,
             )
 
@@ -293,7 +319,7 @@ async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
         profile,
         card_ratings=(
             CardRating(
-                card_key="grp_id:104894",
+                card_key="arena_id:104894",
                 gih_win_rate=RateEstimate(
                     raw_value=0.90,
                     value=0.90,
@@ -304,7 +330,7 @@ async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
                 average_last_seen_at=3.0,
             ),
             CardRating(
-                card_key="grp_id:104976",
+                card_key="arena_id:104976",
                 gih_win_rate=RateEstimate(
                     raw_value=0.10,
                     value=0.10,
@@ -520,51 +546,6 @@ async def _assert_tui_audit_records_visible_ranking(tmp_path: Path) -> None:
     assert choice["recommendation_followed"] is False
 
 
-def test_tui_shows_one_set_reliability_value_only_before_p1p1(
-    tmp_path: Path,
-) -> None:
-    asyncio.run(_assert_one_set_reliability_value_only_before_p1p1(tmp_path=tmp_path))
-
-
-async def _assert_one_set_reliability_value_only_before_p1p1(
-    tmp_path: Path,
-) -> None:
-    app = _tui_app(tmp_path=tmp_path, ratings_loader=_graded_ratings_data)
-    expected_reliability = (
-        "17Lands reliability for MSH — Marvel Super Heroes Quick Draft: "
-        "Medium — 58/100"
-    )
-
-    async with app.run_test(size=(120, 24)) as pilot:
-        app.process_lines(lines=_first_pack_lines()[:3])
-        readiness = app.query_one("#pre-draft-readiness", Static)
-        for _ in range(40):
-            await pilot.pause(0.05)
-            readiness_text = str(readiness.render())
-            if expected_reliability in readiness_text:
-                break
-
-        readiness_text = str(readiness.render())
-        assert readiness.display
-        assert expected_reliability in readiness_text
-        assert readiness_text.count("/100") == 1
-        table = app.query_one("#pack-table", DataTable)
-        assert table.display is False
-
-        app.process_lines(lines=_first_pack_lines()[3:])
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if readiness.display is False and table.display and table.row_count == 14:
-                break
-
-        assert readiness.display is False
-        assert table.display
-        assert table.row_count == 14
-        assert "/100" not in _status_text(app=app)
-        assert all(
-            "/100" not in str(table.get_row_at(index))
-            for index in range(table.row_count)
-        )
 
 
 def test_tui_ignores_pre_draft_detection_from_historical_scan(
@@ -574,7 +555,7 @@ def test_tui_ignores_pre_draft_detection_from_historical_scan(
 
 
 async def _assert_historical_detection_is_ignored(tmp_path: Path) -> None:
-    app = _tui_app(tmp_path=tmp_path, ratings_loader=_graded_ratings_data)
+    app = _tui_app(tmp_path=tmp_path)
 
     async with app.run_test(size=(120, 24)) as pilot:
         app.process_lines(
@@ -586,7 +567,6 @@ async def _assert_historical_detection_is_ignored(tmp_path: Path) -> None:
         readiness = app.query_one("#pre-draft-readiness", Static)
         assert readiness.display
         assert "Quick Draft set not detected yet" in str(readiness.render())
-        assert app.loading_rating_sets == frozenset()
 
 
 async def _assert_fixture_stream_updates_pack_panel(tmp_path: Path) -> None:
@@ -638,32 +618,6 @@ def test_tui_account_indicator_uses_login_display_name_without_auth_screen_name(
         )
     )
 
-
-def test_tui_explains_when_cached_17lands_samples_are_not_usable(
-    tmp_path: Path,
-) -> None:
-    asyncio.run(_assert_cached_thin_ratings_are_explained(tmp_path=tmp_path))
-
-
-async def _assert_cached_thin_ratings_are_explained(tmp_path: Path) -> None:
-    app = _tui_app(tmp_path=tmp_path, ratings_loader=_thin_ratings_data)
-
-    async with app.run_test(size=(140, 30)) as pilot:
-        app.process_lines(lines=_first_pack_lines())
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if (
-                app.session.snapshot.ratings.phase == DataLoadPhase.READY
-                and app.session.snapshot.ratings.total_cards == 14
-            ):
-                break
-
-        assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
-        assert app.session.snapshot.ratings.total_cards == 14
-        assert (
-            "Data: neutral prior (17Lands cached; samples unavailable or thin)"
-            in _status_text(app=app)
-        )
 
 
 async def _assert_account_indicator_uses_login_display_name_without_auth_screen_name(
@@ -1330,21 +1284,24 @@ async def _assert_accountless_live_path_completes(tmp_path: Path) -> None:
         assert not state_root.exists() or not tuple(state_root.rglob("*.json"))
 
 
-def test_tui_pack_rows_show_17lands_win_rate_grade_and_do_score(
+def test_tui_pack_rows_show_profile_win_rate_and_do_score(
     tmp_path: Path,
 ) -> None:
-    asyncio.run(_assert_pack_rows_show_17lands_stats(tmp_path=tmp_path))
+    asyncio.run(_assert_pack_rows_show_profile_stats(tmp_path=tmp_path))
 
 
-async def _assert_pack_rows_show_17lands_stats(tmp_path: Path) -> None:
-    app = _tui_app(tmp_path=tmp_path, ratings_loader=_graded_ratings_data)
+async def _assert_pack_rows_show_profile_stats(tmp_path: Path) -> None:
+    _write_profile_with_card_ratings(
+        tmp_path=tmp_path,
+        card_ratings=_graded_profile_ratings(),
+    )
+    app = _tui_app(tmp_path=tmp_path)
 
     async with app.run_test(size=(140, 24)) as pilot:
         app.process_lines(lines=_first_pack_lines())
         table = app.query_one("#pack-table", DataTable)
         card_index = app.visible_column_keys.index("card")
         win_rate_index = app.visible_column_keys.index("win_rate")
-        grade_index = app.visible_column_keys.index("grade")
         score_index = app.visible_column_keys.index("score")
         split_card_row: list[object] | None = None
         for _ in range(40):
@@ -1372,7 +1329,6 @@ async def _assert_pack_rows_show_17lands_stats(tmp_path: Path) -> None:
         assert split_card_row is not None
 
         assert str(split_card_row[win_rate_index]) == "62.0%"
-        assert str(split_card_row[grade_index]) == "B+"
         assert str(split_card_row[score_index]).isdigit()
 
 def test_tui_render_ignores_publications_during_screen_teardown(
@@ -1396,7 +1352,11 @@ def test_tui_status_shows_close_pick_confidence(tmp_path: Path) -> None:
 
 
 async def _assert_status_shows_close_pick_confidence(tmp_path: Path) -> None:
-    app = _tui_app(tmp_path=tmp_path, ratings_loader=_close_pick_ratings_data)
+    _write_profile_with_card_ratings(
+        tmp_path=tmp_path,
+        card_ratings=_close_pick_profile_ratings(),
+    )
+    app = _tui_app(tmp_path=tmp_path)
 
     async with app.run_test(size=(150, 24)) as pilot:
         app.process_lines(lines=_first_pack_lines())
@@ -2317,17 +2277,14 @@ async def _assert_startup_recovery_serializes_polling(tmp_path: Path) -> None:
 
     def card_loader(set_code: str, *, allow_network: bool) -> CardDatabase:
         card_calls.append((set_code, allow_network))
-        return _fixture_card_database()
-
-    def slow_loader(set_code: str) -> SeventeenLandsData:
         started.set()
-        release.wait(timeout=5.0)
-        return _graded_ratings_data(set_code)
+        if not release.wait(timeout=5.0):
+            raise TimeoutError("Test did not release card-data loader.")
+        return _fixture_card_database()
 
     app = _tui_app(
         tmp_path=tmp_path,
         set_card_data_loader=card_loader,
-        ratings_loader=slow_loader,
         poll_enabled=True,
         startup_scan=True,
         poll_interval=0.01,
@@ -2489,13 +2446,50 @@ def test_tui_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
 async def _assert_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
     started = threading.Event()
     release = threading.Event()
+    profile = _profile_with_card_ratings(card_ratings=_graded_profile_ratings())
 
-    def slow_loader(set_code: str) -> SeventeenLandsData:
-        started.set()
-        release.wait(timeout=5.0)
-        return _ratings_data(set_code=set_code)
+    class ProfileClientFake:
+        manifest_url = "https://profiles.example.test/manifest.json"
+        network_policy = "allowed"
 
-    app = _tui_app(tmp_path=tmp_path, ratings_loader=slow_loader)
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def load_cached(
+            self,
+            set_code: str,
+            event_format: str,
+        ) -> SetProfileLoadResult:
+            return SetProfileLoadResult(
+                profile=SetProfile.generic(
+                    set_code=set_code,
+                    event_format=event_format,
+                ),
+                source="generic",
+            )
+
+        def refresh(
+            self,
+            set_code: str,
+            event_format: str,
+            *,
+            force: bool,
+        ) -> ProfileRefreshResult:
+            del set_code, event_format
+            self.calls.append(force)
+            started.set()
+            if not release.wait(timeout=5.0):
+                raise TimeoutError("Test did not release hosted profile refresh.")
+            return ProfileRefreshResult(
+                profile=profile,
+                outcome=ProfileRefreshOutcome.UPDATED,
+            )
+
+    client = ProfileClientFake()
+    app = _tui_app(
+        tmp_path=tmp_path,
+        profile_client=cast(ProfileClient, client),
+    )
 
     async with app.run_test(size=(120, 24)) as pilot:
         try:
@@ -2506,21 +2500,24 @@ async def _assert_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
 
             assert elapsed < 0.25
             assert await asyncio.to_thread(started.wait, 0.5)
-            assert "MSH" in app.loading_rating_sets
-            assert app.session.snapshot.ratings.phase == DataLoadPhase.LOADING
-            assert app.session.snapshot.progress is not None
-            assert app.session.snapshot.progress.operation == OperationKind.RATINGS
+            assert app.profile_refresh_in_flight is not None
+            assert app.session.profile_refresh_request() is not None
 
             await pilot.press("s")
             assert app.sort_mode == "win_rate"
 
             release.set()
-            for _ in range(10):
+            for _ in range(40):
                 await pilot.pause(0.05)
-                if "MSH" not in app.loading_rating_sets:
+                if (
+                    app.profile_refresh_in_flight is None
+                    and app.session.profile_refresh_request() is None
+                ):
                     break
 
-            assert "MSH" not in app.loading_rating_sets
+            assert client.calls == [False]
+            assert app.profile_refresh_in_flight is None
+            assert app.session.profile_refresh_request() is None
             assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
             assert app.session.snapshot.progress is None
         finally:
@@ -2559,7 +2556,11 @@ def test_tui_clears_automatic_ratings_progress_notice_when_ready(
 
 
 async def _assert_automatic_ratings_notice_clears(tmp_path: Path) -> None:
-    app = _tui_app(tmp_path=tmp_path, ratings_loader=_graded_ratings_data)
+    _write_profile_with_card_ratings(
+        tmp_path=tmp_path,
+        card_ratings=_graded_profile_ratings(),
+    )
+    app = _tui_app(tmp_path=tmp_path)
 
     async with app.run_test(size=(120, 30)) as pilot:
         app.process_lines(lines=_first_pack_lines())
@@ -2597,7 +2598,7 @@ async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
         profile,
         card_ratings=(
             CardRating(
-                card_key="grp_id:104894",
+                card_key="arena_id:104894",
                 gih_win_rate=RateEstimate(
                     raw_value=0.90,
                     value=0.90,
@@ -2608,7 +2609,7 @@ async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
                 average_last_seen_at=3.0,
             ),
             CardRating(
-                card_key="grp_id:104976",
+                card_key="arena_id:104976",
                 gih_win_rate=RateEstimate(
                     raw_value=0.10,
                     value=0.10,
@@ -3017,8 +3018,6 @@ def _tui_app(
     card_database: CardDatabase | None = None,
     profile_client: ProfileClient | None = None,
     set_card_data_loader: SetCardDataLoader | None = None,
-    ratings_loader: Callable[[str], SeventeenLandsData] | None = None,
-    ratings_cache_checker: Callable[[str], bool] | None = None,
     image_preview_enabled: bool | None = None,
     mana_icons_enabled: bool = False,
     card_image_opener: Callable[..., object] | None = None,
@@ -3037,8 +3036,6 @@ def _tui_app(
         set_card_data_loader=set_card_data_loader,
         app_dir=tmp_path / "app",
         profile_client=profile_client,
-        ratings_loader=ratings_loader,
-        ratings_cache_checker=ratings_cache_checker,
         poll_enabled=poll_enabled,
         startup_scan=startup_scan,
         poll_interval=poll_interval,
@@ -3189,173 +3186,75 @@ def _card_cells(*, rows: list[list[object]]) -> list[str]:
     return [str(row[4]) for row in rows]
 
 
-def _close_pick_ratings_data(set_code: str) -> SeventeenLandsData:
-    primary = SeventeenLandsFormatData(
-        set_code=set_code,
-        event_format=QUICK_DRAFT_FORMAT,
-        fetched_at=datetime(2999, 1, 1, tzinfo=UTC),
-        card_ratings={
-            104894: _stats(
-                grp_id=104894,
-                name="Fixture Split Card",
-                color="WU",
-                gih=0.605,
-                games_in_hand=900,
-                alsa=1.2,
-            ),
-            105097: _stats(
-                grp_id=105097,
-                name="Fixture Spider",
-                color="G",
-                gih=0.604,
-                games_in_hand=900,
-                alsa=2.1,
-            ),
-        },
-        pair_win_rates={},
-    )
-    return SeventeenLandsData(
-        set_code=set_code,
-        requested_format=QUICK_DRAFT_FORMAT,
-        primary=primary,
-        fallback=None,
-        thin_sample_minimum=500,
-    )
-
-
-def _thin_ratings_data(set_code: str) -> SeventeenLandsData:
-    primary = SeventeenLandsFormatData(
-        set_code=set_code,
-        event_format=QUICK_DRAFT_FORMAT,
-        fetched_at=datetime(2999, 1, 1, tzinfo=UTC),
-        card_ratings={
-            104894: _stats(
-                grp_id=104894,
-                name="Fixture Split Card",
-                color="WU",
-                gih=None,
-                games_in_hand=100,
-                alsa=1.2,
-            ),
-        },
-        pair_win_rates={},
-    )
-    return SeventeenLandsData(
-        set_code=set_code,
-        requested_format=QUICK_DRAFT_FORMAT,
-        primary=primary,
-        fallback=None,
-        thin_sample_minimum=500,
-    )
-
-
-def _graded_ratings_data(set_code: str) -> SeventeenLandsData:
-    primary = SeventeenLandsFormatData(
-        set_code=set_code,
-        event_format=QUICK_DRAFT_FORMAT,
-        fetched_at=datetime(2999, 1, 1, tzinfo=UTC),
-        card_ratings={
-            104894: _stats(
-                grp_id=104894,
-                name="Fixture Split Card",
-                color="WU",
-                gih=0.62,
-                games_in_hand=900,
-                alsa=1.2,
-            ),
-            105097: _stats(
-                grp_id=105097,
-                name="Fixture Spider",
-                color="G",
-                gih=0.60,
-                games_in_hand=900,
-                alsa=2.1,
-            ),
-            104976: _stats(
-                grp_id=104976,
-                name="Fixture Red Card",
-                color="R",
-                gih=0.56,
-                games_in_hand=900,
-                alsa=4.0,
-            ),
-            105080: _stats(
-                grp_id=105080,
-                name="Fixture Black Card",
-                color="B",
-                gih=0.54,
-                games_in_hand=900,
-                alsa=5.0,
-            ),
-            104995: _stats(
-                grp_id=104995,
-                name="Fixture Filler Card",
-                color="C",
-                gih=0.52,
-                games_in_hand=900,
-                alsa=6.0,
-            ),
-        },
-        pair_win_rates={},
-    )
-    return SeventeenLandsData(
-        set_code=set_code,
-        requested_format=QUICK_DRAFT_FORMAT,
-        primary=primary,
-        fallback=None,
-        thin_sample_minimum=500,
-    )
-
-
-def _ratings_data(*, set_code: str) -> SeventeenLandsData:
-    primary = SeventeenLandsFormatData(
-        set_code=set_code,
-        event_format=QUICK_DRAFT_FORMAT,
-        fetched_at=datetime(2999, 1, 1, tzinfo=UTC),
-        card_ratings={
-            104894: _stats(
-                grp_id=104894,
-                name="Fixture Split Card",
-                color="WU",
-                gih=0.62,
-                games_in_hand=900,
-                alsa=1.2,
-            ),
-        },
-        pair_win_rates={},
-    )
-    return SeventeenLandsData(
-        set_code=set_code,
-        requested_format=QUICK_DRAFT_FORMAT,
-        primary=primary,
-        fallback=None,
-        thin_sample_minimum=500,
-    )
-
-
-def _stats(
+def _write_profile_with_card_ratings(
     *,
-    grp_id: int,
-    name: str,
-    color: str,
-    gih: float | None,
-    games_in_hand: int,
-    alsa: float | None,
-) -> SeventeenCardStats:
-    return SeventeenCardStats(
-        grp_id=grp_id,
-        name=name,
-        color=color,
-        rarity="common",
-        average_last_seen_at=alsa,
-        gih_win_rate=gih,
-        opening_hand_win_rate=None,
-        drawn_improvement_win_rate=None,
-        sample_counts=RatingSampleCounts(
-            seen=1000,
-            picked=500,
-            games_played=games_in_hand,
-            opening_hand=200,
-            games_in_hand=games_in_hand,
+    tmp_path: Path,
+    card_ratings: tuple[CardRating, ...],
+) -> SetProfile:
+    profile = _profile_with_card_ratings(card_ratings=card_ratings)
+    dump_set_profile(
+        profile,
+        set_profile_path(
+            set_code="MSH",
+            event_format=QUICK_DRAFT_FORMAT,
+            app_dir=tmp_path / "app",
         ),
+    )
+    return profile
+
+
+def _profile_with_card_ratings(
+    *,
+    card_ratings: tuple[CardRating, ...],
+) -> SetProfile:
+    profile = load_set_profile(
+        Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json",
+        expected_set_code="TST",
+        expected_format=QUICK_DRAFT_FORMAT,
+    )
+    role_profile = profile.role_profile
+    if role_profile is not None:
+        role_profile = replace(role_profile, set_code="MSH")
+    return replace(
+        profile,
+        set_code="MSH",
+        role_profile=role_profile,
+        card_ratings=card_ratings,
+    )
+
+
+def _graded_profile_ratings() -> tuple[CardRating, ...]:
+    return (
+        _card_rating(card_key="arena_id:104894", gih=0.62, samples=2_000, alsa=1.2),
+        _card_rating(card_key="arena_id:105097", gih=0.60, samples=2_000, alsa=2.1),
+        _card_rating(card_key="arena_id:104976", gih=0.56, samples=2_000, alsa=4.0),
+        _card_rating(card_key="arena_id:105080", gih=0.54, samples=2_000, alsa=5.0),
+        _card_rating(card_key="arena_id:104995", gih=0.52, samples=2_000, alsa=6.0),
+    )
+
+
+def _close_pick_profile_ratings() -> tuple[CardRating, ...]:
+    return (
+        _card_rating(card_key="arena_id:104894", gih=0.605, samples=900, alsa=1.2),
+        _card_rating(card_key="arena_id:105097", gih=0.604, samples=900, alsa=2.1),
+    )
+
+
+def _card_rating(
+    *,
+    card_key: str,
+    gih: float,
+    samples: int,
+    alsa: float,
+) -> CardRating:
+    return CardRating(
+        card_key=card_key,
+        gih_win_rate=RateEstimate(
+            raw_value=gih,
+            value=gih,
+            samples=samples,
+            prior_value=0.50,
+            source="17lands",
+        ),
+        average_last_seen_at=alsa,
     )
