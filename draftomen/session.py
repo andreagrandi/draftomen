@@ -49,11 +49,13 @@ from draftomen.logfollow import LogFollower, is_log_readable
 from draftomen.pickengine import (
     ContextualScoreBreakdown,
     PickEngine,
+    PickRationale,
     PickScoringContext,
     ScoredCard,
     ScoredPack,
     recommendation_confidence_summary,
-    recommendation_explanation,
+    render_pick_rationale_concise,
+    render_pick_rationale_detailed,
 )
 from draftomen.pool import (
     AccountProfile,
@@ -239,6 +241,8 @@ class Recommendation:
     contextual_profile_confidence: float | None = None
     letter_grade: str | None = None
     explanation: str | None = None
+    rationale: PickRationale = field(default_factory=PickRationale)
+    concise_explanation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2166,7 +2170,6 @@ class LiveSession:
                 self._recommendation(
                     rank=rank,
                     scored_card=scored_card,
-                    inferred_pair=scored_pack.commitment.inferred_pair,
                 )
                 for rank, scored_card in enumerate(ranked_cards, start=1)
             ),
@@ -2184,7 +2187,6 @@ class LiveSession:
         *,
         rank: int,
         scored_card: ScoredCard,
-        inferred_pair: str | None = None,
     ) -> Recommendation:
         return Recommendation(
             rank=rank,
@@ -2202,9 +2204,12 @@ class LiveSession:
             contextual_profile_maturity=scored_card.contextual_profile_maturity,
             contextual_profile_confidence=scored_card.contextual_profile_confidence,
             letter_grade=scored_card.rating.letter_grade,
-            explanation=recommendation_explanation(
+            explanation=render_pick_rationale_detailed(
                 scored_card=scored_card,
-                inferred_pair=inferred_pair,
+            ),
+            rationale=scored_card.rationale,
+            concise_explanation=render_pick_rationale_concise(
+                scored_card=scored_card,
             ),
         )
 

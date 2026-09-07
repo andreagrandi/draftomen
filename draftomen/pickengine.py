@@ -88,6 +88,146 @@ PAIR_GAME_SAMPLE_SCALE = 500.0
 PAIR_CARD_GIH_SAMPLE_SCALE = 500.0
 PROFILE_RATING_SOURCE = "profile"
 PROFILE_SOURCE_LABEL = "Profile"
+_PICK_REASON_KINDS = (
+    "rating",
+    "color",
+    "role",
+    "urgency",
+    "synergy",
+    "redundancy",
+    "unsupported_payoff",
+    "fixing",
+    "splash",
+    "tiebreaker",
+)
+_CONCISE_REASON_LABELS: Mapping[str, str] = {
+    "color": "Color fit",
+    "role": "Role fit",
+    "urgency": "Timing",
+    "synergy": "Synergy",
+    "redundancy": "Role redundancy",
+    "unsupported_payoff": "Payoff risk",
+    "fixing": "Mana fixing",
+}
+_CONTEXTUAL_REASON_PHRASES: Mapping[str, str] = {
+    "role": "fills a role deficit",
+    "urgency": "addresses role timing",
+    "synergy": "supports a semantic package",
+    "redundancy": "accounts for role redundancy",
+    "unsupported_payoff": "accounts for unsupported payoff risk",
+    "fixing": "adds needed mana fixing",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class PickReason:
+    """Capture one immutable, attributable piece of pick evidence.
+    Retained evidence may be a string or tuple for detailed rendering.
+    """
+    kind: str
+    contribution: float | None = None
+    phrase: str = ""
+    evidence: str | tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in _PICK_REASON_KINDS:
+            raise ValueError(f"Unknown pick rationale reason kind: {self.kind!r}.")
+        if not isinstance(self.phrase, str) or not self.phrase.strip():
+            raise ValueError("Pick rationale reason phrase must not be empty.")
+        if self.contribution is not None:
+            if (
+                isinstance(self.contribution, bool)
+                or not isinstance(self.contribution, (int, float))
+                or not math.isfinite(float(self.contribution))
+            ):
+                raise ValueError("Pick rationale contribution must be finite.")
+            object.__setattr__(self, "contribution", float(self.contribution))
+        evidence = self.evidence
+        if evidence is not None and not isinstance(evidence, (str, tuple)):
+            raise TypeError("Pick rationale evidence must be a string or tuple.")
+        if isinstance(evidence, tuple) and any(
+            not isinstance(item, str) for item in evidence
+        ):
+            raise TypeError("Pick rationale evidence tuple must contain strings.")
+        if isinstance(evidence, tuple):
+            object.__setattr__(self, "evidence", tuple(evidence))
+
+    @property
+    def preserved_evidence(self) -> tuple[str, ...]:
+        """Return retained evidence in a uniform immutable view."""
+
+        if self.evidence is None:
+            return ()
+        if isinstance(self.evidence, str):
+            return (self.evidence,)
+        return self.evidence
+
+    def to_json(self) -> dict[str, object]:
+        """Return an additive, deterministic representation for consumers."""
+
+        return {
+            "kind": self.kind,
+            "contribution": self.contribution,
+            "phrase": self.phrase,
+            "evidence": (
+                list(self.evidence)
+                if isinstance(self.evidence, tuple)
+                else self.evidence
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PickRationale:
+    """Immutable ordered rationale and explicit score reconciliation remainder."""
+
+    reasons: tuple[PickReason, ...] = ()
+    unattributed_contribution: float = 0.0
+
+    def __post_init__(self) -> None:
+        try:
+            reasons = tuple(self.reasons)
+        except TypeError as error:
+            raise TypeError("PickRationale.reasons must be iterable.") from error
+        if any(not isinstance(reason, PickReason) for reason in reasons):
+            raise TypeError("PickRationale.reasons must contain PickReason values.")
+        object.__setattr__(self, "reasons", reasons)
+        if (
+            isinstance(self.unattributed_contribution, bool)
+            or not isinstance(self.unattributed_contribution, (int, float))
+            or not math.isfinite(float(self.unattributed_contribution))
+        ):
+            raise ValueError("PickRationale.unattributed_contribution must be finite.")
+        object.__setattr__(
+            self,
+            "unattributed_contribution",
+            float(self.unattributed_contribution),
+        )
+
+    @property
+    def attributed_contribution(self) -> float:
+        """Return the sum of reasons with an exact additive contribution."""
+
+        return sum(
+            reason.contribution
+            for reason in self.reasons
+            if reason.contribution is not None
+        )
+
+    @property
+    def total_contribution(self) -> float:
+        """Return attributable terms plus cap/rounding/clamp accounting."""
+
+        return self.attributed_contribution + self.unattributed_contribution
+
+
+    def to_json(self) -> dict[str, object]:
+        """Return an additive, deterministic representation for consumers."""
+
+        return {
+            "reasons": [reason.to_json() for reason in self.reasons],
+            "unattributed_contribution": self.unattributed_contribution,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,13 +461,9 @@ def recommendation_confidence_summary(
     return close_label
 
 
-def recommendation_explanation(
-    *,
-    scored_card: ScoredCard,
-    inferred_pair: str | None,
-) -> str:
-    """Describe one recommendation using scoring and pool evidence.
-    Wording describes supporting evidence rather than promising an outcome.
+def render_pick_rationale_concise(*, scored_card: ScoredCard) -> str:
+    """Render at most three short, drafter-facing rationale sentences.
+    Keep concise copy human-readable while detailed output retains evidence.
     """
 
     if scored_card.freely_available_basic:
@@ -336,75 +472,145 @@ def recommendation_explanation(
             "so it receives 0 DO points and ranks after draftable cards."
         )
 
-    fit = scored_card.color_fit.replace("-", " ")
-    pair = inferred_pair or scored_card.contextual_pair
-    pool_context = (
-        f"the inferred {pair} pool"
-        if pair is not None
-        else "an open-color pool"
+    rationale = _rationale_for_render(scored_card=scored_card)
+    rating_reason = next(
+        reason for reason in rationale.reasons if reason.kind == "rating"
     )
-    gih_win_rate = scored_card.rating.gih_win_rate
-    alsa = scored_card.rating.average_last_seen_at
-    if gih_win_rate is not None:
-        rating_evidence = (
-            f"{scored_card.source_label} GIH win rate "
-            f"{gih_win_rate:.1%}"
-        )
-    elif scored_card.no_data and alsa is not None:
-        rating_evidence = (
-            f"neutral-prior estimate adjusted by ALSA "
-            f"{alsa:.2f}"
-        )
-    elif scored_card.no_data:
-        rating_evidence = "neutral-prior estimate with no GIH data"
-    else:
-        rating_evidence = f"{scored_card.source_label} rating data"
+    sentences = [f"Rating: {rating_reason.phrase}."]
+    selected_reasons = sorted(
+        (
+            (index, reason)
+            for index, reason in enumerate(rationale.reasons)
+            if reason.kind != "rating"
+            and (
+                reason.contribution is None
+                or reason.kind == "color"
+                or abs(reason.contribution) > 1e-12
+            )
+        ),
+        key=lambda item: (-abs(item[1].contribution or 0.0), item[0]),
+    )
+    sentences.extend(
+        _concise_reason(reason=reason)
+        for _, reason in selected_reasons[:2]
+    )
+    return " ".join(sentences)
 
-    context_notes: list[str] = []
-    if scored_card.contextual_pair is not None:
+
+def render_pick_rationale_detailed(
+    *,
+    scored_card: ScoredCard,
+) -> str:
+    """Render every rationale reason and any explicit score remainder.
+    Context claims come only from retained scoring context on the card.
+    """
+
+    if scored_card.freely_available_basic:
+        return (
+            f"{scored_card.card.name} is freely available during deck building, "
+            "so it receives 0 DO points and ranks after draftable cards."
+        )
+
+    rationale = _rationale_for_render(scored_card=scored_card)
+    rating_reason = next(
+        reason for reason in rationale.reasons if reason.kind == "rating"
+    )
+    color_reason = next(
+        reason for reason in rationale.reasons if reason.kind == "color"
+    )
+    parts = [
+        f"{scored_card.card.name} receives {scored_card.score} DO points.",
+        f"rating: {rating_reason.phrase}.",
+        (
+            f"color {_precise_contribution(color_reason.contribution)}: "
+            f"{color_reason.phrase}."
+        ),
+    ]
+    has_material_context = any(
+        reason.kind in _TERM_BOUNDS for reason in rationale.reasons
+    )
+    if scored_card.contextual_pair is not None and has_material_context:
         theme = (
             f", theme {scored_card.contextual_theme}"
             if scored_card.contextual_theme is not None
             else ""
         )
-        maturity = scored_card.contextual_profile_maturity or "unknown"
-        confidence = scored_card.contextual_profile_confidence
-        confidence_note = (
-            f"{confidence:.0%} confidence"
-            if confidence is not None
-            else "unknown confidence"
+        parts.append(f"context {scored_card.contextual_pair}{theme}.")
+
+    for reason in rationale.reasons:
+        if reason.kind in _TERM_BOUNDS or reason.kind in {"splash", "tiebreaker"}:
+            parts.append(f"{_detailed_reason(reason=reason)}.")
+
+    if abs(rationale.unattributed_contribution) > 1e-9:
+        parts.append(
+            "score accounting remainder "
+            f"{_precise_contribution(rationale.unattributed_contribution)} "
+            "covers collective-cap or score-clamp accounting."
         )
-        context_notes.append(
-            f"context {scored_card.contextual_pair}{theme}; "
-            f"{maturity} profile ({confidence_note})"
-        )
-    material_terms = tuple(
-        (name, getattr(scored_card.contextual_breakdown, name))
-        for name in _TERM_BOUNDS
-        if abs(getattr(scored_card.contextual_breakdown, name)) > 0.01
+    return " ".join(parts)
+
+
+
+
+def _rationale_for_render(*, scored_card: ScoredCard) -> PickRationale:
+    if scored_card.rationale.reasons:
+        return scored_card.rationale
+    return _pick_rationale_for_card(
+        card=scored_card,
+        tiebreaker_provenance={},
     )
-    if material_terms:
-        term_text = ", ".join(
-            f"{name} {value:+.2f}" for name, value in material_terms
+
+
+def _concise_reason(*, reason: PickReason) -> str:
+    """Render one reason as a short human-facing sentence.
+    Nonadditive evidence uses stable kind-specific copy without raw evidence.
+    """
+
+    if reason.contribution is not None:
+        label = _CONCISE_REASON_LABELS.get(reason.kind, "Score adjustment")
+        return f"{label} contributes {_signed_do_points(reason.contribution)}."
+
+    phrase = reason.phrase.casefold()
+    if reason.kind == "splash":
+        if "speculative" in phrase:
+            return "Speculative splash is a consideration."
+        if "fixer" in phrase:
+            return "Splash fixing is available."
+        if "ready" in phrase:
+            return "Supported splash is available."
+        return "Splash fit is being evaluated."
+    if reason.kind == "tiebreaker":
+        return "Close pair performance breaks the tie."
+    return "Additional pick evidence is available."
+
+
+def _detailed_reason(*, reason: PickReason) -> str:
+    label = reason.kind.replace("_", " ")
+    if reason.contribution is None:
+        text = f"{label}: {reason.phrase}"
+    else:
+        text = (
+            f"{label} {_precise_contribution(reason.contribution)}: "
+            f"{reason.phrase}"
         )
-        term_text += f", aggregate {scored_card.contextual_breakdown.aggregate:+.2f}"
-        if scored_card.contextual_evidence:
-            term_text += ": " + "; ".join(scored_card.contextual_evidence)
-        context_notes.append("material terms: " + term_text)
-    elif scored_card.contextual_evidence:
-        context_notes.append(
-            "material terms: " + "; ".join(scored_card.contextual_evidence)
-        )
-    context_note = (
-        " " + " ".join(context_notes) + "."
-        if context_notes
-        else ""
-    )
-    return (
-        f"{fit.capitalize()} fit supports a {scored_card.score} DO-point "
-        f"candidate for {pool_context}; {rating_evidence} informs the score."
-        f"{context_note}"
-    )
+    evidence = reason.preserved_evidence
+    if evidence:
+        text += " [" + "; ".join(evidence) + "]"
+    return text
+
+
+def _signed_do_points(value: float | None) -> str:
+    if value is None:
+        return ""
+    magnitude = int(math.floor(abs(value) + 0.5))
+    sign = "+" if value >= 0.0 else "-"
+    return f"{sign}{magnitude} DO points"
+
+
+def _precise_contribution(value: float | None) -> str:
+    if value is None:
+        return "not additive"
+    return f"{value:+.2f} DO points"
 
 
 def _close_pick_label(
@@ -514,6 +720,7 @@ class ScoredCard:
     contextual_theme: str | None = None
     contextual_profile_maturity: str | None = None
     contextual_profile_confidence: float | None = None
+    rationale: PickRationale = PickRationale()
 
     @property
     def no_data(self) -> bool:
@@ -1628,6 +1835,7 @@ def _score_sorted_cards(
     require_material_rate_margin: bool,
 ) -> tuple[ScoredCard, ...]:
     base_sorted = tuple(sorted(cards, key=_scored_card_base_sort_key))
+    tiebreaker_provenance: dict[int, str] = {}
     if not _early_pair_tiebreaker_enabled(
         commitment=commitment,
         ratings_data=ratings_data,
@@ -1635,14 +1843,21 @@ def _score_sorted_cards(
         offered_count=offered_count,
         config=config,
     ):
-        return _with_score_sort_indexes(cards=base_sorted)
+        return _with_score_indexes_and_pick_rationales(
+            cards=base_sorted,
+            tiebreaker_provenance=tiebreaker_provenance,
+        )
 
     sorted_cards = _apply_early_pair_tiebreaker(
         cards=base_sorted,
         config=config,
         require_material_rate_margin=require_material_rate_margin,
+        tiebreaker_provenance=tiebreaker_provenance,
     )
-    return _with_score_sort_indexes(cards=sorted_cards)
+    return _with_score_indexes_and_pick_rationales(
+        cards=sorted_cards,
+        tiebreaker_provenance=tiebreaker_provenance,
+    )
 
 def _early_pair_tiebreaker_enabled(
     *,
@@ -1675,6 +1890,7 @@ def _apply_early_pair_tiebreaker(
     cards: tuple[ScoredCard, ...],
     config: PickEngineConfig,
     require_material_rate_margin: bool,
+    tiebreaker_provenance: dict[int, str],
 ) -> tuple[ScoredCard, ...]:
     sorted_cards: list[ScoredCard] = []
     group: list[ScoredCard] = []
@@ -1695,6 +1911,7 @@ def _apply_early_pair_tiebreaker(
                 group=group,
                 config=config,
                 require_material_rate_margin=require_material_rate_margin,
+                tiebreaker_provenance=tiebreaker_provenance,
             )
         )
         group = [card]
@@ -1706,6 +1923,7 @@ def _apply_early_pair_tiebreaker(
                 group=group,
                 config=config,
                 require_material_rate_margin=require_material_rate_margin,
+                tiebreaker_provenance=tiebreaker_provenance,
             )
         )
 
@@ -1717,6 +1935,7 @@ def _sort_early_pair_tiebreaker_group(
     group: list[ScoredCard],
     config: PickEngineConfig,
     require_material_rate_margin: bool,
+    tiebreaker_provenance: dict[int, str],
 ) -> tuple[ScoredCard, ...]:
     return tuple(
         sorted(
@@ -1727,10 +1946,13 @@ def _sort_early_pair_tiebreaker_group(
                     right=right,
                     config=config,
                     require_material_rate_margin=require_material_rate_margin,
+                    tiebreaker_provenance=tiebreaker_provenance,
                 ),
             ),
         )
     )
+
+
 
 
 def _compare_early_pair_tiebreaker(
@@ -1739,6 +1961,7 @@ def _compare_early_pair_tiebreaker(
     right: ScoredCard,
     config: PickEngineConfig,
     require_material_rate_margin: bool,
+    tiebreaker_provenance: dict[int, str] | None = None,
 ) -> int:
     left_win_rate = left.pair_tiebreaker_win_rate
     right_win_rate = right.pair_tiebreaker_win_rate
@@ -1759,7 +1982,25 @@ def _compare_early_pair_tiebreaker(
             else left_win_rate != right_win_rate
         )
     ):
-        return -1 if left_win_rate > right_win_rate else 1
+        winner, loser = (
+            (left, right)
+            if left_win_rate > right_win_rate
+            else (right, left)
+        )
+        winner_win_rate = winner.pair_tiebreaker_win_rate
+        loser_win_rate = loser.pair_tiebreaker_win_rate
+        assert winner_win_rate is not None
+        assert loser_win_rate is not None
+        if (
+            tiebreaker_provenance is not None
+            and winner.original_index not in tiebreaker_provenance
+        ):
+            tiebreaker_provenance[winner.original_index] = (
+                f"pair-rate comparison selected {winner.pair_tiebreaker_pair} "
+                f"at {winner_win_rate:.1%} over "
+                f"{loser.pair_tiebreaker_pair} at {loser_win_rate:.1%}"
+            )
+        return -1 if winner is left else 1
 
     return _compare_base_scored_cards(left=left, right=right)
 
@@ -1776,10 +2017,161 @@ def _compare_base_scored_cards(*, left: ScoredCard, right: ScoredCard) -> int:
     return 0
 
 
-def _with_score_sort_indexes(*, cards: tuple[ScoredCard, ...]) -> tuple[ScoredCard, ...]:
+def _with_score_indexes_and_pick_rationales(
+    *,
+    cards: tuple[ScoredCard, ...],
+    tiebreaker_provenance: Mapping[int, str],
+) -> tuple[ScoredCard, ...]:
+    """Attach final ordering and rationale in one immutable pass.
+    Original indexes remain the provenance key for tiebreaker evidence.
+    """
+
     return tuple(
-        replace(card, score_sort_index=index)
+        replace(
+            card,
+            score_sort_index=index,
+            rationale=_pick_rationale_for_card(
+                card=card,
+                tiebreaker_provenance=tiebreaker_provenance,
+            ),
+        )
         for index, card in enumerate(cards)
+    )
+
+
+def _pick_rationale_for_card(
+    *,
+    card: ScoredCard,
+    tiebreaker_provenance: Mapping[int, str],
+) -> PickRationale:
+    reasons: list[PickReason] = [
+        PickReason(
+            kind="rating",
+            phrase=_rating_reason_phrase(card=card),
+        ),
+        PickReason(
+            kind="color",
+            contribution=card.base_score * (card.color_factor - 1.0),
+            phrase=(
+                f"{card.color_fit.replace('-', ' ')} color fit applies a "
+                "commitment adjustment"
+            ),
+        ),
+    ]
+
+    evidence_index = 0
+    for kind in _TERM_BOUNDS:
+        contribution = getattr(card.contextual_breakdown, kind)
+        if abs(contribution) <= 0.01:
+            continue
+        evidence = (
+            card.contextual_evidence[evidence_index]
+            if evidence_index < len(card.contextual_evidence)
+            else None
+        )
+        evidence_index += 1
+        reasons.append(
+            PickReason(
+                kind=kind,
+                contribution=contribution,
+                phrase=_CONTEXTUAL_REASON_PHRASES[kind],
+                evidence=evidence,
+            )
+        )
+
+    if (
+        card.splash.reasons
+        and (
+            card.splash.classification
+            in {"splash-ready", "splash-speculative", "splash-fixer"}
+            or (
+                card.splash.classification == "off-color"
+                and card.splash.splash_color is not None
+            )
+        )
+    ):
+        reasons.append(
+            PickReason(
+                kind="splash",
+                phrase=(
+                    f"{card.splash.classification.replace('-', ' ')} splash "
+                    "assessment"
+                ),
+                evidence=card.splash.reasons,
+            )
+        )
+
+    tiebreaker_evidence = tiebreaker_provenance.get(card.original_index)
+    if tiebreaker_evidence is not None:
+        reasons.append(
+            PickReason(
+                kind="tiebreaker",
+                phrase="a close pair-rate comparison decided this ordering",
+                evidence=tiebreaker_evidence,
+            )
+        )
+
+    attributed = sum(
+        reason.contribution
+        for reason in reasons
+        if reason.contribution is not None
+    )
+    return PickRationale(
+        reasons=tuple(reasons),
+        unattributed_contribution=card.raw_score - card.base_score - attributed,
+    )
+
+
+def _profile_rating_note(*, card: ScoredCard) -> str:
+    """Render retained profile maturity and confidence metadata.
+    The estimate wording itself hedges without adding a scoring threshold.
+    """
+
+    maturity = card.contextual_profile_maturity
+    if maturity is None:
+        return ""
+    confidence = card.contextual_profile_confidence
+    confidence_note = (
+        "unknown confidence"
+        if confidence is None
+        else f"{confidence:.0%} confidence"
+    )
+    return f" ({maturity} profile, {confidence_note})"
+
+
+def _rating_reason_phrase(*, card: ScoredCard) -> str:
+    """Describe rating evidence and any retained profile metadata.
+    All rating fallbacks expose the same available maturity and confidence.
+    """
+
+    if card.freely_available_basic:
+        return "basic land policy makes this card freely available at zero points"
+
+    rating = card.rating
+    profile_note = _profile_rating_note(card=card)
+    if card.no_data:
+        if card.prior_adjusted_by_alsa:
+            return (
+                "neutral-prior estimate with no GIH data, adjusted by "
+                f"ALSA {rating.average_last_seen_at:.2f}{profile_note}"
+            )
+        return f"neutral-prior estimate with no GIH data{profile_note}"
+
+    if rating.gih_win_rate is None:
+        return (
+            f"{card.source_label} rating data informs the base score"
+            f"{profile_note}"
+        )
+
+    if rating.metadata.source == PROFILE_RATING_SOURCE:
+        return (
+            f"profile estimate GIH win rate {rating.gih_win_rate:.1%}"
+            f"{profile_note}"
+        )
+
+    return (
+        f"{card.source_label} GIH win rate {rating.gih_win_rate:.1%}"
+        f"{profile_note}"
     )
 
 

@@ -4,11 +4,11 @@ Draft Omen keeps the resolved GIH win rate visible when available. QuickDraft an
 
 EARLY and MATURE profiles are first for empirical card ratings: the loaded database card must match a profile card by its single canonical producer key exactly. On a match, the profile's published `RateEstimate.value` is the score's card estimate; it is already shrunk, while its GIH sample count and optional ALSA are preserved. Provider-only metrics and grades remain unavailable and the row source is `Profile`. Unmatched cards use deterministic local fallback—an already-loaded legacy pair rating when locked and applicable, otherwise the local global/format rating (QuickDraft, then Premier fallback), then the neutral prior with ALSA adjustment—without alias or name borrowing. `GENERIC`, `METADATA_ONLY`, and `SEMANTIC_ONLY` profiles do not activate empirical estimates.
 
-Scores are normalized against the unique resolved empirical-profile estimate distribution when an EARLY or MATURE profile contributes card ratings; each canonical profile estimate enters that distribution once even if multiple runtime IDs resolve to it. Without such profile ratings, normalization uses the local rating distribution. Scores are centered so the neutral prior displays as 50 before color logic. The five basic lands that can be added freely during deck building instead receive 0 DO points and rank after draftable cards; drafted nonbasic and special lands keep their normal ratings. Color commitment then multiplies the normalized score: on-color cards rise gradually, ordinary off-color cards are penalized gradually, supported splash cards receive a smaller penalty, and colorless cards stay neutral.
+Scores are normalized against the unique resolved empirical-profile estimate distribution when an EARLY or MATURE profile contributes card ratings; each canonical profile estimate enters that distribution once even if multiple runtime IDs resolve to it. Without such profile ratings, normalization uses the local rating distribution. Scores are centered so the neutral prior displays as 50 before color logic. The five basic lands that can be added freely during deck building instead receive 0 DO points and rank after draftable cards; drafted nonbasic and special lands keep their normal ratings. Color commitment then multiplies the normalized score. Let `L` be the commitment level from 0 to 1; the factor is `1` for colorless/open/unknown cards or no commitment, `1 + L × (1.15 − 1)` for on-color cards, `1 − L × (1 − 0.75)` for ordinary off-color cards, `1 − L × (1 − 0.95)` for supported splashes, `1 − L × (1 − 0.85)` for speculative splashes, and `1 + L × (1.05 − 1)` for splash fixers. These are the defaults (`on_color_bonus_multiplier = 1.15`, `off_color_penalty_multiplier = 0.75`, and splash ready/speculative/fixer multipliers `0.95`/`0.85`/`1.05`); each factor is bounded below by zero.
 
 Pool color weights come from picked cards. Each colored picked card contributes a quality-weighted amount to each of its colors, so a strong card pulls harder than filler. The highest-weighted two-color pair is the inferred pair once at least two colors have material weight.
 
-During open picks, set/format-specific pair performance is used as a close-pick tiebreaker. If cards are within `3.0` DO points and the hypothetical color-pair weights after taking each card are also close, an empirical-profile pair rate must differ by more than `1pp` before the recommendation prefers the card leading toward the higher-rate pair. Otherwise, the base comparator retains the ordering. For an EARLY or MATURE profile, a published `PairProfile.performance.value` directly supplies the pair tiebreaker rate; that value is already shrunk and receives no second shrinkage. If published performance is absent, the preloaded local aggregate pair rate remains the fallback and keeps the existing evidence/sample shrinkage. Only for that fallback aggregate rate, the tiebreaker uses `p_prior + w × (p − p_prior)`, where `p_prior` is the neutral pair rate and `0 ≤ w ≤ 1`. The influence is the product of profile maturity/confidence, profile total and per-pair sample support, and aggregate pair-game support. Each sample factor is `n / (n + k)` and missing evidence contributes zero, so thin fallback evidence cannot create a material pair-rate margin or overturn base ordering. This is deliberately disabled once the color ramp starts, so pair win rate does not override later commitment signals. Without an empirical profile—including generic, metadata-only, or semantic-only profiles—local rates retain the legacy any-nonzero-rate comparison, so even a sub-`1pp` difference can resolve a close pick.
+During open picks, set/format-specific pair performance is used as a close-pick tiebreaker. If cards' unrounded `raw_score` values are within `3.0` DO points and the hypothetical color-pair weights after taking each card are also close, an empirical-profile pair rate must differ by more than `1pp` before the recommendation prefers the card leading toward the higher-rate pair. Otherwise, the base comparator retains the ordering. For an EARLY or MATURE profile, a published `PairProfile.performance.value` directly supplies the pair tiebreaker rate; that value is already shrunk and receives no second shrinkage. If published performance is absent, the preloaded local aggregate pair rate remains the fallback and keeps the existing evidence/sample shrinkage. Only for that fallback aggregate rate, the tiebreaker uses `p_prior + w × (p − p_prior)`, where `p_prior` is the neutral pair rate and `0 ≤ w ≤ 1`. The influence is the product of profile maturity/confidence, profile total and per-pair sample support, and aggregate pair-game support. Each sample factor is `n / (n + k)` and missing evidence contributes zero, so thin fallback evidence cannot create a material pair-rate margin or overturn base ordering. This is deliberately disabled once the color ramp starts, so pair win rate does not override later commitment signals. Without an empirical profile—including generic, metadata-only, or semantic-only profiles—local rates retain the legacy any-nonzero-rate comparison, so even a sub-`1pp` difference can resolve a close pick. Rationale provenance is narrower than pair-rate availability: only the card that wins an actual pair-rate comparator invocation in this gated open-pick path receives a `tiebreaker` reason. Merely carrying a candidate pair rate or being in a close group is not enough; if the pair-rate winner agrees with the base ordering, the reason is still retained, while a failed gate leaves ordering and rationale unchanged.
 
 Commitment is controlled by documented defaults in `config.py`:
 
@@ -268,6 +268,81 @@ Missing, corrupt, incompatible, or generic profiles normalize to no context:
 `build_pick_scoring_context` returns `None` and
 `ScoredPack.scoring_context` remains `None`; generic rating/color results stay
 unchanged, although a stage-aware generic role ledger may still be retained.
+
+## Immutable pick rationale
+
+Every engine-produced `ScoredCard` has a frozen `PickRationale` after final
+ordering. It is an ordered tuple of frozen `PickReason` values plus an explicit
+`unattributed_contribution` remainder. Each reason has exactly `kind`,
+`contribution`, `phrase`, and `evidence` fields. The allowed kinds are `rating`,
+`color`, `role`, `urgency`, `synergy`, `redundancy`, `unsupported_payoff`,
+`fixing`, `splash`, and `tiebreaker`. Reasons are ordered deterministically:
+rating baseline, color adjustment, material contextual terms, retained splash
+assessment, then actual tiebreaker provenance.
+
+`evidence` is either absent, one retained string, or a tuple of retained
+strings (serialized as a JSON list). Material contextual terms are strictly
+those with `abs(value) > 0.01`; each retains its exact contribution value and
+the corresponding original evidence string. Splash assessments retain their
+complete reasons, while a tiebreaker retains the pair-rate comparison that
+actually selected the winner. Rating, splash, and tiebreaker reasons are
+nonadditive: the rating reason describes the normalized `base_score` baseline,
+which is counted once, and the latter two preserve decision evidence without
+inventing score points. The color reason contributes exactly
+`base_score × (color_factor − 1)`.
+
+The scoring arithmetic remains:
+
+`raw_score = clamp(base_score × color_factor + contextual_breakdown.aggregate, 0, 100)`.
+
+`raw_score` is already clamped before it is stored. Rationale accounting
+reconciles the existing score without changing it:
+
+`base_score + attributed_contribution + unattributed_contribution = raw_score`.
+
+`attributed_contribution` sums only reasons with a numeric contribution. The
+remainder is the exact difference and can account for omitted sub-materiality
+terms, the contextual aggregate cap and six-decimal rounding, and the final
+0–100 clamp. It is accounting for existing arithmetic, not a fictional
+allocation, an additional score term, or a scoring change.
+
+Arithmetic values remain floating point. The displayed DO score is a
+nonnegative whole-number rendering of the clamped raw score (nearest integer,
+with `.5` rounded upward). Concise signed contribution labels use nearest whole
+DO-point rounding with halves away from zero (`+1.5` becomes `+2`, `−1.5`
+becomes `−2`); detailed rationale retains contributions to two decimal places.
+Display rounding therefore must not be used to reconstruct the score equation.
+
+`render_pick_rationale_concise` always shows the rating sentence for a
+draftable card and adds at most two non-rating reasons. Those reasons are
+selected by descending absolute numeric magnitude, with stable original order
+as the tie-breaker; nonadditive splash and tiebreaker evidence remains eligible.
+Concise output uses stable kind-specific wording and signed whole-point labels,
+but does not include raw evidence strings. The rating sentence identifies the
+available source or neutral-prior uncertainty; when a retained profile supplies
+maturity and confidence, it shows both, and unavailable confidence is rendered
+as unknown rather than inferred. Weak semantic evidence is described as
+supporting evidence, never as a guaranteed outcome.
+
+`render_pick_rationale_detailed` starts with the card's score, rating baseline,
+and exact color contribution, then lists every retained material contextual,
+splash, and actual tiebreaker reason with decimal contributions where
+applicable and the retained evidence in brackets. It adds the context pair and
+optional theme only when material contextual terms exist, and reports a
+nonzero score-accounting remainder. The five freely available basic lands keep
+the exact legacy explanation: they receive 0 DO points and rank after draftable
+cards.
+
+Without a usable validated scoring context, contextual terms and evidence are
+absent and generic rating/color scoring remains unchanged. Disabling contextual
+adjustments likewise emits zero contextual terms and empty contextual
+evidence; it does not suppress the rating/color reasons or independently
+available splash and actual tiebreaker reasons. A `Recommendation` publishes
+the same card rationale through `rationale`, `concise_explanation`, and
+`explanation`; the latter two are rendered directly by
+`render_pick_rationale_concise` and `render_pick_rationale_detailed`. Replay
+uses the detailed renderer for the recommendation on every nonempty pack.
+
 
 
 ## Splash recommendations

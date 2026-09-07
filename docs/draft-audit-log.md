@@ -43,6 +43,40 @@ after corrupted evidence.
   target, grade and score gates, classification, and exact decision reasons.
 - Exact card order for DO Score, 17Lands win rate, ALSA, and mana-value views.
 
+### Rationale and published recommendation fields
+
+Each `decision_evaluated.recommendation` object and every object in
+`decision_evaluated.candidates` carries three additive fields at that object's
+top level:
+
+- `rationale`: the immutable `PickRationale.to_json()` shape:
+  `{"reasons": [...], "unattributed_contribution": number}`. Each reason has
+  `kind`, `contribution`, `phrase`, and `evidence`; tuple evidence is encoded
+  as a JSON list. The allowed reason kinds and materiality rules are documented
+  in [pick-scoring.md](pick-scoring.md).
+- `concise_explanation`: the short drafter-facing output of
+  `render_pick_rationale_concise`.
+- `explanation`: the detailed output of
+  `render_pick_rationale_detailed`, including retained evidence and score
+  accounting when applicable.
+
+The fields are projected from the same scored card as the candidate's existing
+rating, color, contextual, splash, and score fields. They are additive to audit
+schema version 1; they do not replace the existing `contextual_breakdown` or
+`contextual_evidence` fields.
+
+`evaluation_id` and the evaluation `record_id` remain stable when these fields
+are added or changed: evaluation identity deliberately excludes `rationale`,
+`concise_explanation`, and `explanation` from both the recommendation and
+candidate payloads. Historical schema-version-1 records may omit the new
+fields, and the loader continues to read them without inventing replacements;
+restarting or rescanning such a record remains idempotent.
+
+Offline replay does not append audit records, but its `Recommendation:` line
+uses `render_pick_rationale_detailed`, so every nonempty offered pack includes
+the detailed rationale for its recommendation.
+
+
 A pending pick may have more than one evaluation when ratings finish loading or
 the scoring inputs genuinely change. Each distinct evaluation gets its own
 `evaluation_id`. Once its choice is recorded, startup rescans cannot add newer

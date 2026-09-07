@@ -28,7 +28,7 @@ from draftomen.pickengine import (
     PickEngine,
     ScoredCard,
     ScoredPack,
-    recommendation_explanation,
+    render_pick_rationale_detailed,
 )
 from draftomen.pool import DraftPoolStore
 from draftomen.set_profile import SetProfile
@@ -382,12 +382,11 @@ def _format_pack(
     lines.extend(_format_scored_cards(cards=scored_pack.cards))
     if any(card.no_data for card in scored_pack.cards):
         lines.append("  * Prior uses neutral prior adjusted by ALSA when available.")
-    if scored_pack.scoring_context is not None and scored_pack.cards:
+    if scored_pack.cards:
         lines.append(
             "Recommendation: "
-            + recommendation_explanation(
+            + render_pick_rationale_detailed(
                 scored_card=scored_pack.cards[0],
-                inferred_pair=scored_pack.commitment.inferred_pair,
             )
         )
 

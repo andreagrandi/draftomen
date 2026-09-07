@@ -425,6 +425,13 @@ def test_pick_contextual_terms_are_stage_aware_and_saturate_at_target() -> None:
     assert met.contextual_breakdown.urgency == 0
     assert met.contextual_breakdown.redundancy < 0
     assert any("redundancy pressure" in item for item in met.contextual_evidence)
+    rationale = met.rationale
+    assert tuple(reason.kind for reason in rationale.reasons) == (
+        "rating",
+        "color",
+        "redundancy",
+    )
+    assert rationale.reasons[-1].evidence == "redundancy pressure for draw"
 
 
 

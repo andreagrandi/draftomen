@@ -15,8 +15,16 @@ from draftomen.audit import (
 )
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import PICK_ENGINE
-from draftomen.events import DraftCompletedEvent, PackOfferedEvent, PickMadeEvent
-from draftomen.pickengine import PickEngine
+from draftomen.events import (
+    DraftCompletedEvent,
+    PackOfferedEvent,
+    PickMadeEvent,
+)
+from draftomen.pickengine import (
+    PickEngine,
+    render_pick_rationale_concise,
+    render_pick_rationale_detailed,
+)
 from draftomen.pool import DraftState
 from draftomen.set_profile import (
     PairProfile,
@@ -136,6 +144,16 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
         ],
         "picked_card_count": 0,
     }
+    scored_cards = {card.card.grp_id: card for card in scored_pack.cards}
+    for candidate in decision["candidates"]:
+        scored_card = scored_cards[candidate["grp_id"]]
+        assert candidate["rationale"] == scored_card.rationale.to_json()
+        assert candidate["concise_explanation"] == render_pick_rationale_concise(
+            scored_card=scored_card,
+        )
+        assert candidate["explanation"] == render_pick_rationale_detailed(
+            scored_card=scored_card,
+        )
     assert len(decision["candidates"]) == 2
     assert decision["candidates"][0]["scoring"]["source_label"] == "Prior*"
     assert decision["candidates"][0]["rating"]["sample_counts"]["games_in_hand"] == 0
@@ -145,6 +163,16 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
     ]
     assert decision["context_provenance"] is None
     assert decision["recommendation"]["grp_id"] == decision["recommended_grp_id"]
+    recommended_scored_card = scored_cards[decision["recommended_grp_id"]]
+    assert decision["recommendation"]["rationale"] == (
+        recommended_scored_card.rationale.to_json()
+    )
+    assert decision["recommendation"]["concise_explanation"] == (
+        render_pick_rationale_concise(scored_card=recommended_scored_card)
+    )
+    assert decision["recommendation"]["explanation"] == (
+        render_pick_rationale_detailed(scored_card=recommended_scored_card)
+    )
     assert decision["recommendation"]["contextual_evidence"] == (
         decision["candidates"][0]["scoring"]["contextual_evidence"]
     )
@@ -297,6 +325,58 @@ def test_restart_does_not_re_evaluate_a_pick_with_a_recorded_choice(
         "2026-07-27T10:30:00+00:00"
     }
 
+
+def test_audit_restart_preserves_identity_for_historical_records_without_rationale(
+    tmp_path: Path,
+) -> None:
+    state = _draft_state()
+    offer = _pack_event()
+    engine = PickEngine()
+    scored_pack = engine.score_pack(
+        offered_grp_ids=offer.offered_grp_ids,
+        card_database=_card_database(),
+        pool_grp_ids=offer.pool_grp_ids,
+        pick_index=1,
+    )
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.record_decision(
+        state=state,
+        event=offer,
+        scored_pack=scored_pack,
+        config=engine.config,
+        ratings_data=None,
+    )
+    path = draft_audit_path(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    historical = json.loads(path.read_text(encoding="utf-8"))
+    for field in ("rationale", "concise_explanation", "explanation"):
+        historical["recommendation"].pop(field, None)
+        for candidate in historical["candidates"]:
+            candidate.pop(field, None)
+    path.write_text(
+        json.dumps(historical, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    restarted_store = DraftAuditStore(app_dir=tmp_path, clock=_later_clock)
+    restarted_store.record_decision(
+        state=state,
+        event=offer,
+        scored_pack=scored_pack,
+        config=engine.config,
+        ratings_data=None,
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert len(records) == 1
+    assert "rationale" not in records[0]["recommendation"]
 
 def test_audit_loader_rejects_a_malformed_json_line(tmp_path: Path) -> None:
     path = draft_audit_path(

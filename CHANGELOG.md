@@ -2,6 +2,10 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Add immutable per-card pick rationale with exact evidence and score accounting,
+  publish concise and detailed explanations through sessions and audits, and
+  include detailed rationale in every nonempty replay pack. (#355)
+
 - Add an explicit shared-engine contextual-adjustment mode that can disable
   additive contextual terms while retaining profile-backed base scoring and
   non-contextual evidence. (#380)

@@ -21,7 +21,12 @@ from draftomen.events import (
     PackOfferedEvent,
     PickMadeEvent,
 )
-from draftomen.pickengine import ScoredCard, ScoredPack
+from draftomen.pickengine import (
+    ScoredCard,
+    ScoredPack,
+    render_pick_rationale_concise,
+    render_pick_rationale_detailed,
+)
 from draftomen.pool import DraftState
 from draftomen.ranking import RANKING_MODES, rank_scored_cards, validate_ranking_mode
 from draftomen.seventeen import SeventeenLandsData, SeventeenLandsFormatData
@@ -194,7 +199,10 @@ class DraftAuditStore:
             app_version=self._app_version,
             decision_id=decision_id,
         )
-        evaluation_id = _record_id(prefix="evaluation", value=evaluation)
+        evaluation_id = _record_id(
+            prefix="evaluation",
+            value=_evaluation_identity_payload(evaluation=evaluation),
+        )
         payload = {
             **evaluation,
             "evaluation_id": evaluation_id,
@@ -504,6 +512,19 @@ def _recommendation_payload(*, scored_card: ScoredCard | None) -> AuditRecord | 
         "contextual_theme": scored_card.contextual_theme,
         "contextual_profile_maturity": scored_card.contextual_profile_maturity,
         "contextual_profile_confidence": scored_card.contextual_profile_confidence,
+        **_rationale_fields(scored_card=scored_card),
+    }
+
+
+def _rationale_fields(*, scored_card: ScoredCard) -> AuditRecord:
+    return {
+        "rationale": scored_card.rationale.to_json(),
+        "concise_explanation": render_pick_rationale_concise(
+            scored_card=scored_card,
+        ),
+        "explanation": render_pick_rationale_detailed(
+            scored_card=scored_card,
+        ),
     }
 
 
@@ -519,6 +540,7 @@ def _candidate_payload(*, scored_card: ScoredCard, rank: int) -> AuditRecord:
         "rarity": card.rarity,
         "types": list(card.types),
         "unknown": card.unknown,
+        **_rationale_fields(scored_card=scored_card),
         "metadata": {
             "oracle_text": card.oracle_text,
             "keywords": list(card.keywords),
@@ -578,6 +600,38 @@ def _candidate_payload(*, scored_card: ScoredCard, rank: int) -> AuditRecord:
         },
         "splash": asdict(scored_card.splash),
     }
+
+
+def _evaluation_identity_payload(*, evaluation: AuditRecord) -> AuditRecord:
+    """Keep evaluation ids stable as rationale fields are added additively."""
+
+    identity = dict(evaluation)
+    recommendation = identity.get("recommendation")
+    if isinstance(recommendation, dict):
+        identity["recommendation"] = _without_rationale_fields(
+            payload=recommendation,
+        )
+    candidates = identity.get("candidates")
+    if isinstance(candidates, list):
+        identity["candidates"] = [
+            (
+                _without_rationale_fields(payload=candidate)
+                if isinstance(candidate, dict)
+                else candidate
+            )
+            for candidate in candidates
+        ]
+    return identity
+
+
+def _without_rationale_fields(*, payload: Mapping[str, Any]) -> AuditRecord:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in {"rationale", "concise_explanation", "explanation"}
+    }
+
+
 
 
 def _ratings_format_snapshot(

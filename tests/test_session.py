@@ -39,11 +39,14 @@ from draftomen.events import (
 from draftomen.pickengine import (
     ColorCommitment,
     ContextualScoreBreakdown,
+    PickEngine,
     PickScoringContext,
     ScoredCard,
     ScoredPack,
     ScoreNormalization,
     build_pick_scoring_context,
+    render_pick_rationale_concise,
+    render_pick_rationale_detailed,
 )
 from draftomen.pool import (
     DraftPick,
@@ -756,6 +759,10 @@ def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
         snapshot=snapshot,
         scored_pack=scored_pack,
     )
+    session_recommendations = {
+        recommendation.card.grp_id: recommendation
+        for recommendation in snapshot.recommendations.cards
+    }
     assert any(
         recommendation.contextual_pair == "WU"
         and recommendation.contextual_theme == "tempo flyers"
@@ -786,6 +793,24 @@ def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
     assert recommended_id is not None
     source_card = scored_cards[recommended_id]
     recommendation_payload = decision["recommendation"]
+    audit_candidates = {
+        candidate["grp_id"]: candidate for candidate in decision["candidates"]
+    }
+    assert set(session_recommendations) == set(scored_cards) == set(audit_candidates)
+    for grp_id, scored_card in scored_cards.items():
+        recommendation = session_recommendations[grp_id]
+        candidate = audit_candidates[grp_id]
+        rationale_json = scored_card.rationale.to_json()
+        assert recommendation.rationale.to_json() == rationale_json
+        assert recommendation.concise_explanation == render_pick_rationale_concise(
+            scored_card=scored_card,
+        )
+        assert recommendation.explanation == render_pick_rationale_detailed(
+            scored_card=scored_card,
+        )
+        assert candidate["rationale"] == rationale_json
+        assert candidate["concise_explanation"] == recommendation.concise_explanation
+        assert candidate["explanation"] == recommendation.explanation
     assert recommendation_payload["contextual_breakdown"] == (
         source_card.contextual_breakdown.to_json()
     )
@@ -799,6 +824,13 @@ def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
     )
     assert recommendation_payload["contextual_profile_confidence"] == (
         source_card.contextual_profile_confidence
+    )
+    assert recommendation_payload["rationale"] == source_card.rationale.to_json()
+    assert recommendation_payload["concise_explanation"] == (
+        render_pick_rationale_concise(scored_card=source_card)
+    )
+    assert recommendation_payload["explanation"] == (
+        render_pick_rationale_detailed(scored_card=source_card)
     )
 
 
@@ -838,6 +870,20 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
         card.contextual_evidence == ()
         for card in initial.current_scored_pack.cards
     )
+    contextual_reason_kinds = {
+        "role",
+        "urgency",
+        "synergy",
+        "redundancy",
+        "unsupported_payoff",
+        "fixing",
+    }
+    assert all(
+        not any(
+            reason.kind in contextual_reason_kinds for reason in card.rationale.reasons
+        )
+        for card in initial.current_scored_pack.cards
+    )
 
     baseline_with_build = session.dispatch(command=RequestBuild())
     baseline_pool = baseline_with_build.pool
@@ -855,6 +901,12 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     assert enabled.current_scored_pack is not None
     assert any(
         card.contextual_evidence
+        for card in enabled.current_scored_pack.cards
+    )
+    assert any(
+        any(
+            reason.kind in contextual_reason_kinds for reason in card.rationale.reasons
+        )
         for card in enabled.current_scored_pack.cards
     )
     assert any(
@@ -882,6 +934,12 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     assert disabled.current_scored_pack is not None
     assert all(
         card.contextual_evidence == ()
+        for card in disabled.current_scored_pack.cards
+    )
+    assert all(
+        not any(
+            reason.kind in contextual_reason_kinds for reason in card.rationale.reasons
+        )
         for card in disabled.current_scored_pack.cards
     )
     assert load_draft_audit_records(
@@ -942,6 +1000,20 @@ def test_live_session_contextual_mode_survives_profile_and_pack_lifecycle(
         card.contextual_evidence == ()
         for card in initial.current_scored_pack.cards
     )
+    contextual_reason_kinds = {
+        "role",
+        "urgency",
+        "synergy",
+        "redundancy",
+        "unsupported_payoff",
+        "fixing",
+    }
+    assert all(
+        not any(
+            reason.kind in contextual_reason_kinds for reason in card.rationale.reasons
+        )
+        for card in initial.current_scored_pack.cards
+    )
 
     refresh_request = session.profile_refresh_request()
     assert refresh_request is not None
@@ -983,12 +1055,24 @@ def test_live_session_contextual_mode_survives_profile_and_pack_lifecycle(
         card.contextual_evidence == ()
         for card in recovered.current_scored_pack.cards
     )
+    assert all(
+        not any(
+            reason.kind in contextual_reason_kinds for reason in card.rationale.reasons
+        )
+        for card in recovered.current_scored_pack.cards
+    )
 
     enabled = session.dispatch(command=ChangeContextualScoring(enabled=True))
     assert enabled.contextual_adjustments_enabled is True
     assert enabled.current_scored_pack is not None
     assert any(
         card.contextual_evidence
+        for card in enabled.current_scored_pack.cards
+    )
+    assert any(
+        any(
+            reason.kind in contextual_reason_kinds for reason in card.rationale.reasons
+        )
         for card in enabled.current_scored_pack.cards
     )
 
@@ -1018,6 +1102,32 @@ def test_live_session_contextual_mode_survives_profile_and_pack_lifecycle(
         card.contextual_evidence
         for card in future_enabled.current_scored_pack.cards
     )
+    future_records = load_draft_audit_records(
+        account_id=state.account_id,
+        draft_id=state.draft_id,
+        app_dir=session.audit_store.app_dir,
+    )
+    future_decision = next(
+        record
+        for record in reversed(future_records)
+        if record["record_type"] == "decision_evaluated"
+    )
+    future_recommendations = {
+        recommendation.card.grp_id: recommendation
+        for recommendation in future_enabled.recommendations.cards
+    }
+    for candidate in future_decision["candidates"]:
+        recommendation = future_recommendations[candidate["grp_id"]]
+        assert candidate["rationale"] == recommendation.rationale.to_json()
+        assert candidate["concise_explanation"] == recommendation.concise_explanation
+        assert candidate["explanation"] == recommendation.explanation
+    assert any(
+        any(
+            reason["kind"] in contextual_reason_kinds
+            for reason in candidate["rationale"]["reasons"]
+        )
+        for candidate in future_decision["candidates"]
+    )
 
     future_disabled = session.dispatch(
         command=ChangeContextualScoring(enabled=False)
@@ -1027,6 +1137,12 @@ def test_live_session_contextual_mode_survives_profile_and_pack_lifecycle(
     assert future_disabled.current_scored_pack is not None
     assert all(
         card.contextual_evidence == ()
+        for card in future_disabled.current_scored_pack.cards
+    )
+    assert all(
+        not any(
+            reason.kind in contextual_reason_kinds for reason in card.rationale.reasons
+        )
         for card in future_disabled.current_scored_pack.cards
     )
 
