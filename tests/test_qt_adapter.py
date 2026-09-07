@@ -14,12 +14,16 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QObject, QTimer, QUrl, Slot
-from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
-from draftomen.set_profile import SetProfile
 
+from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.mock_session import MockLiveSession
-from draftomen.profile_client import ProfileClient, ProfileRefreshOutcome, ProfileRefreshResult
+from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
+from draftomen.preferences import GuiDisplayPreferences
+from draftomen.profile_client import (
+    ProfileClient,
+    ProfileRefreshOutcome,
+    ProfileRefreshResult,
+)
 from draftomen.qt_adapter import (
     GuiPreferencesAdapter,
     LiveSessionAdapter,
@@ -29,13 +33,13 @@ from draftomen.qt_adapter import (
 from draftomen.session import (
     CardDataState,
     CardImageFetchResult,
+    CardImageRequest,
+    CardImageState,
+    CardView,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
     ChooseRecommendation,
-    CardImageRequest,
-    CardImageState,
-    CardView,
     DataLoadPhase,
     DismissError,
     FocusBuildCard,
@@ -46,13 +50,14 @@ from draftomen.session import (
     ProfileRefreshRequest,
     Recommendation,
     RecommendationState,
-    RequestBuild,
     RequestBacktest,
+    RequestBuild,
     RequestRatingsDownload,
     RetryError,
     SetProfileState,
     SnapshotPublisher,
 )
+from draftomen.set_profile import SetProfile
 
 
 class _FakeSession:
@@ -106,11 +111,11 @@ class _ProfileRefreshFakeClient:
         self.error = error
         self.started = threading.Event()
         self.release = threading.Event()
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, bool]] = []
         self.thread_ids: list[int] = []
 
-    def refresh(self, set_code: str, event_format: str) -> object:
-        self.calls.append((set_code, event_format))
+    def refresh(self, set_code: str, event_format: str, *, force: bool = False) -> object:
+        self.calls.append((set_code, event_format, force))
         self.thread_ids.append(threading.get_ident())
         self.started.set()
         self.release.wait(timeout=3.0)
@@ -120,12 +125,18 @@ class _ProfileRefreshFakeClient:
 
 
 class _ProfileRefreshFakeSession(_FakeSession):
-    def __init__(self, *, publish: SnapshotPublisher) -> None:
+    def __init__(
+        self,
+        *,
+        publish: SnapshotPublisher,
+        force: bool = False,
+    ) -> None:
         super().__init__(publish=publish)
         self.profile_request = ProfileRefreshRequest(
             generation=1,
             set_code="OTJ",
             event_format="QuickDraft",
+            force=force,
         )
         self.completed_thread_ids: list[int] = []
         self.failed_thread_ids: list[int] = []
@@ -709,8 +720,10 @@ def _process_until(
     application.processEvents()
 
 
+@pytest.mark.parametrize("force", [False, True])
 def test_live_adapter_refreshes_profiles_off_worker_without_blocking_polling(
     qcore_application: QCoreApplication,
+    force: bool,
 ) -> None:
     gui_thread_id = threading.get_ident()
     sessions: list[_ProfileRefreshFakeSession] = []
@@ -723,7 +736,7 @@ def test_live_adapter_refreshes_profiles_off_worker_without_blocking_polling(
     )
 
     def factory(publish: SnapshotPublisher) -> LiveSession:
-        session = _ProfileRefreshFakeSession(publish=publish)
+        session = _ProfileRefreshFakeSession(publish=publish, force=force)
         sessions.append(session)
         return cast(LiveSession, session)
 
@@ -742,7 +755,7 @@ def test_live_adapter_refreshes_profiles_off_worker_without_blocking_polling(
             description="profile refresh and continued live polling",
         )
         session = sessions[0]
-        assert client.calls == [("OTJ", "QuickDraft")]
+        assert client.calls == [("OTJ", "QuickDraft", force)]
         assert client.thread_ids
         assert all(thread_id != gui_thread_id for thread_id in client.thread_ids)
         assert len(session.poll_thread_ids) >= 2
@@ -755,7 +768,7 @@ def test_live_adapter_refreshes_profiles_off_worker_without_blocking_polling(
         assert session.completed_results
         assert session.completed_thread_ids[0] != gui_thread_id
         assert session.completed_thread_ids[0] != client.thread_ids[0]
-        assert client.calls == [("OTJ", "QuickDraft")]
+        assert client.calls == [("OTJ", "QuickDraft", force)]
     finally:
         client.release.set()
         adapter.shutdown()
@@ -787,7 +800,7 @@ def test_live_adapter_routes_profile_refresh_failure_to_session_worker(
             description="profile refresh failure",
         )
         session = sessions[0]
-        assert client.calls == [("OTJ", "QuickDraft")]
+        assert client.calls == [("OTJ", "QuickDraft", False)]
         assert session.failed_messages == ["profile network failed"]
         assert session.failed_thread_ids[0] != threading.get_ident()
     finally:

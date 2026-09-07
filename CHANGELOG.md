@@ -2,6 +2,13 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Propagate explicit hosted-profile refresh requests with `force=True`, bypassing
+  only the manifest TTL while preserving offline, authority, validation, and
+  non-regression safeguards and usable ratings during refresh. (#367)
+- Route explicit ratings-download and recoverable ratings-retry actions through
+  that forced hosted-profile lifecycle, coalesce repeated requests, and update
+  recommendations in place after validated adoption; TUI and Qt retain existing
+  actions and plain-watch adds no command UI. (#368)
 - Keep hosted-profile refresh generations scoped to the active lifecycle, rejecting obsolete completions on set/account/draft changes, clear, and stop without restarting on ordinary picks or repeated same-lifecycle detection. (#360)
 - Use cached empirical profile ratings immediately for live scoring and keep
   deterministic fallback scoring provider-independent. (#361)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import gzip
+import hashlib
 import http.client
 import io
 import json
@@ -14,15 +16,11 @@ from types import SimpleNamespace
 import pytest
 
 import draftomen.session as session_module
-from draftomen.profile_client import (
-    ProfileClient,
-    ProfileRefreshOutcome,
-    ProfileRefreshResult,
-)
-from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.audit import load_draft_audit_records
 from draftomen.backtest import (
     BacktestPickResult as DomainBacktestPickResult,
+)
+from draftomen.backtest import (
     BacktestReport as DomainBacktestReport,
 )
 from draftomen.card_data_client import CardDataClient
@@ -42,9 +40,9 @@ from draftomen.pickengine import (
     ColorCommitment,
     ContextualScoreBreakdown,
     PickScoringContext,
-    ScoreNormalization,
     ScoredCard,
     ScoredPack,
+    ScoreNormalization,
     build_pick_scoring_context,
 )
 from draftomen.pool import (
@@ -55,7 +53,15 @@ from draftomen.pool import (
     load_draft_state,
     save_draft_state,
 )
+from draftomen.profile_client import (
+    ProfileClient,
+    ProfileNetworkPolicy,
+    ProfileRefreshOutcome,
+    ProfileRefreshResult,
+)
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.session import (
+    LOG_SETUP_GUIDANCE,
     AccountIdentity,
     ApplicationPhase,
     ApplicationStatus,
@@ -77,14 +83,12 @@ from draftomen.session import (
     DraftIdentity,
     FocusBuildCard,
     LiveSession,
-    LOG_SETUP_GUIDANCE,
     LiveSessionCommand,
     LiveSessionEvent,
     LiveSessionSnapshot,
     OperationKind,
     PoolCard,
     PoolState,
-    ProfileRefreshRequest,
     ProgressState,
     RatingsLoader,
     RatingsState,
@@ -94,22 +98,10 @@ from draftomen.session import (
     RequestBuild,
     RequestRatingsDownload,
     RetryError,
-    SetProfileState,
     SessionError,
+    SetProfileState,
 )
-from draftomen.seventeen import (
-    DownloadProgressCallback,
-    PREMIER_DRAFT_FORMAT,
-    QUICK_DRAFT_FORMAT,
-    RatingSampleCounts,
-    SeventeenCardStats,
-    SeventeenLandsData,
-    SeventeenLandsDownloadProgress,
-    SeventeenLandsError,
-    SeventeenLandsFormatData,
-    load_or_refresh_17lands_data,
-    save_17lands_format_data,
-)
+from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import (
     CardRating,
     ProfileMaturity,
@@ -119,7 +111,17 @@ from draftomen.set_profile import (
     load_set_profile,
     set_profile_path,
 )
-from draftomen.set_card_data import SetCardData
+from draftomen.seventeen import (
+    PREMIER_DRAFT_FORMAT,
+    QUICK_DRAFT_FORMAT,
+    RatingSampleCounts,
+    SeventeenCardStats,
+    SeventeenLandsData,
+    SeventeenLandsError,
+    SeventeenLandsFormatData,
+    load_or_refresh_17lands_data,
+    save_17lands_format_data,
+)
 from draftomen.splash import SplashState
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -1030,6 +1032,237 @@ def test_live_session_profile_activation_is_local_first_and_queues_one_request(
     } == {104894: 0.90, 104976: 0.10}
 
 
+
+def test_live_session_profile_refresh_force_precedence_and_fresh_identity(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_empirical_profile()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=_ProfileClientStub({"TST": profile}),
+    )
+
+    session._set_active_set_code(set_code="TST")
+    automatic = session.profile_refresh_request()
+    assert automatic is not None
+    assert automatic.force is False
+
+    with session._state_lock:
+        session._queue_profile_refresh_locked(force=True)
+    forced = session.profile_refresh_request()
+    assert forced is not None
+    assert forced.force is True
+    assert forced != automatic
+    assert forced.generation > automatic.generation
+
+    with session._state_lock:
+        session._queue_profile_refresh_locked(force=True)
+        session._queue_profile_refresh_locked(force=False)
+    assert session.profile_refresh_request() is forced
+
+    unchanged_snapshot = session.snapshot
+    session.complete_profile_refresh(
+        request=automatic,
+        result=ProfileRefreshResult(
+            profile=replace(profile, profile_version="stale-success"),
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    session.fail_profile_refresh(request=automatic, error_message="stale failure")
+    assert session.snapshot is unchanged_snapshot
+    assert session.profile_refresh_request() is forced
+
+    session.complete_profile_refresh(
+        request=forced,
+        result=ProfileRefreshResult(
+            profile=profile,
+            outcome=ProfileRefreshOutcome.UNCHANGED,
+        ),
+    )
+    assert session.profile_refresh_request() is None
+    completed_snapshot = session.snapshot
+
+    with session._state_lock:
+        session._queue_profile_refresh_locked(force=True)
+    after_completion = session.profile_refresh_request()
+    assert after_completion is not None
+    assert after_completion.force is True
+    assert after_completion != forced
+    assert after_completion.generation > forced.generation
+
+    session.fail_profile_refresh(request=forced, error_message="stale failure")
+    assert session.snapshot is completed_snapshot
+    assert session.profile_refresh_request() is after_completion
+
+    session.fail_profile_refresh(request=after_completion, error_message="failed")
+    assert session.profile_refresh_request() is None
+    failed_snapshot = session.snapshot
+
+    with session._state_lock:
+        session._queue_profile_refresh_locked(force=True)
+    after_failure = session.profile_refresh_request()
+    assert after_failure is not None
+    assert after_failure.force is True
+    assert after_failure != after_completion
+    assert after_failure.generation > after_completion.generation
+
+    session.complete_profile_refresh(
+        request=after_completion,
+        result=ProfileRefreshResult(
+            profile=replace(profile, profile_version="stale-again"),
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    assert session.snapshot is failed_snapshot
+    assert session.profile_refresh_request() is after_failure
+
+
+def test_live_session_forced_profile_command_bypasses_fresh_manifest_ttl(
+    tmp_path: Path,
+) -> None:
+    manifest_url = "https://profiles.example.test/v1/manifest.json"
+    artifact_a_url = "https://profiles.example.test/v1/tst-a.json.gz"
+    artifact_b_url = "https://profiles.example.test/v1/tst-b.json.gz"
+    now = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    profile_a = _fixture_empirical_profile(
+        profile_version="empirical-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+        first_gih=0.90,
+        second_gih=0.10,
+    )
+    profile_b = _fixture_empirical_profile(
+        profile_version="empirical-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+        first_gih=0.10,
+        second_gih=0.90,
+    )
+
+    def artifact_for(
+        profile: SetProfile,
+        *,
+        url: str,
+    ) -> tuple[ProfileManifestArtifact, bytes]:
+        raw = profile.to_bytes()
+        compressed = gzip.compress(raw, mtime=0)
+        return (
+            ProfileManifestArtifact(
+                set_code=profile.set_code,
+                event_format=profile.event_format,
+                set_profile_schema_version=1,
+                profile_version=profile.profile_version,
+                generated_at=profile.generated_at,
+                url=url,
+                gzip_bytes=len(compressed),
+                profile_bytes=len(raw),
+                gzip_sha256=hashlib.sha256(compressed).hexdigest(),
+                profile_sha256=hashlib.sha256(raw).hexdigest(),
+                maturity=profile.maturity,
+            ),
+            compressed,
+        )
+
+    artifact_a, compressed_a = artifact_for(profile_a, url=artifact_a_url)
+    artifact_b, compressed_b = artifact_for(profile_b, url=artifact_b_url)
+    payloads = {
+        manifest_url: ProfileManifest(
+            artifacts=(artifact_a,),
+            published_at="2026-08-29T00:00:00+00:00",
+        ).to_bytes(),
+        artifact_a_url: compressed_a,
+    }
+    calls: list[str] = []
+
+    class Response:
+        def __init__(self, payload: bytes, url: str) -> None:
+            self._payload = payload
+            self._url = url
+
+        def read(self, limit: int) -> bytes:
+            del limit
+            payload, self._payload = self._payload, b""
+            return payload
+
+        def close(self) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return self._url
+
+    def opener(request: object, *, timeout: float) -> Response:
+        del timeout
+        url = request.full_url
+        calls.append(url)
+        return Response(payloads[url], url)
+
+    client = ProfileClient(
+        app_dir=tmp_path / "app",
+        manifest_url=manifest_url,
+        opener=opener,
+        clock=lambda: now,
+        manifest_ttl_seconds=24 * 60 * 60,
+    )
+    initial = client.refresh("TST", QUICK_DRAFT_FORMAT, force=True)
+    assert initial.outcome is ProfileRefreshOutcome.UPDATED
+    assert initial.profile == profile_a
+
+    payloads[manifest_url] = ProfileManifest(
+        artifacts=(artifact_b,),
+        published_at="2026-08-30T00:00:00+00:00",
+    ).to_bytes()
+    payloads[artifact_b_url] = compressed_b
+    normal = client.refresh("TST", QUICK_DRAFT_FORMAT)
+    assert normal.outcome is ProfileRefreshOutcome.UNCHANGED
+    assert normal.profile == profile_a
+    assert calls == [manifest_url, artifact_a_url]
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "session",
+        card_database=_fixture_set_card_database(set_code="TST"),
+        profile_client=client,
+    )
+    baseline = session.process_lines(
+        lines=_profiled_history_lines(
+            pool_before_pick=_fixture_pool_before_pick(
+                pack_number=CONTEXT_PACK_NUMBER,
+                pick_number=CONTEXT_PICK_NUMBER,
+            )
+        )
+    )
+    assert baseline.set_profile.profile_version == profile_a.profile_version
+    assert [
+        recommendation.card.grp_id
+        for recommendation in baseline.recommendations.cards
+    ] == [104894, 104976]
+    automatic = session.profile_refresh_request()
+    assert automatic is not None
+    requested = session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    forced = session.profile_refresh_request()
+    assert forced is not None
+    assert forced.force is True
+    assert forced != automatic
+    assert requested.current_scored_pack is baseline.current_scored_pack
+
+    result = client.refresh(
+        forced.set_code,
+        forced.event_format,
+        force=forced.force,
+    )
+    assert result.outcome is ProfileRefreshOutcome.UPDATED
+    assert result.profile == profile_b
+    assert calls == [manifest_url, artifact_a_url, manifest_url, artifact_b_url]
+    session.complete_profile_refresh(request=forced, result=result)
+
+    adopted = session.snapshot
+    assert adopted.current_scored_pack is not baseline.current_scored_pack
+    assert adopted.set_profile.profile_version == profile_b.profile_version
+    assert adopted.ratings.last_successful_update == profile_b.generated_at
+    assert {
+        recommendation.card.grp_id: recommendation.win_rate
+        for recommendation in adopted.recommendations.cards
+    } == {104894: 0.10, 104976: 0.90}
+
 @pytest.mark.parametrize("maturity", ("semantic-only", "metadata-only", "generic"))
 def test_live_session_non_empirical_profiles_use_deterministic_offline_fallbacks(
     tmp_path: Path,
@@ -1927,6 +2160,7 @@ def test_live_session_profile_unchanged_and_failed_refreshes_retain_last_good_st
     assert final.current_scored_pack is scored_pack
     assert final.current_scored_pack.cards == scored_pack.cards
     assert final.recommendations.cards == recommendations
+    assert final.errors == ()
     assert load_draft_audit_records(
         account_id="profiled-account",
         draft_id="profiled-draft",
@@ -2049,6 +2283,101 @@ def test_live_session_explicit_profile_is_authoritative_without_refresh_request(
     assert session.profile_refresh_request() is None
     assert session._set_profile is explicit
     assert session.snapshot.set_profile.source == "injected"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("offline-policy", "absent-manifest", "absent-client", "injected"),
+)
+def test_live_session_ratings_download_respects_network_policy_and_authority(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    profile = _fixture_empirical_profile()
+    app_dir = tmp_path / "app"
+    manifest_url = "https://profiles.example.test/manifest.json"
+    opener_calls: list[object] = []
+    ratings_calls: list[str] = []
+
+    def forbidden_opener(*args: object, **kwargs: object) -> None:
+        opener_calls.append((args, kwargs))
+        raise AssertionError("network-forbidden profile refresh opened the network")
+
+    def forbidden_ratings_loader(set_code: str) -> SeventeenLandsData:
+        ratings_calls.append(set_code)
+        raise AssertionError("hosted profiles must replace direct ratings downloads")
+
+    profile_client: ProfileClient | None = None
+    injected_profile: SetProfile | None = None
+    if mode == "offline-policy":
+        profile_client = ProfileClient(
+            app_dir=app_dir,
+            manifest_url=manifest_url,
+            network_policy=ProfileNetworkPolicy.OFFLINE,
+            opener=forbidden_opener,
+        )
+        dump_set_profile(profile, profile_client.profile_path("TST", QUICK_DRAFT_FORMAT))
+    elif mode == "absent-manifest":
+        profile_client = ProfileClient(
+            app_dir=app_dir,
+            opener=forbidden_opener,
+        )
+        dump_set_profile(profile, profile_client.profile_path("TST", QUICK_DRAFT_FORMAT))
+    elif mode == "absent-client":
+        dump_set_profile(
+            profile,
+            set_profile_path(
+                set_code="TST",
+                event_format=QUICK_DRAFT_FORMAT,
+                app_dir=app_dir,
+            ),
+        )
+    elif mode == "injected":
+        injected_profile = profile
+        profile_client = ProfileClient(
+            app_dir=app_dir,
+            manifest_url=manifest_url,
+            opener=forbidden_opener,
+        )
+    else:  # pragma: no cover - guarded by pytest parametrization
+        raise AssertionError(f"unsupported mode: {mode}")
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_fixture_card_database(),
+        ratings_loader=forbidden_ratings_loader,
+        profile_client=profile_client,
+        set_profile=injected_profile,
+    )
+    baseline = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+    assert baseline.current_scored_pack is not None
+    assert baseline.ratings.phase is DataLoadPhase.READY
+    assert baseline.recommendations.cards
+    baseline_ratings = baseline.ratings
+    baseline_recommendations = baseline.recommendations
+    baseline_scored_pack = baseline.current_scored_pack
+
+    requested = session.dispatch(
+        command=RequestRatingsDownload(set_code="TST"),
+    )
+
+    assert requested is baseline
+    assert requested.ratings is baseline_ratings
+    assert requested.recommendations is baseline_recommendations
+    assert requested.current_scored_pack is baseline_scored_pack
+    assert session.profile_refresh_request() is None
+    assert ratings_calls == []
+    assert opener_calls == []
 
 
 def test_live_session_recovered_profiled_pack_uses_shared_context(
@@ -2795,52 +3124,21 @@ def test_live_session_locked_pair_scoring_never_invokes_lazy_loader(
         assert snapshot.recommendations.cards[0].card.grp_id == 104894
 
 
-def test_live_session_locked_pair_refresh_never_restores_lazy_loader(
+def test_live_session_locked_pair_refresh_never_invokes_ratings_loader(
     tmp_path: Path,
 ) -> None:
-    lazy_calls: list[tuple[int, str]] = []
-    loaded_ratings: list[SeventeenLandsData] = []
+    profile = _fixture_empirical_profile()
+    loader_calls: list[str] = []
 
-    def ratings_loader(set_code: str) -> SeventeenLandsData:
-        load_number = len(loaded_ratings) + 1
-        ratings_data = _fixture_ratings_data(set_code=set_code)
-        if load_number == 2:
-            ratings_data = replace(
-                ratings_data,
-                primary=replace(
-                    ratings_data.primary,
-                    card_ratings={
-                        104894: _fixture_stats(
-                            grp_id=104894,
-                            color="WU",
-                            gih_win_rate=0.40,
-                            average_last_seen_at=3.0,
-                        ),
-                        104976: _fixture_stats(
-                            grp_id=104976,
-                            color="WU",
-                            gih_win_rate=0.90,
-                            average_last_seen_at=1.0,
-                        ),
-                    },
-                ),
-            )
-
-        def lazy_pair_loader(pair: str) -> SeventeenLandsFormatData:
-            lazy_calls.append((load_number, pair))
-            raise SeventeenLandsError(f"lazy pair loader invoked for {pair}")
-
-        ratings_data = replace(
-            ratings_data,
-            pair_card_ratings_loader=lazy_pair_loader,
-        )
-        loaded_ratings.append(ratings_data)
-        return ratings_data
+    def forbidden_loader(set_code: str) -> SeventeenLandsData:
+        loader_calls.append(set_code)
+        raise AssertionError("explicit profile refresh must not load 17Lands ratings")
 
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         card_database=_fixture_card_database(),
-        ratings_loader=ratings_loader,
+        ratings_loader=forbidden_loader,
+        profile_client=_ProfileClientStub({"TST": profile}),
     )
     locked_pool = _fixture_pool_before_pick(
         pack_number=CONTEXT_PACK_NUMBER,
@@ -2852,15 +3150,26 @@ def test_live_session_locked_pair_refresh_never_restores_lazy_loader(
 
     assert initial.current_scored_pack is not None
     assert initial.current_scored_pack.commitment.phase == "locked"
-    assert initial.recommendations.cards[0].card.grp_id == 104894
+    recommendations = initial.recommendations.cards
 
     refreshed = session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    request = session.profile_refresh_request()
+    assert request is not None
+    assert request.force is True
+    assert refreshed.current_scored_pack is initial.current_scored_pack
+    assert refreshed.recommendations.cards == recommendations
+    assert loader_calls == []
 
-    assert len(loaded_ratings) == 2
-    assert refreshed.current_scored_pack is not None
-    assert refreshed.current_scored_pack.commitment.phase == "locked"
-    assert refreshed.recommendations.cards[0].card.grp_id == 104976
-    assert lazy_calls == []
+    session.complete_profile_refresh(
+        request=request,
+        result=ProfileRefreshResult(
+            profile=profile,
+            outcome=ProfileRefreshOutcome.UNCHANGED,
+        ),
+    )
+    assert session.snapshot.current_scored_pack is initial.current_scored_pack
+    assert session.snapshot.recommendations.cards == recommendations
+    assert loader_calls == []
 
 
 def test_live_session_locked_pair_scoring_does_not_open_scryfall_or_17lands_network(
@@ -2975,229 +3284,22 @@ def test_live_session_uses_one_based_later_pick_index_in_scores_and_audit(
     assert evaluation["commitment"]["level"] > 0.0
 
 
-def test_live_session_missing_ratings_use_neutral_priors_until_download_completes(
+def test_live_session_explicit_ratings_download_queues_forced_profile_refresh(
     tmp_path: Path,
 ) -> None:
-    published: list[LiveSessionSnapshot] = []
-    load_calls: list[tuple[str, bool]] = []
+    profile = _fixture_empirical_profile()
+    loader_calls: list[str] = []
 
-    def ratings_loader(
-        set_code: str,
-        progress_callback: DownloadProgressCallback,
-        *,
-        refresh: bool,
-    ) -> SeventeenLandsData:
-        load_calls.append((set_code, refresh))
-        progress_callback(
-            SeventeenLandsDownloadProgress(
-                completed_requests=1,
-                total_requests=4,
-                message="Downloaded Quick Draft ratings",
-            )
-        )
-        progress_callback(
-            SeventeenLandsDownloadProgress(
-                completed_requests=4,
-                total_requests=4,
-                message="Downloaded Premier Draft ratings",
-            )
-        )
-        return _fixture_ratings_data(set_code=set_code)
+    def forbidden_loader(set_code: str) -> SeventeenLandsData:
+        loader_calls.append(set_code)
+        raise AssertionError("explicit ratings downloads must use hosted profiles")
 
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
         card_database=_fixture_card_database(),
-        ratings_progress_loader=ratings_loader,
-        ratings_cache_checker=lambda set_code: False,
-        snapshot_publisher=published.append,
-    )
-    fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
-    _process_until_recommendations(session=session, lines=fixture_lines)
-
-    assert load_calls == []
-    assert session.snapshot.ratings.phase == DataLoadPhase.MISSING
-    assert session.snapshot.recommendations.source_summary == "neutral prior"
-    assert all(card.no_data for card in session.snapshot.recommendations.cards)
-    assert all(card.score == 50 for card in session.snapshot.recommendations.cards)
-
-    published.clear()
-    downloaded = session.dispatch(command=RequestRatingsDownload(set_code="MSH"))
-
-    assert load_calls == [("MSH", True)]
-    assert downloaded.ratings.phase == DataLoadPhase.READY
-    assert downloaded.progress is None
-    assert downloaded.recommendations.cards[0].card.grp_id == 104894
-    assert any(
-        snapshot.ratings.phase == DataLoadPhase.LOADING
-        and snapshot.progress == ProgressState(
-            operation=OperationKind.RATINGS,
-            message="Downloaded Quick Draft ratings",
-            completed=1,
-            total=4,
-        )
-        for snapshot in published
-    )
-    assert any(
-        snapshot.progress is not None and snapshot.progress.completed == 4
-        for snapshot in published
-    )
-
-
-def test_live_session_explicit_ratings_refresh_reloads_ready_data(
-    tmp_path: Path,
-) -> None:
-    published: list[LiveSessionSnapshot] = []
-    load_calls: list[tuple[str, bool]] = []
-
-    def ratings_loader(
-        set_code: str,
-        progress_callback: DownloadProgressCallback,
-        *,
-        refresh: bool,
-    ) -> SeventeenLandsData:
-        load_calls.append((set_code, refresh))
-        progress_callback(
-            SeventeenLandsDownloadProgress(
-                completed_requests=1,
-                total_requests=4,
-                message="Refreshing Quick Draft ratings",
-            )
-        )
-        fetched_at = datetime(
-            2026,
-            8,
-            23 if len(load_calls) == 1 else 24,
-            12,
-            tzinfo=UTC,
-        )
-        return _fixture_ratings_data(set_code=set_code, fetched_at=fetched_at)
-
-    cache_checks: list[str] = []
-    session = LiveSession(
-        log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        card_database=_fixture_card_database(),
-        ratings_progress_loader=ratings_loader,
-        ratings_cache_checker=lambda set_code: (
-            cache_checks.append(set_code) or True
-        ),
-        snapshot_publisher=published.append,
-    )
-    _process_until_recommendations(
-        session=session,
-        lines=FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines(),
-    )
-
-    assert load_calls == [("MSH", False)]
-    assert cache_checks == ["MSH"]
-    assert session.snapshot.ratings.phase == DataLoadPhase.READY
-    assert session.snapshot.ratings.last_successful_update == (
-        "2026-08-23T12:00:00+00:00"
-    )
-
-    published.clear()
-    refreshed = session.dispatch(command=RequestRatingsDownload(set_code="MSH"))
-
-    assert load_calls == [("MSH", False), ("MSH", True)]
-    assert cache_checks == ["MSH"]
-    assert refreshed.ratings.phase == DataLoadPhase.READY
-    assert refreshed.ratings.last_successful_update == (
-        "2026-08-24T12:00:00+00:00"
-    )
-    assert refreshed.progress is None
-    assert any(
-        snapshot.ratings.phase == DataLoadPhase.LOADING
-        and snapshot.progress == ProgressState(
-            operation=OperationKind.RATINGS,
-            message="Refreshing Quick Draft ratings",
-            completed=1,
-            total=4,
-        )
-        for snapshot in published
-    )
-    assert any(
-        snapshot.ratings.phase == DataLoadPhase.READY
-        and snapshot.progress is None
-        for snapshot in published
-    )
-def test_live_session_ratings_refresh_retains_timestamp_while_loading_and_on_failure(
-    tmp_path: Path,
-) -> None:
-    attempts = 0
-    published: list[LiveSessionSnapshot] = []
-
-    def ratings_loader(set_code: str) -> SeventeenLandsData:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 2:
-            raise RuntimeError("temporary service failure")
-        fetched_at = datetime(
-            2026,
-            8,
-            23 if attempts == 1 else 24,
-            12,
-            tzinfo=UTC,
-        )
-        return _fixture_ratings_data(set_code=set_code, fetched_at=fetched_at)
-
-    session = LiveSession(
-        log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        card_database=_fixture_card_database(),
-        ratings_loader=ratings_loader,
-        ratings_cache_checker=lambda set_code: True,
-        snapshot_publisher=published.append,
-    )
-    _process_until_recommendations(
-        session=session,
-        lines=FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines(),
-    )
-
-    previous_timestamp = "2026-08-23T12:00:00+00:00"
-    assert session.snapshot.ratings.last_successful_update == previous_timestamp
-    card_timestamp = session.snapshot.card_data.last_successful_update
-
-    published.clear()
-    failed = session.dispatch(command=RequestRatingsDownload(set_code="MSH"))
-
-    assert failed.ratings.phase == DataLoadPhase.FAILED
-    assert failed.ratings.last_successful_update == previous_timestamp
-    assert failed.card_data.last_successful_update == card_timestamp
-    assert any(
-        snapshot.ratings.phase == DataLoadPhase.LOADING
-        and snapshot.ratings.last_successful_update == previous_timestamp
-        for snapshot in published
-    )
-
-
-def test_live_session_failed_ratings_download_is_recoverable_and_retry_rescores(
-    tmp_path: Path,
-) -> None:
-    attempts = 0
-    lazy_calls: list[str] = []
-
-    def ratings_loader(set_code: str) -> SeventeenLandsData:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("temporary service failure")
-
-        def lazy_pair_loader(pair: str) -> SeventeenLandsFormatData:
-            lazy_calls.append(pair)
-            raise SeventeenLandsError(f"lazy pair loader invoked for {pair}")
-
-        return replace(
-            _fixture_ratings_data(set_code=set_code),
-            pair_card_ratings_loader=lazy_pair_loader,
-        )
-
-    session = LiveSession(
-        log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        card_database=_fixture_card_database(),
-        ratings_loader=ratings_loader,
-        ratings_cache_checker=lambda set_code: False,
+        ratings_loader=forbidden_loader,
+        profile_client=_ProfileClientStub({"TST": profile}),
     )
     initial = session.process_lines(
         lines=(
@@ -3209,35 +3311,197 @@ def test_live_session_failed_ratings_download_is_recoverable_and_retry_rescores(
             ),
         )
     )
-    assert initial.current_scored_pack is not None
-    assert initial.current_scored_pack.commitment.phase == "locked"
-    assert initial.current_scored_pack.commitment.inferred_pair == "WU"
+    automatic = session.profile_refresh_request()
+    assert automatic is not None
 
-    failed = session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    requested = session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    forced = session.profile_refresh_request()
+    assert forced is not None
+    assert forced.force is True
+    assert forced != automatic
+    assert requested is initial
+    assert requested.ratings == initial.ratings
+    assert requested.recommendations == initial.recommendations
+    assert loader_calls == []
 
-    assert failed.ratings.phase == DataLoadPhase.FAILED
-    assert failed.progress is None
+
+def test_live_session_forced_profile_failure_is_recoverable_and_retry_is_fresh(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_empirical_profile()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"TST": profile}),
+    )
+    initial = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+    session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    failed_request = session.profile_refresh_request()
+    assert failed_request is not None
+
+    session.fail_profile_refresh(
+        request=failed_request,
+        error_message="private network diagnostic",
+    )
+
+    failed = session.snapshot
+    assert failed.ratings == initial.ratings
+    assert failed.recommendations == initial.recommendations
+    assert failed.current_scored_pack is initial.current_scored_pack
     assert failed.errors == (
         SessionError(
             error_id="ratings:TST",
             code="ratings_unavailable",
-            message="17Lands ratings failed for TST: temporary service failure.",
+            message="17Lands ratings failed for TST: hosted profile refresh failed.",
             recoverable=True,
             operation=OperationKind.RATINGS,
         ),
     )
-    assert failed.recommendations.source_summary == "neutral prior"
 
-    recovered = session.dispatch(command=RetryError(error_id="ratings:TST"))
+    session.dispatch(command=RetryError(error_id="ratings:TST"))
+    retry_request = session.profile_refresh_request()
+    assert retry_request is not None
+    assert retry_request.force is True
+    assert retry_request != failed_request
+    assert retry_request.generation > failed_request.generation
 
-    assert attempts == 2
-    assert recovered.ratings.phase == DataLoadPhase.READY
+    session.complete_profile_refresh(
+        request=retry_request,
+        result=ProfileRefreshResult(
+            profile=profile,
+            outcome=ProfileRefreshOutcome.UNCHANGED,
+        ),
+    )
+    recovered = session.snapshot
     assert recovered.errors == ()
-    assert recovered.current_scored_pack is not None
-    assert recovered.current_scored_pack.commitment.phase == "locked"
-    assert recovered.current_scored_pack.commitment.inferred_pair == "WU"
-    assert recovered.recommendations.cards[0].card.grp_id == 104894
-    assert lazy_calls == []
+    assert recovered.ratings == initial.ratings
+    assert recovered.recommendations == initial.recommendations
+    assert recovered.current_scored_pack is initial.current_scored_pack
+
+
+def test_live_session_automatic_profile_success_clears_stale_forced_error(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_empirical_profile()
+    newer = _fixture_empirical_profile(
+        profile_version="empirical-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+        first_gih=0.10,
+        second_gih=0.90,
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"TST": profile}),
+    )
+    session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+    session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    forced = session.profile_refresh_request()
+    assert forced is not None
+    assert forced.force is True
+
+    session.fail_profile_refresh(
+        request=forced,
+        error_message="private network diagnostic",
+    )
+    assert any(error.error_id == "ratings:TST" for error in session.snapshot.errors)
+
+    fresh_state = _draft_state(
+        account_id="fresh-account",
+        screen_name="Fresh",
+        draft_id="fresh-draft",
+        updated_at="2026-08-30T10:00:00+00:00",
+        pool_grp_ids=(),
+    )
+    session._select_state(state=fresh_state, recovered=False)
+    automatic = session.profile_refresh_request()
+    assert automatic is not None
+    assert automatic.force is False
+
+    session.complete_profile_refresh(
+        request=automatic,
+        result=ProfileRefreshResult(
+            profile=newer,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    assert session.snapshot.set_profile.profile_version == newer.profile_version
+    assert session.snapshot.errors == ()
+
+    ratings_state = session._ratings_state_by_set["TST"]
+    session._publish_active_ratings_state(state=ratings_state)
+    assert session.snapshot.errors == ()
+
+
+def test_live_session_structured_forced_profile_failure_preserves_usable_state(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_empirical_profile()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"TST": profile}),
+    )
+    initial = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+    session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    request = session.profile_refresh_request()
+    assert request is not None
+    assert request.force is True
+
+    session.complete_profile_refresh(
+        request=request,
+        result=ProfileRefreshResult(
+            profile=profile,
+            outcome=ProfileRefreshOutcome.REMOTE_FAILED,
+        ),
+    )
+
+    failed = session.snapshot
+    assert failed.set_profile.profile_version == initial.set_profile.profile_version
+    assert failed.set_profile.phase is DataLoadPhase.FAILED
+    assert failed.set_profile.refresh_outcome == "remote-failed"
+    assert failed.ratings == initial.ratings
+    assert failed.recommendations == initial.recommendations
+    assert failed.current_scored_pack is initial.current_scored_pack
+    assert failed.errors == (
+        SessionError(
+            error_id="ratings:TST",
+            code="ratings_unavailable",
+            message="17Lands ratings failed for TST: hosted profile refresh failed.",
+            recoverable=True,
+            operation=OperationKind.RATINGS,
+        ),
+    )
 
 
 def test_live_session_card_data_load_failure_and_retry_publish_complete_states(
@@ -3264,8 +3528,10 @@ def test_live_session_card_data_load_failure_and_retry_publish_complete_states(
         app_dir=tmp_path / "app",
         snapshot_publisher=published.append,
     )
-
-    assert session.snapshot.card_data.phase == DataLoadPhase.IDLE
+    assert session.snapshot.card_data == CardDataState(
+        phase=DataLoadPhase.IDLE,
+        message="Card metadata is ready to load.",
+    )
 
     session._consume_detected_event(
         event=QuickDraftDetectedEvent(
@@ -3275,25 +3541,34 @@ def test_live_session_card_data_load_failure_and_retry_publish_complete_states(
         )
     )
     failed = session.snapshot
-    assert failed.card_data.phase == DataLoadPhase.FAILED
+    assert failed.card_data == CardDataState(
+        phase=DataLoadPhase.FAILED,
+        message="Card metadata failed to load: card cache unavailable.",
+    )
     assert failed.card_data.last_successful_update is None
     assert failed.progress is None
     assert failed.errors[0].error_id == "card-data"
-    assert any(
-        snapshot.card_data.phase == DataLoadPhase.LOADING
-        and snapshot.progress is not None
-        and snapshot.progress.operation == OperationKind.CARD_DATA
-        for snapshot in published
+    loading = next(
+        item for item in published if item.card_data.phase is DataLoadPhase.LOADING
+    )
+    assert loading.card_data == CardDataState(
+        phase=DataLoadPhase.LOADING,
+        message="Loading card metadata.",
+    )
+    assert loading.progress == ProgressState(
+        operation=OperationKind.CARD_DATA,
+        message="Loading card metadata",
     )
 
     ready = session.dispatch(command=RetryError(error_id="card-data"))
-
     assert attempts == 2
     assert ready.card_data == CardDataState(
         phase=DataLoadPhase.READY,
         message="Card metadata is ready.",
         last_successful_update="2026-08-23T12:00:00+00:00",
     )
+    assert any(item.card_data == ready.card_data for item in published)
+    assert ready.progress is None
     assert ready.errors == ()
 
 
@@ -3730,104 +4005,37 @@ def test_live_session_card_data_client_cold_load_then_offline_cache_hit(
     assert second.card_database is not None
 
 
-def test_inactive_ratings_worker_caches_result_without_publishing_stale_state(
+def test_inactive_profile_refresh_result_does_not_publish_stale_state(
     tmp_path: Path,
 ) -> None:
-    load_started = threading.Event()
-    release_load = threading.Event()
-    load_calls: list[str] = []
-    worker_errors: list[BaseException] = []
-    published: list[LiveSessionSnapshot] = []
-
-    def ratings_loader(
-        set_code: str,
-        progress_callback: DownloadProgressCallback,
-        *,
-        refresh: bool,
-    ) -> SeventeenLandsData:
-        load_calls.append(set_code)
-        load_started.set()
-        assert release_load.wait(timeout=2.0)
-        progress_callback(
-            SeventeenLandsDownloadProgress(
-                completed_requests=4,
-                total_requests=4,
-                message=f"Downloaded ratings for {set_code}",
-            )
-        )
-        return _fixture_ratings_data(set_code=set_code)
-
-    def request_download() -> None:
-        try:
-            session.dispatch(command=RequestRatingsDownload(set_code="AAA"))
-        except BaseException as error:
-            worker_errors.append(error)
-
+    profile = _fixture_empirical_profile()
     session = LiveSession(
         log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        card_database=_fixture_card_database(),
-        ratings_progress_loader=ratings_loader,
-        ratings_cache_checker=lambda set_code: False,
-        snapshot_publisher=published.append,
+        profile_client=_ProfileClientStub({"AAA": profile, "BBB": profile}),
     )
-    session.process_lines(
-        lines=(
-            _auth_line(account_id="account-1", screen_name="Player"),
-            _course_line(
-                event_name="QuickDraft_AAA_20260823",
-                course_id="draft-aaa",
-            ),
-        )
-    )
-    worker = threading.Thread(target=request_download, daemon=True)
-    worker.start()
-    assert load_started.wait(timeout=2.0)
+    session._set_active_set_code(set_code="AAA")
+    session.dispatch(command=RequestRatingsDownload(set_code="AAA"))
+    stale_request = session.profile_refresh_request()
+    assert stale_request is not None
+    assert stale_request.force is True
 
-    try:
-        session.dispatch(command=RequestRatingsDownload(set_code="AAA"))
-        switched = session.process_lines(
-            lines=(
-                _course_line(
-                    event_name="QuickDraft_BBB_20260823",
-                    course_id="draft-bbb",
-                ),
-            )
-        )
-        assert load_calls == ["AAA"]
-        assert switched.draft is not None
-        assert switched.draft.set_code == "BBB"
-        assert switched.ratings.set_code == "BBB"
-        assert switched.ratings.phase == DataLoadPhase.MISSING
-        published.clear()
-    finally:
-        release_load.set()
-        worker.join(timeout=2.0)
+    session._set_active_set_code(set_code="BBB")
+    current = session.snapshot
+    current_request = session.profile_refresh_request()
+    assert current_request is not None
+    assert current_request.set_code == "BBB"
 
-    assert not worker.is_alive()
-    assert worker_errors == []
-    assert published == []
-    assert session.snapshot.draft is not None
-    assert session.snapshot.draft.set_code == "BBB"
-    assert session.snapshot.ratings.set_code == "BBB"
-    assert session.snapshot.ratings.phase == DataLoadPhase.MISSING
-    assert session.snapshot.progress is None
-
-    restored = session.process_lines(
-        lines=(
-            _course_line(
-                event_name="QuickDraft_AAA_20260823",
-                course_id="draft-aaa",
-            ),
-        )
+    session.complete_profile_refresh(
+        request=stale_request,
+        result=ProfileRefreshResult(
+            profile=profile,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
     )
 
-    assert load_calls == ["AAA"]
-    assert restored.draft is not None
-    assert restored.draft.set_code == "AAA"
-    assert restored.ratings.set_code == "AAA"
-    assert restored.ratings.phase == DataLoadPhase.READY
-
+    assert session.snapshot is current
+    assert session.snapshot.set_profile.set_code == "BBB"
+    assert session.profile_refresh_request() is current_request
 
 def test_live_session_build_request_publishes_structured_ordered_result(
     tmp_path: Path,
@@ -5007,16 +5215,40 @@ def test_live_session_ratings_rescore_preserves_current_build_image_request(
     tmp_path: Path,
 ) -> None:
     service = _ControlledCardImageService(cache_dir=tmp_path)
+    card_database = _fixture_set_card_database(
+        set_code="TST",
+        with_image_uris=True,
+    )
+    older = _fixture_empirical_profile(
+        profile_version="empirical-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+        first_gih=0.90,
+        second_gih=0.10,
+    )
+    newer = _fixture_empirical_profile(
+        profile_version="empirical-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+        first_gih=0.10,
+        second_gih=0.90,
+    )
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
-        card_database=_fixture_card_database(with_image_uris=True),
+        card_database=card_database,
         card_image_service=service,
-        ratings_loader=lambda set_code: _fixture_ratings_data(set_code=set_code),
-        ratings_cache_checker=lambda _set_code: False,
+        profile_client=_ProfileClientStub({"TST": older}),
     )
-    fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
-    session.process_lines(lines=fixture_lines[:10])
+    session.process_lines(
+        lines=_profiled_history_lines(
+            pool_before_pick=_fixture_pool_before_pick(
+                pack_number=CONTEXT_PACK_NUMBER,
+                pick_number=CONTEXT_PICK_NUMBER,
+            )
+        )
+    )
+    automatic = session.profile_refresh_request()
+    assert automatic is not None
+    assert automatic.force is False
     build_snapshot = session.dispatch(command=RequestBuild())
 
     assert build_snapshot.build is not None
@@ -5026,8 +5258,41 @@ def test_live_session_ratings_rescore_preserves_current_build_image_request(
     assert build_image_request is not None
     build_image_state = session.snapshot.card_image
 
-    rescored = session.dispatch(command=RequestRatingsDownload(set_code="MSH"))
+    requested = session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    forced = session.profile_refresh_request()
+    assert forced is not None
+    assert forced.force is True
+    assert forced != automatic
+    assert requested.ratings.phase == DataLoadPhase.READY
+    assert requested.card_image == build_image_state
+    assert session.selected_card_image_request() == build_image_request
+    previous_recommendation_scores = {
+        recommendation.card.grp_id: (
+            recommendation.score,
+            recommendation.win_rate,
+        )
+        for recommendation in requested.recommendations.cards
+    }
+    previous_scored_pack = requested.current_scored_pack
 
+    session.complete_profile_refresh(
+        request=forced,
+        result=ProfileRefreshResult(
+            profile=newer,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    rescored = session.snapshot
+
+    assert rescored.set_profile.profile_version == newer.profile_version
+    assert rescored.current_scored_pack is not previous_scored_pack
+    assert {
+        recommendation.card.grp_id: (
+            recommendation.score,
+            recommendation.win_rate,
+        )
+        for recommendation in rescored.recommendations.cards
+    } != previous_recommendation_scores
     assert rescored.ratings.phase == DataLoadPhase.READY
     assert rescored.card_image == build_image_state
     assert session.selected_card_image_request() == build_image_request
@@ -5512,8 +5777,12 @@ def _fixture_card_database(*, with_image_uris: bool = False) -> CardDatabase:
     )
 
 
-def _fixture_set_card_database(*, set_code: str) -> CardDatabase:
-    database = _fixture_card_database()
+def _fixture_set_card_database(
+    *,
+    set_code: str,
+    with_image_uris: bool = False,
+) -> CardDatabase:
+    database = _fixture_card_database(with_image_uris=with_image_uris)
     return replace(
         database,
         cards={

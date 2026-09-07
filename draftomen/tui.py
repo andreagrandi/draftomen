@@ -21,6 +21,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -44,7 +45,6 @@ from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.config import COLOR_PAIRS, POLL_INTERVAL_SECONDS
 from draftomen.deckbuilder import BuildPool, ManaBase, PairSelection, SpellSelection
 from draftomen.events import (
-    AccountEvent,
     DraftCompletedEvent,
     DraftStartedEvent,
     PackOfferedEvent,
@@ -61,6 +61,7 @@ from draftomen.preferences import (
     load_tui_preferences,
     save_tui_preferences,
 )
+from draftomen.profile_client import ProfileClient, ProfileRefreshResult
 from draftomen.ranking import (
     DEFAULT_RANKING_MODE,
     RANKING_LABELS,
@@ -68,7 +69,6 @@ from draftomen.ranking import (
     rank_scored_cards,
     ranking_label,
 )
-from draftomen.profile_client import ProfileClient, ProfileRefreshResult
 from draftomen.session import (
     ApplicationPhase,
     BacktestPickResult,
@@ -91,15 +91,14 @@ from draftomen.session import (
     RequestBuild,
     RequestRatingsDownload,
     RetryError,
-    SetCardDataLoader,
     SessionError,
-)
-from draftomen.seventeen import (
-    SEVENTEEN_LANDS_ATTRIBUTION,
-    DownloadProgressCallback,
-    SeventeenLandsData,
+    SetCardDataLoader,
 )
 from draftomen.setinfo import format_set_label
+from draftomen.seventeen import (
+    SEVENTEEN_LANDS_ATTRIBUTION,
+    SeventeenLandsData,
+)
 
 _EMPTY_CARD_DATABASE = CardDatabase(cards={})
 
@@ -113,6 +112,15 @@ RatingsProgressLoaderFactory: TypeAlias = Callable[
 RatingsCacheChecker: TypeAlias = Callable[[str], bool]
 TuiCardQuantityKey: TypeAlias = tuple[str, str]
 TuiCardQuantityGroup: TypeAlias = tuple[ScoredCard, int]
+
+
+class _SessionSnapshotMessage(Message):
+    """Publish one immutable session snapshot on the Textual message loop."""
+
+    def __init__(self, snapshot: LiveSessionSnapshot) -> None:
+        super().__init__()
+        self.snapshot = snapshot
+
 
 PRIMARY_COLUMN_KEYS = ("rank", "win_rate", "grade", "score", "card", "colors")
 SECONDARY_COLUMN_KEYS = ("fit", "alsa", "mv", "source")
@@ -387,8 +395,8 @@ def _visibility_control_id(*, field_name: str) -> str:
 
 
 class MissingRatingsScreen(ModalScreen[bool]):
-    """Ask before the first 17Lands download for an uncached set.
-    The active draft continues using neutral priors until the user confirms.
+    """Ask before downloading or refreshing 17Lands ratings.
+    Missing-data prompts explain neutral priors; refresh prompts preserve active data.
     """
 
     CSS = """
@@ -422,37 +430,44 @@ class MissingRatingsScreen(ModalScreen[bool]):
 
     BINDINGS = [Binding("escape", "cancel", "Not now", show=False)]
 
-    def __init__(self, *, set_code: str) -> None:
+    def __init__(self, *, set_code: str, refresh: bool = False) -> None:
         super().__init__()
         self.set_code = set_code.upper()
+        self.is_refresh = refresh
 
     def compose(self) -> ComposeResult:
-        """Compose the missing-data warning and explicit download choice.
-        Downloaded Quick and Premier data will be cached for later drafts.
-        """
-
-        with Vertical(id="missing-ratings-dialog"):
-            yield Static(
-                f"No local 17Lands data for {self.set_code}",
-                id="missing-ratings-title",
+        """Compose the ratings download prompt for missing or ready data."""
+        if self.is_refresh:
+            title = f"Refresh 17Lands data for {self.set_code}"
+            message = (
+                "17Lands ratings are active for this draft. Refresh the all-time "
+                "Quick Draft and Premier fallback ratings now? Progress will be "
+                "shown, then the current pack will be rescored automatically."
             )
-            yield Static(
+            action_label = "Refresh data"
+        else:
+            title = f"No local 17Lands data for {self.set_code}"
+            message = (
                 "Draft Omen is using neutral-prior scores. Download the all-time "
                 "Quick Draft and Premier fallback ratings now? Progress will be "
-                "shown, then the current pack will be rescored automatically.",
-                id="missing-ratings-message",
+                "shown, then the current pack will be rescored automatically."
             )
+            action_label = "Download data"
+
+        with Vertical(id="missing-ratings-dialog"):
+            yield Static(title, id="missing-ratings-title")
+            yield Static(message, id="missing-ratings-message")
             with Horizontal(id="missing-ratings-actions"):
                 yield Button(
-                    "Download data",
+                    action_label,
                     id="download-ratings",
                     variant="primary",
                 )
                 yield Button("Not now", id="cancel-ratings-download")
 
     def action_cancel(self) -> None:
-        """Keep neutral-prior scores without starting a network request.
-        The data action remains available if the user changes their mind.
+        """Dismiss without starting a network request.
+        The app preserves the current ratings state and notice.
         """
 
         self.dismiss(False)
@@ -932,9 +947,7 @@ class DraftomenTuiApp(App[None]):
         self._render_all()
 
     def action_download_ratings(self) -> None:
-        """Offer or retry the ratings download for the active draft set.
-        Existing ready data is left untouched.
-        """
+        """Offer or retry the ratings download for the active draft set."""
 
         set_code = self._set_code
         if set_code is None:
@@ -946,14 +959,11 @@ class DraftomenTuiApp(App[None]):
         if ratings.phase == DataLoadPhase.LOADING:
             return
 
-        if ratings.phase == DataLoadPhase.READY:
-            self._rating_notices_by_set[set_code] = (
-                f"17Lands data is already ready for {set_code}."
-            )
-            self._render_all()
-            return
-
-        self._show_missing_ratings_prompt(set_code=set_code, force=True)
+        self._show_missing_ratings_prompt(
+            set_code=set_code,
+            force=True,
+            refresh=ratings.phase == DataLoadPhase.READY,
+        )
 
     def action_retry_card_data(self) -> None:
         """Retry the current recoverable card-data error in the session worker.
@@ -1273,6 +1283,12 @@ class DraftomenTuiApp(App[None]):
             self.session.dispatch(command=command)
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             self.call_from_thread(self._record_error, str(error))
+            return
+        try:
+            self.call_from_thread(self._schedule_profile_refresh)
+        except Exception:  # pragma: no cover - app may be shutting down.
+            pass
+
     def _schedule_profile_refresh(self) -> None:
         """Start the one pending profile refresh without blocking Textual."""
 
@@ -1296,8 +1312,9 @@ class DraftomenTuiApp(App[None]):
             if self.session.profile_refresh_request() != request:
                 return
             result = self._profile_client.refresh(
-                request.set_code,
-                request.event_format,
+                set_code=request.set_code,
+                event_format=request.event_format,
+                force=request.force,
             )
             if worker.is_cancelled:
                 return
@@ -1344,10 +1361,7 @@ class DraftomenTuiApp(App[None]):
             and self._textual_thread_id is not None
             and get_ident() != self._textual_thread_id
         ):
-            self.call_from_thread(
-                self._apply_session_snapshot,
-                snapshot,
-            )
+            self.post_message(_SessionSnapshotMessage(snapshot))
             return
 
         self._apply_session_snapshot(snapshot)
@@ -1368,6 +1382,15 @@ class DraftomenTuiApp(App[None]):
             return
 
         self._apply_session_event(published)
+
+    def on__session_snapshot_message(
+        self,
+        message: _SessionSnapshotMessage,
+    ) -> None:
+        """Apply a worker-published snapshot on Textual's thread."""
+        if message.snapshot is not self.session.snapshot:
+            return
+        self._apply_session_snapshot(message.snapshot)
 
     def _apply_session_snapshot(
         self,
@@ -1664,12 +1687,12 @@ class DraftomenTuiApp(App[None]):
             return f"{source} (17Lands cached; samples unavailable or thin)"
 
         return source
-
     def _show_missing_ratings_prompt(
         self,
         *,
         set_code: str,
         force: bool = False,
+        refresh: bool = False,
     ) -> None:
         if not self.is_running or set_code in self._rating_prompt_open_sets:
             return
@@ -1681,10 +1704,11 @@ class DraftomenTuiApp(App[None]):
         self._rating_prompt_open_sets.add(set_code)
         self._render_all()
         self.push_screen(
-            MissingRatingsScreen(set_code=set_code),
+            MissingRatingsScreen(set_code=set_code, refresh=refresh),
             lambda approved: self._handle_ratings_download_choice(
                 set_code=set_code,
                 approved=approved,
+                refresh=refresh,
             ),
         )
 
@@ -1693,16 +1717,23 @@ class DraftomenTuiApp(App[None]):
         *,
         set_code: str,
         approved: bool,
+        refresh: bool = False,
     ) -> None:
         self._rating_prompt_open_sets.discard(set_code)
         if approved:
             self._start_ratings_load(set_code=set_code)
             return
 
-        self._rating_notices_by_set[set_code] = (
-            f"No local 17Lands data for {set_code}; neutral-prior scores remain. "
-            "Press d to download."
-        )
+        if refresh and self.session.snapshot.ratings.phase == DataLoadPhase.READY:
+            self._rating_notices_by_set[set_code] = (
+                f"17Lands data ready for {set_code}; refresh cancelled. "
+                "Existing ratings remain active. Press d to refresh."
+            )
+        else:
+            self._rating_notices_by_set[set_code] = (
+                f"No local 17Lands data for {set_code}; neutral-prior scores remain. "
+                "Press d to download."
+            )
         self._render_all()
 
     def _start_ratings_load(self, *, set_code: str) -> None:
