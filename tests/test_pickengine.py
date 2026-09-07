@@ -24,6 +24,7 @@ from draftomen.pickengine import (
     build_pick_scoring_context,
     recommendation_confidence_summary,
     recommendation_explanation,
+    score_pack,
 )
 from draftomen.pool_ledger import (
     COMPLETED_POOL,
@@ -2680,6 +2681,189 @@ def test_explanation_exposes_context_metadata_and_material_late_terms() -> None:
     assert "urgency +" in explanation
     assert "late missing-role urgency" in explanation
 
+def test_contextual_adjustments_can_be_disabled_without_bypassing_profile_scoring() -> None:
+    database = _contextual_database()
+    profile = replace(
+        _contextual_profile(
+            cards=(
+                ProfileCard(
+                    key="arena_id:7",
+                    assignments=(RoleAssignment(Role.DRAW),),
+                ),
+            ),
+            role_targets=(RoleTarget(Role.DRAW, 1),),
+            theme="patient card advantage",
+        ),
+        card_ratings=(
+            _profile_card("ARENA_ID:7", 0.72),
+            _profile_card("ARENA_ID:8", 0.68),
+        ),
+    )
+    ratings_data = _contextual_ratings()
+    enabled = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(7, 8),
+        pool_grp_ids=(1,),
+        ratings_data=ratings_data,
+    )
+    disabled = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(7, 8),
+        pool_grp_ids=(1,),
+        ratings_data=ratings_data,
+        contextual_adjustments_enabled=False,
+    )
+
+    assert enabled.cards[0].contextual_breakdown.role > 0
+    assert all(
+        card.contextual_breakdown == ContextualScoreBreakdown()
+        and card.contextual_evidence == ()
+        for card in disabled.cards
+    )
+    assert tuple(
+        (card.card.grp_id, card.raw_score, card.score, card.source_label)
+        for card in disabled.cards
+    ) == (
+        (7, 100.0, 100, "Profile"),
+        (8, 88.6904761904762, 89, "Profile"),
+    )
+    disabled_card = next(card for card in disabled.cards if card.card.grp_id == 7)
+    assert disabled_card.rating.metadata.source == "profile"
+    assert disabled_card.contextual_pair == "WU"
+    assert disabled_card.contextual_profile_maturity == "mature"
+    assert disabled_card.contextual_profile_confidence == pytest.approx(1.0)
+    explanation = recommendation_explanation(
+        scored_card=disabled_card,
+        inferred_pair="WU",
+    )
+    assert "material terms:" not in explanation
+    assert "fills " not in explanation
+
+    wrapped = score_pack(
+        offered_grp_ids=(7, 8),
+        card_database=database,
+        ratings_data=ratings_data,
+        pool_grp_ids=(1,),
+        scoring_context=enabled.scoring_context,
+        contextual_adjustments_enabled=False,
+    )
+    assert tuple(card.score for card in wrapped.cards) == tuple(
+        card.score for card in disabled.cards
+    )
+    assert all(
+        card.contextual_breakdown == ContextualScoreBreakdown()
+        and card.contextual_evidence == ()
+        for card in wrapped.cards
+    )
+
+
+def test_disabled_contextual_adjustments_preserve_open_pair_tiebreaking() -> None:
+    profile = _pair_shrinkage_profile(
+        total_samples=10_000,
+        pair_samples=10_000,
+    )
+    score_kwargs = {
+        "offered_grp_ids": (32, 31),
+        "card_database": _msh_pair_tiebreaker_database(),
+        "pool_grp_ids": (20, 21),
+        "pick_index": 3,
+    }
+    ratings_data = _msh_pair_tiebreaker_data()
+    disabled = PickEngine(
+        contextual_adjustments_enabled=False,
+        ratings_data=ratings_data,
+        set_profile=profile,
+    ).score_pack(**score_kwargs)
+    expected_pair_metadata = (
+        ("WU", 0.569274),
+        ("BR", 0.5),
+    )
+
+    assert disabled.commitment.phase == "open"
+    assert tuple(
+        (card.card.grp_id, card.raw_score, card.score)
+        for card in disabled.cards
+    ) == (
+        (31, 50.0, 50),
+        (32, 52.0, 52),
+    )
+    assert tuple(
+        (card.pair_tiebreaker_pair, card.pair_tiebreaker_win_rate)
+        for card in disabled.cards
+    ) == expected_pair_metadata
+    assert disabled.cards[0].card.grp_id == 31
+    assert disabled.cards[0].raw_score < disabled.cards[1].raw_score
+    assert all(
+        card.contextual_breakdown == ContextualScoreBreakdown()
+        and card.contextual_evidence == ()
+        for card in disabled.cards
+    )
+
+
+def test_disabled_contextual_adjustments_preserve_locked_splash_behavior() -> None:
+    database = _splash_card_database()
+    profile = _test_profile(
+        pairs=(
+            PairProfile(
+                pair="WU",
+                role_targets=(RoleTarget(Role.DRAW, 1),),
+            ),
+        ),
+        role_profile=CompiledRoleProfile(
+            set_code="TST",
+            cards=(
+                ProfileCard(
+                    key="arena_id:105",
+                    assignments=(RoleAssignment(Role.DRAW),),
+                ),
+            ),
+        ),
+    )
+    database = CardDatabase(
+        cards={
+            grp_id: replace(card, set_code="TST", arena_id=grp_id)
+            for grp_id, card in database.cards.items()
+        }
+    )
+    score_kwargs = {
+        "offered_grp_ids": (106, 107, 109),
+        "card_database": database,
+        "pool_grp_ids": (101, 102, 101, 102, 103, 104, 110, 105),
+        "pick_index": 16,
+    }
+    ratings_data = _splash_ratings_data()
+    disabled = PickEngine(
+        contextual_adjustments_enabled=False,
+        ratings_data=ratings_data,
+        set_profile=profile,
+    ).score_pack(**score_kwargs)
+    expected_raw_scores = (
+        89.99201277955271,
+        75.0,
+        75.0,
+    )
+
+    assert disabled.commitment.phase == "locked"
+    assert disabled.commitment.inferred_pair == "WU"
+    assert disabled.splash_state.active_color == "R"
+    assert tuple(card.card.grp_id for card in disabled.cards) == (106, 107, 109)
+    assert tuple(card.raw_score for card in disabled.cards) == pytest.approx(
+        expected_raw_scores
+    )
+    assert tuple(card.score for card in disabled.cards) == (90, 75, 75)
+    assert tuple(card.color_fit for card in disabled.cards) == (
+        "splash-ready",
+        "off-color",
+        "off-color",
+    )
+    assert all(
+        card.contextual_breakdown == ContextualScoreBreakdown()
+        and card.contextual_evidence == ()
+        for card in disabled.cards
+    )
+
 
 def _score_with_context(
     *,
@@ -2688,6 +2872,7 @@ def _score_with_context(
     offered_grp_ids: tuple[int, ...],
     pool_grp_ids: tuple[int, ...],
     ratings_data: SeventeenLandsData | None = None,
+    contextual_adjustments_enabled: bool = True,
     pack_number: int = 2,
     pick_number: int = 6,
     global_pick_index: int = 35,
@@ -2708,6 +2893,7 @@ def _score_with_context(
     return PickEngine(
         ratings_data=ratings_data,
         scoring_context=context,
+        contextual_adjustments_enabled=contextual_adjustments_enabled,
     ).score_pack(
         offered_grp_ids=offered_grp_ids,
         card_database=database,

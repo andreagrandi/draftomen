@@ -2,6 +2,9 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Add an explicit shared-engine contextual-adjustment mode that can disable
+  additive contextual terms while retaining profile-backed base scoring and
+  non-contextual evidence. (#380)
 - Native live startup now defaults to the production hosted profile manifest,
   supports explicit HTTPS overrides and profile-only `--offline-profiles`,
   and leaves static card-data, card-image, and card-metadata policies
