@@ -35,14 +35,20 @@ context is authoritative: conflicting coordinates are rejected and the same
 context is returned unchanged. `PickEngine.score_pack` resolves stage and
 commitment once, then uses the same private validated construction path.
 Offline, recovered, accountless, replay, backtest, and benchmark entry points
-call `load_scoring_profile` for the active set/format before scoring. They score
-from the loaded profile and local ratings snapshot only. An explicitly supplied
-profile remains authoritative, and a live session without a configured
-`ProfileClient` uses the same local loader. A live session with a configured
-`ProfileClient` reads that cache first and refreshes asynchronously; network is
-never part of score construction. In particular, locked scoring uses only
-already-materialized legacy pair-card data and makes no provider or lazy
-pair-card request.
+call `load_scoring_profile` for the active set/format before scoring. They
+score from the loaded profile and local ratings snapshot only. Normal live TUI,
+plain-watch, CLI `watch`, and Qt live factories use the same profile
+authority; they do not pass provider-loader callbacks, provider-cache checks,
+synchronous or progress loaders, or raw provider ratings into `LiveSession`.
+They load local profile state before any explicitly configured hosted refresh
+owned by the adapter worker. Network is never part of score construction. Live
+build and completion likewise use the selected profile or deterministic
+fallback and make no provider acquisition. Standalone build/backtest commands
+may use an already-cached provider snapshot through their separate offline
+workflows, but do not fetch provider data. In particular, separate offline/domain
+callers supplying already-materialized legacy pair-card data may use it for locked
+scoring; normal live locked scoring uses the selected profile or deterministic
+fallback and makes no provider or lazy pair-card request.
 
 ### Cached profile selection
 
@@ -63,6 +69,9 @@ explicitly configured, an adapter-owned refresh can atomically install a
 validated newer profile and rescore the active pack; stale, invalid, or
 unavailable remote data leaves the profile already selected for scoring in
 place. Without that opt-in URL, live scoring remains offline.
+Normal live hosted refresh remains explicit here; the default manifest URL work
+owned by issue #353 and the native default-URL and ratings-presentation work
+owned by issue #354 remain outside this change.
 
 `PickScoringContext` is an immutable value with exactly two fields:
 

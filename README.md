@@ -68,19 +68,22 @@ draftomen
 
 The PySide6/QML desktop application loads card metadata when needed, watches
 Arena's standard log location, detects the set, and follows the draft
-automatically. If 17Lands ratings are not cached for that set, it offers to
-download them.
+automatically. Normal live TUI, plain-watch, CLI `watch`, and Qt sessions use
+the shared set-profile lifecycle as their sole ratings authority. They load
+the local profile cache first; if no usable profile is available, deterministic
+fallback scoring remains active and no direct 17Lands download is attempted.
 Explicit ratings-download requests, including retries of a recoverable ratings
 error, use the shared hosted-profile lifecycle for the active set and format.
 When a hosted manifest is explicitly configured, these requests force a
-manifest refresh despite the normal TTL; they do not refresh the direct
-provider lifecycle. Force bypasses only that TTL: offline policy, a missing
-manifest or client, an injected authoritative profile, and HTTPS, checksum,
-schema, and non-regression checks still apply. Usable cached or in-memory
-profile ratings and recommendations remain active while a refresh runs or
-fails. A newer validated profile is adopted atomically and current
-recommendations update without restarting; repeated requests coalesce. TUI and
-Qt use their existing actions, and `watch --plain` adds no command UI.
+manifest refresh despite the normal TTL. The refresh runs in the adapter-owned
+worker; it never invokes a direct provider loader. Force bypasses only that
+TTL: offline policy, a missing manifest or client, an injected authoritative
+profile, and HTTPS, checksum, schema, and non-regression checks still apply.
+Usable cached or in-memory profile ratings and recommendations remain active
+while a refresh runs or fails. A newer validated profile is adopted atomically
+and current recommendations update without restarting; repeated requests
+coalesce. TUI and Qt use their existing actions, and `watch --plain` adds no
+command UI.
 
 ### Terminal interface
 
@@ -153,6 +156,9 @@ Refresh validates the manifest and artifact, keeps the last-good cache on
 failure, and reports compact maturity/outcome status. Draft Omen does not
 bundle a hosted profile manifest; profile hosting remains separate from
 runtime.
+The default hosted manifest URL and native default ratings presentation remain
+outside this change (#353 and #354); these explicit opt-in commands do not
+imply a default URL.
 
 For development-only semantic analysis, use the reproducible [card corpus
 workflow](docs/corpus.md). It keeps pinned source bytes and locks outside
