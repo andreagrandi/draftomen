@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
 import threading
 import time
 from collections.abc import Callable
@@ -21,9 +23,11 @@ from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
 from draftomen.preferences import GuiDisplayPreferences
 from draftomen.profile_client import (
     ProfileClient,
+    ProfileNetworkPolicy,
     ProfileRefreshOutcome,
     ProfileRefreshResult,
 )
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.qt_adapter import (
     GuiPreferencesAdapter,
     LiveSessionAdapter,
@@ -57,7 +61,103 @@ from draftomen.session import (
     SetProfileState,
     SnapshotPublisher,
 )
-from draftomen.set_profile import SetProfile
+from draftomen.set_profile import (
+    CardRating,
+    SET_PROFILE_SCHEMA_VERSION,
+    RateEstimate,
+    SetProfile,
+    dump_set_profile,
+    load_set_profile,
+)
+
+
+_PROFILE_FIXTURE_PATH = (
+    Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json"
+)
+_PROFILE_MANIFEST_URL = "https://profiles.example.test/manifest.json"
+
+
+class _ProfileHttpResponse:
+    def __init__(self, *, payload: bytes, url: str) -> None:
+        self._payload = payload
+        self.url = url
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0 or size >= len(self._payload):
+            payload, self._payload = self._payload, b""
+            return payload
+        payload, self._payload = self._payload[:size], self._payload[size:]
+        return payload
+
+    def geturl(self) -> str:
+        return self.url
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self) -> "_ProfileHttpResponse":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+def _adapter_empirical_profile(
+    *,
+    profile_version: str,
+    generated_at: str,
+) -> SetProfile:
+    profile = load_set_profile(
+        _PROFILE_FIXTURE_PATH,
+        expected_set_code="TST",
+        expected_format="QuickDraft",
+    )
+    return replace(
+        profile,
+        profile_version=profile_version,
+        generated_at=generated_at,
+        card_ratings=(
+            CardRating(
+                card_key="grp_id:104894",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.82,
+                    value=0.82,
+                    samples=2_000,
+                    prior_value=0.5,
+                    source="17lands",
+                ),
+                average_last_seen_at=2.0,
+            ),
+        ),
+    )
+
+
+def _profile_transport_payload(
+    profile: SetProfile,
+    *,
+    artifact_url: str,
+    published_at: str,
+) -> tuple[bytes, bytes]:
+    profile_bytes = profile.to_bytes()
+    gzip_bytes = gzip.compress(profile_bytes, mtime=0)
+    artifact = ProfileManifestArtifact(
+        set_code=profile.set_code,
+        event_format=profile.event_format,
+        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+        profile_version=profile.profile_version,
+        generated_at=profile.generated_at,
+        url=artifact_url,
+        gzip_bytes=len(gzip_bytes),
+        profile_bytes=len(profile_bytes),
+        gzip_sha256=hashlib.sha256(gzip_bytes).hexdigest(),
+        profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
+        maturity=profile.maturity,
+    )
+    manifest = ProfileManifest(
+        artifacts=(artifact,),
+        published_at=published_at,
+    )
+    return manifest.to_bytes(), gzip_bytes
 
 
 class _FakeSession:
@@ -848,6 +948,281 @@ def test_live_adapter_shuts_down_cleanly_with_profile_refresh_in_flight(
         )
     finally:
         client.release.set()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_hosted_profile_failure_retains_cached_authority(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cached_profile = _adapter_empirical_profile(
+        profile_version="cached-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
+    app_dir = tmp_path / "app"
+    provider_calls: list[object] = []
+
+    def guarded_provider_opener(
+        request: object,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        del args, kwargs
+        provider_calls.append(request)
+        raise AssertionError("hosted profile flow must not query direct providers")
+
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        guarded_provider_opener,
+    )
+    monkeypatch.setattr(
+        "draftomen.seventeen.urllib.request.urlopen",
+        guarded_provider_opener,
+    )
+    attempted_urls: list[str] = []
+
+    def unavailable_opener(request: object, *, timeout: float) -> object:
+        del timeout
+        attempted_urls.append(str(getattr(request, "full_url")))
+        raise OSError("profile provider unavailable")
+
+    client = ProfileClient(
+        app_dir=app_dir,
+        manifest_url=_PROFILE_MANIFEST_URL,
+        network_policy=ProfileNetworkPolicy.ALLOWED,
+        opener=unavailable_opener,
+    )
+    dump_set_profile(cached_profile, client.profile_path("TST", "QuickDraft"))
+    sessions: list[LiveSession] = []
+
+    def factory(publish: SnapshotPublisher) -> LiveSession:
+        session = LiveSession(
+            log_path=tmp_path / "Player.log",
+            app_dir=app_dir,
+            card_database=CardDatabase(cards={}),
+            profile_client=client,
+            snapshot_publisher=publish,
+        )
+        sessions.append(session)
+        session._set_active_set_code(set_code="TST")
+        return session
+
+    adapter = LiveSessionAdapter(
+        session_factory=factory,
+        poll_interval_ms=60_000,
+        profile_client=client,
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: attempted_urls == [_PROFILE_MANIFEST_URL]
+            and adapter.state.get("set_profile", {}).get("refresh_outcome")
+            == ProfileRefreshOutcome.REMOTE_FAILED.value,
+            description="the initial hosted profile failure",
+        )
+        state = adapter.state
+        assert state["set_profile"]["profile_version"] == cached_profile.profile_version
+        assert state["set_profile"]["source"] == "local-mature"
+        assert state["set_profile"]["maturity"] == "mature"
+        assert state["set_profile"]["phase"] == DataLoadPhase.FAILED.value
+        assert state["ratings"]["phase"] == DataLoadPhase.READY.value
+        assert state["recommendations"]["cards"] == []
+        assert state["errors"] == []
+        assert provider_calls == []
+
+        adapter.requestRatings()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: attempted_urls == [
+                _PROFILE_MANIFEST_URL,
+                _PROFILE_MANIFEST_URL,
+            ]
+            and bool(adapter.state.get("errors")),
+            description="the forced hosted profile failure",
+        )
+        state = adapter.state
+        assert state["set_profile"]["profile_version"] == cached_profile.profile_version
+        assert state["set_profile"]["source"] == "local-mature"
+        assert state["set_profile"]["phase"] == DataLoadPhase.FAILED.value
+        assert state["set_profile"]["refresh_outcome"] == (
+            ProfileRefreshOutcome.REMOTE_FAILED.value
+        )
+        assert state["ratings"]["phase"] == DataLoadPhase.READY.value
+        assert state["errors"][0]["code"] == "ratings_unavailable"
+        assert state["recommendations"]["cards"] == []
+        assert provider_calls == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_ignores_stale_hosted_profile_completion_identity(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cached_profile = _adapter_empirical_profile(
+        profile_version="cached-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
+    stale_profile = _adapter_empirical_profile(
+        profile_version="stale-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    current_profile = _adapter_empirical_profile(
+        profile_version="current-3.0",
+        generated_at="2026-08-31T00:00:00+00:00",
+    )
+    stale_artifact_url = "https://profiles.example.test/stale.json.gz"
+    current_artifact_url = "https://profiles.example.test/current.json.gz"
+    stale_manifest, stale_artifact = _profile_transport_payload(
+        stale_profile,
+        artifact_url=stale_artifact_url,
+        published_at="2026-08-30T01:00:00+00:00",
+    )
+    current_manifest, current_artifact = _profile_transport_payload(
+        current_profile,
+        artifact_url=current_artifact_url,
+        published_at="2026-08-31T01:00:00+00:00",
+    )
+    first_refresh_started = threading.Event()
+    release_first_refresh = threading.Event()
+    second_refresh_started = threading.Event()
+    release_second_refresh = threading.Event()
+    provider_calls: list[object] = []
+
+    def guarded_provider_opener(
+        request: object,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        del args, kwargs
+        provider_calls.append(request)
+        raise AssertionError("hosted profile flow must not query direct providers")
+
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        guarded_provider_opener,
+    )
+    monkeypatch.setattr(
+        "draftomen.seventeen.urllib.request.urlopen",
+        guarded_provider_opener,
+    )
+    attempted_urls: list[str] = []
+
+    def opener(request: object, *, timeout: float) -> _ProfileHttpResponse:
+        del timeout
+        url = str(getattr(request, "full_url"))
+        attempted_urls.append(url)
+        if url == _PROFILE_MANIFEST_URL:
+            manifest_number = attempted_urls.count(_PROFILE_MANIFEST_URL)
+            if manifest_number == 1:
+                first_refresh_started.set()
+                release_first_refresh.wait(timeout=3.0)
+                return _ProfileHttpResponse(
+                    payload=stale_manifest,
+                    url=url,
+                )
+            second_refresh_started.set()
+            release_second_refresh.wait(timeout=3.0)
+            return _ProfileHttpResponse(
+                payload=current_manifest,
+                url=url,
+            )
+        if url == stale_artifact_url:
+            return _ProfileHttpResponse(payload=stale_artifact, url=url)
+        if url == current_artifact_url:
+            return _ProfileHttpResponse(payload=current_artifact, url=url)
+        raise AssertionError(f"unexpected profile provider URL: {url}")
+
+    app_dir = tmp_path / "app"
+    client = ProfileClient(
+        app_dir=app_dir,
+        manifest_url=_PROFILE_MANIFEST_URL,
+        network_policy=ProfileNetworkPolicy.ALLOWED,
+        opener=opener,
+        manifest_ttl_seconds=0,
+    )
+    dump_set_profile(cached_profile, client.profile_path("TST", "QuickDraft"))
+    sessions: list[LiveSession] = []
+
+    def factory(publish: SnapshotPublisher) -> LiveSession:
+        session = LiveSession(
+            log_path=tmp_path / "Player.log",
+            app_dir=app_dir,
+            card_database=CardDatabase(cards={}),
+            profile_client=client,
+            snapshot_publisher=publish,
+        )
+        sessions.append(session)
+        session._set_active_set_code(set_code="TST")
+        return session
+
+    adapter = LiveSessionAdapter(
+        session_factory=factory,
+        poll_interval_ms=60_000,
+        profile_client=client,
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=first_refresh_started.is_set,
+            description="the first hosted profile refresh",
+        )
+        assert provider_calls == []
+        session = sessions[0]
+        adapter.requestRatings()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                (request := session.profile_refresh_request()) is not None
+                and request.force
+            ),
+            description="the forced profile refresh identity",
+        )
+
+        release_first_refresh.set()
+        _process_until(
+            application=qcore_application,
+            predicate=second_refresh_started.is_set,
+            description="the replacement hosted profile refresh",
+        )
+        state = adapter.state
+        assert state["set_profile"]["profile_version"] == cached_profile.profile_version
+        assert state["ratings"]["phase"] == DataLoadPhase.READY.value
+        assert state["errors"] == []
+
+        release_second_refresh.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state.get("set_profile", {}).get(
+                "profile_version"
+            )
+            == current_profile.profile_version,
+            description="the current hosted profile completion",
+        )
+        state = adapter.state
+        assert state["set_profile"]["source"] == "remote"
+        assert state["set_profile"]["refresh_outcome"] == (
+            ProfileRefreshOutcome.UPDATED.value
+        )
+        assert provider_calls == []
+        assert state["ratings"]["phase"] == DataLoadPhase.READY.value
+        assert state["errors"] == []
+        assert attempted_urls == [
+            _PROFILE_MANIFEST_URL,
+            stale_artifact_url,
+            _PROFILE_MANIFEST_URL,
+            current_artifact_url,
+        ]
+        assert provider_calls == []
+    finally:
+        release_first_refresh.set()
+        release_second_refresh.set()
         adapter.shutdown()
         adapter.wait_for_shutdown()
 

@@ -22,12 +22,16 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.pool import load_draft_state
 from draftomen.qt_gui import (
     APPLICATION_NAME,
+    DEFAULT_PROFILE_MANIFEST_URL,
+    _build_provider,
     _configure_application_metadata,
     _live_session_factory,
     _parser,
     _preflight_bundled_profile,
     run_gui,
 )
+from draftomen.qt_adapter import LiveSessionAdapter
+from draftomen.qt_mock import MockSessionAdapter
 from draftomen.set_profile import SET_PROFILE_SCHEMA_VERSION, load_set_profile
 
 
@@ -161,156 +165,148 @@ def test_live_gui_bulk_file_injects_local_database(
 
     assert session.card_database is database
 
+def test_mock_gui_provider_does_not_construct_live_profile_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnexpectedProfileClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            raise AssertionError("mock provider must not construct ProfileClient")
 
-@pytest.mark.parametrize("use_bulk_file", (False, True), ids=("set-card", "bulk"))
-def test_live_gui_profile_manifest_flag_injects_configured_client(
+    monkeypatch.setattr("draftomen.qt_gui.ProfileClient", UnexpectedProfileClient)
+    args = _parser().parse_args(
+        [
+            "--provider",
+            "mock",
+            "--scenario",
+            "warning",
+            "--poll-interval",
+            "0",
+        ]
+    )
+
+    provider = _build_provider(args=args)
+
+    assert isinstance(provider, MockSessionAdapter)
+    assert provider.mockMode is True
+    assert provider.scenario == "warning"
+
+
+def test_live_gui_rejects_nonpositive_poll_interval_before_live_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnexpectedProfileClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            raise AssertionError("invalid polling must fail before ProfileClient setup")
+
+    monkeypatch.setattr("draftomen.qt_gui.ProfileClient", UnexpectedProfileClient)
+    args = _parser().parse_args(["--poll-interval", "0"])
+
+    with pytest.raises(
+        ValueError,
+        match=r"^--poll-interval must be greater than zero\.$",
+    ):
+        _build_provider(args=args)
+
+
+
+
+def test_live_gui_profile_flags_use_cached_provider_state_without_network(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    use_bulk_file: bool,
 ) -> None:
     manifest_url = "https://profiles.example.test/v1/manifest.json"
-    artifact_url = "https://profiles.example.test/v1/tst-quickdraft.json.gz"
-    args = _parser().parse_args(["--profile-manifest-url", manifest_url])
-    assert args.profile_manifest_url == manifest_url
+    app_dir = tmp_path / "app"
+    attempted_requests: list[str] = []
 
+    def guarded_opener(
+        _client: ProfileClient,
+        request: Any,
+        *,
+        timeout: float,
+    ) -> Any:
+        del timeout
+        attempted_requests.append(request.full_url)
+        raise AssertionError("offline profile mode must not open a request")
+
+    monkeypatch.setattr(ProfileClient, "_default_opener", guarded_opener)
     profile = load_set_profile(
         PROJECT_ROOT / "tests" / "fixtures" / "set-profiles" / "early.json",
         expected_set_code="TST",
         expected_format="QuickDraft",
     )
-    profile_bytes = profile.to_bytes()
-    compressed_profile = gzip.compress(profile_bytes, mtime=0)
-    artifact = ProfileManifestArtifact(
-        set_code=profile.set_code,
-        event_format=profile.event_format,
-        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
-        profile_version=profile.profile_version,
-        generated_at=profile.generated_at,
-        url=artifact_url,
-        gzip_bytes=len(compressed_profile),
-        profile_bytes=len(profile_bytes),
-        gzip_sha256=hashlib.sha256(compressed_profile).hexdigest(),
-        profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
-        maturity=profile.maturity,
-    )
-    payloads = {
-        manifest_url: ProfileManifest(
-            artifacts=(artifact,),
-            published_at="2026-09-01T00:00:00+00:00",
-        ).to_bytes(),
-        artifact_url: compressed_profile,
-    }
-    requests: list[str] = []
-
-    class Response:
-        def __init__(self, payload: bytes, url: str) -> None:
-            self._payload = io.BytesIO(payload)
-            self._url = url
-
-        def read(self, size: int = -1) -> bytes:
-            return self._payload.read(size)
-
-        def geturl(self) -> str:
-            return self._url
-
-        def close(self) -> None:
-            pass
-
-    def opener(request: Any, *, timeout: float) -> Response:
-        del timeout
-        url = request.full_url
-        requests.append(url)
-        return Response(payloads[url], url)
-
-    bulk_file: Path | None = None
-    configured_client: ProfileClient | None = None
-    if use_bulk_file:
-        database = CardDatabase(cards={})
-        bulk_file = tmp_path / "cards.jsonl"
-        monkeypatch.setattr(
-            "draftomen.qt_gui.build_card_database_from_bulk_file",
-            lambda *, path: database,
-        )
-        configured_client = ProfileClient(
-            app_dir=tmp_path / "app",
-            manifest_url=manifest_url,
-            opener=opener,
-        )
-    else:
-        created_clients: list[ProfileClient] = []
-
-        def make_profile_client(
-            *,
-            app_dir: Path | None,
-            manifest_url: str | None,
-        ) -> ProfileClient:
-            client = ProfileClient(
-                app_dir=app_dir,
-                manifest_url=manifest_url,
-                opener=opener,
-            )
-            created_clients.append(client)
-            return client
-
-        monkeypatch.setattr("draftomen.qt_gui.ProfileClient", make_profile_client)
-
-    factory = _live_session_factory(
-        log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        bulk_file=bulk_file,
-        poll_interval=0.01,
-        profile_manifest_url=None if use_bulk_file else args.profile_manifest_url,
-        profile_client=configured_client,
-    )
-    session = factory(lambda snapshot: None)
-    if use_bulk_file:
-        assert session.card_database is database
-        client = configured_client
-    else:
-        client = created_clients[0]
-    assert client is not None
-
-    session._set_active_set_code(set_code="TST")  # type: ignore[attr-defined]
-    request = session.profile_refresh_request()
-    assert request is not None
-    result = client.refresh(
-        request.set_code,
-        request.event_format,
-        force=request.force,
-    )
-    assert result.outcome.value == "updated"
-    session.complete_profile_refresh(request=request, result=result)
-    assert session.snapshot.set_profile.set_code == "TST"
-    assert session.snapshot.set_profile.maturity == "early"
-    assert session.snapshot.set_profile.refresh_outcome == "updated"
-    assert requests == [manifest_url, artifact_url]
-
-    offline_requests: list[str] = []
-
-    def offline_opener(request: Any, *, timeout: float) -> Response:
-        del timeout
-        offline_requests.append(request.full_url)
-        raise AssertionError("offline profile refresh must not open a request")
-
-    offline_client = ProfileClient(
-        app_dir=tmp_path / "offline-app",
+    cache_client = ProfileClient(
+        app_dir=app_dir,
         manifest_url=manifest_url,
         network_policy=ProfileNetworkPolicy.OFFLINE,
-        opener=offline_opener,
     )
-    offline_factory = _live_session_factory(
-        log_path=tmp_path / "offline-Player.log",
-        app_dir=tmp_path / "offline-app",
-        bulk_file=bulk_file,
-        poll_interval=0.01,
-        profile_client=offline_client,
+    cache_path = cache_client.profile_path("TST", "QuickDraft")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(profile.to_bytes())
+
+    args = _parser().parse_args(
+        [
+            "--provider",
+            "live",
+            "--app-dir",
+            str(app_dir),
+            "--log-path",
+            str(tmp_path / "Player.log"),
+            "--profile-manifest-url",
+            manifest_url,
+            "--offline-profiles",
+            "--poll-interval",
+            "0.01",
+            "--no-startup-scan",
+        ]
     )
-    offline_session = offline_factory(lambda snapshot: None)
-    offline_session._set_active_set_code(set_code="TST")  # type: ignore[attr-defined]
-    assert offline_session.snapshot.set_profile.set_code == "TST"
-    assert offline_session.profile_refresh_request() is None
-    assert offline_client.refresh("TST", "QuickDraft").outcome.value == "offline"
-    assert offline_requests == []
+    provider = _build_provider(args=args)
+    assert isinstance(provider, LiveSessionAdapter)
+
+    client = provider._profile_client  # type: ignore[attr-defined]
+    assert isinstance(client, ProfileClient)
+    assert client.manifest_url == manifest_url
+    assert client.network_policy is ProfileNetworkPolicy.OFFLINE
+    session = provider._session_factory(lambda snapshot: None)  # type: ignore[attr-defined]
+    assert session._profile_client is client  # type: ignore[attr-defined]
+    session._set_active_set_code(set_code="TST")  # type: ignore[attr-defined]
+
+    assert session.snapshot.set_profile.set_code == "TST"
+    assert session.snapshot.set_profile.maturity == "early"
+    assert session.snapshot.set_profile.source == "local-early"
+    assert session.snapshot.set_profile.phase.value == "ready"
+    assert session.profile_refresh_request() is None
+    assert client.refresh("TST", "QuickDraft").outcome.value == "cached"
+    assert attempted_requests == []
+
+    fallback_app_dir = tmp_path / "fallback-app"
+    fallback_args = _parser().parse_args(
+        [
+            "--provider",
+            "live",
+            "--app-dir",
+            str(fallback_app_dir),
+            "--log-path",
+            str(tmp_path / "fallback-Player.log"),
+            "--profile-manifest-url",
+            manifest_url,
+            "--offline-profiles",
+            "--poll-interval",
+            "0.01",
+            "--no-startup-scan",
+        ]
+    )
+    fallback_provider = _build_provider(args=fallback_args)
+    fallback_session = fallback_provider._session_factory(  # type: ignore[attr-defined]
+        lambda snapshot: None
+    )
+    fallback_session._set_active_set_code(set_code="TST")  # type: ignore[attr-defined]
+    assert fallback_session.snapshot.set_profile.set_code == "TST"
+    assert fallback_session.snapshot.set_profile.maturity == "generic"
+    assert fallback_session.snapshot.set_profile.phase.value == "ready"
+    assert fallback_session.profile_refresh_request() is None
+    assert attempted_requests == []
 
 
 def test_verify_bundled_profile_flag_is_hidden_and_parsed() -> None:
@@ -1536,9 +1532,18 @@ QTest.keyClick(root, Qt.Key_Space)
 QTest.keyClick(root, Qt.Key_Return)
 application.processEvents()
 assert any(isinstance(command, ChooseAccount) for command in provider.commands)
+assert provider.state["ratings"]["phase"] == "missing"
+unavailable_state = dict(provider.state)
+unavailable_state["ratings"] = dict(unavailable_state["ratings"])
+unavailable_state["ratings"]["phase"] = "unavailable"
+provider._replace_state(state=unavailable_state)
+application.processEvents()
+assert provider.state["ratings"]["phase"] == "unavailable"
+
 
 download = root.findChild(QObject, "ratingsDownloadButton")
 assert download is not None
+assert download.property("visible") is True
 download.forceActiveFocus()
 QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
@@ -1596,10 +1601,15 @@ assert provider.state["ratings"]["phase"] == "loading"
     assert completed.returncode == 0, completed.stderr
 
 
-def test_qml_settings_ratings_progress_and_styled_download_dialog_offscreen() -> None:
+def test_qml_settings_hosted_ratings_refresh_dialog_offscreen() -> None:
     probe = """
+import gzip
+import hashlib
+import io
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import time
 
 from PySide6.QtCore import QObject, QUrl, Qt
 from PySide6.QtGui import QGuiApplication
@@ -1608,19 +1618,125 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
 from draftomen import __version__
-from draftomen.mock_session import MockLiveSession
-from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.carddb import CardDatabase
+from draftomen.profile_client import ProfileClient, ProfileNetworkPolicy
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
+from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_gui import _fixed_font_family
-from draftomen.qt_mock import MockSessionAdapter
+from draftomen.session import LiveSession
+from draftomen.set_profile import SET_PROFILE_SCHEMA_VERSION, load_set_profile
+
+
+def wait_until(predicate, description):
+    deadline = time.monotonic() + 8
+    while not predicate():
+        application.processEvents()
+        if time.monotonic() >= deadline:
+            raise AssertionError("Timed out waiting for " + description)
+        time.sleep(0.005)
+    application.processEvents()
+
+
+class Response:
+    def __init__(self, payload: bytes, url: str):
+        self._payload = io.BytesIO(payload)
+        self._url = url
+
+    def read(self, size: int = -1) -> bytes:
+        return self._payload.read(size)
+
+    def geturl(self) -> str:
+        return self._url
+
+    def close(self) -> None:
+        pass
+
+
+project_root = Path.cwd()
+app_dir = TemporaryDirectory()
+app_path = Path(app_dir.name)
+manifest_url = "https://profiles.example.test/v1/manifest.json"
+artifact_url = "https://profiles.example.test/v1/tst-quickdraft.json.gz"
+cached_profile = load_set_profile(
+    project_root / "tests" / "fixtures" / "set-profiles" / "early.json",
+    expected_set_code="TST",
+    expected_format="QuickDraft",
+)
+updated_profile = replace(
+    cached_profile,
+    profile_version="e2e-updated",
+    generated_at="2026-09-02T00:00:00+00:00",
+)
+cached_client = ProfileClient(
+    app_dir=app_path,
+    manifest_url=manifest_url,
+    network_policy=ProfileNetworkPolicy.OFFLINE,
+)
+cache_path = cached_client.profile_path("TST", "QuickDraft")
+cache_path.parent.mkdir(parents=True, exist_ok=True)
+cache_path.write_bytes(cached_profile.to_bytes())
+artifact_bytes = gzip.compress(updated_profile.to_bytes(), mtime=0)
+artifact = ProfileManifestArtifact(
+    set_code=updated_profile.set_code,
+    event_format=updated_profile.event_format,
+    set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+    profile_version=updated_profile.profile_version,
+    generated_at=updated_profile.generated_at,
+    url=artifact_url,
+    gzip_bytes=len(artifact_bytes),
+    profile_bytes=len(updated_profile.to_bytes()),
+    gzip_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+    profile_sha256=hashlib.sha256(updated_profile.to_bytes()).hexdigest(),
+    maturity=updated_profile.maturity,
+)
+payloads = {
+    manifest_url: ProfileManifest(
+        artifacts=(artifact,),
+        published_at="2026-09-02T00:00:00+00:00",
+    ).to_bytes(),
+    artifact_url: artifact_bytes,
+}
+requests = []
+
+
+def opener(request, *, timeout):
+    del timeout
+    requests.append(request.full_url)
+    return Response(payloads[request.full_url], request.full_url)
+
+
+client = ProfileClient(
+    app_dir=app_path,
+    manifest_url=manifest_url,
+    network_policy=ProfileNetworkPolicy.OFFLINE,
+    opener=opener,
+)
+
+
+def factory(publish):
+    session = LiveSession(
+        log_path=app_path / "Player.log",
+        card_database=CardDatabase(cards={}),
+        app_dir=app_path,
+        poll_interval=0.01,
+        snapshot_publisher=publish,
+        profile_client=client,
+    )
+    session._set_active_set_code(set_code="TST")
+    return session
 
 
 QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
-provider = MockSessionAdapter(session=MockLiveSession(scenario="ready"))
-preferences_dir = TemporaryDirectory()
-preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+provider = LiveSessionAdapter(
+    session_factory=factory,
+    poll_interval_ms=10,
+    startup_scan=False,
+    profile_client=client,
+)
+preferences = GuiPreferencesAdapter(app_dir=app_path)
 engine = QQmlApplicationEngine()
-qml_directory = Path.cwd() / "draftomen" / "qml"
+qml_directory = project_root / "draftomen" / "qml"
 engine.addImportPath(str(qml_directory))
 context = engine.rootContext()
 context.setContextProperty("fixedFontFamily", _fixed_font_family())
@@ -1634,84 +1750,181 @@ context.setContextProperty("initialWindowHeight", 700)
 engine.setInitialProperties({"provider": provider})
 engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
-application.processEvents()
-
-progress_container = root.findChild(QObject, "settingsRatingsProgressContainer")
-progress_message = root.findChild(QObject, "settingsRatingsProgressMessage")
-progress_bar = root.findChild(QObject, "settingsRatingsProgressBar")
-card_update = root.findChild(QObject, "settingsCardDataLastUpdated")
-ratings_update = root.findChild(QObject, "settingsRatingsLastUpdated")
 download = root.findChild(QObject, "settingsRatingsDownloadButton")
-assert progress_container is not None
-assert progress_message is not None
-assert progress_bar is not None
-assert card_update is not None
-assert ratings_update is not None
-assert download is not None
-assert str(card_update.property("text")).startswith("Card metadata updated · ")
-assert str(ratings_update.property("text")).startswith("17Lands ratings updated · ")
-assert "Never updated" not in card_update.property("text")
-assert "Never updated" not in ratings_update.property("text")
-assert progress_container.property("visible") is False
-assert download.property("enabled") is True
-assert download.property("text") == "Download 17Lands ratings"
-
-download.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
-application.processEvents()
 dialog = root.findChild(QObject, "settingsRatingsDownloadDialog")
-background = root.findChild(QObject, "settingsRatingsDownloadDialogBackground")
-header = root.findChild(QObject, "settingsRatingsDownloadDialogHeader")
-footer = root.findChild(QObject, "settingsRatingsDownloadDialogFooter")
-footer_background = root.findChild(
-    QObject, "settingsRatingsDownloadDialogFooterBackground"
-)
-title = root.findChild(QObject, "settingsRatingsDownloadDialogTitle")
-dialog_message = root.findChild(QObject, "settingsRatingsDownloadDialogMessage")
 confirm = root.findChild(QObject, "settingsRatingsDownloadConfirmButton")
-assert dialog is not None and dialog.property("visible") is True
-assert background is not None
-assert header is not None
-assert footer is not None
-assert footer_background is not None
-assert title is not None
-assert dialog_message is not None
+status = root.findChild(QObject, "settingsProfileCacheStatus")
+assert download is not None
+assert dialog is not None
 assert confirm is not None
-assert title.property("text") == "Download 17Lands ratings?"
-assert dialog_message.property("text") == (
-    "Download text-only card performance ratings and color-pair win rates "
-    "from 17Lands for OTJ? No card images are downloaded."
-)
-assert confirm.property("text") == "Download 17Lands ratings"
-assert background.property("color").name() == "#11142a"
-assert background.property("radius") == 4
-assert header.property("color").name() == "#191d3b"
-assert header.property("height") == 52
-assert footer.property("visible") is True
-assert footer_background.property("color").name() == "#191d3b"
+assert status is not None
 
-confirm.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+provider.start()
+try:
+    wait_until(
+        lambda: download.property("enabled") is True
+        and provider.state["set_profile"]["source"] == "local-early",
+        "cached hosted profile state in the settings control",
+    )
+    assert provider.state["set_profile"]["refresh_outcome"] == "cached"
+    assert requests == []
+
+    download.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    wait_until(lambda: dialog.property("visible") is True, "ratings refresh dialog")
+    QTest.keyClick(root, Qt.Key_Escape)
+    wait_until(lambda: dialog.property("visible") is False, "ratings refresh cancellation")
+    assert download.property("activeFocus") is True
+
+    client.network_policy = ProfileNetworkPolicy.ALLOWED
+    download.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    wait_until(lambda: dialog.property("visible") is True, "ratings refresh confirmation dialog")
+    confirm.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    wait_until(lambda: dialog.property("visible") is False, "ratings refresh dialog close")
+    wait_until(
+        lambda: provider.state["set_profile"]["refresh_outcome"]
+        in ("updated", "unchanged"),
+        "shared hosted profile refresh outcome",
+    )
+    outcome = provider.state["set_profile"]["refresh_outcome"]
+    assert requests == [manifest_url, artifact_url]
+    assert status.property("text") == "TST · early · " + outcome
+finally:
+    preferences.shutdown()
+    provider.shutdown()
+    provider.wait_for_shutdown()
+    del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
+def test_qml_state_banner_renders_generic_progress_and_excludes_ratings_loader() -> None:
+    probe = """
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter, SessionAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.session import (
+    DataLoadPhase,
+    OperationKind,
+    ProgressState,
+    RatingsState,
+    SetProfileState,
+)
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+base_snapshot = MockLiveSession().snapshot
+provider = SessionAdapter(snapshot=base_snapshot)
+preferences_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 900)
+context.setContextProperty("initialWindowHeight", 700)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+banner = root.findChild(QObject, "liveStateBanner")
+progress_bar = root.findChild(QObject, "stateProgressBar")
+assert banner is not None
+assert progress_bar is not None
+
+ready_snapshot = replace(
+    base_snapshot,
+    set_profile=SetProfileState(
+        set_code="TST",
+        event_format="QuickDraft",
+        maturity="mature",
+        profile_version="test",
+        source="test",
+        phase=DataLoadPhase.READY,
+        refresh_outcome="unchanged",
+        message="Set profile ready.",
+    ),
+    ratings=RatingsState(
+        set_code="TST",
+        phase=DataLoadPhase.UNAVAILABLE,
+        message="Ratings are not loaded.",
+    ),
+)
+
+build_snapshot = replace(
+    ready_snapshot,
+    progress=ProgressState(
+        operation=OperationKind.BUILD,
+        message="Building deck",
+        completed=2,
+        total=4,
+    ),
+)
+root.setProperty("currentSurface", "live")
+provider._apply_snapshot(build_snapshot)
 application.processEvents()
-assert dialog.property("visible") is False
-assert provider.state["ratings"]["phase"] == "loading"
-assert provider.state["progress"]["operation"] == "ratings"
-assert progress_container.property("visible") is True
-assert progress_message.property("text") == "Downloading OTJ ratings"
+assert banner.property("visible") is True
+assert banner.property("bannerTitle") == "Working"
+assert banner.property("bannerMessage") == "Building deck"
 assert progress_bar.property("visible") is True
 assert progress_bar.property("indeterminate") is False
-assert progress_bar.property("value") == 340
-assert progress_bar.property("to") == 1000
-assert download.property("enabled") is False
+assert progress_bar.property("value") == 2
 
-provider.selectScenario("ready")
+backtest_snapshot = replace(
+    ready_snapshot,
+    progress=ProgressState(
+        operation=OperationKind.BACKTEST,
+        message="Running backtest",
+    ),
+)
+root.setProperty("currentSurface", "live")
+provider._apply_snapshot(backtest_snapshot)
 application.processEvents()
-assert progress_container.property("visible") is False
+assert banner.property("bannerMessage") == "Running backtest"
+assert progress_bar.property("visible") is True
+assert progress_bar.property("indeterminate") is True
+
+ratings_snapshot = replace(
+    ready_snapshot,
+    progress=ProgressState(
+        operation=OperationKind.RATINGS,
+        message="Downloading ratings",
+    ),
+)
+root.setProperty("currentSurface", "live")
+provider._apply_snapshot(ratings_snapshot)
+application.processEvents()
+assert banner.property("bannerTitle") == "Ratings unavailable"
+assert banner.property("bannerMessage") == "Ratings are not loaded."
 assert progress_bar.property("visible") is False
-assert download.property("enabled") is True
 
 preferences.shutdown()
+del root
 del engine
+preferences_dir.cleanup()
 """
     completed = _run_qml_probe(probe)
 

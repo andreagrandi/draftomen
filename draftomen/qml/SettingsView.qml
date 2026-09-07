@@ -14,17 +14,6 @@ Item {
         root.displayPreferences.applicationFontPixelSize
             / Theme.baseFontPixelSize * 100
     )
-    readonly property bool ratingsLoading: root.sessionState
-        && root.sessionState.ratings
-        && root.sessionState.ratings.phase === "loading"
-    readonly property bool ratingsProgressActive: root.ratingsLoading
-        && root.sessionState.progress
-        && root.sessionState.progress.operation === "ratings"
-    readonly property bool ratingsProgressDeterminate: root.activeRatingsProgress
-        && root.activeRatingsProgress.total !== null
-        && root.activeRatingsProgress.total !== undefined
-    readonly property var activeRatingsProgress: root.ratingsProgressActive
-        ? root.sessionState.progress : null
 
     ScrollView {
         id: settingsScroll
@@ -372,90 +361,23 @@ Item {
                         Accessible.name: text
                         Accessible.description: qsTr("The latest successful 17Lands ratings update.")
                     }
-                    ColumnLayout {
-                        id: ratingsProgressContainer
-                        objectName: "settingsRatingsProgressContainer"
-                        Layout.fillWidth: true
-                        visible: root.ratingsProgressActive
-                        spacing: 6
-
-                        Label {
-                            objectName: "settingsRatingsProgressMessage"
-                            Layout.fillWidth: true
-                            text: root.activeRatingsProgress
-                                ? root.activeRatingsProgress.message : ""
-                            color: Theme.text
-                            wrapMode: Text.WordWrap
-                            Accessible.name: text
-                            Accessible.description: "Current ratings download progress."
-                        }
-
-                        ProgressBar {
-                            id: ratingsProgressBar
-                            objectName: "settingsRatingsProgressBar"
-                            Layout.fillWidth: true
-                            implicitHeight: 8
-                            from: 0
-                            to: root.activeRatingsProgress
-                                && root.ratingsProgressDeterminate
-                                ? root.activeRatingsProgress.total : 1
-                            value: root.activeRatingsProgress
-                                && root.ratingsProgressDeterminate
-                                && root.activeRatingsProgress.completed !== null
-                                && root.activeRatingsProgress.completed !== undefined
-                                ? root.activeRatingsProgress.completed : 0
-                            indeterminate: root.ratingsProgressActive
-                                && !root.ratingsProgressDeterminate
-                            Accessible.name: root.activeRatingsProgress
-                                ? root.activeRatingsProgress.message : ""
-
-                            background: Rectangle {
-                                objectName: "settingsRatingsProgressBarBackground"
-                                implicitWidth: 280
-                                implicitHeight: 8
-                                color: Theme.surfaceHigh
-                                border.color: Theme.outline
-                                border.width: 1
-                                radius: 4
-                            }
-
-                            contentItem: Item {
-                                implicitWidth: 280
-                                implicitHeight: 8
-                                clip: true
-
-                                Rectangle {
-                                    id: ratingsProgressFill
-                                    objectName: "settingsRatingsProgressBarFill"
-                                    width: root.ratingsProgressDeterminate
-                                        ? ratingsProgressBar.visualPosition * parent.width
-                                        : parent.width * 0.35
-                                    height: parent.height
-                                    x: root.ratingsProgressDeterminate ? 0 : -width
-                                    color: Theme.primary
-                                    radius: 4
-
-                                    SequentialAnimation on x {
-                                        running: root.ratingsProgressActive
-                                            && ratingsProgressBar.indeterminate
-                                        loops: Animation.Infinite
-                                        NumberAnimation {
-                                            from: -ratingsProgressFill.width
-                                            to: ratingsProgressFill.parent.width
-                                            duration: 900
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                     DimensionalButton {
                         id: settingsRatingsDownloadButton
                         objectName: "settingsRatingsDownloadButton"
-                        enabled: root.sessionState.ratings.set_code !== null && root.sessionState.ratings.set_code !== undefined && root.sessionState.ratings.phase !== "loading"
-                        text: qsTr("Download 17Lands ratings")
-                        Accessible.name: qsTr("Download 17Lands ratings")
-                        Accessible.description: qsTr("Downloads text-only card performance ratings and color-pair win rates from 17Lands; no card images are downloaded.")
+                        enabled: {
+                            const profile = root.sessionState.set_profile
+                            const ratings = root.sessionState.ratings
+                            return Boolean(
+                                profile && profile.set_code
+                                && ratings && ratings.set_code === profile.set_code
+                            )
+                        }
+                        text: qsTr("Refresh hosted ratings")
+                        Accessible.name: qsTr("Refresh hosted ratings")
+                        Accessible.description: qsTr(
+                            "Refreshes the hosted set profile used for 17Lands ratings; "
+                                + "cached ratings or deterministic fallback remain available."
+                        )
                         onClicked: {
                             ratingsDownloadDialog.returnFocusItem = settingsRatingsDownloadButton
                             ratingsDownloadDialog.open()
@@ -477,7 +399,7 @@ Item {
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape
-        title: qsTr("Download 17Lands ratings?")
+        title: qsTr("Refresh hosted ratings?")
         width: Math.min(420, Math.max(300, parent ? parent.width - 32 : 420))
         x: parent ? Math.max(16, Math.round((parent.width - width) / 2)) : 16
         y: parent ? Math.max(16, Math.round((parent.height - height) / 2)) : 16
@@ -530,7 +452,11 @@ Item {
             Label {
                 objectName: "settingsRatingsDownloadDialogMessage"
                 Layout.fillWidth: true
-                text: qsTr("Download text-only card performance ratings and color-pair win rates from 17Lands for %1? No card images are downloaded.").arg(root.sessionState.ratings.set_code)
+                text: qsTr(
+                    "Check the hosted 17Lands profile for %1? "
+                        + "Cached ratings or deterministic fallback remain available "
+                        + "while it refreshes."
+                ).arg(root.sessionState.ratings.set_code)
                 color: Theme.text
                 wrapMode: Text.WordWrap
                 Accessible.name: text
@@ -557,9 +483,9 @@ Item {
             }
             DimensionalButton {
                 objectName: "settingsRatingsDownloadConfirmButton"
-                text: qsTr("Download 17Lands ratings")
+                text: qsTr("Refresh hosted ratings")
                 implicitWidth: 144
-                Accessible.name: qsTr("Confirm 17Lands ratings download")
+                Accessible.name: qsTr("Confirm hosted ratings refresh")
                 onClicked: {
                     sessionProvider.requestRatings()
                     ratingsDownloadDialog.close()
