@@ -97,25 +97,41 @@ profile for card ratings and normalization, color inference, splash assessment,
 and pair tiebreaking, and an explicitly supplied scoring context does not
 override the setting.
 
+The setting controls only those additive contextual terms; it does not disable
+profile-backed scoring. While disabled, the selected profile can still supply
+card estimates and normalization, color inference, splash assessment, and pair
+tiebreaking. Profile download/refresh and profile-cache selection are
+independent of this mode: disabling contextual adjustments neither prevents
+profile loading or use of an existing cache nor changes the adapter-owned
+profile refresh policy. Changing the mode itself makes no profile, ratings,
+metadata, or card-image request.
+
 With contextual adjustments disabled, scores use only the existing
 base-score/color calculation and its `0–100` clamp. The serialized breakdown
 contains zero for every contextual term and contextual evidence is empty, so
 recommendations and audit payloads do not claim that contextual adjustments
 were applied. The default enabled mode retains the bounded terms,
-aggregate clamp, ordering, and fallback behavior described below.
+aggregate clamp, ordering, and fallback behavior described below. Enabling the
+mode permits contextual terms; it does not guarantee a numeric score or
+recommendation change. A changed score requires a validated pre-pick context
+and usable, material profile evidence. With no usable profile/context, generic
+rating/color scoring remains in effect and the contextual evidence stays empty.
 
 #### Live session and backtest behavior
 
 `LiveSession(..., contextual_adjustments_enabled=True)` is enabled by default,
-as is shared backtest generation. The published
+as is shared backtest generation. This shared API/session default is separate
+from the desktop's persisted policy. The published
 `LiveSessionSnapshot.contextual_adjustments_enabled` value is authoritative and
 immutable; callers change it by dispatching the frozen
-`ChangeContextualScoring(enabled: bool)` command. This is an in-memory session
-mode, not a persisted preference or a UI setting.
+`ChangeContextualScoring(enabled: bool)` command.
 
 When a current pack exists, the command immediately re-scores that pack locally
 from already-loaded card, profile, and pool state, then publishes the
-replacement scored pack and recommendations. Toggling the mode makes no
+replacement scored pack and recommendations. The visible scores and
+explanations are replaced immediately; when the required profile evidence is
+not usable or material, the replacement can retain the same numeric ordering
+while correctly omitting contextual evidence. Toggling the mode makes no
 metadata, profile, ratings, or card-image request, does not queue a delayed
 recommendation-image request, and does not cancel unrelated work. The selected
 mode is used for later packs and retained through profile adoption and other
@@ -128,6 +144,85 @@ invalidates an in-flight one, so a stale completion cannot republish results
 scored under the previous mode. Deck construction is independent of this
 toggle: build requests do not use contextual terms, and changing the mode
 neither rebuilds nor changes an existing deck result.
+
+#### Desktop policy and fresh-process persistence
+
+The production desktop GUI applies a separate, persisted policy: **Settings →
+Contextual pick scoring** is an accessible keyboard/mouse switch whose default
+is off. Its value is stored as the additive
+`display.contextual_adjustments_enabled` field in GUI preferences schema
+version 1. Existing version-1 preferences remain compatible: a missing or
+non-boolean field falls back to off while the other display preferences remain
+usable. Startup loads this preference before provider/session construction and
+before `LiveSessionAdapter.start()`. A real accepted switch change dispatches
+`ChangeContextualScoring`; the desktop saves changes through its coalesced
+atomic writer and drains pending writes during shutdown.
+
+Switching the setting in the desktop immediately updates the current pack's
+scores and recommendation explanations through the live-session command, uses
+the selected mode for later packs and backtests, and retains the profile
+loading/download/cache and deck-independence rules above. A fresh desktop
+process reads the saved value before its first provider/session score, so the
+choice survives a normal close and restart.
+
+For a reproducible production restart check, use the same isolated application
+directory, log fixture, local card-data file, and cached profile for both
+processes. Do not use the mockup:
+
+1. Prepare an isolated `APP_DIR`, a readable `PLAYER_LOG`, a local Scryfall
+   JSONL `CARD_DATA` file, and a validated non-generic profile cache below
+   `APP_DIR/set-profiles/` for the set/format under test.
+2. Start the production GUI with those exact inputs, for example:
+
+   ```bash
+   uv run draftomen --provider live \
+     --app-dir "$APP_DIR" \
+     --log-path "$PLAYER_LOG" \
+     --bulk-file "$CARD_DATA" \
+     --offline-profiles
+   ```
+
+3. In **Settings**, activate **Contextual pick scoring** with the mouse, then use
+   Space to disable it and the mouse to enable it again. With a current pack
+   visible, record the displayed scores and recommendation explanation, then
+   close the application normally so the coalesced writer can drain.
+4. After the first process has exited, launch the exact same command as a new
+   OS process. Confirm that the switch is still on before the first scored pack
+   appears, then inspect a later pack and a session backtest. Turn the switch off,
+   close normally, and launch a third process to confirm the off state before its
+   first scored pack. Both on and off directions are required for acceptance
+   verification.
+
+##### Recorded #382 verification
+
+This production workflow used the controlled fixture identity **TST /
+QuickDraft**, profile version `contextual-1.0` (source `local-mature`, maturity
+`mature`), event `QuickDraft_TST_20260829`, and user-facing pack 1, pick 7
+(stored coordinates 0/6). The card was grpId 104894, **Fixture Card 104894**,
+with inferred pair **WU**. These controlled fixture identities are verification
+data, not user configuration.
+
+- In the initial fresh process, no preference was loaded and the first score
+  mode was **OFF** (the default). The real Settings switch enabled scoring with
+  the mouse, Space disabled it, and the mouse enabled it again. The card's
+  visible score was **72 → 73 → 72 → 73** (OFF → ON → OFF → final ON). OFF had
+  no contextual evidence; ON had aggregate **+0.637871**, `fills draw deficit
+  (0/3)`, and `emerging role urgency 0.15`.
+  The off/on explanations differed, and normal shutdown persisted ON.
+- A second fresh OS process loaded **ON** before startup; its first score was
+  ON, the switch was visibly ON, and the card remained **73** with the same
+  material WU evidence. Mouse-disabling the switch changed the visible score to
+  **72** and changed the explanation; normal shutdown persisted **OFF**.
+- A third fresh OS process loaded **OFF** before startup; its first score was
+  OFF, the switch was visibly OFF, the card was **72**, and contextual evidence
+  was empty. OFF remained persisted after normal shutdown.
+
+All three driver invocations exited successfully.
+
+To observe a score delta rather than only the persisted mode and explanation,
+use a profile and pool that produce a validated pre-pick context with material
+evidence. A metadata-only, unusable, or absent profile is still a valid
+persistence test, but enabling the switch need not change its numeric scores.
 
 When a validated profile-backed pre-pick context is available, the engine scores
 with six small additive contextual terms from that validated pre-pick state:

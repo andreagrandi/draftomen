@@ -166,8 +166,8 @@ GUI_PREFERENCES_SCHEMA_VERSION = 1
 
 @dataclass(frozen=True)
 class GuiDisplayPreferences:
-    """User-controlled desktop display choices independent from the live session.
-    Functional draft choices remain owned by explicit live-session commands.
+    """User-controlled desktop display choices and contextual-scoring selection are persisted.
+    Functional changes still reach the live session through explicit commands.
     """
 
     compact_density: bool = False
@@ -176,6 +176,7 @@ class GuiDisplayPreferences:
     detailed_build_context: bool = True
     system_text_scaling: bool = True
     show_backtest: bool = False
+    contextual_adjustments_enabled: bool = False
 
 
 def gui_preferences_path(*, app_dir: PathInput | None = None) -> Path:

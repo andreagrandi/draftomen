@@ -294,13 +294,14 @@ class _GuiPreferencesSaveThread(QThread):
 
 
 class GuiPreferencesAdapter(QObject):
-    """Expose persisted display-only GUI choices through narrow Qt properties.
-    Ranking and splash choices remain explicit commands on SessionAdapter.
+    """Expose persisted desktop display choices and contextual-scoring selection through narrow Qt properties.
+    Functional changes still reach the live session through explicit commands.
     """
 
     preferencesChanged = Signal()
     persistenceChanged = Signal()
     applicationFontPixelSizeChanged = Signal()
+    contextualAdjustmentsEnabledChanged = Signal(bool)
 
     def __init__(
         self,
@@ -358,6 +359,10 @@ class GuiPreferencesAdapter(QObject):
     def showBacktest(self) -> bool:
         return self._preferences.show_backtest
 
+    @Property(bool, notify=contextualAdjustmentsEnabledChanged)
+    def contextualAdjustmentsEnabled(self) -> bool:
+        return self._preferences.contextual_adjustments_enabled
+
     @Property(int, notify=applicationFontPixelSizeChanged)
     def applicationFontPixelSize(self) -> int:
         application = QGuiApplication.instance()
@@ -398,6 +403,10 @@ class GuiPreferencesAdapter(QObject):
     def setShowBacktest(self, enabled: bool) -> None:
         self._replace_preferences(show_backtest=enabled)
 
+    @Slot(bool)
+    def setContextualAdjustmentsEnabled(self, enabled: bool) -> None:
+        self._replace_preferences(contextual_adjustments_enabled=enabled)
+
     @Slot()
     def shutdown(self) -> None:
         self._closing = True
@@ -437,8 +446,9 @@ class GuiPreferencesAdapter(QObject):
     def _replace_preferences(self, **changes: bool) -> None:
         if self._closing:
             return
-        updated = replace(self._preferences, **changes)
-        if updated == self._preferences:
+        previous = self._preferences
+        updated = replace(previous, **changes)
+        if updated == previous:
             return
         self._preferences = updated
         self._save_generation += 1
@@ -446,6 +456,13 @@ class GuiPreferencesAdapter(QObject):
         self._persistence_message = "Saving…"
         self.preferencesChanged.emit()
         self.persistenceChanged.emit()
+        if (
+            updated.contextual_adjustments_enabled
+            != previous.contextual_adjustments_enabled
+        ):
+            self.contextualAdjustmentsEnabledChanged.emit(
+                updated.contextual_adjustments_enabled
+            )
         self._ensure_save_thread().enqueue(
             generation=generation,
             preferences=updated,
@@ -519,6 +536,10 @@ class SessionAdapter(QObject):
     @Slot(bool)
     def setSplashEnabled(self, enabled: bool) -> None:
         self._dispatch(command=ChangeSplashPreference(enabled=enabled))
+
+    @Slot(bool)
+    def setContextualScoringEnabled(self, enabled: bool) -> None:
+        self._dispatch(command=ChangeContextualScoring(enabled=enabled))
 
     @Slot()
     def requestRatings(self) -> None:

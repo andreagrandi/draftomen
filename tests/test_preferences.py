@@ -177,6 +177,52 @@ def test_tui_preferences_path_uses_default_application_directory(
     assert path == tmp_path / "app" / "tui-preferences.json"
 
 
+def test_load_gui_preferences_uses_defaults_when_file_is_missing(tmp_path: Path) -> None:
+    preferences, warning = load_gui_preferences(app_dir=tmp_path / "app")
+
+    assert preferences == GuiDisplayPreferences()
+    assert preferences.contextual_adjustments_enabled is False
+    assert warning is None
+
+
+def test_load_gui_preferences_defaults_contextual_adjustments_for_existing_v1_file(
+    tmp_path: Path,
+) -> None:
+    path = gui_preferences_path(app_dir=tmp_path / "app")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "display": {
+                    "secondary_stats": False,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    preferences, warning = load_gui_preferences(app_dir=path.parent)
+
+    assert preferences == GuiDisplayPreferences(secondary_stats=False)
+    assert preferences.contextual_adjustments_enabled is False
+    assert warning is None
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_gui_preferences_round_trip_contextual_adjustments(
+    tmp_path: Path,
+    enabled: bool,
+) -> None:
+    expected = GuiDisplayPreferences(contextual_adjustments_enabled=enabled)
+
+    assert save_gui_preferences(preferences=expected, app_dir=tmp_path / "app") is None
+    actual, warning = load_gui_preferences(app_dir=tmp_path / "app")
+
+    assert actual == expected
+    assert warning is None
+
+
 def test_gui_preferences_round_trip_and_isolate_display_choices(
     tmp_path: Path,
 ) -> None:
@@ -199,6 +245,7 @@ def test_gui_preferences_round_trip_and_isolate_display_choices(
         "display": {
             "card_preview": False,
             "compact_density": True,
+            "contextual_adjustments_enabled": False,
             "detailed_build_context": False,
             "secondary_stats": False,
             "show_backtest": True,
@@ -219,6 +266,7 @@ def test_gui_preferences_recover_from_invalid_schema_and_fields(
                 "version": 1,
                 "display": {
                     "compact_density": "yes",
+                    "contextual_adjustments_enabled": "yes",
                     "secondary_stats": False,
                     "show_backtest": "yes",
                 },
@@ -232,6 +280,7 @@ def test_gui_preferences_recover_from_invalid_schema_and_fields(
     assert preferences == GuiDisplayPreferences(secondary_stats=False)
     assert warning is not None
     assert "compact_density" in warning
+    assert "contextual_adjustments_enabled" in warning
     assert "show_backtest" in warning
     path.write_text(json.dumps({"version": 2, "display": {}}), encoding="utf-8")
     _, unsupported_warning = load_gui_preferences(app_dir=path.parent)
