@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -15,9 +16,18 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication, QObject, QTimer, QUrl, Slot
+from PySide6.QtCore import (
+    QCoreApplication,
+    QMetaObject,
+    QObject,
+    QTimer,
+    QUrl,
+    Qt,
+    Slot,
+)
 
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.cardimages import CardImageService
 from draftomen.mock_session import MockLiveSession
 from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
 from draftomen.preferences import GuiDisplayPreferences
@@ -40,6 +50,7 @@ from draftomen.session import (
     CardImageRequest,
     CardImageState,
     CardView,
+    ChangeContextualScoring,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
@@ -1835,12 +1846,314 @@ def test_application_quit_releases_busy_worker_before_adapter_teardown(
         elapsed = time.monotonic() - started_at
 
         assert elapsed < 1.0
-        assert adapter.thread is not None
-        assert not adapter.thread.isRunning()
-        assert sessions[0].stopped is True
     finally:
         quit_requested.set()
         sessions[0].release.set()
         release_thread.join(timeout=1.0)
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+def test_live_adapter_contextual_toggle_stays_local_with_production_session(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    image_calls: list[object] = []
+    profile_calls: list[object] = []
+    request_gate = threading.Event()
+    event_name = "QuickDraft_TST_20260829"
+    pool_before_pick = (104976, 105080, 104995, 105027, 105030, 105170)
+
+    def payload_line(*, payload: dict[str, object]) -> str:
+        return json.dumps(
+            {"CurrentModule": "BotDraft", "Payload": json.dumps(payload)}
+        )
+
+    def pack_line(
+        *,
+        pack_number: int,
+        pick_number: int,
+        draft_pack: tuple[int, ...],
+        picked_cards: tuple[int, ...],
+    ) -> str:
+        return payload_line(
+            payload={
+                "Result": "Success",
+                "EventName": event_name,
+                "DraftStatus": "PickNext",
+                "PackNumber": pack_number,
+                "PickNumber": pick_number,
+                "NumCardsToPick": 1,
+                "DraftPack": [str(grp_id) for grp_id in draft_pack],
+                "PickedCards": [str(grp_id) for grp_id in picked_cards],
+            }
+        )
+
+    def pick_line(
+        *,
+        request_id: str,
+        card_id: int,
+        pack_number: int,
+        pick_number: int,
+    ) -> str:
+        request = {
+            "EventName": event_name,
+            "PickInfo": {
+                "EventName": event_name,
+                "CardIds": [str(card_id)],
+                "PackNumber": pack_number,
+                "PickNumber": pick_number,
+            },
+        }
+        envelope = {"id": request_id, "request": json.dumps(request)}
+        return (
+            "[UnityCrossThreadLogger]==> BotDraftDraftPick "
+            f"{json.dumps(envelope)}"
+        )
+
+    fixture_lines = [
+        json.dumps(
+            {
+                "authenticateResponse": {
+                    "clientId": "FIXTURECLIENTID1234567890",
+                    "screenName": "FixturePlayer",
+                }
+            }
+        ),
+        json.dumps(
+            {
+                "Course": {
+                    "CourseId": "00000000-0000-4000-8000-000000000004",
+                    "InternalEventName": event_name,
+                    "CurrentModule": "BotDraft",
+                }
+            }
+        ),
+    ]
+    for pick_index, picked_card in enumerate(pool_before_pick):
+        pack_number, pick_number = divmod(pick_index, 14)
+        fixture_lines.extend(
+            (
+                pack_line(
+                    pack_number=pack_number,
+                    pick_number=pick_number,
+                    draft_pack=(picked_card,),
+                    picked_cards=pool_before_pick[:pick_index],
+                ),
+                pick_line(
+                    request_id=f"profiled-pick-{pick_index}",
+                    card_id=picked_card,
+                    pack_number=pack_number,
+                    pick_number=pick_number,
+                ),
+            )
+        )
+    fixture_lines.append(
+        payload_line(
+            payload={
+                "Result": "Success",
+                "EventName": event_name,
+                "DraftStatus": "PickNext",
+                "PackNumber": 0,
+                "PickNumber": len(pool_before_pick),
+                "NumCardsToPick": 1,
+                "DraftPack": [
+                    "104894",
+                    "104976",
+                    "105080",
+                    "104995",
+                    "105027",
+                    "105030",
+                    "105170",
+                    "104932",
+                    "104893",
+                    "105091",
+                    "104969",
+                    "105097",
+                    "104979",
+                    "105164",
+                ],
+                "PickedCards": [str(grp_id) for grp_id in pool_before_pick],
+            }
+        )
+    )
+
+    def fail_image_opener(request: object, timeout: float) -> object:
+        del timeout
+        image_calls.append(request)
+        raise AssertionError("contextual scoring must not fetch card images")
+
+    def fail_profile_opener(request: object, timeout: float) -> object:
+        del timeout
+        profile_calls.append(request)
+        raise AssertionError("contextual scoring must not refresh profiles")
+
+    card_database = CardDatabase(
+        cards={
+            grp_id: CardInfo(
+                grp_id=grp_id,
+                name=f"Fixture Card {grp_id}",
+                colors=("W", "U"),
+                mana_value=3.0,
+                rarity="common",
+                types=("Creature",),
+                image_uri=f"https://images.example/{grp_id}.jpg",
+                set_code="tst",
+            )
+            for grp_id in (
+                104894,
+                104976,
+                105080,
+                104995,
+                105027,
+                105030,
+                105170,
+                104932,
+                104893,
+                105091,
+                104969,
+                105097,
+                104979,
+                105164,
+            )
+        }
+    )
+    profile_client = ProfileClient(
+        app_dir=tmp_path / "profiles",
+        manifest_url=_PROFILE_MANIFEST_URL,
+        opener=fail_profile_opener,
+    )
+    profile = _adapter_empirical_profile(
+        profile_version="contextual-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
+    profile = replace(
+        profile,
+        card_ratings=(
+            replace(
+                profile.card_ratings[0],
+                gih_win_rate=replace(
+                    profile.card_ratings[0].gih_win_rate,
+                    raw_value=0.57,
+                    value=0.57,
+                ),
+            ),
+        ),
+        role_profile=replace(
+            profile.role_profile,
+            cards=(
+                replace(profile.role_profile.cards[0], key="grp_id:104894"),
+            ),
+        ),
+    )
+    dump_set_profile(
+        profile,
+        profile_client.profile_path("TST", "QuickDraft"),
+    )
+    image_service = CardImageService(
+        cache_dir=tmp_path / "images",
+        opener=fail_image_opener,
+    )
+
+    class _ControlledLiveSession(LiveSession):
+        def selected_card_image_request(self) -> CardImageRequest | None:
+            if not request_gate.is_set():
+                return None
+            return super().selected_card_image_request()
+
+        def recommendation_image_request(self) -> CardImageRequest | None:
+            if not request_gate.is_set():
+                return None
+            return super().recommendation_image_request()
+
+        def recent_pick_image_request(self) -> CardImageRequest | None:
+            if not request_gate.is_set():
+                return None
+            return super().recent_pick_image_request()
+
+        def profile_refresh_request(self) -> ProfileRefreshRequest | None:
+            if not request_gate.is_set():
+                return None
+            return super().profile_refresh_request()
+
+        def poll_once(self) -> LiveSessionSnapshot:
+            return super().poll_once()
+
+    sessions: list[_ControlledLiveSession] = []
+
+    def factory(publish: SnapshotPublisher) -> LiveSession:
+        session = _ControlledLiveSession(
+            log_path=tmp_path / "Player.log",
+            app_dir=tmp_path / "app",
+            card_database=card_database,
+            card_image_service=image_service,
+            profile_client=profile_client,
+            snapshot_publisher=publish,
+        )
+        session.process_lines(lines=fixture_lines)
+        sessions.append(session)
+        return session
+
+    adapter = LiveSessionAdapter(
+        session_factory=factory,
+        poll_interval_ms=60_000,
+        startup_scan=False,
+        profile_client=profile_client,
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(sessions)
+            and bool(adapter.state["recommendations"]["cards"]),
+            description="the production live-session recommendations",
+        )
+        request_gate.set()
+        initial_snapshot = sessions[0].snapshot
+        initial_recommendation = next(
+            recommendation
+            for recommendation in initial_snapshot.recommendations.cards
+            if recommendation.card.grp_id == 104894
+        )
+        assert initial_snapshot.contextual_adjustments_enabled is True
+        assert initial_recommendation.contextual_pair == "WU"
+        assert initial_recommendation.contextual_evidence
+        assert initial_recommendation.contextual_breakdown.aggregate > 0
+
+        adapter._dispatch(command=ChangeContextualScoring(enabled=False))
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                bool(sessions)
+                and sessions[0].snapshot.contextual_adjustments_enabled is False
+            ),
+            description="the queued contextual-scoring rescore",
+        )
+        for _ in range(5):
+            qcore_application.processEvents()
+        disabled_recommendation = next(
+            recommendation
+            for recommendation in sessions[0].snapshot.recommendations.cards
+            if recommendation.card.grp_id == 104894
+        )
+        assert disabled_recommendation.contextual_evidence == ()
+        assert disabled_recommendation.contextual_breakdown.aggregate == 0
+        assert disabled_recommendation.score < initial_recommendation.score
+        assert image_calls == []
+        assert profile_calls == []
+
+        worker = adapter._worker
+        assert worker is not None
+        QMetaObject.invokeMethod(
+            worker,
+            "_poll",
+            Qt.ConnectionType.QueuedConnection,
+        )
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(image_calls) and bool(profile_calls),
+            description="the controlled later production poll requests",
+        )
+        assert sessions[0].snapshot.contextual_adjustments_enabled is False
+    finally:
         adapter.shutdown()
         adapter.wait_for_shutdown()

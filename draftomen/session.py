@@ -525,6 +525,7 @@ class LiveSessionSnapshot:
     """
 
     status: ApplicationStatus = field(default_factory=ApplicationStatus)
+    contextual_adjustments_enabled: bool = True
     accounts: tuple[AccountIdentity, ...] = ()
     active_account: AccountIdentity | None = None
     draft: DraftIdentity | None = None
@@ -595,6 +596,12 @@ class ChangeSplashPreference:
 
     enabled: bool
 
+@dataclass(frozen=True, slots=True)
+class ChangeContextualScoring:
+    """Request whether contextual scoring adjustments are enabled."""
+
+    enabled: bool
+
 
 @dataclass(frozen=True, slots=True)
 class RequestRatingsDownload:
@@ -649,6 +656,7 @@ LiveSessionCommand: TypeAlias = (
     | FocusBuildCard
     | ChangeRanking
     | ChangeSplashPreference
+    | ChangeContextualScoring
     | RequestRatingsDownload
     | RequestBuild
     | RequestBacktest
@@ -676,6 +684,7 @@ class LiveSession:
         ranking_mode: RankingMode = DEFAULT_RANKING_MODE,
         card_image_service: CardImageService | None = None,
         splash_enabled: bool = SPLASH.enabled_by_default,
+        contextual_adjustments_enabled: bool = True,
         set_profile: SetProfile | None = None,
         profile_client: ProfileClient | None = None,
     ) -> None:
@@ -700,6 +709,7 @@ class LiveSession:
         self._event_publisher = event_publisher
         self._ranking_mode = validate_ranking_mode(ranking_mode=ranking_mode)
         self._splash_enabled = splash_enabled
+        self._contextual_adjustments_enabled = contextual_adjustments_enabled
         self._card_database = card_database
         self._set_card_data_loader = set_card_data_loader
         self._card_database_set_code: str | None = None
@@ -766,6 +776,7 @@ class LiveSession:
             card_data = CardDataState()
         ratings_state = self._initial_ratings_state()
         self._snapshot = LiveSessionSnapshot(
+            contextual_adjustments_enabled=self._contextual_adjustments_enabled,
             status=_waiting_for_draft_status(setup_guidance=not initial_log_readable),
             accounts=self._known_accounts(),
             card_data=card_data,
@@ -1345,6 +1356,9 @@ class LiveSession:
         if isinstance(command, ChangeRanking):
             self._change_ranking(ranking_mode=command.ranking_mode)
             return self.snapshot
+        if isinstance(command, ChangeContextualScoring):
+            self._change_contextual_scoring(enabled=command.enabled)
+            return self.snapshot
 
         if isinstance(command, ChooseRecommendation):
             self._choose_recommendation(grp_id=command.grp_id)
@@ -1584,6 +1598,7 @@ class LiveSession:
             draft = self.snapshot.draft
             ranking_mode = self._ranking_mode
             splash_enabled = self._splash_enabled
+            contextual_adjustments_enabled = self._contextual_adjustments_enabled
             self._publish(
                 snapshot=replace(
                     self.snapshot,
@@ -1597,7 +1612,10 @@ class LiveSession:
                 )
             )
         try:
-            backtest = self._backtest_result(command=command)
+            backtest = self._backtest_result(
+                command=command,
+                contextual_adjustments_enabled=contextual_adjustments_enabled,
+            )
         except Exception as error:
             session_error = SessionError(
                 error_id="backtest",
@@ -1613,6 +1631,7 @@ class LiveSession:
                     draft=draft,
                     ranking_mode=ranking_mode,
                     splash_enabled=splash_enabled,
+                    contextual_adjustments_enabled=contextual_adjustments_enabled,
                 ):
                     return
                 self._publish(
@@ -1634,6 +1653,7 @@ class LiveSession:
                 draft=draft,
                 ranking_mode=ranking_mode,
                 splash_enabled=splash_enabled,
+                contextual_adjustments_enabled=contextual_adjustments_enabled,
             ):
                 return
             self._publish(
@@ -1657,6 +1677,7 @@ class LiveSession:
         draft: DraftIdentity | None,
         ranking_mode: RankingMode,
         splash_enabled: bool,
+        contextual_adjustments_enabled: bool,
     ) -> bool:
         return (
             generation == self._backtest_request_generation
@@ -1664,6 +1685,8 @@ class LiveSession:
             and draft == self.snapshot.draft
             and ranking_mode == self._ranking_mode
             and splash_enabled == self._splash_enabled
+            and contextual_adjustments_enabled
+            == self._contextual_adjustments_enabled
         )
 
     def _progress_after_operation(
@@ -1688,7 +1711,12 @@ class LiveSession:
             if error.operation not in {OperationKind.BUILD, OperationKind.BACKTEST}
         )
 
-    def _backtest_result(self, *, command: RequestBacktest) -> BacktestResult:
+    def _backtest_result(
+        self,
+        *,
+        command: RequestBacktest,
+        contextual_adjustments_enabled: bool,
+    ) -> BacktestResult:
         if self._card_database is None:
             raise ValueError("Card metadata is not ready.")
 
@@ -1704,6 +1732,7 @@ class LiveSession:
             ratings_data=None,
             ranking_mode=self._ranking_mode,
             splash_enabled=self._splash_enabled,
+            contextual_adjustments_enabled=contextual_adjustments_enabled,
             set_profile=self._set_profile,
         )
         return _backtest_result(report=report)
@@ -2016,10 +2045,6 @@ class LiveSession:
             self._queue_profile_refresh_locked(force=True)
 
 
-
-
-
-
     def _card_image_focuses_current_build(
         self,
         *,
@@ -2043,6 +2068,8 @@ class LiveSession:
         self,
         *,
         snapshot: LiveSessionSnapshot | None = None,
+        prepare_image_requests: bool = True,
+        record_audit: bool = True,
     ) -> bool:
         event = self._current_pack_event
         database = self._card_database
@@ -2057,6 +2084,7 @@ class LiveSession:
         engine = PickEngine(
             ratings_data=ratings_data,
             splash_enabled=self._splash_enabled,
+            contextual_adjustments_enabled=self._contextual_adjustments_enabled,
             set_profile=self._set_profile,
         )
         global_pick_index = _draft_pick_index(event=event)
@@ -2077,7 +2105,7 @@ class LiveSession:
             recommendations=recommendations,
         )
         state = self._active_draft_state()
-        if state is not None:
+        if record_audit and state is not None:
             self.audit_store.record_decision(
                 state=state,
                 event=event,
@@ -2086,20 +2114,24 @@ class LiveSession:
                 ratings_data=ratings_data,
             )
         previous_snapshot = self.snapshot if snapshot is None else snapshot
-        build_image_focus = self._card_image_focuses_current_build(
-            card_image=previous_snapshot.card_image,
-            build=previous_snapshot.build,
-        )
-        card_image = (
-            previous_snapshot.card_image
-            if build_image_focus
-            or previous_snapshot.card_image.grp_id == recommendations.selected_grp_id
-            else self._retire_card_image()
-        )
-        self._prepare_recommendation_image_requests(
-            pack=event,
-            recommendations=recommendations,
-        )
+        if prepare_image_requests:
+            build_image_focus = self._card_image_focuses_current_build(
+                card_image=previous_snapshot.card_image,
+                build=previous_snapshot.build,
+            )
+            card_image = (
+                previous_snapshot.card_image
+                if build_image_focus
+                or previous_snapshot.card_image.grp_id == recommendations.selected_grp_id
+                else self._retire_card_image()
+            )
+            self._prepare_recommendation_image_requests(
+                pack=event,
+                recommendations=recommendations,
+            )
+        else:
+            build_image_focus = False
+            card_image = previous_snapshot.card_image
         self._publish(
             snapshot=replace(
                 previous_snapshot,
@@ -2112,7 +2144,7 @@ class LiveSession:
                 card_image=card_image,
             )
         )
-        if not build_image_focus:
+        if prepare_image_requests and not build_image_focus:
             self._start_focused_card_image_load(
                 grp_id=recommendations.selected_grp_id,
             )
@@ -2661,6 +2693,42 @@ class LiveSession:
                 )
             )
             self._score_current_pack_locked()
+
+    def _change_contextual_scoring(self, *, enabled: bool) -> None:
+        with self._state_lock:
+            if enabled == self._contextual_adjustments_enabled:
+                return
+
+            self._contextual_adjustments_enabled = enabled
+            self._backtest_request_generation += 1
+            self._last_backtest_request = None
+            errors = tuple(
+                error
+                for error in self.snapshot.errors
+                if error.operation is not OperationKind.BACKTEST
+            )
+            progress = self.snapshot.progress
+            if (
+                progress is not None
+                and progress.operation is OperationKind.BACKTEST
+            ):
+                progress = None
+            candidate_snapshot = replace(
+                self.snapshot,
+                contextual_adjustments_enabled=enabled,
+                progress=progress,
+                errors=errors,
+                backtest=None,
+            )
+            if self._current_pack_event is None:
+                self._publish(snapshot=candidate_snapshot)
+                return
+
+            self._score_current_pack_locked(
+                snapshot=candidate_snapshot,
+                prepare_image_requests=False,
+                record_audit=False,
+            )
 
     def _dismiss_error(self, *, error_id: str) -> None:
         with self._state_lock:
@@ -4122,6 +4190,7 @@ class LiveSession:
         with self._state_lock:
             snapshot = replace(
                 snapshot,
+                contextual_adjustments_enabled=self._contextual_adjustments_enabled,
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,
                 errors=self._project_ratings_errors_locked(errors=snapshot.errors),

@@ -104,6 +104,31 @@ recommendations and audit payloads do not claim that contextual adjustments
 were applied. The default enabled mode retains the bounded terms,
 aggregate clamp, ordering, and fallback behavior described below.
 
+#### Live session and backtest behavior
+
+`LiveSession(..., contextual_adjustments_enabled=True)` is enabled by default,
+as is shared backtest generation. The published
+`LiveSessionSnapshot.contextual_adjustments_enabled` value is authoritative and
+immutable; callers change it by dispatching the frozen
+`ChangeContextualScoring(enabled: bool)` command. This is an in-memory session
+mode, not a persisted preference or a UI setting.
+
+When a current pack exists, the command immediately re-scores that pack locally
+from already-loaded card, profile, and pool state, then publishes the
+replacement scored pack and recommendations. Toggling the mode makes no
+metadata, profile, ratings, or card-image request, does not queue a delayed
+recommendation-image request, and does not cancel unrelated work. The selected
+mode is used for later packs and retained through profile adoption and other
+session lifecycle transitions, including recovery.
+
+Session-requested backtests use the same current mode, while the shared
+`generate_backtest_report` entry point accepts the mode explicitly and defaults
+it to enabled. Changing the mode retires any published backtest comparison and
+invalidates an in-flight one, so a stale completion cannot republish results
+scored under the previous mode. Deck construction is independent of this
+toggle: build requests do not use contextual terms, and changing the mode
+neither rebuilds nor changes an existing deck result.
+
 When a validated profile-backed pre-pick context is available, the engine scores
 with six small additive contextual terms from that validated pre-pick state:
 role need (0–2.5), late urgency (0–3.0), semantic package support (0–1.5),
