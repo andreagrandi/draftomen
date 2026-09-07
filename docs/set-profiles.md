@@ -9,11 +9,17 @@ profile loading.
 The producer workflow is explicit and reproducible: it reads caller-selected
 local inputs, writes a validated compressed artifact plus a generation marker,
 and can turn those outputs into a remote manifest record. The profile client
-workflow is offline-first and network-optional; Draft Omen does not bundle a
-profile host, production manifest, or default profile URL. Native applications
-do bundle one validated baseline profile snapshot as a read-only module
-resource. The repository's optional hosted publication boundary is documented
-below and is never implicit in the runtime.
+workflow is local-first and network-optional. Terminal `watch`, `watch --plain`,
+and CLI `watch` use
+`https://www.draftomen.com/profiles/manifest.json` by default;
+`--profile-manifest-url` overrides it and `--offline-profiles` selects
+`ProfileNetworkPolicy.OFFLINE`. Draft Omen does not bundle a profile host or
+manifest; the terminal default points to a separately published static asset.
+Native applications do bundle one validated baseline profile snapshot as a
+read-only module resource. Qt/native default-URL and ratings-presentation work
+owned by issue #354 remain outside this terminal change. Producer generation,
+website publication, and package/native release workflows remain independent of
+runtime profile consumption.
 
 For the complete local producer path, run `draftomen-tui refresh-profile-data`.
 With no selector it discovers every supported set/format pair represented by a
@@ -66,6 +72,9 @@ artifact is cached at the application-data
 cache-only operation; otherwise the runtime fetches the selected artifact from
 the default hosted URL. No card-data network request occurs after
 `DraftStartedEvent`.
+`--offline-profiles` applies only to hosted set-profile networking. It does not
+disable Scryfall card metadata, card images, or static card-data networking;
+those sources retain their own cache and network policies.
 
 In the TUI, press `r` to retry a recoverable card-data error. Network repair is
 available only before draft start; after `DraftStartedEvent`, retries use the
@@ -120,13 +129,15 @@ be selected accidentally.
 The bundled file is read-only evidence: loading it performs no network access,
 never copies it into application data, and never writes, renames, deletes, or
 mutates the module resource. A fresh offline install can use it without a
-profile-cache entry. An explicitly configured hosted manifest with a valid
-newer artifact installs the flat cache and supersedes the baseline on later
-loads under the existing anti-regression rules. Equal identity is `unchanged`;
-older maturity or timestamp, and same-timestamp conflicts, are
-`stale-manifest`. Invalid manifests or artifacts, network failures, and failed
-commits retain the usable profile and never mutate the bundle. No default URL or
-implicit network activity is introduced.
+profile-cache entry. The terminal watch default can later fetch a valid newer
+profile from the production manifest, while an explicitly configured hosted
+manifest can do the same for other clients. Such a profile installs the flat
+cache and supersedes the baseline on later loads under the existing
+anti-regression rules. Equal identity is `unchanged`; older maturity or
+timestamp, and same-timestamp conflicts, are `stale-manifest`. Invalid
+manifests or artifacts, network failures, and failed commits retain the usable
+profile and never mutate the bundle. The baseline resource itself introduces
+no default URL or implicit network activity.
 
 ### Baseline ownership and update procedure
 
@@ -392,10 +403,11 @@ and development cannot have separate publication timing.
 
 There is no profile hook, manual data deployment, branch/preview deployment, or
 alternate publication timing. A failed build leaves the last successful
-snapshot. Hosting does not alter Python, PyPI, Homebrew, native,
-application-startup, or release workflows. Issue #227 discovery, scheduling,
-backfill, and publication automation remain excluded; baseline application
-bundling remains owned by #313.
+snapshot. Publishing a hosted snapshot does not trigger or gate Python, PyPI,
+Homebrew, native packaging, application startup, or release workflows; terminal
+runtime consumption of the production manifest is a separate client setting.
+Issue #227 discovery, scheduling, backfill, and publication automation remain
+excluded; baseline application bundling remains owned by #313.
 
 #### Stage, validate, and publish one transition
 
@@ -1613,12 +1625,12 @@ Normal live construction through the CLI `watch` path, Textual TUI,
 `watch --plain`, and the Qt live factory uses the set-profile boundary as its
 sole ratings authority. These paths construct `LiveSession` without direct
 provider callbacks, provider-cache checks, synchronous or progress loaders,
-raw provider-rating accessors, or direct 17Lands provider objects. Startup, pack
-completion, and live build requests never acquire 17Lands data; they use the
-selected profile or deterministic local/generic fallback. Standalone build
-and backtest commands remain usable without provider data; their separate
-offline workflows may still consume an explicitly available cached provider
-snapshot, but do not perform live provider acquisition.
+raw provider-rating accessors, or direct 17Lands provider objects. Startup,
+pack completion, and live build requests never acquire 17Lands data directly;
+they use the selected profile or deterministic local/generic fallback.
+Standalone build and backtest commands remain usable without provider data;
+their separate offline workflows may still consume an explicitly available
+cached provider snapshot, but do not perform live provider acquisition.
 
 The explicit producer commands and separate domain/offline workflows retain
 their supported provider behavior. Their cached or fresh provider inputs are
@@ -1627,6 +1639,33 @@ normal live session.
 `LiveSession` publishes immutable profile and rating state and exposes only the
 guarded refresh request/result handoff needed by adapters; it does not expose
 mutable provider data.
+
+### Terminal watch defaults
+
+Terminal `watch`, `watch --plain`, and the Textual TUI configure the production
+manifest by default. A `--profile-manifest-url URL` argument selects a
+different HTTPS manifest. Set-profile activation is cache-first: a warm valid
+local profile is usable immediately while the allowed hosted refresh runs. If
+the hosted manifest or requested artifact is absent, unreachable, invalid, or
+weaker than the cached profile, the last-good cache remains authoritative. With
+no usable cache, deterministic fallback scoring remains active; live sessions do
+not load ratings directly from 17Lands.
+
+`--offline-profiles` selects `ProfileNetworkPolicy.OFFLINE` for profiles and
+prevents manifest or artifact requests. It does not disable Scryfall card
+metadata, card images, or static card-data networking. The terminal default,
+including its hosted consumption, does not move producer generation or website
+publication into the runtime and does not make either one a package, native, or
+release dependency.
+
+In the Textual TUI, `d` requests the existing forced hosted-profile refresh for
+the active set. Force bypasses the manifest TTL only. A newer validated result
+is adopted atomically and recommendations update in place; an unchanged result
+leaves the current cache active. A failed refresh reports failure while
+retaining cached ratings, or deterministic fallback when no empirical profile is
+available. Repeated requests coalesce, and `watch --plain` has no command UI.
+The Qt live factory remains on its separate explicit configuration path; its
+default URL and native ratings presentation are issue #354 work.
 
 `ProfileClient(app_dir=..., manifest_url=..., network_policy=...)` is the
 public client boundary. `ProfileNetworkPolicy.OFFLINE` forbids network access;
@@ -1666,8 +1705,8 @@ projection leaves unrelated operation errors untouched in the snapshot, while
 their own lifecycle still applies (for example, an intentional account reset
 may clear them). `Retry` acts only on the currently published active-set
 ratings error and queues that set's forced hosted-profile refresh.
-Repeated forced requests coalesce for the same active lifecycle. TUI and Qt
-emit their existing actions; plain-watch adds no command UI.
+Repeated forced requests coalesce for the same active lifecycle. TUI and Qt emit
+their existing actions; plain-watch adds no command UI.
 
 For ordinary candidate loading, `safe_load_set_profile(...)` never raises for
 missing, corrupt, future-schema, malformed, or wrong-target candidates. Its
@@ -1777,24 +1816,44 @@ outcome=updated cache_path=...`. It does not print profile rows or source
 data. A non-generic usable result exits successfully; a generic result or
 setup failure exits non-zero.
 
-Live refresh is always an explicit opt-in. Supply the same HTTPS manifest URL
-to any live terminal mode:
+Terminal live refresh is hosted by default. CLI `watch`, the Textual TUI, and
+`watch --plain` use the production manifest unless overridden:
 
 ```sh
+draftomen-tui watch
+draftomen-tui watch --plain
 draftomen-tui watch --profile-manifest-url "$PROFILE_MANIFEST_URL"
 draftomen-tui watch --plain --profile-manifest-url "$PROFILE_MANIFEST_URL"
 ```
 
-The desktop live command accepts the same opt-in:
+Use `--offline-profiles` when only local set profiles may be used:
+
+```sh
+draftomen-tui watch --offline-profiles
+draftomen-tui watch --plain --offline-profiles
+```
+
+The terminal default is a client configuration only. It does not bundle the
+manifest and does not make producer generation, website publication, or
+Python/native release workflows depend on profile availability. The hosted
+profile lifecycle remains local-first: a warm valid cache is active before a
+refresh, and an absent or failed hosted manifest/artifact retains that cache.
+Without a usable cache, deterministic fallback remains active. `d` in the
+Textual TUI requests the forced refresh described above; an unchanged result
+is truthful and leaves the cache active, while a failed refresh is reported
+without discarding retained ratings. Profile-only offline mode does not disable
+Scryfall card metadata, images, or static card-data networking.
+
+The desktop live command accepts an explicit manifest override:
 
 ```sh
 draftomen --profile-manifest-url "$PROFILE_MANIFEST_URL"
 ```
 
-Without `--profile-manifest-url`, TUI, plain-watch, and desktop live scoring
-remain offline and use local/historical caches only. TUI and desktop expose
-compact maturity/outcome status (for example `mature · updated`); failure
-status does not discard the profile already used for scoring.
+Qt/native default-URL and ratings-presentation work owned by issue #354 remain
+outside this terminal change. The desktop command has no terminal production
+default here, and no native presentation behavior is implied.
+
 The refresh generation is the lifecycle authority for live hosted-profile
 refreshes. Set, account, or draft identity changes, along with clear or stop,
 retire the request so an obsolete completion cannot be accepted as current,
@@ -1806,10 +1865,6 @@ shutdown, adapters retire the session lifecycle and tear down their owned
 refresh workers before releasing them, so an in-flight result cannot publish
 late state. This is logical stale-result rejection only; it does not promise
 to cancel worker threads, network requests, or cache writes already underway.
-The default hosted manifest URL work owned by issue #353 and the native
-default-URL and ratings-presentation work owned by issue #354 remain outside
-this change. Live hosted refresh is therefore still an explicit opt-in here;
-no default URL or native presentation claim is implied.
 
 ## Semantic-role compatibility
 
@@ -1826,16 +1881,24 @@ Missing empirical sections do not remove a valid semantic role profile.
 The generator and client do not change pick scoring, deck-building heuristics,
 card-database schemas, or 17Lands cache schemas. The generator reads only
 explicit local inputs; the producer manifest APIs validate and write local
-publication files, while the client downloads only when explicitly configured.
-Producer and client code do not upload, schedule, discover, or backfill profile
-data. The current hosting boundary above is limited to the master-only static
-assets under `website/public/profiles/` and `website/public/profiles-dev/`,
-deployed in the ordinary complete Astro/Cloudflare website snapshot.
+publication files, while the client downloads only when configured by its
+caller. Terminal `watch` supplies the production manifest configuration by
+default; `--profile-manifest-url` overrides it and `--offline-profiles` disables
+profile networking only.
+
+Explicit producer commands retain their supported provider ingestion from
+caller-selected or first-party 17Lands inputs. Producer generation, static
+website publication, and client consumption are separate boundaries: producer
+and client code do not upload, schedule, discover, or backfill profile data.
+The current hosting boundary above is limited to the master-only static assets
+under `website/public/profiles/` and `website/public/profiles-dev/`, deployed
+in the ordinary complete Astro/Cloudflare website snapshot.
 
 The broader issue #227 discovery, scheduling, backfill, and publication
 automation remains excluded and does not own hosting. Issue #313's native work
 is limited to the pinned resource, local precedence, and compiled verification;
-it adds no hosting, default URL, or implicit network activity. Website hosting
-does not trigger or gate native packaging, releases, startup, PyPI, or Homebrew.
-Producers choose maturity and hand off the checksummed artifacts described by
-their manifest; the loader only validates, orders, and exposes profiles.
+issue #354's native default URL and ratings presentation remain separate.
+Website hosting and profile publication do not trigger or gate native
+packaging, releases, startup, PyPI, or Homebrew. Producers choose maturity and
+hand off the checksummed artifacts described by their manifest; the loader only
+validates, orders, and exposes profiles.

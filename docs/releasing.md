@@ -19,8 +19,18 @@ complete `website/dist/` output atomically, including
 <https://www.draftomen.com/profiles/> and `website/public/profiles-dev/` at
 <https://www.draftomen.com/profiles-dev/>. Profile assets never trigger or
 gate a Python package release, PyPI publication, Homebrew update, native
-bundle release, or application startup, and they are never a runtime default
-URL or bundled profile snapshot.
+bundle release, or application startup.
+
+Terminal `watch`, `watch --plain`, and CLI `watch` consume
+`https://www.draftomen.com/profiles/manifest.json` by default.
+`--profile-manifest-url` overrides the terminal manifest, while
+`--offline-profiles` disables only profile networking. This is a runtime client
+configuration, not a package or release input: a missing or failed hosted
+profile leaves the terminal's local cache or deterministic fallback in use.
+The manifest is not bundled. Qt/native default-URL and ratings-presentation
+work remains owned by issue #354 and is outside this terminal change.
+Producer generation, website publication, and Python/native release workflows
+remain independent.
 
 Follow [`docs/set-profiles.md`](set-profiles.md) for validated object staging,
 manifest construction, pruning, cache headers, retention and legal erasure,

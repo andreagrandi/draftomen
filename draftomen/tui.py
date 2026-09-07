@@ -386,8 +386,9 @@ def _visibility_control_id(*, field_name: str) -> str:
 
 
 class MissingRatingsScreen(ModalScreen[bool]):
-    """Ask before downloading or refreshing 17Lands ratings.
-    Missing-data prompts explain neutral priors; refresh prompts preserve active data.
+    """Ask before checking or refreshing the hosted set profile.
+    Missing-data prompts explain deterministic fallback scores; refresh prompts
+    explain that active cached ratings remain available.
     """
 
     CSS = """
@@ -427,23 +428,23 @@ class MissingRatingsScreen(ModalScreen[bool]):
         self.is_refresh = refresh
 
     def compose(self) -> ComposeResult:
-        """Compose the ratings download prompt for missing or ready data."""
+        """Compose the hosted profile refresh prompt for missing or ready data."""
         if self.is_refresh:
-            title = f"Refresh 17Lands data for {self.set_code}"
+            title = f"Refresh hosted profile for {self.set_code}"
             message = (
-                "17Lands ratings are active for this draft. Refresh the all-time "
-                "Quick Draft and Premier fallback ratings now? Progress will be "
-                "shown, then the current pack will be rescored automatically."
+                "A hosted set profile is active for this draft. Refresh it now? "
+                "Progress will be shown, then the current pack will be rescored "
+                "automatically."
             )
-            action_label = "Refresh data"
+            action_label = "Refresh profile"
         else:
-            title = f"No local 17Lands data for {self.set_code}"
+            title = f"No empirical profile for {self.set_code}"
             message = (
-                "Draft Omen is using neutral-prior scores. Download the all-time "
-                "Quick Draft and Premier fallback ratings now? Progress will be "
-                "shown, then the current pack will be rescored automatically."
+                "Draft Omen is using deterministic fallback scores. Check the "
+                "hosted set profile now? Progress will be shown, then the current "
+                "pack will be rescored automatically."
             )
-            action_label = "Download data"
+            action_label = "Check hosted profile"
 
         with Vertical(id="missing-ratings-dialog"):
             yield Static(title, id="missing-ratings-title")
@@ -903,11 +904,13 @@ class DraftomenTuiApp(App[None]):
         self._render_all()
 
     def action_download_ratings(self) -> None:
-        """Offer or retry the ratings download for the active draft set."""
+        """Offer or retry a hosted profile refresh for the active draft set."""
 
         set_code = self._set_code
         if set_code is None:
-            self._last_error = "No active draft set is available for a data download."
+            self._last_error = (
+                "No active draft set is available for a hosted profile refresh."
+            )
             self._render_all()
             return
 
@@ -1236,11 +1239,60 @@ class DraftomenTuiApp(App[None]):
             self.session.dispatch(command=command)
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             self.call_from_thread(self._record_error, str(error))
+            if isinstance(command, RequestRatingsDownload):
+                try:
+                    self.call_from_thread(
+                        self._schedule_or_finish_ratings_download_request,
+                        command.set_code,
+                    )
+                except Exception:  # pragma: no cover - app may be shutting down.
+                    pass
+            return
+        if isinstance(command, RequestRatingsDownload):
+            try:
+                self.call_from_thread(
+                    self._schedule_or_finish_ratings_download_request,
+                    command.set_code,
+                )
+            except Exception:  # pragma: no cover - app may be shutting down.
+                pass
             return
         try:
             self.call_from_thread(self._schedule_profile_refresh)
         except Exception:  # pragma: no cover - app may be shutting down.
             pass
+
+    def _schedule_or_finish_ratings_download_request(self, set_code: str) -> None:
+        """Schedule an accepted ratings request or finish a shared rejection."""
+
+        request = self.session.profile_refresh_request()
+        in_flight = self._profile_refresh_in_flight
+        if request is None:
+            if in_flight is None or in_flight.set_code != set_code:
+                self._finish_ratings_download_request(set_code)
+            return
+        if request.set_code != set_code:
+            self._finish_ratings_download_request(set_code)
+            if in_flight is not None:
+                return
+        if in_flight is None:
+            self._schedule_profile_refresh()
+
+    def _finish_ratings_download_request(self, set_code: str) -> None:
+        """Finish a rejected ratings command without leaving stale progress."""
+
+        if set_code not in self._rating_download_requested_sets:
+            return
+
+        self._rating_download_requested_sets.discard(set_code)
+        snapshot = self.session.snapshot
+        self._rating_notices_by_set[set_code] = (
+            self._ratings_refresh_unavailable_notice(
+                set_code=set_code,
+                snapshot=snapshot,
+            )
+        )
+        self._render_all()
 
     def _schedule_profile_refresh(self) -> None:
         """Start the one pending profile refresh without blocking Textual."""
@@ -1252,6 +1304,11 @@ class DraftomenTuiApp(App[None]):
             return
 
         self._profile_refresh_in_flight = request
+        self._rating_notices_by_set.setdefault(
+            request.set_code,
+            f"Refreshing hosted profile for {request.set_code}…",
+        )
+        self._render_all()
         self._refresh_profile_worker(request=request)
 
     @work(thread=True, group="profile-refresh")
@@ -1295,8 +1352,8 @@ class DraftomenTuiApp(App[None]):
         if self._profile_refresh_in_flight != request:
             return
         self._profile_refresh_in_flight = None
+        self._apply_session_snapshot(self.session.snapshot)
         self._schedule_profile_refresh()
-
 
     def _session_publication_is_allowed(self) -> bool:
         """Allow presentation updates only while Textual is running."""
@@ -1523,29 +1580,45 @@ class DraftomenTuiApp(App[None]):
             return
 
         progress = snapshot.progress
-        if (
-            ratings.phase == DataLoadPhase.LOADING
-            and progress is not None
-            and progress.operation == OperationKind.RATINGS
-        ):
-            completed = 0 if progress.completed is None else progress.completed
-            total = "?" if progress.total is None else str(progress.total)
-            self._rating_notices_by_set[set_code] = (
-                f"{progress.message} for {set_code} ({completed}/{total})"
-            )
+        profile = snapshot.set_profile
+        if profile.phase == DataLoadPhase.LOADING or ratings.phase == DataLoadPhase.LOADING:
+            if progress is not None and progress.operation == OperationKind.RATINGS:
+                completed = 0 if progress.completed is None else progress.completed
+                total = "?" if progress.total is None else str(progress.total)
+                self._rating_notices_by_set[set_code] = (
+                    f"Refreshing hosted profile for {set_code} ({completed}/{total})"
+                )
+            else:
+                self._rating_notices_by_set[set_code] = (
+                    f"Refreshing hosted profile for {set_code}…"
+                )
+            return
+        if profile.phase == DataLoadPhase.FAILED:
+            if ratings.phase == DataLoadPhase.READY:
+                self._rating_notices_by_set[set_code] = (
+                    f"Hosted profile refresh failed for {set_code}; cached ratings "
+                    "remain active. Press d to retry."
+                )
+            else:
+                self._rating_notices_by_set[set_code] = (
+                    f"Hosted profile refresh failed for {set_code}; deterministic "
+                    "fallback scores remain active. Press d to retry."
+                )
             return
 
-        if ratings.phase == DataLoadPhase.MISSING:
+        if ratings.phase in {DataLoadPhase.MISSING, DataLoadPhase.UNAVAILABLE}:
             self._rating_notices_by_set[set_code] = (
-                f"No local 17Lands data for {set_code}; neutral-prior scores are "
-                "active. Choose Download data, or press d later."
+                f"No empirical profile for {set_code}; deterministic fallback scores "
+                "are active. Choose Check hosted profile, or press d later."
             )
-            self._show_missing_ratings_prompt(set_code=set_code)
+            if ratings.phase == DataLoadPhase.MISSING:
+                self._show_missing_ratings_prompt(set_code=set_code)
             return
 
         if ratings.phase == DataLoadPhase.FAILED:
             self._rating_notices_by_set[set_code] = (
-                f"{ratings.message} Press d to retry."
+                f"Ratings unavailable for {set_code}; deterministic fallback scores "
+                "are active. Press d to retry."
             )
             return
 
@@ -1563,20 +1636,36 @@ class DraftomenTuiApp(App[None]):
     def _ratings_ready_notice(self, *, snapshot: LiveSessionSnapshot) -> str:
         ratings = snapshot.ratings
         set_code = ratings.set_code or "unknown set"
+        profile = snapshot.set_profile
+        if profile.phase == DataLoadPhase.FAILED:
+            return (
+                f"Hosted profile refresh failed for {set_code}; cached ratings "
+                "remain active. Press d to retry."
+            )
+
+        if profile.refresh_outcome == "updated":
+            prefix = f"Hosted profile updated for {set_code}; scores recalculated."
+        elif profile.refresh_outcome == "unchanged":
+            prefix = (
+                f"Hosted profile unchanged for {set_code}; cached ratings remain "
+                "active."
+            )
+        elif profile.refresh_outcome == "cached":
+            prefix = f"Hosted profile loaded from cache for {set_code}."
+        else:
+            prefix = f"Hosted profile ready for {set_code}; scores recalculated."
+
         total_cards = ratings.total_cards
         rated_cards = ratings.rated_cards
         if total_cards is None or rated_cards is None:
-            return f"17Lands data ready for {set_code}; future scores will use it."
+            return f"{prefix} Future scores will use it."
         if rated_cards == total_cards:
-            return (
-                f"17Lands data ready for {set_code}; scores recalculated. "
-                f"All {total_cards} offered cards have usable ratings."
-            )
+            return f"{prefix} All {total_cards} offered cards have usable ratings."
 
         return (
-            f"17Lands data ready for {set_code}; scores recalculated. "
-            f"{rated_cards}/{total_cards} offered cards have usable ratings; "
-            "neutral priors remain where 17Lands samples are unavailable or thin."
+            f"{prefix} {rated_cards}/{total_cards} offered cards have usable "
+            "ratings; deterministic fallback scores remain where profile evidence "
+            "is unavailable or thin."
         )
 
     def _adopt_changed_session_identity(
@@ -1626,18 +1715,30 @@ class DraftomenTuiApp(App[None]):
         source = snapshot.recommendations.source_summary
         if source is None:
             return "unknown"
-        if snapshot.ratings.phase == DataLoadPhase.LOADING:
-            return f"{source} (downloading ratings)"
-        if snapshot.ratings.phase == DataLoadPhase.FAILED:
-            return f"{source} (ratings unavailable)"
-        if snapshot.ratings.phase == DataLoadPhase.MISSING:
-            return f"{source} (no local 17Lands data)"
+        profile = snapshot.set_profile
+        ratings = snapshot.ratings
         if (
-            snapshot.ratings.phase == DataLoadPhase.READY
-            and snapshot.ratings.total_cards
-            and snapshot.ratings.rated_cards == 0
+            profile.phase == DataLoadPhase.LOADING
+            or ratings.phase == DataLoadPhase.LOADING
         ):
-            return f"{source} (17Lands cached; samples unavailable or thin)"
+            return f"{source} (refreshing hosted profile)"
+        if profile.phase == DataLoadPhase.FAILED:
+            if ratings.phase == DataLoadPhase.READY:
+                return f"{source} (hosted refresh failed; cached ratings active)"
+            return f"{source} (hosted refresh failed; deterministic fallback)"
+        if ratings.phase == DataLoadPhase.FAILED:
+            return f"{source} (ratings unavailable; deterministic fallback)"
+        if ratings.phase in {DataLoadPhase.MISSING, DataLoadPhase.UNAVAILABLE}:
+            return f"{source} (no empirical profile; deterministic fallback)"
+        if (
+            ratings.phase == DataLoadPhase.READY
+            and ratings.total_cards
+            and ratings.rated_cards == 0
+        ):
+            return (
+                f"{source} (no empirical ratings for offered cards; "
+                "deterministic fallback)"
+            )
 
         return source
     def _show_missing_ratings_prompt(
@@ -1677,17 +1778,45 @@ class DraftomenTuiApp(App[None]):
             self._start_ratings_load(set_code=set_code)
             return
 
-        if refresh and self.session.snapshot.ratings.phase == DataLoadPhase.READY:
-            self._rating_notices_by_set[set_code] = (
-                f"17Lands data ready for {set_code}; refresh cancelled. "
-                "Existing ratings remain active. Press d to refresh."
-            )
+        snapshot = self.session.snapshot
+        if refresh and snapshot.ratings.phase == DataLoadPhase.READY:
+            if snapshot.set_profile.phase == DataLoadPhase.FAILED:
+                self._rating_notices_by_set[set_code] = (
+                    f"Hosted profile refresh failed for {set_code}; refresh "
+                    "cancelled. Cached ratings remain active. Press d to retry."
+                )
+            else:
+                self._rating_notices_by_set[set_code] = (
+                    self._ratings_refresh_unavailable_notice(
+                        set_code=set_code,
+                        snapshot=snapshot,
+                        cancelled=True,
+                    )
+                )
         else:
             self._rating_notices_by_set[set_code] = (
-                f"No local 17Lands data for {set_code}; neutral-prior scores remain. "
-                "Press d to download."
+                f"No empirical profile for {set_code}; deterministic fallback scores "
+                "remain active. Press d to check the hosted profile."
             )
         self._render_all()
+
+    def _ratings_refresh_unavailable_notice(
+        self,
+        *,
+        set_code: str,
+        snapshot: LiveSessionSnapshot,
+        cancelled: bool = False,
+    ) -> str:
+        action = "cancelled" if cancelled else "unavailable"
+        if snapshot.ratings.phase == DataLoadPhase.READY:
+            return (
+                f"Hosted profile refresh {action} for {set_code}; existing cached "
+                "ratings remain active. Press d to refresh."
+            )
+        return (
+            f"Hosted profile refresh {action} for {set_code}; deterministic fallback "
+            "scores remain active. Press d to check the hosted profile."
+        )
 
     def _start_ratings_load(self, *, set_code: str) -> None:
         if self.session.snapshot.ratings.phase == DataLoadPhase.LOADING:
@@ -1695,7 +1824,7 @@ class DraftomenTuiApp(App[None]):
 
         self._rating_download_requested_sets.add(set_code)
         self._rating_notices_by_set[set_code] = (
-            f"Checking 17Lands data for {set_code}…"
+            f"Refreshing hosted profile for {set_code}…"
         )
         self._render_all()
         self._dispatch_session_command_worker(
@@ -1736,10 +1865,23 @@ class DraftomenTuiApp(App[None]):
 
         label.update(notice)
         snapshot = self.session.snapshot
+        pending_request = self.session.profile_refresh_request()
+        in_flight = self._profile_refresh_in_flight
         downloading = (
             set_code is not None
             and snapshot.ratings.set_code == set_code
-            and snapshot.ratings.phase == DataLoadPhase.LOADING
+            and (
+                snapshot.ratings.phase == DataLoadPhase.LOADING
+                or snapshot.set_profile.phase == DataLoadPhase.LOADING
+                or (
+                    pending_request is not None
+                    and pending_request.set_code == set_code
+                )
+                or (
+                    in_flight is not None
+                    and in_flight.set_code == set_code
+                )
+            )
         )
         progress_bar.display = downloading
         if not downloading or set_code is None:
@@ -1871,18 +2013,45 @@ class DraftomenTuiApp(App[None]):
             return
 
         set_label = format_set_label(set_code=set_code)
-        prefix = f"17Lands reliability for {set_label} Quick Draft:"
-        ratings = self.session.snapshot.ratings
-        if ratings.phase == DataLoadPhase.LOADING:
-            readiness.update(f"{prefix} Checking…")
+        prefix = f"Hosted profile for {set_label}:"
+        snapshot = self.session.snapshot
+        ratings = snapshot.ratings
+        profile = snapshot.set_profile
+        if (
+            profile.phase == DataLoadPhase.LOADING
+            or ratings.phase == DataLoadPhase.LOADING
+        ):
+            readiness.update(f"{prefix} Refreshing…")
             return
 
-        if ratings.phase == DataLoadPhase.FAILED:
-            readiness.update(f"{prefix} Unavailable")
+        if profile.phase == DataLoadPhase.FAILED:
+            if ratings.phase == DataLoadPhase.READY:
+                readiness.update(
+                    f"{prefix} Refresh failed — cached ratings active; "
+                    "press d to retry"
+                )
+            else:
+                readiness.update(
+                    f"{prefix} Refresh failed — deterministic fallback active; "
+                    "press d to retry"
+                )
             return
 
-        if ratings.phase == DataLoadPhase.MISSING:
-            readiness.update(f"{prefix} Not checked — press d to download data")
+        if ratings.phase in {DataLoadPhase.MISSING, DataLoadPhase.UNAVAILABLE}:
+            readiness.update(
+                f"{prefix} No empirical profile — deterministic fallback active; "
+                "press d to check"
+            )
+            return
+
+        if ratings.phase == DataLoadPhase.READY:
+            outcome = profile.refresh_outcome
+            if outcome == "updated":
+                readiness.update(f"{prefix} Updated")
+            elif outcome == "unchanged":
+                readiness.update(f"{prefix} Current")
+            else:
+                readiness.update(f"{prefix} Ready")
             return
 
         readiness.update(f"{prefix} Not checked")

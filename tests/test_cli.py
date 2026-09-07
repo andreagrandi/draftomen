@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gzip
 import hashlib
 import json
@@ -10,8 +11,9 @@ from io import BytesIO
 from pathlib import Path
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 
@@ -29,9 +31,11 @@ from draftomen.profile_input_acquisition import (
     SeventeenLandsRatingsAdapter,
 )
 from draftomen.profile_input_cache import ProfileInputCache
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.profile_refresh_execution import load_staged_profile_build_bundle
 from draftomen.refresh_plan import LifecycleMetadata, PlannedEnvironment, RefreshPlan, write_refresh_plan
 from draftomen.set_profile import (
+    SET_PROFILE_SCHEMA_VERSION,
     SetProfile,
     dump_set_profile,
     load_set_profile,
@@ -42,6 +46,9 @@ from draftomen.seventeen import (
     load_17lands_format_data,
     seventeen_lands_structure_targets_cache_path,
 )
+from draftomen.tui import DraftomenTuiApp
+from draftomen.watch import PlainLogWatcher
+
 
 SCRYFALL_BULK_SAMPLE_PATH = (
     Path(__file__).parent / "fixtures" / "scryfall-default-cards-sample.jsonl"
@@ -943,8 +950,7 @@ def test_execute_profile_refresh_handler_errors_are_generic_and_path_free(
     assert str(tmp_path) not in captured.err
     assert sentinel not in captured.err
 
-
-def test_profile_manifest_url_is_live_watch_opt_in_only() -> None:
+def test_watch_profile_manifest_url_override_and_replay_rejection() -> None:
     parser = build_parser()
     watch = parser.parse_args(
         args=["watch", "--profile-manifest-url", "https://profiles.example.test/m.json"]
@@ -1135,6 +1141,7 @@ def test_watch_plain_once_honors_log_path_override(
             "--app-dir",
             str(tmp_path / "app"),
             "--once",
+            "--offline-profiles",
         ]
     )
 
@@ -1180,6 +1187,7 @@ def test_watch_plain_once_ignores_quick_draft_course_snapshot_outside_botdraft(
             "--app-dir",
             str(tmp_path / "app"),
             "--once",
+            "--offline-profiles",
         ]
     )
 
@@ -1212,6 +1220,7 @@ def test_watch_plain_actual_entrypoint_processes_complete_fixture(
             "--app-dir",
             str(app_dir),
             "--once",
+            "--offline-profiles",
         ]
     )
 
@@ -1262,6 +1271,7 @@ def test_watch_tui_once_is_default_mode(
             "--app-dir",
             str(tmp_path / "app"),
             "--once",
+            "--offline-profiles",
         ]
     )
 
@@ -1668,7 +1678,207 @@ def test_watch_defaults_to_set_card_data_client_without_startup_load(
     assert calls[-1] == (None, "TST", True)
 
 
-def test_watch_bulk_file_uses_direct_database_without_hosted_client(
+@pytest.mark.parametrize("plain", [False, True], ids=["tui", "plain"])
+@pytest.mark.parametrize(
+    ("profile_args", "expected_manifest_url", "network_expected"),
+    [
+        (
+            (),
+            cli.DEFAULT_PROFILE_MANIFEST_URL,
+            True,
+        ),
+        (
+            (
+                "--profile-manifest-url",
+                "https://profiles.example.test/m.json",
+            ),
+            "https://profiles.example.test/m.json",
+            True,
+        ),
+        (
+            (
+                "--profile-manifest-url",
+                "https://profiles.example.test/m.json",
+                "--offline-profiles",
+            ),
+            "https://profiles.example.test/m.json",
+            False,
+        ),
+    ],
+    ids=["production-default", "manifest-override", "override-offline"],
+)
+def test_watch_uses_profile_source_through_each_terminal_mode(
+    plain: bool,
+    profile_args: tuple[str, ...],
+    expected_manifest_url: str,
+    network_expected: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = load_set_profile(
+        Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json",
+        expected_set_code="TST",
+        expected_format=QUICK_DRAFT_FORMAT,
+    )
+    profile_bytes = profile.to_bytes()
+    artifact_bytes = gzip.compress(profile_bytes, mtime=0)
+    artifact_url = (
+        expected_manifest_url.rsplit("/", maxsplit=1)[0]
+        + "/tst-quickdraft.json.gz"
+    )
+    artifact = ProfileManifestArtifact(
+        set_code=profile.set_code,
+        event_format=profile.event_format,
+        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+        profile_version=profile.profile_version,
+        generated_at=profile.generated_at,
+        url=artifact_url,
+        gzip_bytes=len(artifact_bytes),
+        profile_bytes=len(profile_bytes),
+        gzip_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+        profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
+        maturity=profile.maturity,
+    )
+    responses = {
+        expected_manifest_url: ProfileManifest(
+            artifacts=(artifact,),
+            published_at="2026-09-01T00:00:00+00:00",
+        ).to_bytes(),
+        artifact_url: artifact_bytes,
+    }
+    requested_urls: list[str] = []
+
+    class Response:
+        def __init__(self, payload: bytes, url: str) -> None:
+            self._stream = BytesIO(payload)
+            self.url = url
+
+        def read(self, size: int = -1) -> bytes:
+            return self._stream.read(size)
+
+        def close(self) -> None:
+            self._stream.close()
+
+    def deterministic_opener(
+        _client: object,
+        request: Any,
+        *,
+        timeout: float,
+    ) -> Response:
+        del timeout
+        url = request.full_url
+        requested_urls.append(url)
+        if url not in responses:
+            raise AssertionError(f"unexpected profile request: {url}")
+        return Response(responses[url], url)
+
+    monkeypatch.setattr(cli.ProfileClient, "_default_opener", deterministic_opener)
+
+    fixture_lines = tuple(
+        line.replace("MSH", "TST")
+        for line in QUICK_DRAFT_FIXTURE_PATH.read_text(encoding="utf-8").splitlines()[:7]
+    )
+    observations: list[object] = []
+
+    def fake_plain_watch(**kwargs: object) -> int:
+        watcher = PlainLogWatcher(
+            log_path=kwargs["log_path"],
+            card_database=kwargs["card_database"],
+            set_card_data_loader=kwargs["set_card_data_loader"],
+            app_dir=kwargs["app_dir"],
+            profile_client=kwargs["profile_client"],
+            poll_interval=0.01,
+            splash_enabled=kwargs["splash_enabled"],
+        )
+        try:
+            watcher.process_lines(lines=fixture_lines)
+            for _ in range(300):
+                if watcher.profile_refresh_in_flight is None:
+                    break
+                time.sleep(0.01)
+            assert watcher.profile_refresh_in_flight is None
+            observations.append(watcher.session.snapshot)
+        finally:
+            watcher.close()
+        return 0
+
+    async def drive_tui_watch(**kwargs: object) -> None:
+        app = DraftomenTuiApp(
+            log_path=kwargs["log_path"],
+            card_database=kwargs["card_database"],
+            set_card_data_loader=kwargs["set_card_data_loader"],
+            app_dir=kwargs["app_dir"],
+            profile_client=kwargs["profile_client"],
+            poll_interval=0.01,
+            poll_enabled=False,
+            mana_icons_enabled=kwargs["mana_icons_enabled"],
+            splash_enabled=kwargs["splash_enabled"],
+        )
+        async with app.run_test(size=(120, 24)) as pilot:
+            app.process_lines(lines=fixture_lines)
+            for _ in range(300):
+                snapshot = app.session.snapshot
+                if (
+                    (
+                        snapshot.set_profile.maturity == "mature"
+                        and app.profile_refresh_in_flight is None
+                    )
+                    or (
+                        not network_expected
+                        and app.session.profile_refresh_request() is None
+                        and app.profile_refresh_in_flight is None
+                    )
+                ):
+                    break
+                await pilot.pause(0.01)
+            assert app.profile_refresh_in_flight is None
+            observations.append(app.session.snapshot)
+
+    runner_name = "run_plain_watch" if plain else "run_tui_watch"
+    if plain:
+        monkeypatch.setattr(cli, runner_name, fake_plain_watch)
+    else:
+        monkeypatch.setattr(
+            cli,
+            runner_name,
+            lambda **kwargs: (asyncio.run(drive_tui_watch(**kwargs)) or 0),
+        )
+
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("", encoding="utf-8")
+    app_dir = tmp_path / "app"
+    args = [
+        "watch",
+        "--log-path",
+        str(log_path),
+        "--bulk-file",
+        str(SCRYFALL_BULK_SAMPLE_PATH),
+        "--app-dir",
+        str(app_dir),
+        "--once",
+        *profile_args,
+    ]
+    if plain:
+        args.insert(1, "--plain")
+    assert main(argv=args) == 0
+    snapshot, = observations
+    assert (
+        requested_urls == [expected_manifest_url, artifact_url]
+        if network_expected
+        else requested_urls == []
+    )
+    if network_expected:
+        assert snapshot.set_profile.maturity == "mature"
+        assert snapshot.current_scored_pack is not None
+        assert snapshot.current_scored_pack.scoring_context is not None
+    else:
+        assert snapshot.set_profile.maturity == "generic"
+        assert snapshot.set_profile.source == "generic"
+        assert snapshot.current_scored_pack is not None
+        assert snapshot.current_scored_pack.scoring_context is None
+
+
+def test_watch_bulk_file_uses_direct_database_without_hosted_card_data_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

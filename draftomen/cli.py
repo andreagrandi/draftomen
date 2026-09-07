@@ -110,6 +110,8 @@ from draftomen.seventeen import (
 from draftomen.tui import run_tui_watch
 from draftomen.watch import run_plain_watch
 
+DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
+
 CommandHandler = Callable[[argparse.Namespace], int]
 
 
@@ -212,9 +214,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile-manifest-url",
         default=None,
         help=(
-            "Opt in to live set-profile refreshes from this manifest URL. "
-            "Without this option, live scoring remains offline."
+            "Override the hosted set-profile manifest URL. "
+            f"Defaults to {DEFAULT_PROFILE_MANIFEST_URL}."
         ),
+    )
+    watch_parser.add_argument(
+        "--offline-profiles",
+        action="store_true",
+        help="Use only cached set profiles; do not access the hosted manifest.",
     )
     watch_parser.set_defaults(handler=handle_watch)
     export_parser = subparsers.add_parser(
@@ -1247,14 +1254,20 @@ def handle_watch(args: argparse.Namespace) -> int:
         else:
             set_card_data_loader = CardDataClient(app_dir=args.app_dir).load
 
-        profile_client = (
-            None
+        profile_manifest_url = (
+            DEFAULT_PROFILE_MANIFEST_URL
             if args.profile_manifest_url is None
-            else ProfileClient(
-                app_dir=args.app_dir,
-                manifest_url=args.profile_manifest_url,
-                network_policy=ProfileNetworkPolicy.ALLOWED,
-            )
+            else args.profile_manifest_url
+        )
+        profile_network_policy = (
+            ProfileNetworkPolicy.OFFLINE
+            if getattr(args, "offline_profiles", False)
+            else ProfileNetworkPolicy.ALLOWED
+        )
+        profile_client = ProfileClient(
+            app_dir=args.app_dir,
+            manifest_url=profile_manifest_url,
+            network_policy=profile_network_policy,
         )
         if args.plain:
             return run_plain_watch(
