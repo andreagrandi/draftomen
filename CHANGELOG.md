@@ -2,6 +2,9 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Report profile-refresh publication as successful after verifying the generated
+  commit reached `master`, even when GitHub PR merge metadata is delayed or
+  unavailable; keep master verification failures fatal.
 - Isolate recoverable ratings errors to the active set at snapshot publication:
   hide inactive-set errors while retaining nondismissed errors for return,
   remove dismissed errors, and make Retry queue the active set's forced
@@ -20,7 +23,6 @@
   deterministic fallback and carry the lifecycle contract through end-to-end
   adapter workflows, including refresh adoption, failure retention, and
   shutdown guards. (#372, #374)
-
 - Propagate explicit hosted-profile refresh requests with `force=True`, bypassing
   only the manifest TTL while preserving offline, authority, validation, and
   non-regression safeguards and usable ratings during refresh. (#367)

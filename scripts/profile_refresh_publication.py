@@ -1396,27 +1396,27 @@ def publish_website(
         if _commit_parent(root, head) != master_commit:
             _fail("publication commit parent does not equal checked master")
         _push_master(root, master_commit, head)
+        verified_master = _fetch_master(root)
+        if not _is_ancestor(root, head, verified_master):
+            _fail("master publication could not be verified")
         try:
-            verified_master = _fetch_master(root)
-            if not _is_ancestor(root, head, verified_master):
-                _fail("master publication could not be verified")
             final_pr = _pr_view(root, repository, number)
-            final_state = str(final_pr.get("state", "")).upper()
-            pr_url = final_pr.get("url") or pr_url
-            if final_state != "MERGED" and not final_pr.get("mergedAt"):
-                _publication_note(
-                    summary_path,
-                    "master updated; merge confirmation unavailable",
-                    url=pr_url,
-                )
-                return 1
         except ProfileRefreshPublicationError:
             _publication_note(
                 summary_path,
                 "master updated; merge confirmation unavailable",
                 url=pr_url,
             )
-            return 1
+            return 0
+        final_state = str(final_pr.get("state", "")).upper()
+        pr_url = final_pr.get("url") or pr_url
+        if final_state != "MERGED" and not final_pr.get("mergedAt"):
+            _publication_note(
+                summary_path,
+                "master updated; merge confirmation unavailable",
+                url=pr_url,
+            )
+            return 0
         _publication_note(summary_path, "Validated generated data was merged into master.", url=pr_url)
         return 0
     except ProfileRefreshPublicationError as error:
