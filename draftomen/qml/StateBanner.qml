@@ -8,40 +8,65 @@ Rectangle {
     required property var sessionState
 
     readonly property bool hasError: sessionState.errors && sessionState.errors.length > 0
-    readonly property bool hasProgress: sessionState.progress !== null && sessionState.progress !== undefined
+    readonly property var setProfile: sessionState.set_profile
+    readonly property var ratings: sessionState.ratings
+    readonly property var progress: sessionState.progress
+    readonly property bool hasProfileStatus: setProfile
+        && (setProfile.phase === "loading" || setProfile.phase === "failed")
+    readonly property bool hasProgress: progress !== null
+        && progress !== undefined
+        && progress.operation !== "ratings"
     readonly property bool determinateProgress: hasProgress
-        && sessionState.progress.total !== null
-        && sessionState.progress.total !== undefined
-    readonly property bool hasWarning: sessionState.ratings && sessionState.ratings.phase === "missing"
-    readonly property bool shown: hasError || hasProgress || hasWarning
+        && progress !== null
+        && progress !== undefined
+        && progress.completed !== null
+        && progress.completed !== undefined
+        && progress.total !== null
+        && progress.total !== undefined
+        && progress.total > 0
+    readonly property bool hasWarning: ratings && (
+        ratings.phase === "unavailable"
+            || ratings.phase === "missing"
+            || ratings.phase === "failed"
+    )
+    readonly property bool shown: hasError || hasProfileStatus || hasProgress || hasWarning
     readonly property var activeError: hasError ? sessionState.errors[0] : null
     readonly property string bannerTitle: {
         if (root.activeError)
             return root.activeError.recoverable ? "Recoverable error" : "Application error"
+        if (root.hasProfileStatus)
+            return root.setProfile.phase === "loading"
+                ? "Refreshing hosted profile"
+                : "Hosted profile unavailable"
+        if (root.hasProgress)
+            return "Working"
         if (root.hasWarning)
             return "Ratings unavailable"
-        if (root.hasProgress)
-            return root.sessionState.progress.message
         return ""
     }
     readonly property string bannerMessage: {
         if (root.activeError)
             return root.activeError.message
+        if (root.hasProfileStatus)
+            return root.setProfile.message
+        if (root.hasProgress && root.progress !== null
+                && root.progress !== undefined)
+            return root.progress.message
         if (root.hasWarning)
-            return root.sessionState.ratings.message
-        return "The current view remains available while work continues."
+            return root.ratings.message
+        return ""
     }
     readonly property color bannerColor: {
         if (root.hasError)
             return Theme.errorDark
-        if (root.hasWarning)
+        if (root.hasWarning || root.hasProfileStatus || root.hasProgress)
             return Theme.warningDark
         return Theme.surfaceHigh
     }
     readonly property color bannerBorderColor: {
         if (root.hasError)
             return Theme.error
-        if (root.hasWarning)
+        if (root.hasWarning || root.hasProfileStatus || root.hasProgress)
             return Theme.warning
         return Theme.outline
     }
@@ -69,6 +94,29 @@ Rectangle {
                 color: Theme.text
                 font.bold: true
             }
+            ProgressBar {
+                id: progressBar
+                objectName: "stateProgressBar"
+                Layout.fillWidth: true
+                visible: root.hasProgress
+                from: 0
+                to: root.determinateProgress && root.progress
+                    ? root.progress.total
+                    : 1
+                value: root.determinateProgress && root.progress
+                    && root.progress.completed !== null
+                    && root.progress.completed !== undefined
+                    ? Math.max(
+                        0,
+                        Math.min(
+                            root.progress.completed,
+                            root.progress.total
+                        )
+                    )
+                    : 0
+                indeterminate: root.hasProgress && !root.determinateProgress
+            }
+
 
             Label {
                 Layout.fillWidth: true
@@ -86,27 +134,15 @@ Rectangle {
                 wrapMode: Text.WordWrap
             }
 
-            ProgressBar {
-                Layout.fillWidth: true
-                visible: root.hasProgress
-                indeterminate: root.hasProgress && !root.determinateProgress
-                from: 0
-                to: root.determinateProgress ? root.sessionState.progress.total : 1
-                value: root.determinateProgress
-                    && root.sessionState.progress.completed !== null
-                    && root.sessionState.progress.completed !== undefined
-                    ? root.sessionState.progress.completed : 0
-                Accessible.name: root.hasProgress ? root.sessionState.progress.message : ""
-            }
         }
 
         DimensionalButton {
             id: ratingsDownloadButton
             visible: root.hasWarning
-                && root.sessionState.ratings.set_code !== null
-                && root.sessionState.ratings.set_code !== undefined
-            text: "Download ratings"
-            Accessible.name: "Download ratings"
+                && root.ratings.set_code !== null
+                && root.ratings.set_code !== undefined
+            text: "Refresh hosted ratings"
+            Accessible.name: "Refresh hosted ratings"
             objectName: "ratingsDownloadButton"
             onClicked: {
                 ratingsDownloadDialog.returnFocusItem = ratingsDownloadButton
@@ -150,7 +186,7 @@ Rectangle {
         modal: true
         focus: true
         parent: Overlay.overlay
-        title: "Download ratings?"
+        title: "Refresh hosted ratings?"
         onClosed: {
             if (returnFocusItem)
                 returnFocusItem.forceActiveFocus()
@@ -158,9 +194,9 @@ Rectangle {
 
         Label {
             width: 360
-            text: "Download 17Lands ratings for "
-                + root.sessionState.ratings.set_code
-                + "? Neutral-prior recommendations remain available while it loads."
+            text: "Check the hosted 17Lands profile for "
+                + root.ratings.set_code
+                + "? Cached ratings or deterministic fallback remain available while it refreshes."
             color: Theme.text
             wrapMode: Text.WordWrap
         }
@@ -176,8 +212,8 @@ Rectangle {
 
             DimensionalButton {
                 objectName: "ratingsDownloadConfirmButton"
-                text: "Download ratings"
-                Accessible.name: "Confirm ratings download"
+                text: "Refresh hosted ratings"
+                Accessible.name: "Confirm hosted ratings refresh"
                 onClicked: {
                     sessionProvider.requestRatings()
                     ratingsDownloadDialog.close()

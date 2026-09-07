@@ -21,16 +21,23 @@ complete `website/dist/` output atomically, including
 gate a Python package release, PyPI publication, Homebrew update, native
 bundle release, or application startup.
 
-Terminal `watch`, `watch --plain`, and CLI `watch` consume
+Terminal `watch`, `watch --plain`, CLI `watch`, and the native live command use
 `https://www.draftomen.com/profiles/manifest.json` by default.
-`--profile-manifest-url` overrides the terminal manifest, while
-`--offline-profiles` disables only profile networking. This is a runtime client
-configuration, not a package or release input: a missing or failed hosted
-profile leaves the terminal's local cache or deterministic fallback in use.
-The manifest is not bundled. Qt/native default-URL and ratings-presentation
-work remains owned by issue #354 and is outside this terminal change.
-Producer generation, website publication, and Python/native release workflows
-remain independent.
+`--profile-manifest-url` overrides the manifest for either client, while
+`--offline-profiles` selects `ProfileNetworkPolicy.OFFLINE` for profile
+networking only. It does not disable Scryfall card metadata, card images, or
+static card-data networking.
+A missing or failed hosted profile leaves the local cache or deterministic
+fallback in use; live runtime sessions never load ratings directly from 17Lands.
+Native applications retain their validated bundled baseline as a local fallback,
+and the existing native ratings control reports the shared refresh's `updated` or
+`unchanged` outcome. Failed, offline, or missing refreshes retain the last usable
+cache when ratings exist; with no usable profile, deterministic fallback scoring
+remains active.
+
+These are runtime client configurations, not package or release inputs. The
+manifest is not bundled: producer generation, website publication, Python
+releases, and native bundle releases remain independent.
 
 Follow [`docs/set-profiles.md`](set-profiles.md) for validated object staging,
 manifest construction, pruning, cache headers, retention and legal erasure,

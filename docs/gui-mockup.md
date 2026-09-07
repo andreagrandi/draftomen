@@ -13,9 +13,38 @@ Install Draft Omen and launch the live provider:
 uv run draftomen
 ```
 
-The live provider follows Arena's standard `Player.log` location and loads the
-same card and ratings services as the terminal application. Use `--log-path`
-to override the platform default.
+The live provider follows Arena's standard `Player.log` location and uses the
+shared set-profile lifecycle as its ratings authority. It starts with the
+production hosted manifest
+`https://www.draftomen.com/profiles/manifest.json` unless an explicit
+`--profile-manifest-url URL` override is supplied. Use `--log-path` to override
+the platform-default log location.
+
+The native profile flags are:
+
+```bash
+uv run draftomen
+uv run draftomen --profile-manifest-url "$PROFILE_MANIFEST_URL"
+uv run draftomen --offline-profiles
+```
+
+`--offline-profiles` selects `ProfileNetworkPolicy.OFFLINE` for profile
+networking and takes precedence over the hosted profile configuration. It is
+profile-only offline mode, not full application offline mode: Scryfall card
+metadata, card images, and static card-data networking keep their own
+cache/network policies. A valid local profile is used immediately; if hosted
+data is unavailable or invalid, the last usable cache is retained, with
+deterministic fallback scoring when no usable empirical profile exists. Native
+live sessions never load ratings directly from 17Lands.
+
+The existing ratings refresh control in Settings requests the same shared
+hosted-profile refresh as the terminal `d` action. The native view presents the
+shared session outcome: `updated` adopts a newer validated profile and updates
+recommendations in place, while `unchanged` leaves current ratings active.
+Failed, offline, or missing refreshes retain the last usable cache when ratings
+exist; with no usable empirical profile, deterministic fallback scoring remains
+active. 17Lands remains visible as ratings attribution; it is not a direct
+runtime ratings source.
 
 Select the deterministic provider for an automated smoke check without
 filesystem or network dependencies:
@@ -67,8 +96,10 @@ The implementation follows the checked-in **Draft Omen** design system and the s
 - neutral labelled card-image placeholders rather than generated Magic artwork.
 
 The generated HTML under `ui_mockups/` remains reference material only. QML
-owns presentation and local visual formatting. Both providers publish the same
-narrow QObject properties and Qt item models, and receive the same explicit
-user intentions; parsing, persistence, scoring, builds, backtests, and recovery
-remain in shared Python.
+renders published `set_profile` and ratings state and emits explicit user
+intents. It does not perform networking, scoring, caching, or lifecycle
+decisions. The Qt adapter owns the shared session boundary, including one
+`ProfileClient` shared by the live session and its background refresh worker;
+parsing, persistence, scoring, builds, backtests, and recovery remain in
+shared Python.
 

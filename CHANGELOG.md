@@ -2,10 +2,18 @@
 
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 ## [Unreleased]
+- Native live startup now defaults to the production hosted profile manifest,
+  supports explicit HTTPS overrides and profile-only `--offline-profiles`,
+  and leaves static card-data, card-image, and card-metadata policies
+  unchanged. Existing ratings refresh controls use the shared hosted-profile
+  lifecycle, reporting `updated` or `unchanged` outcomes and retaining the last
+  usable cache or deterministic fallback as applicable when refreshes fail, go
+  offline, or find no profile, while preserving visible 17Lands attribution.
+  (#354)
 - Default terminal `watch` profile loading to the production manifest, add
   `--offline-profiles` for profile-only offline mode, and retain cached or
-  deterministic-fallback ratings when hosted refreshes fail. Qt/native #354 and
-  producer, publication, and release boundaries remain separate. (#353)
+  deterministic-fallback ratings when hosted refreshes fail. Producer,
+  publication, and release boundaries remain separate. (#353)
 - Report profile-refresh publication as successful after verifying the generated
   commit reached `master`, even when GitHub PR merge metadata is delayed or
   unavailable; keep master verification failures fatal.
@@ -16,9 +24,7 @@
 - Remove direct provider-loader callbacks, cache/progress machinery, and raw
   ratings surfaces from normal terminal and native live factories; TUI,
   plain-watch, CLI `watch`, and Qt now use the shared hosted-profile lifecycle
-  while preserving configured manifest overrides. Native default-URL and
-  ratings-presentation work owned by #354 remain outside this change.
-  (#370, #371)
+  while preserving configured manifest overrides. (#370, #371)
 - Complete the normal `LiveSession` provider cutover: profile state is the sole
   live ratings authority, cache-first startup and deterministic no-provider
   scoring/build/backtest fallback remain intact, and explicit producer plus

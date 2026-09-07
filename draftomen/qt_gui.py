@@ -44,6 +44,7 @@ from draftomen.profile_client import (
 SURFACES = ("live", "build", "backtest", "settings")
 ProviderName = Literal["live", "mock"]
 APPLICATION_NAME = "Draft Omen"
+DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
 
 
 def _configure_application_metadata(*, application: QGuiApplication) -> None:
@@ -116,7 +117,15 @@ def _parser(*, forced_provider: ProviderName | None = None) -> argparse.Argument
     parser.add_argument(
         "--profile-manifest-url",
         default=None,
-        help="Opt in to refreshing set profiles from this HTTPS manifest URL.",
+        help=(
+            "Override the hosted set-profile manifest URL. "
+            f"Defaults to {DEFAULT_PROFILE_MANIFEST_URL}."
+        ),
+    )
+    parser.add_argument(
+        "--offline-profiles",
+        action="store_true",
+        help="Use only cached set profiles; do not access the hosted manifest.",
     )
     parser.add_argument("--poll-interval", type=float, default=1.0)
     parser.set_defaults(startup_scan=True)
@@ -200,12 +209,18 @@ def _live_session_factory(
     bulk_file: Path | None,
     poll_interval: float,
     profile_manifest_url: str | None = None,
+    profile_network_policy: ProfileNetworkPolicy = ProfileNetworkPolicy.ALLOWED,
     profile_client: ProfileClient | None = None,
 ) -> SessionFactory:
     if profile_client is None:
         profile_client = ProfileClient(
             app_dir=app_dir,
-            manifest_url=profile_manifest_url,
+            manifest_url=(
+                DEFAULT_PROFILE_MANIFEST_URL
+                if profile_manifest_url is None
+                else profile_manifest_url
+            ),
+            network_policy=profile_network_policy,
         )
     card_data_client = (
         None if bulk_file is not None else CardDataClient(app_dir=app_dir)
@@ -241,16 +256,25 @@ def _live_session_factory(
 def _build_provider(*, args: argparse.Namespace) -> SessionAdapter:
     if args.provider == "mock":
         return MockSessionAdapter(
-            session=MockLiveSession(
-                scenario=cast(MockScenario, args.scenario),
-            )
+            session=MockLiveSession(scenario=args.scenario),
         )
     if args.poll_interval <= 0:
         raise ValueError("--poll-interval must be greater than zero.")
     profile_manifest_url = getattr(args, "profile_manifest_url", None)
+    profile_network_policy = (
+        ProfileNetworkPolicy.OFFLINE
+        if getattr(args, "offline_profiles", False)
+        else ProfileNetworkPolicy.ALLOWED
+    )
+    resolved_profile_manifest_url = (
+        DEFAULT_PROFILE_MANIFEST_URL
+        if profile_manifest_url is None
+        else profile_manifest_url
+    )
     profile_client = ProfileClient(
         app_dir=args.app_dir,
-        manifest_url=profile_manifest_url,
+        manifest_url=resolved_profile_manifest_url,
+        network_policy=profile_network_policy,
     )
     return LiveSessionAdapter(
         session_factory=_live_session_factory(
@@ -258,7 +282,8 @@ def _build_provider(*, args: argparse.Namespace) -> SessionAdapter:
             app_dir=args.app_dir,
             bulk_file=args.bulk_file,
             poll_interval=args.poll_interval,
-            profile_manifest_url=profile_manifest_url,
+            profile_manifest_url=resolved_profile_manifest_url,
+            profile_network_policy=profile_network_policy,
             profile_client=profile_client,
         ),
         profile_client=profile_client,
