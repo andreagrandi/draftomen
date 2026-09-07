@@ -9,6 +9,11 @@
   mode with immutable state, explicit commands, immediate local rescoring,
   stale comparison invalidation, and no toggle-triggered external work; deck
   construction remains independent. (#381)
+- Add the persisted desktop Settings → Contextual pick scoring switch,
+  defaulting off while retaining the shared API/session default-enabled
+  contract; it re-scores current and later packs and backtests, survives a
+  fresh-process restart, and remains independent of profile refresh/cache and
+  deck construction. (#382)
 - Native live startup now defaults to the production hosted profile manifest,
   supports explicit HTTPS overrides and profile-only `--offline-profiles`,
   and leaves static card-data, card-image, and card-metadata policies

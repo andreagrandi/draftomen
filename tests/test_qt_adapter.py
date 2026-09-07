@@ -30,7 +30,7 @@ from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cardimages import CardImageService
 from draftomen.mock_session import MockLiveSession
 from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
-from draftomen.preferences import GuiDisplayPreferences
+from draftomen.preferences import GuiDisplayPreferences, save_gui_preferences
 from draftomen.profile_client import (
     ProfileClient,
     ProfileNetworkPolicy,
@@ -1425,6 +1425,7 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
 
         adapter.changeRanking("win_rate")
         adapter.setSplashEnabled(False)
+        adapter.setContextualScoringEnabled(False)
         adapter.requestRatings()
         adapter.requestBuild("BG")
         build_grp_id = adapter.state["build"]["spells"][0]["card"]["grp_id"]
@@ -1434,7 +1435,7 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
         adapter.retryError("missing-error")
         _process_until(
             application=qcore_application,
-            predicate=lambda: len(session.commands) == 10,
+            predicate=lambda: len(session.commands) == 11,
             description="all queued live session commands",
         )
 
@@ -1443,6 +1444,7 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
             ChooseRecommendation,
             ChangeRanking,
             ChangeSplashPreference,
+            ChangeContextualScoring,
             RequestRatingsDownload,
             RequestBuild,
             FocusBuildCard,
@@ -1614,19 +1616,28 @@ def test_gui_preferences_adapter_persists_display_choices_independently(
 ) -> None:
     adapter = GuiPreferencesAdapter(app_dir=tmp_path / "app")
     changes: list[bool] = []
+    contextual_changes: list[bool] = []
     adapter.preferencesChanged.connect(lambda: changes.append(True))
+    adapter.contextualAdjustmentsEnabledChanged.connect(
+        contextual_changes.append
+    )
 
     try:
         assert adapter.showBacktest is False
+        assert adapter.contextualAdjustmentsEnabled is False
         adapter.setCompactDensity(False)
         adapter.setShowBacktest(False)
+        adapter.setContextualAdjustmentsEnabled(False)
         assert changes == []
+        assert contextual_changes == []
         adapter.setCompactDensity(True)
         adapter.setSecondaryStats(False)
         adapter.setCardPreview(False)
         adapter.setDetailedBuildContext(False)
         adapter.setSystemTextScaling(False)
         adapter.setShowBacktest(True)
+        adapter.setContextualAdjustmentsEnabled(True)
+        adapter.setContextualAdjustmentsEnabled(True)
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.persistenceMessage == "Saved",
@@ -1634,7 +1645,8 @@ def test_gui_preferences_adapter_persists_display_choices_independently(
         )
         reloaded = GuiPreferencesAdapter(app_dir=tmp_path / "app")
 
-        assert changes == [True, True, True, True, True, True]
+        assert changes == [True, True, True, True, True, True, True]
+        assert contextual_changes == [True]
         assert adapter.persistenceMessage == "Saved"
         assert reloaded.compactDensity is True
         assert reloaded.secondaryStats is False
@@ -1642,9 +1654,9 @@ def test_gui_preferences_adapter_persists_display_choices_independently(
         assert reloaded.detailedBuildContext is False
         assert reloaded.systemTextScaling is False
         assert reloaded.showBacktest is True
+        assert reloaded.contextualAdjustmentsEnabled is True
     finally:
         adapter.shutdown()
-
 
 def test_gui_preferences_adapter_exposes_saving_and_ignores_stale_completion(
     qcore_application: QCoreApplication,
@@ -1707,6 +1719,49 @@ def test_gui_preferences_adapter_exposes_saving_and_ignores_stale_completion(
             description="the current preference save failure",
         )
         assert adapter.persistenceMessage == "current save failed"
+    finally:
+        release_first_save.set()
+        adapter.shutdown()
+
+
+def test_gui_preferences_adapter_shutdown_drains_coalesced_contextual_save(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_calls: list[GuiDisplayPreferences] = []
+    first_save_started = threading.Event()
+    release_first_save = threading.Event()
+
+    def blocked_save(
+        *,
+        preferences: GuiDisplayPreferences,
+        app_dir: str | PathLike[str] | None,
+    ) -> str | None:
+        save_calls.append(preferences)
+        if len(save_calls) == 1:
+            first_save_started.set()
+            assert release_first_save.wait(timeout=3.0)
+        return save_gui_preferences(preferences=preferences, app_dir=app_dir)
+
+    monkeypatch.setattr("draftomen.qt_adapter.save_gui_preferences", blocked_save)
+    adapter = GuiPreferencesAdapter(app_dir=tmp_path / "app")
+
+    try:
+        adapter.setContextualAdjustmentsEnabled(True)
+        assert first_save_started.wait(timeout=3.0)
+        adapter.setCompactDensity(True)
+        adapter.setContextualAdjustmentsEnabled(False)
+        assert adapter.contextualAdjustmentsEnabled is False
+        release_first_save.set()
+        adapter.shutdown()
+
+        assert len(save_calls) == 2
+        assert save_calls[-1].contextual_adjustments_enabled is False
+        reloaded = GuiPreferencesAdapter(app_dir=tmp_path / "app")
+        assert reloaded.contextualAdjustmentsEnabled is False
+        assert reloaded.compactDensity is True
+        reloaded.shutdown()
     finally:
         release_first_save.set()
         adapter.shutdown()
@@ -1859,7 +1914,6 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
 ) -> None:
     image_calls: list[object] = []
     profile_calls: list[object] = []
-    request_gate = threading.Event()
     event_name = "QuickDraft_TST_20260829"
     pool_before_pick = (104976, 105080, 104995, 105027, 105030, 105170)
 
@@ -1976,6 +2030,14 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
             }
         )
     )
+    fixture_lines.append(
+        pick_line(
+            request_id="backtest-pick",
+            card_id=104894,
+            pack_number=0,
+            pick_number=len(pool_before_pick),
+        )
+    )
 
     def fail_image_opener(request: object, timeout: float) -> object:
         del timeout
@@ -2055,27 +2117,41 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
     )
 
     class _ControlledLiveSession(LiveSession):
-        def selected_card_image_request(self) -> CardImageRequest | None:
-            if not request_gate.is_set():
-                return None
-            return super().selected_card_image_request()
+        poll_count = 0
+        contextual_toggle_count = 0
+        external_work_ready = threading.Event()
 
-        def recommendation_image_request(self) -> CardImageRequest | None:
-            if not request_gate.is_set():
-                return None
-            return super().recommendation_image_request()
-
-        def recent_pick_image_request(self) -> CardImageRequest | None:
-            if not request_gate.is_set():
-                return None
-            return super().recent_pick_image_request()
-
-        def profile_refresh_request(self) -> ProfileRefreshRequest | None:
-            if not request_gate.is_set():
-                return None
-            return super().profile_refresh_request()
+        def dispatch(
+            self,
+            *,
+            command: LiveSessionCommand,
+        ) -> LiveSessionSnapshot:
+            if isinstance(command, ChangeContextualScoring):
+                self.contextual_toggle_count += 1
+                if self.contextual_toggle_count == 3:
+                    assert self._current_pack_event is not None
+                    self._prepare_recommendation_image_requests(
+                        pack=self._current_pack_event,
+                        recommendations=self.snapshot.recommendations,
+                    )
+                    with self._state_lock:
+                        self._queue_profile_refresh_locked(force=True)
+                    self.external_work_ready.set()
+            return super().dispatch(command=command)
 
         def poll_once(self) -> LiveSessionSnapshot:
+            self.poll_count += 1
+            if self.poll_count == 2:
+                self.process_lines(
+                    lines=(
+                        pack_line(
+                            pack_number=0,
+                            pick_number=7,
+                            draft_pack=(104894, 104976),
+                            picked_cards=pool_before_pick + (104894,),
+                        ),
+                    )
+                )
             return super().poll_once()
 
     sessions: list[_ControlledLiveSession] = []
@@ -2089,7 +2165,14 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
             profile_client=profile_client,
             snapshot_publisher=publish,
         )
-        session.process_lines(lines=fixture_lines)
+        original_network_policy = profile_client.network_policy
+        profile_client.network_policy = ProfileNetworkPolicy.OFFLINE
+        session._card_image_service = None
+        try:
+            session.process_lines(lines=fixture_lines)
+        finally:
+            session._card_image_service = image_service
+            profile_client.network_policy = original_network_policy
         sessions.append(session)
         return session
 
@@ -2107,7 +2190,6 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
             and bool(adapter.state["recommendations"]["cards"]),
             description="the production live-session recommendations",
         )
-        request_gate.set()
         initial_snapshot = sessions[0].snapshot
         initial_recommendation = next(
             recommendation
@@ -2118,15 +2200,41 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         assert initial_recommendation.contextual_pair == "WU"
         assert initial_recommendation.contextual_evidence
         assert initial_recommendation.contextual_breakdown.aggregate > 0
+        initial_state_recommendation = next(
+            card
+            for card in adapter.state["recommendations"]["cards"]
+            if card["card"]["grp_id"] == 104894
+        )
+        initial_state_score = initial_state_recommendation["score"]
+        initial_state_explanation = initial_state_recommendation["explanation"]
 
-        adapter._dispatch(command=ChangeContextualScoring(enabled=False))
+        adapter.requestBacktest()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state.get("backtest") is not None,
+            description="the enabled production backtest",
+        )
+        enabled_backtest = adapter.state["backtest"]
+        assert enabled_backtest is not None
+        enabled_backtest_row = next(
+            row
+            for row in enabled_backtest["rows"]
+            if row["recommended"]["grp_id"] == 104894
+        )
+        assert enabled_backtest_row["recommended_score"] is not None
+        assert enabled_backtest_row["contextual_evidence"]
+        image_calls_after_enabled_backtest = len(image_calls)
+        profile_calls_after_enabled_backtest = len(profile_calls)
+
+        adapter.setContextualScoringEnabled(False)
         _process_until(
             application=qcore_application,
             predicate=lambda: (
                 bool(sessions)
                 and sessions[0].snapshot.contextual_adjustments_enabled is False
+                and adapter.state.get("backtest") is None
             ),
-            description="the queued contextual-scoring rescore",
+            description="the queued contextual-scoring disable",
         )
         for _ in range(5):
             qcore_application.processEvents()
@@ -2135,14 +2243,99 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
             for recommendation in sessions[0].snapshot.recommendations.cards
             if recommendation.card.grp_id == 104894
         )
+        disabled_state_recommendation = next(
+            card
+            for card in adapter.state["recommendations"]["cards"]
+            if card["card"]["grp_id"] == 104894
+        )
         assert disabled_recommendation.contextual_evidence == ()
         assert disabled_recommendation.contextual_breakdown.aggregate == 0
         assert disabled_recommendation.score < initial_recommendation.score
-        assert image_calls == []
-        assert profile_calls == []
+        assert disabled_state_recommendation["score"] < initial_state_score
+        assert (
+            disabled_state_recommendation["explanation"]
+            != initial_state_explanation
+        )
+        assert len(image_calls) == image_calls_after_enabled_backtest
+        assert len(profile_calls) == profile_calls_after_enabled_backtest
 
+        adapter.requestBacktest()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state.get("backtest") is not None,
+            description="the disabled production backtest",
+        )
+        disabled_backtest = adapter.state["backtest"]
+        assert disabled_backtest is not None
+        disabled_backtest_row = next(
+            row
+            for row in disabled_backtest["rows"]
+            if row["recommended"]["grp_id"] == 104894
+        )
+        assert disabled_backtest_row["recommended_score"] is not None
+        assert (
+            disabled_backtest_row["recommended_score"]
+            < enabled_backtest_row["recommended_score"]
+        )
+        assert disabled_backtest_row["contextual_evidence"] == []
+        image_calls_after_disabled_backtest = len(image_calls)
+        profile_calls_after_disabled_backtest = len(profile_calls)
+
+        adapter.setContextualScoringEnabled(True)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                bool(sessions)
+                and sessions[0].snapshot.contextual_adjustments_enabled is True
+                and adapter.state.get("backtest") is None
+            ),
+            description="the queued contextual-scoring enable",
+        )
+        enabled_recommendation = next(
+            recommendation
+            for recommendation in sessions[0].snapshot.recommendations.cards
+            if recommendation.card.grp_id == 104894
+        )
+        enabled_state_recommendation = next(
+            card
+            for card in adapter.state["recommendations"]["cards"]
+            if card["card"]["grp_id"] == 104894
+        )
+        assert enabled_recommendation.contextual_evidence
+        assert enabled_recommendation.contextual_breakdown.aggregate > 0
+        assert enabled_recommendation.score > disabled_recommendation.score
+        assert (
+            enabled_state_recommendation["score"]
+            > disabled_state_recommendation["score"]
+        )
+        assert (
+            enabled_state_recommendation["explanation"]
+            != disabled_state_recommendation["explanation"]
+        )
+        image_calls_after_enable = len(image_calls)
+        profile_calls_after_enable = len(profile_calls)
+        assert len(image_calls) == image_calls_after_disabled_backtest
+        assert len(profile_calls) == profile_calls_after_disabled_backtest
+
+        adapter.setContextualScoringEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                bool(sessions)
+                and sessions[0].snapshot.contextual_adjustments_enabled is False
+                and adapter.state.get("backtest") is None
+                and sessions[0].external_work_ready.is_set()
+                and sessions[0].recommendation_image_request() is not None
+                and sessions[0].profile_refresh_request() is not None
+            ),
+            description="the queued contextual-scoring disable",
+        )
+        assert len(image_calls) == image_calls_after_enable
+        assert len(profile_calls) == profile_calls_after_enable
         worker = adapter._worker
         assert worker is not None
+        image_calls_before_later_poll = len(image_calls)
+
         QMetaObject.invokeMethod(
             worker,
             "_poll",
@@ -2150,10 +2343,23 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         )
         _process_until(
             application=qcore_application,
-            predicate=lambda: bool(image_calls) and bool(profile_calls),
-            description="the controlled later production poll requests",
+            predicate=lambda: (
+                bool(sessions)
+                and sessions[0].snapshot.current_pack_event is not None
+                and sessions[0].snapshot.current_pack_event.pack_number == 0
+                and sessions[0].snapshot.current_pack_event.pick_number == 7
+                and len(image_calls) > image_calls_before_later_poll
+            ),
+            description="the controlled later production poll result",
         )
         assert sessions[0].snapshot.contextual_adjustments_enabled is False
+        later_recommendation = next(
+            recommendation
+            for recommendation in sessions[0].snapshot.recommendations.cards
+            if recommendation.card.grp_id == 104894
+        )
+        assert later_recommendation.contextual_evidence == ()
+        assert later_recommendation.contextual_breakdown.aggregate == 0
     finally:
         adapter.shutdown()
         adapter.wait_for_shutdown()

@@ -208,6 +208,7 @@ def _live_session_factory(
     app_dir: Path | None,
     bulk_file: Path | None,
     poll_interval: float,
+    contextual_adjustments_enabled: bool,
     profile_manifest_url: str | None = None,
     profile_network_policy: ProfileNetworkPolicy = ProfileNetworkPolicy.ALLOWED,
     profile_client: ProfileClient | None = None,
@@ -242,18 +243,24 @@ def _live_session_factory(
         if bulk_file is not None:
             return LiveSession(
                 **common_kwargs,
+                contextual_adjustments_enabled=contextual_adjustments_enabled,
                 card_database=build_card_database_from_bulk_file(path=bulk_file),
             )
         assert card_data_client is not None
         return LiveSession(
             **common_kwargs,
+            contextual_adjustments_enabled=contextual_adjustments_enabled,
             set_card_data_loader=card_data_client.load,
         )
 
     return factory
 
 
-def _build_provider(*, args: argparse.Namespace) -> SessionAdapter:
+def _build_provider(
+    *,
+    args: argparse.Namespace,
+    contextual_adjustments_enabled: bool,
+) -> SessionAdapter:
     if args.provider == "mock":
         return MockSessionAdapter(
             session=MockLiveSession(scenario=args.scenario),
@@ -282,6 +289,7 @@ def _build_provider(*, args: argparse.Namespace) -> SessionAdapter:
             app_dir=args.app_dir,
             bulk_file=args.bulk_file,
             poll_interval=args.poll_interval,
+            contextual_adjustments_enabled=contextual_adjustments_enabled,
             profile_manifest_url=resolved_profile_manifest_url,
             profile_network_policy=profile_network_policy,
             profile_client=profile_client,
@@ -367,8 +375,14 @@ def run_gui(
     application = QGuiApplication([sys.argv[0]])
     _configure_application_metadata(application=application)
 
-    provider = _build_provider(args=args)
     preferences = GuiPreferencesAdapter(app_dir=args.app_dir, parent=application)
+    provider = _build_provider(
+        args=args,
+        contextual_adjustments_enabled=preferences.contextualAdjustmentsEnabled,
+    )
+    preferences.contextualAdjustmentsEnabledChanged.connect(
+        provider.setContextualScoringEnabled
+    )
     engine = QQmlApplicationEngine()
     qml_directory = _qml_directory()
     engine.addImportPath(str(qml_directory))

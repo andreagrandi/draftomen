@@ -33,7 +33,7 @@ Item {
             }
             Label {
                 Layout.fillWidth: true
-                text: "Draft guidance uses the shared live session. Display choices are saved only for this desktop application."
+                text: "Draft guidance uses the shared live session. Guidance and display choices are saved for this desktop application."
                 color: Theme.textMuted
                 wrapMode: Text.WordWrap
             }
@@ -116,8 +116,30 @@ Item {
                             onToggled: sessionProvider.setSplashEnabled(checked)
                         }
                     }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Label { text: "Contextual pick scoring"; color: Theme.text; font.bold: true }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "Use available profile and pool evidence for contextual pick scoring; explanations show the evidence used."
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.textPixelSize(11)
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        SettingsSwitch {
+                            objectName: "settingsContextualScoringSwitch"
+                            checked: root.displayPreferences.contextualAdjustmentsEnabled
+                            Accessible.name: "Contextual pick scoring"
+                            Accessible.description: "Enable contextual score adjustments and evidence in recommendations and backtests. Saved for this desktop application."
+                            onToggled: root.displayPreferences.setContextualAdjustmentsEnabled(checked)
+                        }
+                    }
                 }
             }
+
 
             Rectangle {
                 Layout.fillWidth: true

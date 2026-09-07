@@ -30,7 +30,7 @@ from draftomen.qt_gui import (
     _preflight_bundled_profile,
     run_gui,
 )
-from draftomen.qt_adapter import LiveSessionAdapter
+from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_mock import MockSessionAdapter
 from draftomen.set_profile import SET_PROFILE_SCHEMA_VERSION, load_set_profile
 
@@ -125,13 +125,21 @@ def test_live_gui_uses_set_scoped_card_data_client_without_startup_fetch(
 
     monkeypatch.setattr("draftomen.qt_gui.CardDataClient", RecordingCardDataClient)
     app_dir = tmp_path / "app"
+    preferences = GuiPreferencesAdapter(app_dir=app_dir)
+    try:
+        contextual_adjustments_enabled = preferences.contextualAdjustmentsEnabled
+    finally:
+        preferences.shutdown()
+    assert contextual_adjustments_enabled is False
     session_factory = _live_session_factory(
         log_path=tmp_path / "Player.log",
         app_dir=app_dir,
         bulk_file=None,
         poll_interval=0.01,
+        contextual_adjustments_enabled=contextual_adjustments_enabled,
     )
     session = session_factory(lambda snapshot: None)
+    assert session.snapshot.contextual_adjustments_enabled is False
 
     client = client_instances[0]
     assert client.app_dir == app_dir  # type: ignore[attr-defined]
@@ -160,6 +168,7 @@ def test_live_gui_bulk_file_injects_local_database(
         app_dir=tmp_path / "app",
         bulk_file=bulk_file,
         poll_interval=0.01,
+        contextual_adjustments_enabled=True,
     )
     session = session_factory(lambda snapshot: None)
 
@@ -185,7 +194,10 @@ def test_mock_gui_provider_does_not_construct_live_profile_client(
         ]
     )
 
-    provider = _build_provider(args=args)
+    provider = _build_provider(
+        args=args,
+        contextual_adjustments_enabled=True,
+    )
 
     assert isinstance(provider, MockSessionAdapter)
     assert provider.mockMode is True
@@ -207,7 +219,7 @@ def test_live_gui_rejects_nonpositive_poll_interval_before_live_construction(
         ValueError,
         match=r"^--poll-interval must be greater than zero\.$",
     ):
-        _build_provider(args=args)
+        _build_provider(args=args, contextual_adjustments_enabled=True)
 
 
 
@@ -261,7 +273,10 @@ def test_live_gui_profile_flags_use_cached_provider_state_without_network(
             "--no-startup-scan",
         ]
     )
-    provider = _build_provider(args=args)
+    provider = _build_provider(
+        args=args,
+        contextual_adjustments_enabled=True,
+    )
     assert isinstance(provider, LiveSessionAdapter)
 
     client = provider._profile_client  # type: ignore[attr-defined]
@@ -297,7 +312,10 @@ def test_live_gui_profile_flags_use_cached_provider_state_without_network(
             "--no-startup-scan",
         ]
     )
-    fallback_provider = _build_provider(args=fallback_args)
+    fallback_provider = _build_provider(
+        args=fallback_args,
+        contextual_adjustments_enabled=True,
+    )
     fallback_session = fallback_provider._session_factory(  # type: ignore[attr-defined]
         lambda snapshot: None
     )
@@ -620,6 +638,174 @@ def test_production_gui_processes_representative_arena_log_offscreen(
     assert records[-1]["record_type"] == "draft_completed"
 
 
+def test_production_startup_scoring_uses_reloaded_contextual_preference_offscreen(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    probe = """
+import json
+import os
+import time
+from pathlib import Path
+
+from PySide6.QtGui import QGuiApplication
+
+import draftomen.qt_gui as qt_gui
+from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
+from draftomen.session import LiveSession
+
+
+def wait_until(predicate, description):
+    deadline = time.monotonic() + 8
+    while not predicate():
+        application.processEvents()
+        if time.monotonic() >= deadline:
+            raise AssertionError("Timed out waiting for " + description)
+        time.sleep(0.005)
+    application.processEvents()
+
+
+class RecordingLiveSession(LiveSession):
+    def __init__(self, **kwargs):
+        self.scored_publications = []
+        super().__init__(**kwargs)
+        recording_sessions.append(self)
+
+    def _publish(self, snapshot):
+        super()._publish(snapshot=snapshot)
+        scored_pack = snapshot.current_scored_pack
+        if scored_pack is not None and scored_pack.cards and not self.scored_publications:
+            self.scored_publications.append(
+                {
+                    "contextual_adjustments_enabled": (
+                        snapshot.contextual_adjustments_enabled
+                    ),
+                    "scored_pack": scored_pack,
+                }
+            )
+
+
+class NoNetworkCardImageService:
+    def __init__(self, **kwargs):
+        del kwargs
+
+    def resolve_image_uri(self, **kwargs):
+        del kwargs
+        return None
+
+    def resolve_focused_image_uri(self, **kwargs):
+        del kwargs
+        return None
+
+
+recording_sessions = []
+qt_gui.LiveSession = RecordingLiveSession
+qt_gui.CardImageService = NoNetworkCardImageService
+
+project_root = Path.cwd()
+fixture_log_path = project_root / "tests" / "fixtures" / "quick-draft-msh-player.log"
+fixture_log_lines = fixture_log_path.read_text(encoding="utf-8").splitlines(keepends=True)
+bulk_file = project_root / "tests" / "fixtures" / "scryfall-default-cards-sample.jsonl"
+
+
+def seed_preferences(*, case_dir, contextual_enabled, legacy):
+    seed = GuiPreferencesAdapter(app_dir=case_dir)
+    if contextual_enabled:
+        seed.setContextualAdjustmentsEnabled(True)
+    else:
+        seed.setCardPreview(False)
+    wait_until(
+        lambda: seed.persistenceMessage == "Saved",
+        "the seeded preference save",
+    )
+    seed.shutdown()
+    if legacy:
+        preferences_path = case_dir / "gui-preferences.json"
+        preferences_data = json.loads(preferences_path.read_text(encoding="utf-8"))
+        del preferences_data["display"]["contextual_adjustments_enabled"]
+        preferences_path.write_text(
+            json.dumps(preferences_data, indent=2, sort_keys=True) + "\\n",
+            encoding="utf-8",
+        )
+
+
+def startup_case(*, name, contextual_enabled, legacy):
+    case_dir = Path(os.environ["DRAFTOMEN_E2E_APP_DIR"]) / name
+    case_dir.mkdir(parents=True, exist_ok=True)
+    log_path = case_dir / "Player.log"
+    log_path.write_text("".join(fixture_log_lines[:22]), encoding="utf-8")
+    if legacy:
+        seed_preferences(
+            case_dir=case_dir,
+            contextual_enabled=False,
+            legacy=True,
+        )
+    elif contextual_enabled:
+        seed_preferences(
+            case_dir=case_dir,
+            contextual_enabled=True,
+            legacy=False,
+        )
+    preferences = GuiPreferencesAdapter(app_dir=case_dir)
+    provider = None
+    try:
+        assert preferences.contextualAdjustmentsEnabled is contextual_enabled
+        args = qt_gui._parser().parse_args(
+            [
+                "--provider",
+                "live",
+                "--app-dir",
+                str(case_dir),
+                "--log-path",
+                str(log_path),
+                "--bulk-file",
+                str(bulk_file),
+                "--poll-interval",
+                "0.01",
+                "--offline-profiles",
+            ]
+        )
+        assert args.startup_scan is True
+        provider = qt_gui._build_provider(
+            args=args,
+            contextual_adjustments_enabled=preferences.contextualAdjustmentsEnabled,
+        )
+        assert isinstance(provider, LiveSessionAdapter)
+        assert provider._startup_scan is True
+        session_index = len(recording_sessions)
+        provider.start()
+        wait_until(
+            lambda: len(recording_sessions) > session_index,
+            name + " production-created session",
+        )
+        recording_session = recording_sessions[session_index]
+        wait_until(
+            lambda: recording_session.scored_publications,
+            name + " first non-empty startup score",
+        )
+        first_scoring = recording_session.scored_publications[0]
+        assert first_scoring["contextual_adjustments_enabled"] is contextual_enabled
+        assert first_scoring["scored_pack"].cards
+    finally:
+        if provider is not None:
+            provider.shutdown()
+            provider.wait_for_shutdown()
+        preferences.shutdown()
+
+
+application = QGuiApplication([])
+startup_case(name="missing", contextual_enabled=False, legacy=False)
+startup_case(name="existing-v1-without-field", contextual_enabled=False, legacy=True)
+startup_case(name="persisted-true", contextual_enabled=True, legacy=False)
+"""
+    completed = _run_qml_probe(
+        probe,
+        environment={"DRAFTOMEN_E2E_APP_DIR": str(app_dir)},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_production_adapter_renders_build_backtest_and_persisted_preferences_offscreen(
     tmp_path: Path,
 ) -> None:
@@ -732,8 +918,22 @@ bulk_file = project_root / "tests" / "fixtures" / "scryfall-default-cards-sample
 class RecordingLiveSession(LiveSession):
     def __init__(self, **kwargs):
         self.build_requests: list[dict[str, bool | int]] = []
+        self.scored_publications: list[dict[str, object]] = []
         self.app_dir = kwargs["app_dir"]
         super().__init__(**kwargs)
+
+    def _publish(self, snapshot):
+        super()._publish(snapshot=snapshot)
+        scored_pack = self.snapshot.current_scored_pack
+        if scored_pack is not None and not self.scored_publications:
+            self.scored_publications.append(
+                {
+                    "scored_pack": scored_pack,
+                    "contextual_adjustments_enabled": (
+                        self.snapshot.contextual_adjustments_enabled
+                    ),
+                }
+            )
 
     def dispatch(self, *, command: LiveSessionCommand):
         if isinstance(command, RequestBuild):
@@ -768,6 +968,7 @@ def factory(publish):
         card_database=load_image_database(),
         app_dir=app_dir,
         poll_interval=0.01,
+        contextual_adjustments_enabled=preferences.contextualAdjustmentsEnabled,
         snapshot_publisher=publish,
         card_image_service=CardImageService(
             cache_dir=app_dir / "card-images",
@@ -782,8 +983,20 @@ def factory(publish):
 
 QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
-provider = LiveSessionAdapter(session_factory=factory, poll_interval_ms=10)
 preferences = GuiPreferencesAdapter(app_dir=app_dir)
+preferences.setContextualAdjustmentsEnabled(True)
+wait_until(
+    lambda: preferences.persistenceMessage == "Saved",
+    "the persisted contextual scoring preference",
+)
+provider = LiveSessionAdapter(
+    session_factory=factory,
+    poll_interval_ms=10,
+    startup_scan=True,
+)
+preferences.contextualAdjustmentsEnabledChanged.connect(
+    provider.setContextualScoringEnabled
+)
 engine = QQmlApplicationEngine()
 qml_directory = project_root / "draftomen" / "qml"
 engine.addImportPath(str(qml_directory))
@@ -799,8 +1012,21 @@ context.setContextProperty("initialWindowHeight", 900)
 engine.setInitialProperties({"provider": provider})
 engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
-provider.start()
 try:
+    provider.start()
+    wait_until(
+        lambda: recording_sessions,
+        "the worker-created recording session",
+    )
+    recording_session = recording_sessions[0]
+    wait_until(
+        lambda: recording_session.scored_publications,
+        "the first published startup scoring result",
+    )
+    first_scoring = recording_session.scored_publications[0]
+    assert first_scoring["contextual_adjustments_enabled"] is True
+    assert first_scoring["scored_pack"].cards
+    assert recording_session.snapshot.contextual_adjustments_enabled is True
     assert root.property("currentSurface") == "live"
     root.resize(760, 900)
     application.processEvents()
@@ -840,7 +1066,6 @@ try:
     )
     next_recommendation_source = image_source(live_image)
     assert next_recommendation_source
-    recording_session = recording_sessions[0]
     assert recording_session.build_requests == []
     provider.requestBuild("")
     wait_until(
@@ -957,7 +1182,11 @@ try:
         lambda: preferences.persistenceMessage == "Saved",
         "the latest display preference save",
     )
-    assert GuiPreferencesAdapter(app_dir=app_dir).cardPreview is False
+    persisted_display_preferences = GuiPreferencesAdapter(app_dir=app_dir)
+    try:
+        assert persisted_display_preferences.cardPreview is False
+    finally:
+        persisted_display_preferences.shutdown()
 finally:
     preferences.shutdown()
     provider.shutdown()
@@ -4321,7 +4550,7 @@ def test_qml_settings_switches_expose_contrast_states_and_keyboard_toggle() -> N
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtCore import QPoint, QObject, QPointF, Qt, QUrl
 from PySide6.QtGui import QAccessible, QColor, QFontInfo, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -4425,8 +4654,51 @@ with TemporaryDirectory() as preferences_dir:
     application.processEvents()
     assert show_backtest.property("checked") is False
     assert preferences.showBacktest is False
-    assert navigation.property("backtestNavigationVisible") is False
+    contextual_switch = root.findChild(QObject, "settingsContextualScoringSwitch")
+    assert contextual_switch is not None
+    assert contextual_switch.property("checked") is False
+    accessible_contextual = QAccessible.queryAccessibleInterface(contextual_switch)
+    assert accessible_contextual is not None
+    assert accessible_contextual.text(QAccessible.Text.Name) == "Contextual pick scoring"
+    assert accessible_contextual.text(QAccessible.Text.Description) == (
+        "Enable contextual score adjustments and evidence in recommendations and backtests. "
+        "Saved for this desktop application."
+    )
+    contextual_center = contextual_switch.mapToItem(
+        root.contentItem(),
+        QPointF(contextual_switch.width() / 2, contextual_switch.height() / 2),
+    )
+    QTest.mouseClick(
+        root,
+        Qt.LeftButton,
+        Qt.NoModifier,
+        QPoint(round(contextual_center.x()), round(contextual_center.y())),
+    )
+    application.processEvents()
+    assert contextual_switch.property("checked") is True
+    assert preferences.contextualAdjustmentsEnabled is True
+    contextual_switch.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    application.processEvents()
+    assert contextual_switch.property("checked") is False
+    assert preferences.contextualAdjustmentsEnabled is False
+    QTest.mouseClick(
+        root,
+        Qt.LeftButton,
+        Qt.NoModifier,
+        QPoint(round(contextual_center.x()), round(contextual_center.y())),
+    )
+    application.processEvents()
+    assert contextual_switch.property("checked") is True
+    assert preferences.contextualAdjustmentsEnabled is True
     wait_for_saved(preferences)
+    persisted_contextual_preferences = GuiPreferencesAdapter(
+        app_dir=preferences_dir
+    )
+    try:
+        assert persisted_contextual_preferences.contextualAdjustmentsEnabled is True
+    finally:
+        persisted_contextual_preferences.shutdown()
     assert root.findChild(QObject, "settingsPersistenceMessage") is None
     accessible_persistence = QAccessible.queryAccessibleInterface(persistence_message)
     assert accessible_persistence is not None
@@ -4436,6 +4708,7 @@ with TemporaryDirectory() as preferences_dir:
     names = (
         "settingsSplashSwitch",
         "settingsShowBacktestSwitch",
+        "settingsContextualScoringSwitch",
         "settingsCompactDensitySwitch",
         "settingsSecondaryStatsSwitch",
         "settingsCardPreviewSwitch",
@@ -4451,7 +4724,7 @@ with TemporaryDirectory() as preferences_dir:
     unchecked_switches = [
         switch for switch in switches if not switch.property("checked")
     ]
-    assert len(checked_switches) == 5
+    assert len(checked_switches) == 6
     assert len(unchecked_switches) == 2
 
     for switch in switches:
@@ -4589,7 +4862,11 @@ with TemporaryDirectory() as preferences_dir:
     assert persistence_message.property("text") == "Saved"
     assert QColor(persistence_message.property("color")) == QColor("#a78bfa")
     assert_accessible_status(persistence_message, "Saved")
-    assert GuiPreferencesAdapter(app_dir=preferences_dir).systemTextScaling is False
+    persisted_system_preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    try:
+        assert persisted_system_preferences.systemTextScaling is False
+    finally:
+        persisted_system_preferences.shutdown()
     QTest.keyClick(root, Qt.Key_Space)
     application.processEvents()
     assert system_switch.property("checked") is True
@@ -4645,8 +4922,10 @@ with TemporaryDirectory() as preferences_dir:
     persisted_preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
     persisted_preferences.setSystemTextScaling(False)
     persisted_preferences.setShowBacktest(True)
+    persisted_preferences.setContextualAdjustmentsEnabled(True)
     assert persisted_preferences.systemTextScaling is False
     assert persisted_preferences.showBacktest is True
+    assert persisted_preferences.contextualAdjustmentsEnabled is True
     wait_for_saved(persisted_preferences)
     preferences.shutdown()
     del root
@@ -4681,6 +4960,11 @@ with TemporaryDirectory() as preferences_dir:
     )
     assert reloaded_system_switch is not None
     assert reloaded_system_switch.property("checked") is False
+    reloaded_contextual_switch = root.findChild(
+        QObject, "settingsContextualScoringSwitch"
+    )
+    assert reloaded_contextual_switch is not None
+    assert reloaded_contextual_switch.property("checked") is True
     reloaded_inherited_font_control = root.findChild(
         QObject, "settingsRatingsDownloadButton"
     )
