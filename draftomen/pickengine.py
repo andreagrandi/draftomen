@@ -558,6 +558,7 @@ class PickEngine:
         ratings_data: SeventeenLandsData | None = None,
         config: PickEngineConfig = PICK_ENGINE,
         splash_enabled: bool = SPLASH.enabled_by_default,
+        contextual_adjustments_enabled: bool = True,
         set_profile: SetProfile | None = None,
         scoring_context: PickScoringContext | None = None,
     ) -> None:
@@ -565,6 +566,7 @@ class PickEngine:
         self.ratings_data = ratings_data
         self.config = config
         self.splash_enabled = splash_enabled
+        self.contextual_adjustments_enabled = contextual_adjustments_enabled
         self.set_profile = _normalize_scoring_profile(set_profile)
         self.scoring_context = scoring_context
         self.normalization = _normalization_from_data(
@@ -690,6 +692,7 @@ class PickEngine:
                 splash_state=splash_state,
                 best_on_color_score=best_on_color_score,
                 scoring_context=active_context,
+                contextual_adjustments_enabled=self.contextual_adjustments_enabled,
                 profile=active_profile,
                 normalization=normalization,
                 profile_lookup=profile_lookup,
@@ -771,6 +774,7 @@ class PickEngine:
         splash_state: SplashState,
         best_on_color_score: float | None,
         scoring_context: PickScoringContext | None,
+        contextual_adjustments_enabled: bool,
         profile: SetProfile | None,
         normalization: ScoreNormalization,
         profile_lookup: _ProfileRatingLookup,
@@ -821,10 +825,14 @@ class PickEngine:
             commitment=commitment,
             config=self.config,
         )
-        contextual_breakdown, contextual_evidence = _contextual_score_for_card(
-            card=card,
-            scoring_context=scoring_context,
-        )
+        if contextual_adjustments_enabled:
+            contextual_breakdown, contextual_evidence = _contextual_score_for_card(
+                card=card,
+                scoring_context=scoring_context,
+            )
+        else:
+            contextual_breakdown = ContextualScoreBreakdown()
+            contextual_evidence = ()
         contextual_adjustment = contextual_breakdown.aggregate
         raw_score = _clamp(
             value=(base_score * color_factor) + contextual_adjustment,
@@ -1267,6 +1275,7 @@ def score_pack(
     pool_grp_ids: tuple[int, ...] = (),
     pick_index: int | None = None,
     splash_enabled: bool = SPLASH.enabled_by_default,
+    contextual_adjustments_enabled: bool = True,
     set_profile: SetProfile | None = None,
     scoring_context: PickScoringContext | None = None,
     pack_number: int | None = None,
@@ -1281,6 +1290,7 @@ def score_pack(
         ratings_data=ratings_data,
         config=config,
         splash_enabled=splash_enabled,
+        contextual_adjustments_enabled=contextual_adjustments_enabled,
         set_profile=set_profile,
         scoring_context=scoring_context,
     ).score_pack(

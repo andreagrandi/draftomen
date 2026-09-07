@@ -87,6 +87,23 @@ property.
 `ScoredPack.scoring_context` retains the supplied or constructed context
 exactly, and `ScoredPack.role_ledger` retains its ledger.
 
+### Contextual-adjustment mode
+
+The shared engine and module-level `score_pack` wrapper expose
+`contextual_adjustments_enabled`, which defaults to `True` for compatibility.
+Set it to `False` when the caller needs profile-backed base scoring without
+the six additive contextual terms. This mode still loads the selected rich
+profile for card ratings and normalization, color inference, splash assessment,
+and pair tiebreaking, and an explicitly supplied scoring context does not
+override the setting.
+
+With contextual adjustments disabled, scores use only the existing
+base-score/color calculation and its `0–100` clamp. The serialized breakdown
+contains zero for every contextual term and contextual evidence is empty, so
+recommendations and audit payloads do not claim that contextual adjustments
+were applied. The default enabled mode retains the bounded terms,
+aggregate clamp, ordering, and fallback behavior described below.
+
 When a validated profile-backed pre-pick context is available, the engine scores
 with six small additive contextual terms from that validated pre-pick state:
 role need (0–2.5), late urgency (0–3.0), semantic package support (0–1.5),
