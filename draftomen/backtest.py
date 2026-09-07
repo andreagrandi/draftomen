@@ -133,6 +133,7 @@ def generate_backtest_report(
     pick_engine: PickEngine | None = None,
     ranking_mode: str = DEFAULT_RANKING_MODE,
     splash_enabled: bool = True,
+    contextual_adjustments_enabled: bool = True,
     set_profile: SetProfile | None = None,
 ) -> BacktestReport:
     """Score each saved pick from the persisted pre-pick state.
@@ -145,6 +146,7 @@ def generate_backtest_report(
         else PickEngine(
             ratings_data=ratings_data,
             splash_enabled=splash_enabled,
+            contextual_adjustments_enabled=contextual_adjustments_enabled,
             set_profile=set_profile,
         )
     )

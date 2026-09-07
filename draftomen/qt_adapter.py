@@ -39,6 +39,7 @@ from draftomen.ranking import RankingMode
 from draftomen.session import (
     CardImageFetchResult,
     CardImageRequest,
+    ChangeContextualScoring,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
@@ -793,6 +794,8 @@ class _LiveSessionWorker(QObject):
             return
         try:
             self._session.dispatch(command=command)
+            if isinstance(command, ChangeContextualScoring):
+                return
             self._request_one_card_image()
             if self._profile_client is not None:
                 self._request_profile_refresh()

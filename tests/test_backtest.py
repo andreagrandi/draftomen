@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,10 +11,20 @@ import draftomen.cli as cli_module
 from draftomen.backtest import format_backtest_report, generate_backtest_report
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cli import main
+from draftomen.pickengine import PickEngine
 from draftomen.pool import DraftPick, DraftState, draft_state_path, save_draft_state
+from draftomen.semantic_roles import (
+    CompiledRoleProfile,
+    ProfileCard,
+    Role,
+    RoleAssignment,
+)
 from draftomen.set_profile import (
+    CardRating,
     PairProfile,
     ProfileMaturity,
+    RateEstimate,
+    RoleTarget,
     SampleSummary,
     SetProfile,
     SourceMetadata,
@@ -109,6 +120,75 @@ def test_backtest_retains_profile_context_and_recommendation_evidence() -> None:
     assert row.contextual_evidence == row.recommended.contextual_evidence
 
 
+def test_backtest_contextual_mode_changes_saved_pick_scoring() -> None:
+    state = _draft_state(
+        picks=(
+            DraftPick(
+                pack_number=0,
+                pick_number=5,
+                offered_grp_ids=(3, 4),
+                pool_before_pick=(1, 2),
+                chosen_grp_id=3,
+            ),
+        ),
+        pool_grp_ids=(1, 2, 3),
+    )
+    database = _contextual_backtest_database()
+    profile = _contextual_backtest_profile()
+
+    enabled = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=profile,
+    ).rows[0]
+    disabled = generate_backtest_report(
+        state=state,
+        card_database=database,
+        contextual_adjustments_enabled=False,
+        set_profile=profile,
+    ).rows[0]
+
+    assert enabled.recommended is not None
+    assert disabled.recommended is not None
+    assert enabled.recommended.card.grp_id == disabled.recommended.card.grp_id == 3
+    assert enabled.recommended.raw_score > disabled.recommended.raw_score
+    assert enabled.contextual_evidence
+    assert disabled.contextual_evidence == ()
+    assert disabled.recommended.rating.metadata.source == "profile"
+
+
+def test_backtest_injected_engine_configuration_takes_precedence() -> None:
+    state = _draft_state(
+        picks=(
+            DraftPick(
+                pack_number=0,
+                pick_number=5,
+                offered_grp_ids=(3, 4),
+                pool_before_pick=(1, 2),
+                chosen_grp_id=3,
+            ),
+        ),
+        pool_grp_ids=(1, 2, 3),
+    )
+    profile = _contextual_backtest_profile()
+    engine = PickEngine(
+        contextual_adjustments_enabled=False,
+        set_profile=profile,
+    )
+
+    row = generate_backtest_report(
+        state=state,
+        card_database=_contextual_backtest_database(),
+        contextual_adjustments_enabled=True,
+        pick_engine=engine,
+    ).rows[0]
+
+    assert row.recommended is not None
+    assert row.contextual_evidence == ()
+    assert row.recommended.contextual_evidence == ()
+    assert engine.contextual_adjustments_enabled is False
+
+
 def test_backtest_no_profile_retains_generic_scoring_without_context() -> None:
     state = _draft_state(
         picks=(
@@ -146,6 +226,60 @@ def _set_profile() -> SetProfile:
         confidence=1.0,
         pairs=(PairProfile(pair="WU"),),
     )
+
+
+def _contextual_backtest_profile() -> SetProfile:
+    return SetProfile(
+        set_code="TST",
+        event_format="quickdraft",
+        profile_version="backtest-contextual-mode-test",
+        generated_at="1970-01-01T00:00:00+00:00",
+        source=SourceMetadata(provider="test"),
+        maturity=ProfileMaturity.MATURE,
+        samples=SampleSummary(total=100, by_pair=(("WU", 100),)),
+        confidence=1.0,
+        pairs=(
+            PairProfile(
+                pair="WU",
+                role_targets=(RoleTarget(role=Role.DRAW, value=1),),
+            ),
+        ),
+        role_profile=CompiledRoleProfile(
+            set_code="TST",
+            cards=(
+                ProfileCard(
+                    key="arena_id:3",
+                    assignments=(RoleAssignment(role=Role.DRAW),),
+                ),
+            ),
+        ),
+        card_ratings=tuple(
+            CardRating(
+                card_key=f"arena_id:{grp_id}",
+                gih_win_rate=RateEstimate(
+                    raw_value=value,
+                    value=value,
+                    samples=100,
+                    prior_value=0.5,
+                    source="test",
+                ),
+            )
+            for grp_id, value in ((3, 0.72), (4, 0.68), (5, 0.90))
+        ),
+    )
+
+
+def _contextual_backtest_database() -> CardDatabase:
+    cards = {
+        grp_id: replace(card, set_code="TST", arena_id=grp_id)
+        for grp_id, card in _card_database().cards.items()
+    }
+    cards[5] = replace(
+        _card(grp_id=5, name="White Ceiling", colors=("W",)),
+        set_code="TST",
+        arena_id=5,
+    )
+    return CardDatabase(cards=cards)
 
 
 def test_backtest_cli_skips_missing_offered_history_without_mutating_state(

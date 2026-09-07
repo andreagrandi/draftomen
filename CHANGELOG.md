@@ -5,6 +5,10 @@
 - Add an explicit shared-engine contextual-adjustment mode that can disable
   additive contextual terms while retaining profile-backed base scoring and
   non-contextual evidence. (#380)
+- Add the default-enabled live-session and backtest contextual-adjustment
+  mode with immutable state, explicit commands, immediate local rescoring,
+  stale comparison invalidation, and no toggle-triggered external work; deck
+  construction remains independent. (#381)
 - Native live startup now defaults to the production hosted profile manifest,
   supports explicit HTTPS overrides and profile-only `--offline-profiles`,
   and leaves static card-data, card-image, and card-metadata policies

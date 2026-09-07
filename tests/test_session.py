@@ -75,6 +75,7 @@ from draftomen.session import (
     CardImageState,
     CardView,
     ChangeRanking,
+    ChangeContextualScoring,
     ChangeSplashPreference,
     ChooseAccount,
     ChooseRecommendation,
@@ -140,6 +141,7 @@ def test_default_live_session_snapshot_has_neutral_initial_state() -> None:
     assert snapshot.ratings == RatingsState()
     assert snapshot.set_profile == SetProfileState()
     assert snapshot.recommendations == RecommendationState()
+    assert snapshot.contextual_adjustments_enabled is True
     assert snapshot.pool == PoolState()
     assert snapshot.progress is None
     assert snapshot.errors == ()
@@ -390,6 +392,7 @@ def test_live_session_commands_capture_explicit_user_intentions() -> None:
         ChooseRecommendation(grp_id=123),
         FocusBuildCard(grp_id=456),
         ChangeRanking(ranking_mode="win_rate"),
+        ChangeContextualScoring(enabled=False),
         ChangeSplashPreference(enabled=False),
         RequestRatingsDownload(set_code="TST"),
         RequestBuild(pair_override="WU", allow_splash=False),
@@ -403,6 +406,7 @@ def test_live_session_commands_capture_explicit_user_intentions() -> None:
         ChooseRecommendation(grp_id=123),
         FocusBuildCard(grp_id=456),
         ChangeRanking(ranking_mode="win_rate"),
+        ChangeContextualScoring(enabled=False),
         ChangeSplashPreference(enabled=False),
         RequestRatingsDownload(set_code="TST"),
         RequestBuild(pair_override="WU", allow_splash=False),
@@ -795,6 +799,235 @@ def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
     )
     assert recommendation_payload["contextual_profile_confidence"] == (
         source_card.contextual_profile_confidence
+    )
+
+
+def test_live_session_contextual_mode_controls_startup_and_local_rescore(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_set_profile()
+    pool_before_pick = _fixture_pool_before_pick(
+        pack_number=CONTEXT_PACK_NUMBER,
+        pick_number=CONTEXT_PICK_NUMBER,
+    )
+    database = _fixture_contextual_card_database()
+    events: list[LiveSessionEvent] = []
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=database,
+        set_profile=profile,
+        contextual_adjustments_enabled=False,
+        event_publisher=events.append,
+    )
+
+    initial = session.process_lines(
+        lines=_profiled_history_lines(pool_before_pick=pool_before_pick)
+    )
+    event_count = len(events)
+    assert initial.draft is not None
+    audit_before_toggle = load_draft_audit_records(
+        account_id=initial.draft.account_id,
+        draft_id=initial.draft.draft_id,
+        app_dir=tmp_path / "app",
+    )
+    assert initial.contextual_adjustments_enabled is False
+    assert initial.current_pack_event is not None
+    assert initial.current_scored_pack is not None
+    assert all(
+        card.contextual_evidence == ()
+        for card in initial.current_scored_pack.cards
+    )
+
+    baseline_with_build = session.dispatch(command=RequestBuild())
+    baseline_pool = baseline_with_build.pool
+    baseline_build = baseline_with_build.build
+    disabled_scores = {
+        card.card.grp_id: card.raw_score
+        for card in initial.current_scored_pack.cards
+    }
+
+    enabled = session.dispatch(command=ChangeContextualScoring(enabled=True))
+
+    assert enabled.contextual_adjustments_enabled is True
+    assert enabled.draft == initial.draft
+    assert enabled.current_pack_event == initial.current_pack_event
+    assert enabled.current_scored_pack is not None
+    assert any(
+        card.contextual_evidence
+        for card in enabled.current_scored_pack.cards
+    )
+    assert any(
+        card.raw_score != disabled_scores[card.card.grp_id]
+        for card in enabled.current_scored_pack.cards
+    )
+    assert enabled.pool == baseline_pool
+    assert enabled.build is baseline_build
+
+    assert len(events) == event_count
+    displayed_comparison = session.dispatch(
+        command=RequestBacktest(
+            account_id=initial.draft.account_id,
+            draft_id=initial.draft.draft_id,
+        )
+    )
+    assert displayed_comparison.backtest is not None
+
+
+    disabled = session.dispatch(command=ChangeContextualScoring(enabled=False))
+
+    assert disabled.contextual_adjustments_enabled is False
+    assert disabled.draft == initial.draft
+    assert disabled.current_pack_event == initial.current_pack_event
+    assert disabled.current_scored_pack is not None
+    assert all(
+        card.contextual_evidence == ()
+        for card in disabled.current_scored_pack.cards
+    )
+    assert load_draft_audit_records(
+        account_id=initial.draft.account_id,
+        draft_id=initial.draft.draft_id,
+        app_dir=tmp_path / "app",
+    ) == audit_before_toggle
+    assert disabled.pool == baseline_pool
+    assert disabled.build is baseline_build
+
+    assert len(events) == event_count
+
+
+def test_live_session_contextual_mode_toggle_without_pack_publishes_only_mode(
+    tmp_path: Path,
+) -> None:
+    published: list[LiveSessionSnapshot] = []
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        snapshot_publisher=published.append,
+    )
+
+
+
+    initial = session.snapshot
+    changed = session.dispatch(command=ChangeContextualScoring(enabled=False))
+
+    assert initial.contextual_adjustments_enabled is True
+    assert changed.contextual_adjustments_enabled is False
+    assert changed.current_pack_event is None
+    assert changed.current_scored_pack is None
+    assert published[-1] is changed
+
+
+def test_live_session_contextual_mode_survives_profile_and_pack_lifecycle(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_set_profile()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_contextual_card_database(),
+        profile_client=_ProfileClientStub({"TST": profile}),
+        contextual_adjustments_enabled=False,
+    )
+    initial = session.process_lines(
+        lines=_profiled_history_lines(
+            pool_before_pick=_fixture_pool_before_pick(
+                pack_number=CONTEXT_PACK_NUMBER,
+                pick_number=CONTEXT_PICK_NUMBER,
+            )
+        )
+    )
+    assert initial.contextual_adjustments_enabled is False
+    assert initial.current_scored_pack is not None
+    assert all(
+        card.contextual_evidence == ()
+        for card in initial.current_scored_pack.cards
+    )
+
+    refresh_request = session.profile_refresh_request()
+    assert refresh_request is not None
+    refreshed_profile = replace(
+        profile,
+        profile_version="2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    session.complete_profile_refresh(
+        request=refresh_request,
+        result=ProfileRefreshResult(
+            profile=refreshed_profile,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+    adopted = session.snapshot
+    assert adopted.contextual_adjustments_enabled is False
+    assert adopted.current_scored_pack is not None
+    assert all(
+        card.contextual_evidence == ()
+        for card in adopted.current_scored_pack.cards
+    )
+
+    state = session._active_draft_state()
+    assert state is not None
+    current_event = session.current_pack_event
+    assert current_event is not None
+    session._select_state(
+        state=state,
+        recovered=True,
+        current_pack_event=current_event,
+    )
+    session._score_current_pack()
+    recovered = session.snapshot
+    assert recovered.contextual_adjustments_enabled is False
+    assert recovered.recommendations.selected_grp_id is not None
+    assert recovered.current_scored_pack is not None
+    assert all(
+        card.contextual_evidence == ()
+        for card in recovered.current_scored_pack.cards
+    )
+
+    enabled = session.dispatch(command=ChangeContextualScoring(enabled=True))
+    assert enabled.contextual_adjustments_enabled is True
+    assert enabled.current_scored_pack is not None
+    assert any(
+        card.contextual_evidence
+        for card in enabled.current_scored_pack.cards
+    )
+
+    reset = session.dispatch(command=ChangeRanking(ranking_mode="win_rate"))
+    assert reset.contextual_adjustments_enabled is True
+    assert reset.current_scored_pack is not None
+    assert any(
+        card.contextual_evidence
+        for card in reset.current_scored_pack.cards
+    )
+
+    future_event = replace(
+        current_event,
+        pick_number=current_event.pick_number + 1,
+    )
+    session._select_state(
+        state=state,
+        recovered=False,
+        event=future_event,
+    )
+    session._score_current_pack()
+    future_enabled = session.snapshot
+    assert future_enabled.contextual_adjustments_enabled is True
+    assert future_enabled.current_pack_event == future_event
+    assert future_enabled.current_scored_pack is not None
+    assert any(
+        card.contextual_evidence
+        for card in future_enabled.current_scored_pack.cards
+    )
+
+    future_disabled = session.dispatch(
+        command=ChangeContextualScoring(enabled=False)
+    )
+    assert future_disabled.contextual_adjustments_enabled is False
+    assert future_disabled.current_pack_event == future_event
+    assert future_disabled.current_scored_pack is not None
+    assert all(
+        card.contextual_evidence == ()
+        for card in future_disabled.current_scored_pack.cards
     )
 
 
@@ -4945,6 +5178,172 @@ def test_live_session_discards_older_overlapping_backtest_completion(
     assert session.snapshot.backtest.draft_id == "draft-2"
 
 
+@pytest.mark.parametrize(
+    ("older_outcome", "newer_outcome"),
+    (("failure", "success"), ("success", "failure")),
+)
+def test_live_session_stale_backtest_completion_preserves_newer_result_or_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    older_outcome: str,
+    newer_outcome: str,
+) -> None:
+    app_dir = tmp_path / "app"
+    for draft_id, updated_at in (
+        ("draft-1", "2026-08-23T10:00:00+00:00"),
+        ("draft-2", "2026-08-23T11:00:00+00:00"),
+    ):
+        save_draft_state(
+            state=_draft_state(
+                account_id="account-1",
+                screen_name="Player",
+                draft_id=draft_id,
+                updated_at=updated_at,
+                pool_grp_ids=(),
+            ),
+            app_dir=app_dir,
+        )
+    started = threading.Event()
+    release = threading.Event()
+    real_generator = session_module.generate_backtest_report
+
+    def controlled_generator(*args: object, **kwargs: object) -> object:
+        state = kwargs["state"]
+        assert isinstance(state, DraftState)
+        outcome = (
+            older_outcome if state.draft_id == "draft-1" else newer_outcome
+        )
+        if state.draft_id == "draft-1":
+            started.set()
+            assert release.wait(timeout=2.0)
+        if outcome == "failure":
+            raise RuntimeError(f"{state.draft_id} failed")
+        return real_generator(*args, **kwargs)
+
+    monkeypatch.setattr(
+        session_module,
+        "generate_backtest_report",
+        controlled_generator,
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_fixture_card_database(),
+    )
+    worker_errors: list[Exception] = []
+
+    def request_older() -> None:
+        try:
+            session.dispatch(
+                command=RequestBacktest(
+                    account_id="account-1",
+                    draft_id="draft-1",
+                )
+            )
+        except Exception as error:
+            worker_errors.append(error)
+
+    worker = threading.Thread(target=request_older, daemon=True)
+    worker.start()
+    assert started.wait(timeout=2.0)
+
+    newer = session.dispatch(
+        command=RequestBacktest(
+            account_id="account-1",
+            draft_id="draft-2",
+        )
+    )
+    assert (newer.backtest is not None) is (newer_outcome == "success")
+    assert any(error.operation is OperationKind.BACKTEST for error in newer.errors) is (
+        newer_outcome == "failure"
+    )
+
+    release.set()
+    worker.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert worker_errors == []
+    assert (session.snapshot.backtest is not None) is (newer_outcome == "success")
+    assert any(
+        error.operation is OperationKind.BACKTEST
+        for error in session.snapshot.errors
+    ) is (newer_outcome == "failure")
+
+
+@pytest.mark.parametrize("older_fails", (False, True))
+def test_live_session_contextual_mode_aba_rejects_stale_backtest_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    older_fails: bool,
+) -> None:
+    app_dir = tmp_path / "app"
+    save_draft_state(
+        state=_draft_state(
+            account_id="account-1",
+            screen_name="Player",
+            draft_id="draft-1",
+            updated_at="2026-08-23T10:00:00+00:00",
+            pool_grp_ids=(),
+        ),
+        app_dir=app_dir,
+    )
+    started = threading.Event()
+    release = threading.Event()
+    real_generator = session_module.generate_backtest_report
+
+    def controlled_generator(*args: object, **kwargs: object) -> object:
+        started.set()
+        assert release.wait(timeout=2.0)
+        if older_fails:
+            raise RuntimeError("stale completion")
+        return real_generator(*args, **kwargs)
+
+    monkeypatch.setattr(
+        session_module,
+        "generate_backtest_report",
+        controlled_generator,
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_fixture_card_database(),
+    )
+    worker_errors: list[Exception] = []
+
+    def request_backtest() -> None:
+        try:
+            session.dispatch(
+                command=RequestBacktest(
+                    account_id="account-1",
+                    draft_id="draft-1",
+                )
+            )
+        except Exception as error:
+            worker_errors.append(error)
+
+    worker = threading.Thread(target=request_backtest, daemon=True)
+    worker.start()
+    assert started.wait(timeout=2.0)
+
+    session.dispatch(command=ChangeContextualScoring(enabled=False))
+    session.dispatch(command=ChangeContextualScoring(enabled=True))
+    session.dispatch(command=ChangeContextualScoring(enabled=False))
+    assert session.snapshot.contextual_adjustments_enabled is False
+    assert session.snapshot.progress is None
+    assert session.snapshot.backtest is None
+
+    release.set()
+    worker.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert worker_errors == []
+    assert session.snapshot.contextual_adjustments_enabled is False
+    assert session.snapshot.progress is None
+    assert session.snapshot.backtest is None
+    assert not any(
+        error.operation is OperationKind.BACKTEST
+        for error in session.snapshot.errors
+    )
+
+
 def test_live_session_ranking_change_discards_in_flight_backtest_and_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6131,6 +6530,22 @@ def _fixture_card_database(*, with_image_uris: bool = False) -> CardDatabase:
             )
             for grp_id in offered_grp_ids
         }
+    )
+
+
+def _fixture_contextual_card_database() -> CardDatabase:
+    database = _fixture_card_database()
+    first_card = database.cards[CONTEXT_OFFERED_GRP_IDS[0]]
+    return replace(
+        database,
+        cards={
+            **database.cards,
+            first_card.grp_id: replace(
+                first_card,
+                oracle_id="wu-bomb",
+                set_code="tst",
+            ),
+        },
     )
 
 
