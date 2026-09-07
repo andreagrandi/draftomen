@@ -1607,6 +1607,27 @@ time. The client keeps a separate validated manifest envelope at
 validation/TTL cache, not a profile source. Downloaded profiles are stored as
 canonical, uncompressed JSON at the flat path.
 
+### Normal live session boundary
+
+Normal live construction through the CLI `watch` path, Textual TUI,
+`watch --plain`, and the Qt live factory uses the set-profile boundary as its
+sole ratings authority. These paths construct `LiveSession` without direct
+provider callbacks, provider-cache checks, synchronous or progress loaders,
+raw provider-rating accessors, or direct 17Lands provider objects. Startup, pack
+completion, and live build requests never acquire 17Lands data; they use the
+selected profile or deterministic local/generic fallback. Standalone build
+and backtest commands remain usable without provider data; their separate
+offline workflows may still consume an explicitly available cached provider
+snapshot, but do not perform live provider acquisition.
+
+The explicit producer commands and separate domain/offline workflows retain
+their supported provider behavior. Their cached or fresh provider inputs are
+producer/offline concerns and are not a second ratings authority inside a
+normal live session.
+`LiveSession` publishes immutable profile and rating state and exposes only the
+guarded refresh request/result handoff needed by adapters; it does not expose
+mutable provider data.
+
 `ProfileClient(app_dir=..., manifest_url=..., network_policy=...)` is the
 public client boundary. `ProfileNetworkPolicy.OFFLINE` forbids network access;
 `ProfileNetworkPolicy.ALLOWED` permits it only when a manifest URL is
@@ -1635,6 +1656,16 @@ authority while refresh is pending and when an accepted refresh fails, so
 existing ratings and recommendations remain active. A validated newer result is
 adopted atomically with the existing rescoring flow, so current recommendations
 update without restarting.
+
+At each snapshot publication, `LiveSession` projects recoverable ratings errors
+from a per-set cache onto the active set only. An error for an inactive set, or
+any ratings error when no set is active, is hidden; a nondismissed error is
+projected again when that set becomes active. Dismissing an error removes its
+per-set cache entry, so switching away and back cannot resurrect it. This
+projection leaves unrelated operation errors untouched in the snapshot, while
+their own lifecycle still applies (for example, an intentional account reset
+may clear them). `Retry` acts only on the currently published active-set
+ratings error and queues that set's forced hosted-profile refresh.
 Repeated forced requests coalesce for the same active lifecycle. TUI and Qt
 emit their existing actions; plain-watch adds no command UI.
 
@@ -1765,13 +1796,20 @@ remain offline and use local/historical caches only. TUI and desktop expose
 compact maturity/outcome status (for example `mature · updated`); failure
 status does not discard the profile already used for scoring.
 The refresh generation is the lifecycle authority for live hosted-profile
-refreshes: set, account, or draft identity changes, along with clear or stop,
-make obsolete completions no-ops before they can clear the pending request,
-mutate the profile cache, publish profile/status/error state, or trigger
-rescoring. Ordinary picks and repeated detection of the same lifecycle do not
-restart the refresh. This is logical stale-result rejection only; it does not
-promise to cancel worker threads, network requests, or cache writes already
-underway.
+refreshes. Set, account, or draft identity changes, along with clear or stop,
+retire the request so an obsolete completion cannot be accepted as current,
+publish profile/status/error state, or trigger rescoring. A worker that has
+already entered `ProfileClient.refresh()` may still finish its network or
+cache work; its result is ignored by the generation guard. Ordinary picks and
+repeated detection of the same lifecycle do not restart the refresh. On
+shutdown, adapters retire the session lifecycle and tear down their owned
+refresh workers before releasing them, so an in-flight result cannot publish
+late state. This is logical stale-result rejection only; it does not promise
+to cancel worker threads, network requests, or cache writes already underway.
+The default hosted manifest URL work owned by issue #353 and the native
+default-URL and ratings-presentation work owned by issue #354 remain outside
+this change. Live hosted refresh is therefore still an explicit opt-in here;
+no default URL or native presentation claim is implied.
 
 ## Semantic-role compatibility
 

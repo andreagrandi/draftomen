@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
+import io
 import os
 import subprocess
 import sys
 from importlib.resources import files
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,16 +17,18 @@ pytest.importorskip("PySide6")
 from draftomen import __version__
 from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.profile_client import ProfileClient, ProfileNetworkPolicy
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.pool import load_draft_state
 from draftomen.qt_gui import (
     APPLICATION_NAME,
-    _build_provider,
     _configure_application_metadata,
     _live_session_factory,
     _parser,
     _preflight_bundled_profile,
     run_gui,
 )
+from draftomen.set_profile import SET_PROFILE_SCHEMA_VERSION, load_set_profile
 
 
 FIXTURE_ACCOUNT_ID = "FIXTURECLIENTID1234567890"
@@ -156,44 +162,161 @@ def test_live_gui_bulk_file_injects_local_database(
     assert session.card_database is database
 
 
+@pytest.mark.parametrize("use_bulk_file", (False, True), ids=("set-card", "bulk"))
 def test_live_gui_profile_manifest_flag_injects_configured_client(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    use_bulk_file: bool,
 ) -> None:
     manifest_url = "https://profiles.example.test/v1/manifest.json"
+    artifact_url = "https://profiles.example.test/v1/tst-quickdraft.json.gz"
     args = _parser().parse_args(["--profile-manifest-url", manifest_url])
     assert args.profile_manifest_url == manifest_url
+
+    profile = load_set_profile(
+        PROJECT_ROOT / "tests" / "fixtures" / "set-profiles" / "early.json",
+        expected_set_code="TST",
+        expected_format="QuickDraft",
+    )
+    profile_bytes = profile.to_bytes()
+    compressed_profile = gzip.compress(profile_bytes, mtime=0)
+    artifact = ProfileManifestArtifact(
+        set_code=profile.set_code,
+        event_format=profile.event_format,
+        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+        profile_version=profile.profile_version,
+        generated_at=profile.generated_at,
+        url=artifact_url,
+        gzip_bytes=len(compressed_profile),
+        profile_bytes=len(profile_bytes),
+        gzip_sha256=hashlib.sha256(compressed_profile).hexdigest(),
+        profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
+        maturity=profile.maturity,
+    )
+    payloads = {
+        manifest_url: ProfileManifest(
+            artifacts=(artifact,),
+            published_at="2026-09-01T00:00:00+00:00",
+        ).to_bytes(),
+        artifact_url: compressed_profile,
+    }
+    requests: list[str] = []
+
+    class Response:
+        def __init__(self, payload: bytes, url: str) -> None:
+            self._payload = io.BytesIO(payload)
+            self._url = url
+
+        def read(self, size: int = -1) -> bytes:
+            return self._payload.read(size)
+
+        def geturl(self) -> str:
+            return self._url
+
+        def close(self) -> None:
+            pass
+
+    def opener(request: Any, *, timeout: float) -> Response:
+        del timeout
+        url = request.full_url
+        requests.append(url)
+        return Response(payloads[url], url)
+
+    bulk_file: Path | None = None
+    configured_client: ProfileClient | None = None
+    if use_bulk_file:
+        database = CardDatabase(cards={})
+        bulk_file = tmp_path / "cards.jsonl"
+        monkeypatch.setattr(
+            "draftomen.qt_gui.build_card_database_from_bulk_file",
+            lambda *, path: database,
+        )
+        configured_client = ProfileClient(
+            app_dir=tmp_path / "app",
+            manifest_url=manifest_url,
+            opener=opener,
+        )
+    else:
+        created_clients: list[ProfileClient] = []
+
+        def make_profile_client(
+            *,
+            app_dir: Path | None,
+            manifest_url: str | None,
+        ) -> ProfileClient:
+            client = ProfileClient(
+                app_dir=app_dir,
+                manifest_url=manifest_url,
+                opener=opener,
+            )
+            created_clients.append(client)
+            return client
+
+        monkeypatch.setattr("draftomen.qt_gui.ProfileClient", make_profile_client)
 
     factory = _live_session_factory(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
-        bulk_file=None,
+        bulk_file=bulk_file,
         poll_interval=0.01,
-        profile_manifest_url=args.profile_manifest_url,
+        profile_manifest_url=None if use_bulk_file else args.profile_manifest_url,
+        profile_client=configured_client,
     )
     session = factory(lambda snapshot: None)
+    if use_bulk_file:
+        assert session.card_database is database
+        client = configured_client
+    else:
+        client = created_clients[0]
+    assert client is not None
 
-    profile_client = getattr(session, "_profile_client")
-    assert profile_client is not None
-    assert profile_client.manifest_url == manifest_url
+    session._set_active_set_code(set_code="TST")  # type: ignore[attr-defined]
+    request = session.profile_refresh_request()
+    assert request is not None
+    result = client.refresh(
+        request.set_code,
+        request.event_format,
+        force=request.force,
+    )
+    assert result.outcome.value == "updated"
+    session.complete_profile_refresh(request=request, result=result)
+    assert session.snapshot.set_profile.set_code == "TST"
+    assert session.snapshot.set_profile.maturity == "early"
+    assert session.snapshot.set_profile.refresh_outcome == "updated"
+    assert requests == [manifest_url, artifact_url]
 
-    offline_factory = _live_session_factory(
-        log_path=tmp_path / "Player.log",
+    offline_requests: list[str] = []
+
+    def offline_opener(request: Any, *, timeout: float) -> Response:
+        del timeout
+        offline_requests.append(request.full_url)
+        raise AssertionError("offline profile refresh must not open a request")
+
+    offline_client = ProfileClient(
         app_dir=tmp_path / "offline-app",
-        bulk_file=None,
+        manifest_url=manifest_url,
+        network_policy=ProfileNetworkPolicy.OFFLINE,
+        opener=offline_opener,
+    )
+    offline_factory = _live_session_factory(
+        log_path=tmp_path / "offline-Player.log",
+        app_dir=tmp_path / "offline-app",
+        bulk_file=bulk_file,
         poll_interval=0.01,
+        profile_client=offline_client,
     )
     offline_session = offline_factory(lambda snapshot: None)
-    offline_profile_client = getattr(offline_session, "_profile_client")
-    assert offline_profile_client is not None
-    assert offline_profile_client.manifest_url is None
+    offline_session._set_active_set_code(set_code="TST")  # type: ignore[attr-defined]
+    assert offline_session.snapshot.set_profile.set_code == "TST"
     assert offline_session.profile_refresh_request() is None
+    assert offline_client.refresh("TST", "QuickDraft").outcome.value == "offline"
+    assert offline_requests == []
 
 
 def test_verify_bundled_profile_flag_is_hidden_and_parsed() -> None:
     parser = _parser()
 
     args = parser.parse_args(["--verify-bundled-profile"])
-
     assert args.verify_bundled_profile is True
     assert "--verify-bundled-profile" not in parser.format_help()
 
@@ -227,40 +350,6 @@ def test_verify_bundled_profile_failure_exits_before_gui_setup(
     monkeypatch.setattr("draftomen.qt_gui.QGuiApplication", unexpected_gui_setup)
 
     assert run_gui(argv=["--verify-bundled-profile"], forced_provider="mock") == 1
-
-
-def test_live_gui_reuses_default_profile_client_in_adapter_and_factory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class RecordingAdapter:
-        def __init__(
-            self,
-            *,
-            session_factory: object,
-            profile_client: object,
-            poll_interval_ms: int,
-            startup_scan: bool,
-        ) -> None:
-            del poll_interval_ms, startup_scan
-            self.session_factory = session_factory
-            self.profile_client = profile_client
-
-    monkeypatch.setattr("draftomen.qt_gui.LiveSessionAdapter", RecordingAdapter)
-    args = _parser().parse_args(
-        [
-            "--app-dir",
-            str(tmp_path / "app"),
-            "--log-path",
-            str(tmp_path / "Player.log"),
-        ]
-    )
-
-    adapter = _build_provider(args=args)
-    session = adapter.session_factory(lambda snapshot: None)  # type: ignore[attr-defined]
-
-    assert adapter.profile_client is session._profile_client  # type: ignore[attr-defined]
-
 
 def test_qml_settings_renders_card_and_ratings_update_fallback_and_value() -> None:
     probe = """
@@ -691,7 +780,6 @@ def factory(publish):
             monotonic_clock=lambda: 0.0,
             sleep=lambda seconds: None,
         ),
-        ratings_cache_checker=lambda _set_code: False,
     )
     recording_sessions.append(session)
     return session

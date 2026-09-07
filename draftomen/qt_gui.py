@@ -39,12 +39,6 @@ from draftomen.profile_client import (
     ProfileClient,
     ProfileNetworkPolicy,
 )
-from draftomen.seventeen import (
-    DownloadProgressCallback,
-    SeventeenLandsData,
-    has_cached_17lands_data,
-    load_or_refresh_17lands_data,
-)
 
 
 SURFACES = ("live", "build", "backtest", "settings")
@@ -217,19 +211,6 @@ def _live_session_factory(
         None if bulk_file is not None else CardDataClient(app_dir=app_dir)
     )
 
-    def load_ratings(
-        set_code: str,
-        progress_callback: DownloadProgressCallback,
-        *,
-        refresh: bool,
-    ) -> SeventeenLandsData:
-        return load_or_refresh_17lands_data(
-            set_code=set_code,
-            app_dir=app_dir,
-            refresh=refresh,
-            progress_callback=progress_callback,
-        )
-
     def factory(publish: SnapshotPublisher) -> LiveSession:
         common_kwargs = {
             "log_path": resolve_player_log_path(log_path=log_path),
@@ -237,15 +218,10 @@ def _live_session_factory(
             "profile_client": profile_client,
             "poll_interval": poll_interval,
             "snapshot_publisher": publish,
-            "ratings_progress_loader": load_ratings,
             "card_image_service": CardImageService(
                 cache_dir=card_image_cache_dir(app_dir=app_dir),
                 timeout_seconds=2.0,
                 max_attempts=1,
-            ),
-            "ratings_cache_checker": lambda set_code: has_cached_17lands_data(
-                set_code=set_code,
-                app_dir=app_dir,
             ),
         }
         if bulk_file is not None:

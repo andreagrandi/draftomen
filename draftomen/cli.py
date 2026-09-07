@@ -99,11 +99,9 @@ from draftomen.replay import ReplayError, replay_log_file
 from draftomen.seventeen import (
     PREMIER_DRAFT_FORMAT,
     QUICK_DRAFT_FORMAT,
-    DownloadProgressCallback,
     SeventeenLandsData,
     augment_card_database_from_ratings,
     SeventeenLandsError,
-    has_cached_17lands_data,
     load_cached_17lands_data,
     load_or_refresh_17lands_data,
     refresh_17lands_structure_targets,
@@ -1267,27 +1265,10 @@ def handle_watch(args: argparse.Namespace) -> int:
                 poll_interval=args.poll_interval,
                 once=args.once,
                 startup_scan=args.startup_scan,
-                ratings_loader=lambda set_code: load_or_refresh_17lands_data(
-                    set_code=set_code,
-                    app_dir=args.app_dir,
-                ),
                 splash_enabled=(
                     True if args.splash_enabled is None else args.splash_enabled
                 ),
                 profile_client=profile_client,
-            )
-
-        def load_ratings(
-            set_code: str,
-            progress_callback: DownloadProgressCallback,
-            *,
-            refresh: bool,
-        ) -> SeventeenLandsData:
-            return load_or_refresh_17lands_data(
-                set_code=set_code,
-                app_dir=args.app_dir,
-                refresh=refresh,
-                progress_callback=progress_callback,
             )
 
         return run_tui_watch(
@@ -1298,15 +1279,11 @@ def handle_watch(args: argparse.Namespace) -> int:
             poll_interval=args.poll_interval,
             once=args.once,
             startup_scan=args.startup_scan,
-            ratings_progress_loader=load_ratings,
-            ratings_cache_checker=lambda set_code: has_cached_17lands_data(
-                set_code=set_code,
-                app_dir=args.app_dir,
-            ),
             mana_icons_enabled=args.mana_icons,
             splash_enabled=args.splash_enabled,
             profile_client=profile_client,
         )
+
     except KeyboardInterrupt:
         return 130
     except (

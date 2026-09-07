@@ -4,11 +4,9 @@ import json
 import time
 import urllib.request
 from dataclasses import replace
-from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
-from typing import NoReturn
 
 import pytest
 
@@ -16,26 +14,24 @@ from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import CardDatabase, CardInfo, build_card_database_from_bulk_file
 from draftomen.events import EXPECTED_PICKS_PER_PACK
 from draftomen.pool import draft_state_path, load_draft_state
-from draftomen.profile_client import ProfileRefreshOutcome, ProfileRefreshResult
+from draftomen.profile_client import (
+    ProfileClient,
+    ProfileNetworkPolicy,
+    ProfileRefreshOutcome,
+    ProfileRefreshResult,
+)
 from draftomen.session import DataLoadPhase
 from draftomen.set_profile import (
+    CardRating,
+    RateEstimate,
     SetProfile,
     dump_set_profile,
     load_set_profile,
     set_profile_path,
 )
-from draftomen.seventeen import (
-    PREMIER_DRAFT_FORMAT,
-    QUICK_DRAFT_FORMAT,
-    RatingSampleCounts,
-    SeventeenCardStats,
-    SeventeenLandsData,
-    SeventeenLandsError,
-    SeventeenLandsFormatData,
-    load_or_refresh_17lands_data,
-    save_17lands_format_data,
-    seventeen_lands_pair_card_cache_path,
-)
+
+from draftomen.seventeen import QUICK_DRAFT_FORMAT
+
 from draftomen.watch import PlainLogWatcher
 
 FIXTURE_LOG_PATH = Path(__file__).parent / "fixtures" / "quick-draft-msh-player.log"
@@ -709,88 +705,113 @@ def test_plain_watch_does_not_assign_post_login_draft_events_to_prior_account(
     ).exists()
 
 
-def test_plain_watch_degrades_to_neutral_when_ratings_loader_fails(
+def test_plain_watch_degrades_to_neutral_when_profile_cache_fails(
     tmp_path: Path,
 ) -> None:
     fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    app_dir = tmp_path / "app"
+    profile_path = set_profile_path(
+        set_code="MSH",
+        event_format=QUICK_DRAFT_FORMAT,
+        app_dir=app_dir,
+    )
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_bytes(b"not-json")
+    provider_calls: list[object] = []
+
+    def fail_provider(*args: object, **kwargs: object) -> object:
+        provider_calls.append((args, kwargs))
+        raise AssertionError("provider access during cached-profile fallback")
+
     watcher = PlainLogWatcher(
         log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
+        app_dir=app_dir,
         card_database=_fixture_card_database(),
         poll_interval=0.01,
-        ratings_loader=_failing_ratings_loader,
+        profile_client=ProfileClient(
+            app_dir=app_dir,
+            network_policy=ProfileNetworkPolicy.OFFLINE,
+            opener=fail_provider,
+        ),
     )
+    try:
+        output = watcher.process_lines(lines=fixture_lines[:7])
+    finally:
+        watcher.close()
 
-    output = watcher.process_lines(lines=fixture_lines[:7])
-
+    assert provider_calls == []
     assert "Status: active account FixturePlayer" in output
     assert "data neutral prior" in output
     assert "Fixture Spider (grpId 105097)" in output
     assert "Prior*" in output
 
 
-def test_plain_watch_loads_locked_pair_ratings_through_shared_session(
+def test_plain_watch_loads_locked_pair_ratings_through_cached_profile(
     tmp_path: Path,
 ) -> None:
-    pair_loads: list[str] = []
-    ratings_data = _aggregate_ratings_data(pair_loads=pair_loads)
+    app_dir = tmp_path / "app"
+    dump_set_profile(
+        _empirical_pair_profile(),
+        set_profile_path(
+            set_code="TST",
+            event_format=QUICK_DRAFT_FORMAT,
+            app_dir=app_dir,
+        ),
+    )
+    provider_calls: list[object] = []
+
+    def fail_provider(*args: object, **kwargs: object) -> object:
+        provider_calls.append((args, kwargs))
+        raise AssertionError("provider access during cached-profile scoring")
+
     watcher = PlainLogWatcher(
         log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
+        app_dir=app_dir,
         card_database=_pair_ratings_card_database(),
         poll_interval=0.01,
-        ratings_loader=lambda set_code: ratings_data,
+        profile_client=ProfileClient(
+            app_dir=app_dir,
+            network_policy=ProfileNetworkPolicy.OFFLINE,
+            opener=fail_provider,
+        ),
     )
+    try:
+        output = watcher.process_lines(
+            lines=[
+                _pack_line(
+                    event_name="QuickDraft_TST_20260703",
+                    pack_number=1,
+                    pick_number=1,
+                    draft_pack=(3, 4),
+                    picked_cards=(1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1),
+                )
+            ]
+        )
+    finally:
+        watcher.close()
 
-    output = watcher.process_lines(
-        lines=[
-            _pack_line(
-                event_name="QuickDraft_TST_20260703",
-                pack_number=1,
-                pick_number=1,
-                draft_pack=(3, 4),
-                picked_cards=(1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1),
-            )
-        ]
-    )
-
-    assert pair_loads == []
+    assert provider_calls == []
     assert "commitment 100% (locked)" in output
     assert "65.0%" in output
-    assert "Data source: QuickDraft" in output
+    assert "Data source: set profile" in output
     assert "GIH WR" in output
     assert output.index("All-Decks Leader (grpId 4)") < output.index(
         "Pair Upgrade (grpId 3)"
-)
+    )
 
 
-def test_plain_watch_scoring_never_requests_network_with_real_loader(
+def test_plain_watch_scoring_never_requests_network_with_real_profile_client(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app_dir = tmp_path / "app"
-    fetched_at = datetime.now(tz=UTC)
-    aggregate = _aggregate_ratings_data(pair_loads=[]).primary
-    save_17lands_format_data(
-        replace(aggregate, fetched_at=fetched_at),
-        app_dir=app_dir,
-    )
-    save_17lands_format_data(
-        replace(
-            aggregate,
-            event_format=PREMIER_DRAFT_FORMAT,
-            fetched_at=fetched_at,
+    dump_set_profile(
+        _empirical_pair_profile(),
+        set_profile_path(
+            set_code="TST",
+            event_format=QUICK_DRAFT_FORMAT,
+            app_dir=app_dir,
         ),
-        app_dir=app_dir,
     )
-    pair_cache_path = seventeen_lands_pair_card_cache_path(
-        set_code="TST",
-        event_format=QUICK_DRAFT_FORMAT,
-        pair="WU",
-        app_dir=app_dir,
-    )
-    assert not pair_cache_path.exists()
-
     attempted_urls: list[str] = []
 
     def fail_urlopen(
@@ -801,7 +822,12 @@ def test_plain_watch_scoring_never_requests_network_with_real_loader(
         attempted_urls.append(getattr(request, "full_url", str(request)))
         raise AssertionError("network request during pack scoring")
 
-    monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
+    client = ProfileClient(
+        app_dir=app_dir,
+        manifest_url="https://profiles.example.test/manifest.json",
+        network_policy=ProfileNetworkPolicy.OFFLINE,
+        opener=fail_urlopen,
+    )
     log_path = tmp_path / "Player.log"
     log_path.write_text("", encoding="utf-8")
     watcher = PlainLogWatcher(
@@ -809,10 +835,7 @@ def test_plain_watch_scoring_never_requests_network_with_real_loader(
         app_dir=app_dir,
         card_database=_pair_ratings_card_database(),
         poll_interval=0.01,
-        ratings_loader=lambda set_code: load_or_refresh_17lands_data(
-            set_code=set_code,
-            app_dir=app_dir,
-        ),
+        profile_client=client,
     )
     try:
         _append_lines(
@@ -836,11 +859,10 @@ def test_plain_watch_scoring_never_requests_network_with_real_loader(
         "Pair Upgrade (grpId 3)"
     )
     assert "65.0%" in first_output
-    assert "Data source: QuickDraft" in first_output
+    assert "Data source: set profile" in first_output
     assert "Pack 2 Pick 3" in second_output
     assert "commitment 100% (locked)" in second_output
     assert "All-Decks Leader (grpId 4)" in output
-    assert not pair_cache_path.exists()
 
 
 def test_plain_watch_recovers_rotation_tail_without_loss_or_duplication(
@@ -944,10 +966,6 @@ def _fixture_card_database() -> CardDatabase:
     )
 
 
-def _failing_ratings_loader(set_code: str) -> NoReturn:
-    raise SeventeenLandsError(f"ratings unavailable for {set_code}")
-
-
 def _small_card_database() -> CardDatabase:
     return CardDatabase(
         cards={
@@ -997,6 +1015,7 @@ def _pair_ratings_card_database() -> CardDatabase:
                 mana_value=2.0,
                 rarity="common",
                 types=("Creature",),
+                set_code="tst",
             ),
             2: CardInfo(
                 grp_id=2,
@@ -1004,6 +1023,7 @@ def _pair_ratings_card_database() -> CardDatabase:
                 colors=("U",),
                 mana_value=2.0,
                 rarity="common",
+                set_code="tst",
                 types=("Creature",),
             ),
             3: CardInfo(
@@ -1012,6 +1032,7 @@ def _pair_ratings_card_database() -> CardDatabase:
                 colors=("W",),
                 mana_value=3.0,
                 rarity="common",
+                set_code="tst",
                 types=("Creature",),
             ),
             4: CardInfo(
@@ -1020,10 +1041,47 @@ def _pair_ratings_card_database() -> CardDatabase:
                 colors=("U",),
                 mana_value=3.0,
                 rarity="common",
+                set_code="tst",
                 types=("Creature",),
             ),
         }
     )
+def _empirical_pair_profile() -> SetProfile:
+    profile = load_set_profile(
+        Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json",
+        expected_set_code="TST",
+        expected_format=QUICK_DRAFT_FORMAT,
+    )
+    return replace(
+        profile,
+        profile_version="fixture-empirical",
+        card_ratings=(
+            CardRating(
+                card_key="grp_id:3",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.50,
+                    value=0.50,
+                    samples=1_000,
+                    prior_value=0.50,
+                    source="fixture-empirical",
+                ),
+                average_last_seen_at=3.0,
+            ),
+            CardRating(
+                card_key="grp_id:4",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.65,
+                    value=0.65,
+                    samples=1_000,
+                    prior_value=0.50,
+                    source="fixture-empirical",
+                ),
+                average_last_seen_at=3.0,
+            ),
+        ),
+    )
+
+
 
 
 def _locked_pair_setup_lines() -> list[str]:
@@ -1092,85 +1150,6 @@ def _locked_pair_continuation_lines() -> list[str]:
     ]
 
 
-def _aggregate_ratings_data(*, pair_loads: list[str]) -> SeventeenLandsData:
-    fetched_at = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
-    pair_data = SeventeenLandsFormatData(
-        set_code="TST",
-        event_format=QUICK_DRAFT_FORMAT,
-        fetched_at=fetched_at,
-        card_ratings={
-            3: _ratings_stats(
-                grp_id=3,
-                name="Pair Upgrade",
-                color="W",
-                win_rate=0.80,
-            ),
-            4: _ratings_stats(
-                grp_id=4,
-                name="All-Decks Leader",
-                color="U",
-                win_rate=0.60,
-            ),
-        },
-        pair_win_rates={},
-    )
-
-    def load_pair(pair: str) -> SeventeenLandsFormatData:
-        pair_loads.append(pair)
-        return pair_data
-
-    return SeventeenLandsData(
-        set_code="TST",
-        requested_format=QUICK_DRAFT_FORMAT,
-        primary=SeventeenLandsFormatData(
-            set_code="TST",
-            event_format=QUICK_DRAFT_FORMAT,
-            fetched_at=fetched_at,
-            card_ratings={
-                3: _ratings_stats(
-                    grp_id=3,
-                    name="Pair Upgrade",
-                    color="W",
-                    win_rate=0.50,
-                ),
-                4: _ratings_stats(
-                    grp_id=4,
-                    name="All-Decks Leader",
-                    color="U",
-                    win_rate=0.65,
-                ),
-            },
-            pair_win_rates={},
-        ),
-        fallback=None,
-        pair_card_ratings_loader=load_pair,
-    )
-
-
-def _ratings_stats(
-    *,
-    grp_id: int,
-    name: str,
-    color: str,
-    win_rate: float,
-) -> SeventeenCardStats:
-    return SeventeenCardStats(
-        grp_id=grp_id,
-        name=name,
-        color=color,
-        rarity="common",
-        average_last_seen_at=3.0,
-        gih_win_rate=win_rate,
-        opening_hand_win_rate=win_rate,
-        drawn_improvement_win_rate=0.0,
-        sample_counts=RatingSampleCounts(
-            seen=2_000,
-            picked=1_500,
-            games_played=1_200,
-            opening_hand=800,
-            games_in_hand=1_000,
-        ),
-    )
 
 
 def _two_account_log_lines() -> list[str]:

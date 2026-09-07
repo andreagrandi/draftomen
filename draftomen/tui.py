@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from os import PathLike
 from pathlib import Path
@@ -86,7 +86,6 @@ from draftomen.session import (
     OperationKind,
     PoolState,
     ProfileRefreshRequest,
-    RatingsProgressLoader,
     RequestBacktest,
     RequestBuild,
     RequestRatingsDownload,
@@ -97,19 +96,11 @@ from draftomen.session import (
 from draftomen.setinfo import format_set_label
 from draftomen.seventeen import (
     SEVENTEEN_LANDS_ATTRIBUTION,
-    SeventeenLandsData,
 )
 
 _EMPTY_CARD_DATABASE = CardDatabase(cards={})
 
 PathInput: TypeAlias = str | PathLike[str]
-RatingsLoader: TypeAlias = Callable[[str], SeventeenLandsData]
-RatingsLoaderFactory: TypeAlias = Callable[[CardDatabase], RatingsLoader]
-RatingsProgressLoaderFactory: TypeAlias = Callable[
-    [CardDatabase],
-    RatingsProgressLoader,
-]
-RatingsCacheChecker: TypeAlias = Callable[[str], bool]
 TuiCardQuantityKey: TypeAlias = tuple[str, str]
 TuiCardQuantityGroup: TypeAlias = tuple[ScoredCard, int]
 
@@ -615,11 +606,6 @@ class DraftomenTuiApp(App[None]):
         profile_client: ProfileClient | None = None,
         poll_interval: float = POLL_INTERVAL_SECONDS,
         previous_log_path: PathInput | None = None,
-        ratings_loader: RatingsLoader | None = None,
-        ratings_loader_factory: RatingsLoaderFactory | None = None,
-        ratings_progress_loader: RatingsProgressLoader | None = None,
-        ratings_progress_loader_factory: RatingsProgressLoaderFactory | None = None,
-        ratings_cache_checker: RatingsCacheChecker | None = None,
         startup_scan: bool = False,
         once: bool = False,
         poll_enabled: bool = True,
@@ -636,21 +622,7 @@ class DraftomenTuiApp(App[None]):
             raise ValueError(
                 "card_database and set_card_data_loader are mutually exclusive."
             )
-        configured_ratings_loaders = sum(
-            loader is not None
-            for loader in (
-                ratings_loader,
-                ratings_loader_factory,
-                ratings_progress_loader,
-                ratings_progress_loader_factory,
-            )
-        )
-        if configured_ratings_loaders > 1:
-            raise ValueError("Configure exactly one ratings loader or loader factory.")
-        self._ratings_operations_may_block = configured_ratings_loaders > 0
-        self._session_ingestion_may_block = (
-            self._ratings_operations_may_block or set_card_data_loader is not None
-        )
+        self._session_ingestion_may_block = set_card_data_loader is not None
 
         self.log_path = Path(log_path).expanduser().resolve(strict=False)
         self._preferences_app_dir = app_dir
@@ -683,11 +655,6 @@ class DraftomenTuiApp(App[None]):
             previous_log_path=previous_log_path,
             snapshot_publisher=self._publish_session_snapshot,
             event_publisher=self._publish_session_event,
-            ratings_loader=ratings_loader,
-            ratings_loader_factory=ratings_loader_factory,
-            ratings_progress_loader=ratings_progress_loader,
-            ratings_progress_loader_factory=ratings_progress_loader_factory,
-            ratings_cache_checker=ratings_cache_checker,
             splash_enabled=self.visibility_preferences.splash_enabled,
             profile_client=profile_client,
         )
@@ -777,17 +744,6 @@ class DraftomenTuiApp(App[None]):
 
         return self._visible_column_keys
 
-    @property
-    def loading_rating_sets(self) -> frozenset[str]:
-        """Return set codes currently refreshing in a worker.
-        Tests use this to confirm slow loads stay off the render loop.
-        """
-
-        ratings = self.session.snapshot.ratings
-        if ratings.phase != DataLoadPhase.LOADING or ratings.set_code is None:
-            return frozenset()
-
-        return frozenset((ratings.set_code,))
     @property
     def profile_refresh_in_flight(self) -> ProfileRefreshRequest | None:
         """Return the adapter-owned profile refresh currently running."""
@@ -1144,10 +1100,7 @@ class DraftomenTuiApp(App[None]):
 
         account_id = ordered_account_ids[index]
         command = ChooseAccount(account_id=account_id)
-        if self._ratings_operations_may_block:
-            self._dispatch_session_command_worker(command)
-        else:
-            self.session.dispatch(command=command)
+        self._dispatch_session_command_worker(command)
 
     def action_rebuild_with_pair_override(self) -> None:
         """Request a shared build after cycling the TUI pair override."""
@@ -1926,14 +1879,6 @@ class DraftomenTuiApp(App[None]):
 
         if ratings.phase == DataLoadPhase.FAILED:
             readiness.update(f"{prefix} Unavailable")
-            return
-
-        ratings_data = self.session.ratings_data(set_code=set_code)
-        if ratings_data is not None:
-            reliability = ratings_data.set_reliability
-            readiness.update(
-                f"{prefix} {reliability.tier} — {reliability.score}/100"
-            )
             return
 
         if ratings.phase == DataLoadPhase.MISSING:
@@ -3788,11 +3733,6 @@ def run_tui_watch(
     poll_interval: float = POLL_INTERVAL_SECONDS,
     once: bool = False,
     startup_scan: bool = False,
-    ratings_loader: RatingsLoader | None = None,
-    ratings_loader_factory: RatingsLoaderFactory | None = None,
-    ratings_progress_loader: RatingsProgressLoader | None = None,
-    ratings_progress_loader_factory: RatingsProgressLoaderFactory | None = None,
-    ratings_cache_checker: RatingsCacheChecker | None = None,
     mana_icons_enabled: bool = False,
     splash_enabled: bool | None = None,
 ) -> int:
@@ -3807,11 +3747,6 @@ def run_tui_watch(
         app_dir=app_dir,
         profile_client=profile_client,
         poll_interval=poll_interval,
-        ratings_loader=ratings_loader,
-        ratings_loader_factory=ratings_loader_factory,
-        ratings_progress_loader=ratings_progress_loader,
-        ratings_progress_loader_factory=ratings_progress_loader_factory,
-        ratings_cache_checker=ratings_cache_checker,
         startup_scan=startup_scan,
         once=once,
         mana_icons_enabled=mana_icons_enabled,

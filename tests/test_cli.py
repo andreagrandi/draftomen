@@ -39,7 +39,6 @@ from draftomen.set_profile import (
 )
 from draftomen.seventeen import (
     QUICK_DRAFT_FORMAT,
-    SeventeenLandsError,
     load_17lands_format_data,
     seventeen_lands_structure_targets_cache_path,
 )
@@ -1193,22 +1192,8 @@ def test_watch_plain_once_ignores_quick_draft_course_snapshot_outside_botdraft(
 
 def test_watch_plain_actual_entrypoint_processes_complete_fixture(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def fail_ratings_load(
-        *,
-        set_code: str,
-        app_dir: Path | None = None,
-        progress_callback: object | None = None,
-    ) -> NoReturn:
-        raise SeventeenLandsError(f"ratings unavailable for {set_code}")
-
-    monkeypatch.setattr(
-        cli,
-        "load_or_refresh_17lands_data",
-        fail_ratings_load,
-    )
     log_path = tmp_path / "Player.log"
     log_path.write_text(
         QUICK_DRAFT_FIXTURE_PATH.read_text(encoding="utf-8"),
@@ -1320,100 +1305,9 @@ def test_watch_mana_icons_flag_is_explicit_tui_opt_in(
     assert default_args.mana_icons is False
     assert isinstance(captured["card_database"], CardDatabase)
     assert captured["set_card_data_loader"] is None
-    assert callable(captured["ratings_progress_loader"])
-    assert callable(captured["ratings_cache_checker"])
     assert captured["mana_icons_enabled"] is True
 
 
-def test_watch_tui_ratings_loader_forwards_refresh_flag(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-    refresh_values: list[bool] = []
-
-    def fake_run_tui_watch(**kwargs: object) -> int:
-        captured.update(kwargs)
-        return 0
-
-    def fake_load_or_refresh(
-        *,
-        set_code: str,
-        app_dir: Path | None = None,
-        refresh: bool,
-        progress_callback: object,
-    ) -> object:
-        refresh_values.append(refresh)
-        return object()
-
-    monkeypatch.setattr(cli, "run_tui_watch", fake_run_tui_watch)
-    monkeypatch.setattr(cli, "load_or_refresh_17lands_data", fake_load_or_refresh)
-    log_path = tmp_path / "Player.log"
-    log_path.write_text("", encoding="utf-8")
-
-    assert (
-        main(
-            argv=[
-                "watch",
-                "--log-path",
-                str(log_path),
-                "--bulk-file",
-                str(SCRYFALL_BULK_SAMPLE_PATH),
-                "--once",
-            ]
-        )
-        == 0
-    )
-
-    loader = captured["ratings_progress_loader"]
-    assert callable(loader)
-    loader("TST", lambda progress: None, refresh=False)  # type: ignore[operator]
-    loader("TST", lambda progress: None, refresh=True)  # type: ignore[operator]
-
-    assert refresh_values == [False, True]
-    assert "ratings_progress_loader_factory" not in captured
-
-def test_watch_plain_passes_raw_ratings_loader(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-    ratings = object()
-
-    def fake_run_plain_watch(**kwargs: object) -> int:
-        captured.update(kwargs)
-        return 0
-
-    def fake_load_or_refresh(
-        *,
-        set_code: str,
-        app_dir: Path | None = None,
-    ) -> object:
-        assert set_code == "TST"
-        return ratings
-
-    monkeypatch.setattr(cli, "run_plain_watch", fake_run_plain_watch)
-    monkeypatch.setattr(cli, "load_or_refresh_17lands_data", fake_load_or_refresh)
-    log_path = tmp_path / "Player.log"
-    log_path.write_text("", encoding="utf-8")
-
-    assert (
-        main(
-            argv=[
-                "watch",
-                "--plain",
-                "--log-path",
-                str(log_path),
-                "--bulk-file",
-                str(SCRYFALL_BULK_SAMPLE_PATH),
-            ]
-        )
-        == 0
-    )
-
-    loader = captured["ratings_loader"]
-    assert callable(loader)
-    assert loader("TST") is ratings  # type: ignore[operator]
 
 
 
