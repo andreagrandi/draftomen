@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from dataclasses import replace
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -15,7 +15,7 @@ from typing import cast
 import pytest
 from textual.containers import VerticalScroll
 from textual.pilot import Pilot
-from textual.widgets import DataTable, ProgressBar, Select, Static, Switch
+from textual.widgets import DataTable, Select, Static, Switch
 
 from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import (
@@ -25,7 +25,6 @@ from draftomen.carddb import (
     build_card_database_from_bulk_file,
 )
 from draftomen.cardimages import CardImageService, card_image_cache_dir
-from draftomen.preferences import TuiVisibilityPreferences, tui_preferences_path
 from draftomen.pickengine import ScoredCard
 from draftomen.pool import (
     DraftPick,
@@ -35,22 +34,35 @@ from draftomen.pool import (
     draft_state_path,
     save_draft_state,
 )
+from draftomen.preferences import TuiVisibilityPreferences, tui_preferences_path
+from draftomen.profile_client import (
+    ProfileClient,
+    ProfileRefreshOutcome,
+    ProfileRefreshResult,
+)
+from draftomen.session import (
+    ApplicationPhase,
+    CardView,
+    ChangeRanking,
+    DataLoadPhase,
+    OperationKind,
+    SetCardDataLoader,
+)
+from draftomen.set_profile import (
+    CardRating,
+    RateEstimate,
+    SetProfile,
+    SetProfileLoadResult,
+    dump_set_profile,
+    load_set_profile,
+    set_profile_path,
+)
 from draftomen.seventeen import (
     QUICK_DRAFT_FORMAT,
     RatingSampleCounts,
     SeventeenCardStats,
-    SeventeenLandsDownloadProgress,
     SeventeenLandsData,
     SeventeenLandsFormatData,
-)
-from draftomen.set_profile import dump_set_profile, load_set_profile, set_profile_path
-from draftomen.session import (
-    ApplicationPhase,
-    CardView,
-    DataLoadPhase,
-    OperationKind,
-    RatingsProgressLoader,
-    SetCardDataLoader,
 )
 from draftomen.splash import SplashAssessment
 from draftomen.tui import (
@@ -156,6 +168,279 @@ async def _assert_tui_auto_loads_conventional_profile(tmp_path: Path) -> None:
                 recommendation.contextual_profile_confidence
                 == scored_card.contextual_profile_confidence
             )
+
+def test_tui_profile_refresh_propagates_force_and_completes_through_session(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(
+        _assert_tui_profile_refresh_propagates_force_and_completes_through_session(
+            tmp_path=tmp_path,
+        )
+    )
+
+
+async def _assert_tui_profile_refresh_propagates_force_and_completes_through_session(
+    tmp_path: Path,
+) -> None:
+    class ProfileClientFake:
+        manifest_url = "https://profiles.example.test/manifest.json"
+        network_policy = "allowed"
+
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def load_cached(
+            self,
+            set_code: str,
+            event_format: str,
+        ) -> SetProfileLoadResult:
+            return SetProfileLoadResult(
+                profile=SetProfile.generic(
+                    set_code=set_code,
+                    event_format=event_format,
+                ),
+                source="generic",
+            )
+
+        def refresh(
+            self,
+            set_code: str,
+            event_format: str,
+            *,
+            force: bool,
+        ) -> ProfileRefreshResult:
+            self.calls.append(force)
+            return ProfileRefreshResult(
+                profile=SetProfile.generic(
+                    set_code=set_code,
+                    event_format=event_format,
+                ),
+                outcome=ProfileRefreshOutcome.UPDATED,
+            )
+
+    client = ProfileClientFake()
+    app = _tui_app(
+        tmp_path=tmp_path,
+        profile_client=cast(ProfileClient, client),
+    )
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        app.session._set_active_set_code(set_code="MSH")
+
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if (
+                len(client.calls) == 1
+                and app.session.profile_refresh_request() is None
+                and app.profile_refresh_in_flight is None
+            ):
+                break
+
+        assert client.calls == [False]
+        assert app.session.profile_refresh_request() is None
+        assert app.profile_refresh_in_flight is None
+
+        with app.session._state_lock:
+            app.session._queue_profile_refresh_locked(force=True)
+        app._schedule_profile_refresh()
+
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if (
+                len(client.calls) == 2
+                and app.session.profile_refresh_request() is None
+                and app.profile_refresh_in_flight is None
+            ):
+                break
+
+        assert client.calls == [False, True]
+        assert app.session.profile_refresh_request() is None
+        assert app.profile_refresh_in_flight is None
+        assert app.session.snapshot.set_profile.phase is DataLoadPhase.READY
+        assert (
+            app.session.snapshot.set_profile.refresh_outcome
+            == ProfileRefreshOutcome.UNCHANGED.value
+        )
+
+
+def test_tui_ready_ratings_download_refreshes_hosted_profile(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(
+        _assert_tui_ready_ratings_download_refreshes_hosted_profile(
+            tmp_path=tmp_path,
+        )
+    )
+
+
+async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
+    tmp_path: Path,
+) -> None:
+    profile = load_set_profile(
+        Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json",
+        expected_set_code="TST",
+        expected_format=QUICK_DRAFT_FORMAT,
+    )
+    if profile.role_profile is not None:
+        profile = replace(
+            profile,
+            set_code="MSH",
+            role_profile=replace(profile.role_profile, set_code="MSH"),
+        )
+    else:
+        profile = replace(profile, set_code="MSH")
+    profile = replace(
+        profile,
+        card_ratings=(
+            CardRating(
+                card_key="grp_id:104894",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.90,
+                    value=0.90,
+                    samples=2_000,
+                    prior_value=0.50,
+                    source="17lands",
+                ),
+                average_last_seen_at=3.0,
+            ),
+            CardRating(
+                card_key="grp_id:104976",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.10,
+                    value=0.10,
+                    samples=2_000,
+                    prior_value=0.50,
+                    source="17lands",
+                ),
+                average_last_seen_at=1.0,
+            ),
+        ),
+    )
+
+    class ProfileClientFake:
+        manifest_url = "https://profiles.example.test/manifest.json"
+        network_policy = "allowed"
+
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def load_cached(
+            self,
+            set_code: str,
+            event_format: str,
+        ) -> SetProfileLoadResult:
+            return SetProfileLoadResult(
+                profile=profile,
+                source="cache",
+            )
+
+        def refresh(
+            self,
+            set_code: str,
+            event_format: str,
+            *,
+            force: bool,
+        ) -> ProfileRefreshResult:
+            self.calls.append(force)
+            return ProfileRefreshResult(
+                profile=profile,
+                outcome=ProfileRefreshOutcome.UPDATED,
+            )
+
+    client = ProfileClientFake()
+    app = _tui_app(
+        tmp_path=tmp_path,
+        profile_client=cast(ProfileClient, client),
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if (
+                client.calls == [False]
+                and app.session.snapshot.ratings.phase == DataLoadPhase.READY
+            ):
+                break
+
+        assert client.calls == [False]
+        assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, MissingRatingsScreen)
+        dialog = app.screen
+        prompt_title = str(dialog.query_one("#missing-ratings-title", Static).render())
+        prompt_message = str(
+            dialog.query_one("#missing-ratings-message", Static).render()
+        )
+        assert "Refresh 17Lands data for MSH" in prompt_title
+        assert "ratings are active" in prompt_message
+        assert "No local" not in prompt_title
+        assert "neutral-prior" not in prompt_message
+
+        await pilot.click("#cancel-ratings-download")
+        await pilot.pause()
+        assert not isinstance(app.screen, MissingRatingsScreen)
+        ready_notice = app._rating_notices_by_set["MSH"]
+        assert "17Lands data ready for MSH" in ready_notice
+        assert "neutral-prior" not in ready_notice
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, MissingRatingsScreen)
+        await pilot.click("#download-ratings")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if (
+                client.calls == [False, True]
+                and app.session.profile_refresh_request() is None
+                and app.profile_refresh_in_flight is None
+            ):
+                break
+
+        assert client.calls == [False, True]
+        assert app.session.profile_refresh_request() is None
+        assert app.profile_refresh_in_flight is None
+        assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
+        assert (
+            app.session.snapshot.set_profile.refresh_outcome
+            == ProfileRefreshOutcome.UNCHANGED.value
+        )
+
+
+def test_tui_discards_stale_worker_snapshot_after_newer_ui_publication(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(
+        _assert_tui_discards_stale_worker_snapshot(
+            tmp_path=tmp_path,
+        )
+    )
+
+
+async def _assert_tui_discards_stale_worker_snapshot(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path, poll_enabled=False)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        snapshot_a = app.session.snapshot
+        worker = threading.Thread(
+            target=app._publish_session_snapshot,
+            args=(snapshot_a,),
+        )
+        worker.start()
+        worker.join()
+
+        snapshot_b = app.session.dispatch(
+            command=ChangeRanking(ranking_mode="win_rate"),
+        )
+        assert app.session.snapshot is snapshot_b
+        assert app.sort_mode == snapshot_b.recommendations.ranking_mode
+
+        await pilot.pause()
+
+        assert app.session.snapshot is snapshot_b
+        assert app.sort_mode == snapshot_b.recommendations.ranking_mode
 
 
 def test_tui_splash_details_use_plain_color_and_mana_language() -> None:
@@ -2201,145 +2486,6 @@ def test_tui_shows_actionable_error_when_card_metadata_load_fails(
 def test_tui_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
     asyncio.run(_assert_slow_ratings_refresh_stays_responsive(tmp_path=tmp_path))
 
-
-def test_tui_drops_session_publication_after_shutdown(tmp_path: Path) -> None:
-    asyncio.run(_assert_tui_drops_session_publication_after_shutdown(tmp_path=tmp_path))
-
-
-async def _assert_tui_drops_session_publication_after_shutdown(
-    tmp_path: Path,
-) -> None:
-    app = _tui_app(tmp_path=tmp_path)
-
-    async with app.run_test(size=(120, 24)):
-        ratings_label = app.query_one("#ratings-download-label", Static)
-        await ratings_label.remove()
-        app._pick_label = "before-shutdown"
-        app._session_error = "before-shutdown"
-        app._running = False
-        assert not app.is_running
-
-        app._apply_session_snapshot(app.session.snapshot)
-        app._publish_session_snapshot(app.session.snapshot)
-
-        assert app._pick_label == "before-shutdown"
-        assert app._session_error == "before-shutdown"
-
-
-def test_tui_offers_missing_ratings_download_and_rescores_when_ready(
-    tmp_path: Path,
-) -> None:
-    asyncio.run(_assert_missing_ratings_download_rescores_pack(tmp_path=tmp_path))
-
-
-async def _assert_missing_ratings_download_rescores_pack(tmp_path: Path) -> None:
-    started = threading.Event()
-    release = threading.Event()
-
-    def progress_loader(
-        set_code: str,
-        progress_callback: Callable[[SeventeenLandsDownloadProgress], None],
-        *,
-        refresh: bool,
-    ) -> SeventeenLandsData:
-        progress_callback(
-            SeventeenLandsDownloadProgress(
-                completed_requests=1,
-                total_requests=4,
-                message="Downloaded QuickDraft card ratings",
-            )
-        )
-        started.set()
-        release.wait(timeout=1.0)
-        for completed, message in (
-            (2, "Downloaded QuickDraft color ratings"),
-            (3, "Downloaded PremierDraft card ratings"),
-            (4, "Downloaded PremierDraft color ratings"),
-        ):
-            progress_callback(
-                SeventeenLandsDownloadProgress(
-                    completed_requests=completed,
-                    total_requests=4,
-                    message=message,
-                )
-            )
-        return _graded_ratings_data(set_code)
-
-    app = _tui_app(
-        tmp_path=tmp_path,
-        ratings_progress_loader=progress_loader,
-        ratings_cache_checker=lambda set_code: False,
-    )
-
-    async with app.run_test(size=(120, 30)) as pilot:
-        try:
-            app.process_lines(lines=_first_pack_lines())
-            await pilot.pause()
-
-            assert isinstance(app.screen, MissingRatingsScreen)
-            assert "No local 17Lands data for MSH" in str(
-                app.screen.query_one("#missing-ratings-title", Static).content
-            )
-            assert not started.is_set()
-
-            await pilot.click("#cancel-ratings-download")
-            await pilot.pause()
-            assert "Press d to download" in str(
-                app.query_one("#ratings-download-label", Static).content
-            )
-            assert "Data: neutral prior (no local 17Lands data)" in _status_text(
-                app=app
-            )
-
-            await pilot.press("d")
-            await pilot.pause()
-            assert isinstance(app.screen, MissingRatingsScreen)
-            await pilot.click("#download-ratings")
-            assert await asyncio.to_thread(started.wait, 0.5)
-            await pilot.pause()
-
-            progress_bar = app.query_one(
-                "#ratings-download-progress",
-                ProgressBar,
-            )
-            assert progress_bar.display
-            assert progress_bar.progress == 1
-            assert progress_bar.total == 4
-            assert "1/4" in str(
-                app.query_one("#ratings-download-label", Static).content
-            )
-            assert "Data: neutral prior (downloading ratings)" in _status_text(
-                app=app
-            )
-
-            release.set()
-            for _ in range(40):
-                await pilot.pause(0.05)
-                if (
-                    app.session.snapshot.ratings.phase == DataLoadPhase.READY
-                    and app.session.snapshot.ratings.total_cards == 14
-                    and not progress_bar.display
-                ):
-                    break
-
-            assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
-            assert app.session.snapshot.ratings.total_cards == 14
-            assert "MSH" not in app.loading_rating_sets
-            assert not progress_bar.display
-            ready_notice = str(
-                app.query_one("#ratings-download-label", Static).content
-            )
-            assert "17Lands data ready for MSH; scores recalculated" in ready_notice
-            assert "5/14 offered cards have usable ratings" in ready_notice
-
-            table = app.query_one("#pack-table", DataTable)
-            rows = [table.get_row_at(index) for index in range(table.row_count)]
-            assert any(str(row[1]) != "—" for row in rows)
-            assert "Data: QuickDraft + neutral prior" in _status_text(app=app)
-        finally:
-            release.set()
-
-
 async def _assert_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
     started = threading.Event()
     release = threading.Event()
@@ -2381,6 +2527,31 @@ async def _assert_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
             release.set()
 
 
+def test_tui_drops_session_publication_after_shutdown(tmp_path: Path) -> None:
+    asyncio.run(_assert_tui_drops_session_publication_after_shutdown(tmp_path=tmp_path))
+
+
+async def _assert_tui_drops_session_publication_after_shutdown(
+    tmp_path: Path,
+) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 24)):
+        ratings_label = app.query_one("#ratings-download-label", Static)
+        await ratings_label.remove()
+        app._pick_label = "before-shutdown"
+        app._session_error = "before-shutdown"
+        app._running = False
+        assert not app.is_running
+
+        app._apply_session_snapshot(app.session.snapshot)
+        app._publish_session_snapshot(app.session.snapshot)
+
+        assert app._pick_label == "before-shutdown"
+        assert app._session_error == "before-shutdown"
+
+
+
 def test_tui_clears_automatic_ratings_progress_notice_when_ready(
     tmp_path: Path,
 ) -> None:
@@ -2409,42 +2580,179 @@ def test_tui_clears_session_error_after_successful_ratings_retry(
 
 
 async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
-    load_count = 0
+    profile = load_set_profile(
+        Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json",
+        expected_set_code="TST",
+        expected_format=QUICK_DRAFT_FORMAT,
+    )
+    if profile.role_profile is not None:
+        profile = replace(
+            profile,
+            set_code="MSH",
+            role_profile=replace(profile.role_profile, set_code="MSH"),
+        )
+    else:
+        profile = replace(profile, set_code="MSH")
+    profile = replace(
+        profile,
+        card_ratings=(
+            CardRating(
+                card_key="grp_id:104894",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.90,
+                    value=0.90,
+                    samples=2_000,
+                    prior_value=0.50,
+                    source="17lands",
+                ),
+                average_last_seen_at=3.0,
+            ),
+            CardRating(
+                card_key="grp_id:104976",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.10,
+                    value=0.10,
+                    samples=2_000,
+                    prior_value=0.50,
+                    source="17lands",
+                ),
+                average_last_seen_at=1.0,
+            ),
+        ),
+    )
 
-    def retrying_loader(set_code: str) -> SeventeenLandsData:
-        nonlocal load_count
-        load_count += 1
-        if load_count == 1:
-            raise RuntimeError("temporary ratings failure")
+    class ProfileClientFake:
+        manifest_url = "https://profiles.example.test/manifest.json"
+        network_policy = "allowed"
 
-        return _graded_ratings_data(set_code)
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
 
-    app = _tui_app(tmp_path=tmp_path, ratings_loader=retrying_loader)
+        def load_cached(
+            self,
+            set_code: str,
+            event_format: str,
+        ) -> SetProfileLoadResult:
+            del set_code, event_format
+            return SetProfileLoadResult(profile=profile, source="cache")
+
+        def refresh(
+            self,
+            set_code: str,
+            event_format: str,
+            *,
+            force: bool,
+        ) -> ProfileRefreshResult:
+            del set_code, event_format
+            self.calls.append(force)
+            if force and self.calls.count(True) == 1:
+                return ProfileRefreshResult(
+                    profile=profile,
+                    outcome=ProfileRefreshOutcome.REMOTE_FAILED,
+                )
+            return ProfileRefreshResult(
+                profile=profile,
+                outcome=ProfileRefreshOutcome.UNCHANGED,
+            )
+
+    client = ProfileClientFake()
+    app = _tui_app(
+        tmp_path=tmp_path,
+        profile_client=cast(ProfileClient, client),
+    )
 
     async with app.run_test(size=(120, 30)) as pilot:
         app.process_lines(lines=_first_pack_lines())
-        for _ in range(20):
+        for _ in range(40):
             await pilot.pause(0.05)
-            if app.session.snapshot.ratings.phase == DataLoadPhase.FAILED:
+            if (
+                client.calls == [False]
+                and app.session.profile_refresh_request() is None
+                and app.profile_refresh_in_flight is None
+                and app.session.snapshot.ratings.phase == DataLoadPhase.READY
+            ):
                 break
 
-        assert app.session.snapshot.ratings.phase == DataLoadPhase.FAILED
-        assert "Error: 17Lands ratings failed for MSH" in _status_text(app=app)
+        initial_snapshot = app.session.snapshot
+        assert client.calls == [False]
+        assert initial_snapshot.set_profile.maturity == "mature"
+        assert initial_snapshot.set_profile.source == "cache"
+        assert initial_snapshot.set_profile.phase is DataLoadPhase.READY
+        assert initial_snapshot.ratings.phase is DataLoadPhase.READY
+        assert initial_snapshot.current_scored_pack is not None
+        assert initial_snapshot.recommendations.cards
+        assert app.session.profile_refresh_request() is None
+        assert app.profile_refresh_in_flight is None
 
         await pilot.press("d")
         await pilot.pause()
         assert isinstance(app.screen, MissingRatingsScreen)
         await pilot.click("#download-ratings")
-        for _ in range(20):
+        for _ in range(40):
             await pilot.pause(0.05)
-            if app.session.snapshot.ratings.phase == DataLoadPhase.READY:
+            if (
+                client.calls == [False, True]
+                and app.session.profile_refresh_request() is None
+                and app.profile_refresh_in_flight is None
+            ):
                 break
 
-        assert load_count == 2
-        assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
-        assert app.session.snapshot.errors == ()
-        assert "temporary ratings failure" not in _status_text(app=app)
+        failed_snapshot = app.session.snapshot
+        assert client.calls == [False, True]
+        assert failed_snapshot.set_profile.phase is DataLoadPhase.FAILED
+        assert (
+            failed_snapshot.set_profile.refresh_outcome
+            == ProfileRefreshOutcome.REMOTE_FAILED.value
+        )
+        assert failed_snapshot.ratings == initial_snapshot.ratings
+        assert (
+            failed_snapshot.current_scored_pack
+            is initial_snapshot.current_scored_pack
+        )
+        assert failed_snapshot.recommendations == initial_snapshot.recommendations
+        assert len(failed_snapshot.errors) == 1
+        assert "Error: 17Lands ratings failed for MSH" in _status_text(app=app)
+        error = failed_snapshot.errors[0]
+        assert error.error_id == "ratings:MSH"
+        assert error.code == "ratings_unavailable"
+        assert error.recoverable
+        assert error.operation is OperationKind.RATINGS
+        assert error.message == (
+            "17Lands ratings failed for MSH: hosted profile refresh failed."
+        )
+        assert app.session.profile_refresh_request() is None
+        assert app.profile_refresh_in_flight is None
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, MissingRatingsScreen)
+        await pilot.click("#download-ratings")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if (
+                client.calls == [False, True, True]
+                and app.session.profile_refresh_request() is None
+                and app.profile_refresh_in_flight is None
+            ):
+                break
+
+        recovered_snapshot = app.session.snapshot
+        assert client.calls == [False, True, True]
+        assert recovered_snapshot.set_profile.phase is DataLoadPhase.READY
+        assert (
+            recovered_snapshot.set_profile.refresh_outcome
+            == ProfileRefreshOutcome.UNCHANGED.value
+        )
+        assert recovered_snapshot.ratings == initial_snapshot.ratings
+        assert (
+            recovered_snapshot.current_scored_pack
+            is initial_snapshot.current_scored_pack
+        )
+        assert recovered_snapshot.recommendations == initial_snapshot.recommendations
+        assert recovered_snapshot.errors == ()
         assert "Error: 17Lands ratings failed for MSH" not in _status_text(app=app)
+        assert app.session.profile_refresh_request() is None
+        assert app.profile_refresh_in_flight is None
 
 
 def test_tui_visibility_dialog_saves_preferences_and_restores_them_after_restart(
@@ -2707,9 +3015,9 @@ def _tui_app(
     *,
     tmp_path: Path,
     card_database: CardDatabase | None = None,
+    profile_client: ProfileClient | None = None,
     set_card_data_loader: SetCardDataLoader | None = None,
     ratings_loader: Callable[[str], SeventeenLandsData] | None = None,
-    ratings_progress_loader: RatingsProgressLoader | None = None,
     ratings_cache_checker: Callable[[str], bool] | None = None,
     image_preview_enabled: bool | None = None,
     mana_icons_enabled: bool = False,
@@ -2728,8 +3036,8 @@ def _tui_app(
         ),
         set_card_data_loader=set_card_data_loader,
         app_dir=tmp_path / "app",
+        profile_client=profile_client,
         ratings_loader=ratings_loader,
-        ratings_progress_loader=ratings_progress_loader,
         ratings_cache_checker=ratings_cache_checker,
         poll_enabled=poll_enabled,
         startup_scan=startup_scan,

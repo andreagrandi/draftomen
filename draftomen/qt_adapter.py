@@ -12,18 +12,18 @@ from os import PathLike
 from typing import Any, Literal, TypeAlias, cast
 
 from PySide6.QtCore import (
+    Property,
     QAbstractListModel,
     QByteArray,
     QCoreApplication,
     QEvent,
-    QModelIndex,
     QMetaObject,
+    QModelIndex,
     QObject,
-    Property,
+    Qt,
     QThread,
     QTimer,
     QUrl,
-    Qt,
     Signal,
     Slot,
 )
@@ -634,8 +634,9 @@ class _ProfileRefreshWorker(QObject):
             if not hasattr(request, "set_code") or not hasattr(request, "event_format"):
                 raise TypeError("Profile refresh worker received an invalid request.")
             result = self._profile_client.refresh(
-                request.set_code,
-                request.event_format,
+                set_code=request.set_code,
+                event_format=request.event_format,
+                force=request.force,
             )
         except Exception as error:  # pragma: no cover - network boundary.
             self.resultReady.emit(request, None, str(error))

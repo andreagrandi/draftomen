@@ -17,6 +17,8 @@ from typing import Protocol, TypeAlias
 from draftomen.audit import DraftAuditStore
 from draftomen.backtest import (
     BacktestReport as DomainBacktestReport,
+)
+from draftomen.backtest import (
     generate_backtest_report,
     load_persisted_backtest_state,
 )
@@ -44,14 +46,6 @@ from draftomen.events import (
     QuickDraftDetectedEvent,
 )
 from draftomen.logfollow import LogFollower, is_log_readable
-from draftomen.pool import (
-    AccountProfile,
-    DraftPoolError,
-    DraftPoolStore,
-    DraftState,
-    list_account_profiles,
-    list_draft_states,
-)
 from draftomen.pickengine import (
     ContextualScoreBreakdown,
     PickEngine,
@@ -61,7 +55,20 @@ from draftomen.pickengine import (
     recommendation_confidence_summary,
     recommendation_explanation,
 )
+from draftomen.pool import (
+    AccountProfile,
+    DraftPoolError,
+    DraftPoolStore,
+    DraftState,
+    list_account_profiles,
+    list_draft_states,
+)
 from draftomen.pool_ledger import PoolRoleLedger
+from draftomen.profile_client import (
+    ProfileClient,
+    ProfileRefreshOutcome,
+    ProfileRefreshResult,
+)
 from draftomen.ranking import (
     DEFAULT_RANKING_MODE,
     RANKING_MODES,
@@ -75,14 +82,9 @@ from draftomen.set_profile import (
     SetProfileError,
     load_scoring_profile,
 )
-from draftomen.profile_client import (
-    ProfileClient,
-    ProfileRefreshOutcome,
-    ProfileRefreshResult,
-)
 from draftomen.seventeen import (
-    DownloadProgressCallback,
     QUICK_DRAFT_FORMAT,
+    DownloadProgressCallback,
     SeventeenLandsData,
     SeventeenLandsDownloadProgress,
 )
@@ -335,6 +337,7 @@ class ProfileRefreshRequest:
     generation: int
     set_code: str
     event_format: str
+    force: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -882,11 +885,6 @@ class LiveSession:
             if not self._profile_refresh_request_is_current(request=request):
                 return
 
-            self._profile_refresh_request = None
-            active_set_code = self._active_set_code_value
-            if active_set_code is None:
-                return
-
             if isinstance(result, SetProfile):
                 profile = result
                 outcome = ProfileRefreshOutcome.UPDATED.value
@@ -894,7 +892,14 @@ class LiveSession:
                 profile = result.profile
                 outcome = _profile_refresh_outcome_value(result.outcome)
             else:
-                raise TypeError("result must be a ProfileRefreshResult or SetProfile.")
+                raise TypeError(
+                    "result must be a SetProfile or ProfileRefreshResult"
+                )
+
+            self._profile_refresh_request = None
+            active_set_code = self._active_set_code_value
+            if active_set_code is None:
+                return
 
             if (
                 profile.set_code.upper() != active_set_code
@@ -917,7 +922,13 @@ class LiveSession:
                 if candidate is not None
             )
             profile_changed = (
-                self._configured_set_profile is None
+                outcome
+                in {
+                    ProfileRefreshOutcome.CACHED.value,
+                    ProfileRefreshOutcome.UNCHANGED.value,
+                    ProfileRefreshOutcome.UPDATED.value,
+                }
+                and self._configured_set_profile is None
                 and profile.maturity is not ProfileMaturity.GENERIC
                 and profile != current_profile
                 and all(
@@ -944,6 +955,11 @@ class LiveSession:
                         self.snapshot,
                         set_profile=profile_state,
                         ratings=ratings_state,
+                        errors=self._profile_refresh_errors_locked(
+                            request=request,
+                            outcome=outcome,
+                            phase=DataLoadPhase.READY,
+                        ),
                     )
                     transition_generation = self._transition_generation
                     if self._score_current_pack_locked(
@@ -1376,8 +1392,9 @@ class LiveSession:
         return self.snapshot
 
     def dispatch(self, *, command: LiveSessionCommand) -> LiveSessionSnapshot:
-        """Apply one explicit frontend intention and publish the resulting snapshot.
-        Blocking service work runs synchronously so frontend adapters own scheduling.
+        """Apply one explicit frontend intention and publish resulting state.
+        Blocking service work is scheduled by frontend adapters through requests
+        exposed by the session; dispatch itself does not perform that work.
         """
 
         if isinstance(command, ChooseAccount):
@@ -2169,16 +2186,16 @@ class LiveSession:
 
     def _request_ratings_download(self, *, set_code: str) -> None:
         normalized_set_code = set_code.upper()
-        active_set_code = self._active_set_code()
-        if active_set_code is None:
-            raise ValueError("Ratings downloads require an active draft set.")
-        if normalized_set_code != active_set_code:
-            raise ValueError(
-                f"Ratings download set {normalized_set_code!r} does not match "
-                f"active set {active_set_code!r}."
-            )
-
-        self._load_ratings(set_code=normalized_set_code, refresh=True)
+        with self._state_lock:
+            active_set_code = self._active_set_code_value
+            if active_set_code is None:
+                raise ValueError("Ratings downloads require an active draft set.")
+            if normalized_set_code != active_set_code:
+                raise ValueError(
+                    f"Ratings download set {normalized_set_code!r} does not match "
+                    f"active set {active_set_code!r}."
+                )
+            self._queue_profile_refresh_locked(force=True)
 
     def _load_ratings(self, *, set_code: str, refresh: bool) -> None:
         if self._ratings_loader is None and self._ratings_progress_loader is None:
@@ -3408,19 +3425,28 @@ class LiveSession:
         )
         return transitioned, profile_state, ratings_state
 
-
-
-    def _queue_profile_refresh_locked(self) -> None:
+    def _queue_profile_refresh_locked(self, *, force: bool = False) -> None:
         if (
-            self._active_set_code_value is not None
-            and self._configured_set_profile is None
-            and self._profile_refresh_allowed()
+            self._active_set_code_value is None
+            or self._configured_set_profile is not None
+            or not self._profile_refresh_allowed()
         ):
-            self._profile_refresh_request = ProfileRefreshRequest(
-                generation=self._profile_refresh_generation,
-                set_code=self._active_set_code_value,
-                event_format=QUICK_DRAFT_FORMAT,
-            )
+            return
+
+        current = self._profile_refresh_request
+        if current is not None:
+            if current.force or not force:
+                return
+            self._profile_refresh_generation += 1
+        elif force:
+            self._profile_refresh_generation += 1
+
+        self._profile_refresh_request = ProfileRefreshRequest(
+            generation=self._profile_refresh_generation,
+            set_code=self._active_set_code_value,
+            event_format=QUICK_DRAFT_FORMAT,
+            force=force,
+        )
 
     def _set_active_set_code(
         self,
@@ -3587,6 +3613,40 @@ class LiveSession:
             message=message,
         )
 
+    def _profile_refresh_errors_locked(
+        self,
+        *,
+        request: ProfileRefreshRequest,
+        outcome: str,
+        phase: DataLoadPhase,
+    ) -> tuple[SessionError, ...]:
+        """Project forced refresh failures into recoverable ratings state."""
+        error_id = self._ratings_error_id(set_code=request.set_code)
+        if (
+            phase is DataLoadPhase.READY
+            and outcome
+            in {
+                ProfileRefreshOutcome.UPDATED.value,
+                ProfileRefreshOutcome.UNCHANGED.value,
+            }
+        ):
+            self._ratings_errors_by_set.pop(request.set_code, None)
+            return self._without_error_id(error_id=error_id)
+        if not request.force or phase is not DataLoadPhase.FAILED:
+            return self.snapshot.errors
+        error = SessionError(
+            error_id=error_id,
+            code="ratings_unavailable",
+            message=(
+                f"17Lands ratings failed for {request.set_code}: "
+                "hosted profile refresh failed."
+            ),
+            recoverable=True,
+            operation=OperationKind.RATINGS,
+        )
+        self._ratings_errors_by_set[request.set_code] = error
+        return self._with_error(error=error)
+
     def _publish_profile_refresh_status_locked(
         self,
         *,
@@ -3607,7 +3667,17 @@ class LiveSession:
             refresh_outcome=outcome,
         )
         self._set_profile_states_by_set[request.set_code] = state
-        self._publish(snapshot=replace(self.snapshot, set_profile=state))
+        self._publish(
+            snapshot=replace(
+                self.snapshot,
+                set_profile=state,
+                errors=self._profile_refresh_errors_locked(
+                    request=request,
+                    outcome=outcome,
+                    phase=phase,
+                ),
+            )
+        )
 
     def _active_draft_state(self) -> DraftState | None:
         draft = self.snapshot.draft

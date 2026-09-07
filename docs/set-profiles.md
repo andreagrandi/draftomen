@@ -1624,6 +1624,20 @@ provider-backed evidence was available during generation; without valid provider
 evidence, scoring uses deterministic fallback and never fabricates an empirical
 profile.
 
+Explicit ratings-download requests and retries of recoverable ratings errors
+validate the active set and format, then queue a forced hosted-profile refresh
+through the shared live-session lifecycle. A forced request bypasses only the
+manifest TTL; it does not invoke the direct provider ratings loader. Offline
+policy, a missing manifest or client, an injected authoritative profile, HTTPS
+and origin security checks, checksum and schema validation, and non-regression
+checks still apply. A usable cached or in-memory profile remains the scoring
+authority while refresh is pending and when an accepted refresh fails, so
+existing ratings and recommendations remain active. A validated newer result is
+adopted atomically with the existing rescoring flow, so current recommendations
+update without restarting.
+Repeated forced requests coalesce for the same active lifecycle. TUI and Qt
+emit their existing actions; plain-watch adds no command UI.
+
 For ordinary candidate loading, `safe_load_set_profile(...)` never raises for
 missing, corrupt, future-schema, malformed, or wrong-target candidates. Its
 deterministic fallback hierarchy is mature, then early, semantic-only, and
@@ -1674,12 +1688,12 @@ supplied result and in-memory state; it performs no network or profile-cache
 load.
 
 When networking is allowed, the client reuses a validated manifest for its
-default 24-hour TTL unless `force=True`, then selects the exact normalized
-set/format artifact. It accepts only a newer maturity or timestamp; an
-identical artifact is `unchanged`, while an older, lower-maturity, or
-same-timestamp conflicting artifact is `stale-manifest`. A missing target
-artifact is `missing`. Manifest and artifact failures never replace the
-current profile.
+default 24-hour TTL. A forced request (`force=True`) bypasses only this TTL,
+then selects the exact normalized set/format artifact. It accepts only a newer
+maturity or timestamp; an identical artifact is `unchanged`, while an older,
+lower-maturity, or same-timestamp conflicting artifact is `stale-manifest`. A
+missing target artifact is `missing`. Manifest and artifact failures never
+replace the current profile.
 
 Every remote URL must be absolute HTTPS with no credentials, fragment,
 whitespace, or non-default port. Artifact URLs and redirects must remain on

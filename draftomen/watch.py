@@ -6,15 +6,14 @@ from __future__ import annotations
 
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from os import PathLike
 from threading import Lock
 from typing import TextIO, TypeAlias
 
 from draftomen.carddb import CardDatabase
-from draftomen.profile_client import ProfileClient, ProfileRefreshResult
 from draftomen.config import POLL_INTERVAL_SECONDS
 from draftomen.deckbuilder import DeckBuilderError, format_build_result
 from draftomen.events import (
@@ -25,6 +24,7 @@ from draftomen.events import (
     PickMadeEvent,
     QuickDraftDetectedEvent,
 )
+from draftomen.profile_client import ProfileClient, ProfileRefreshResult
 from draftomen.replay import (
     format_draft_completed_event,
     format_pack_offered_event,
@@ -145,8 +145,9 @@ class PlainLogWatcher:
             if self._profile_client is None:
                 return
             result = self._profile_client.refresh(
-                request.set_code,
-                request.event_format,
+                set_code=request.set_code,
+                event_format=request.event_format,
+                force=request.force,
             )
             if not isinstance(result, ProfileRefreshResult):
                 raise TypeError("ProfileClient.refresh returned an invalid result.")

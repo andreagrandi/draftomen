@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
+import time
+import urllib.request
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, Thread
-import time
 from types import SimpleNamespace
 from typing import NoReturn
-import urllib.request
 
 import pytest
 
@@ -17,9 +17,16 @@ from draftomen.carddb import CardDatabase, CardInfo, build_card_database_from_bu
 from draftomen.events import EXPECTED_PICKS_PER_PACK
 from draftomen.pool import draft_state_path, load_draft_state
 from draftomen.profile_client import ProfileRefreshOutcome, ProfileRefreshResult
+from draftomen.session import DataLoadPhase
+from draftomen.set_profile import (
+    SetProfile,
+    dump_set_profile,
+    load_set_profile,
+    set_profile_path,
+)
 from draftomen.seventeen import (
-    QUICK_DRAFT_FORMAT,
     PREMIER_DRAFT_FORMAT,
+    QUICK_DRAFT_FORMAT,
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsData,
@@ -29,13 +36,6 @@ from draftomen.seventeen import (
     save_17lands_format_data,
     seventeen_lands_pair_card_cache_path,
 )
-from draftomen.set_profile import (
-    SetProfile,
-    dump_set_profile,
-    load_set_profile,
-    set_profile_path,
-)
-from draftomen.session import DataLoadPhase
 from draftomen.watch import PlainLogWatcher
 
 FIXTURE_LOG_PATH = Path(__file__).parent / "fixtures" / "quick-draft-msh-player.log"
@@ -354,7 +354,7 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
     release = Event()
     refreshed = Event()
     cached_calls: list[tuple[str, str]] = []
-    refresh_calls: list[tuple[str, str]] = []
+    refresh_calls: list[tuple[str, str, bool]] = []
 
     class BlockingProfileClient:
         manifest_url = "https://profiles.example.test/m.json"
@@ -365,8 +365,8 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
             cached_calls.append((set_code, event_format))
             return SimpleNamespace(profile=cached_profile, source="cache")
 
-        def refresh(self, set_code: str, event_format: str):
-            refresh_calls.append((set_code, event_format))
+        def refresh(self, set_code: str, event_format: str, *, force: bool):
+            refresh_calls.append((set_code, event_format, force))
             started.set()
             assert release.wait(timeout=5.0)
             return ProfileRefreshResult(
@@ -396,6 +396,8 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
     watcher.session._snapshot_publisher = capture_snapshot
     try:
         watcher.session._set_active_set_code(set_code="TST")
+        with watcher.session._state_lock:
+            watcher.session._queue_profile_refresh_locked(force=True)
         watcher._schedule_profile_refresh()
         assert started.wait(timeout=5.0)
         poll_started = time.monotonic()
@@ -414,7 +416,7 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
             ]
         )
         assert cached_calls == [("TST", QUICK_DRAFT_FORMAT)]
-        assert refresh_calls == [("TST", QUICK_DRAFT_FORMAT)]
+        assert refresh_calls == [("TST", QUICK_DRAFT_FORMAT, True)]
         assert "Data source: set profile" in blocked_output
         assert blocked_output.index("Cached First") < blocked_output.index("Cached Second")
 
@@ -470,7 +472,8 @@ def test_plain_watch_hands_off_obsolete_refresh_to_same_set_lifecycle(
                 source="generic",
             )
 
-        def refresh(self, set_code: str, event_format: str):
+        def refresh(self, set_code: str, event_format: str, *, force: bool):
+            assert force is False
             nonlocal refresh_count
             assert (set_code, event_format) == ("TST", QUICK_DRAFT_FORMAT)
             refresh_count += 1
@@ -621,7 +624,8 @@ def test_plain_watch_close_quiesces_blocked_refresh_without_late_publication(
                 source="generic",
             )
 
-        def refresh(self, set_code: str, event_format: str):
+        def refresh(self, set_code: str, event_format: str, *, force: bool):
+            assert force is False
             assert (set_code, event_format) == ("TST", QUICK_DRAFT_FORMAT)
             started.set()
             assert release.wait(timeout=5.0)
