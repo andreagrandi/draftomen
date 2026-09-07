@@ -10,6 +10,7 @@ import pytest
 import draftomen.cli as cli_module
 from draftomen.carddb import (
     CardDatabase,
+    CardInfo,
     build_card_database_from_bulk_file,
     card_database_cache_path,
     refresh_card_database,
@@ -22,8 +23,16 @@ from draftomen.events import (
     PackOfferedEvent,
     PickMadeEvent,
 )
-from draftomen.pickengine import PickEngine, ScoredPack
-from draftomen.replay import render_replay_events, replay_log_file
+from draftomen.pickengine import (
+    PickEngine,
+    ScoredPack,
+    render_pick_rationale_detailed,
+)
+from draftomen.replay import (
+    format_pack_offered_event,
+    render_replay_events,
+    replay_log_file,
+)
 from draftomen.set_profile import SetProfile, dump_set_profile, set_profile_path
 from draftomen.seventeen import (
     PREMIER_DRAFT_FORMAT,
@@ -205,7 +214,40 @@ def test_replay_without_ratings_cache_uses_neutral_prior_scores(
     assert "Data source: neutral prior" in captured.out
     assert "Score" in captured.out
     assert "Prior*" in captured.out
+    assert "Recommendation: Fixture Split Card receives 50 DO points." in captured.out
+    assert "rating: neutral-prior estimate with no GIH data." in captured.out
     assert captured.err == ""
+
+
+def test_replay_basic_recommendation_keeps_legacy_explanation() -> None:
+    basic_land = CardInfo(
+        grp_id=9001,
+        name="Plains",
+        colors=("W",),
+        mana_value=0.0,
+        rarity="basic",
+        types=("Basic Land — Plains",),
+        mana_cost=None,
+    )
+    event = PackOfferedEvent(
+        event_name="QuickDraft_TST_basic",
+        set_code="TST",
+        pack_number=0,
+        pick_number=0,
+        offered_grp_ids=(9001,),
+        pool_grp_ids=(),
+        account_id="BASICACCOUNT",
+    )
+
+    lines = format_pack_offered_event(
+        event=event,
+        card_database=CardDatabase(cards={9001: basic_land}),
+    )
+
+    assert lines[-1] == (
+        "Recommendation: Plains is freely available during deck building, "
+        "so it receives 0 DO points and ranks after draftable cards."
+    )
 
 
 def test_replay_without_card_cache_returns_actionable_error(
@@ -293,7 +335,12 @@ def test_replay_uses_pre_pick_context_for_recommendation_evidence(
         for evidence in recommended_card.contextual_evidence
     )
     assert "Recommendation: " in output
-    assert "early profile (80% confidence)" in output
+    assert (
+        "Recommendation: "
+        + render_pick_rationale_detailed(scored_card=recommended_card)
+        in output
+    )
+    assert "splash disabled" in output
     assert "fills draw deficit" in output
 
 
@@ -349,11 +396,13 @@ def test_replay_cli_loads_local_profile_once(
     assert exit_code == 0
     assert calls == [("MSH", QUICK_DRAFT_FORMAT, app_dir)]
     assert "Recommendation: " in captured.out
-    assert "early profile (80% confidence)" in captured.out
+    assert "splash disabled" in captured.out
     assert captured.err == ""
 
 
-def test_replay_explains_profile_context_without_material_terms() -> None:
+def test_replay_explains_profile_context_without_material_terms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
     database = CardDatabase(
         cards={
@@ -364,7 +413,15 @@ def test_replay_explains_profile_context_without_material_terms() -> None:
         }
     )
     profile = replace(_replay_semantic_profile(), role_profile=None)
+    calls: list[ScoredPack] = []
+    score_pack = PickEngine.score_pack
 
+    def record_score_pack(self: PickEngine, **kwargs: object) -> ScoredPack:
+        scored_pack = score_pack(self, **kwargs)
+        calls.append(scored_pack)
+        return scored_pack
+
+    monkeypatch.setattr(PickEngine, "score_pack", record_score_pack)
     output = render_replay_events(
         events=_replay_context_events(),
         card_database=database,
@@ -372,9 +429,25 @@ def test_replay_explains_profile_context_without_material_terms() -> None:
         splash_enabled=False,
     )
 
+    assert len(calls) == 1
+    recommended_card = calls[0].cards[0]
+    assert recommended_card.contextual_profile_confidence == pytest.approx(0.8)
+    assert recommended_card.contextual_evidence == ()
+    assert recommended_card.contextual_breakdown.aggregate == 0.0
     assert "Recommendation: " in output
-    assert "context UG, theme replay tempo; early profile (80% confidence)" in output
-    assert "material terms:" not in output
+    assert (
+        "Recommendation: "
+        + render_pick_rationale_detailed(scored_card=recommended_card)
+        in output
+    )
+    assert "context UG" not in output
+    assert "theme replay tempo" not in output
+    assert "fills a role deficit" not in output
+    assert "addresses role timing" not in output
+    assert "supports a semantic package" not in output
+    assert "accounts for role redundancy" not in output
+    assert "accounts for unsupported payoff risk" not in output
+    assert "adds needed mana fixing" not in output
 
 
 def test_replay_profile_loader_is_skipped_for_explicit_profile() -> None:

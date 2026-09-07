@@ -19,11 +19,14 @@ from draftomen.pickengine import (
     MAX_UNSUPPORTED_PAYOFF_TERM,
     MAX_URGENCY_TERM,
     PickEngine,
+    PickReason,
+    PickRationale,
     PickScoringContext,
     ScoredPack,
     build_pick_scoring_context,
     recommendation_confidence_summary,
-    recommendation_explanation,
+    render_pick_rationale_concise,
+    render_pick_rationale_detailed,
     score_pack,
 )
 from draftomen.pool_ledger import (
@@ -88,6 +91,469 @@ def test_pick_engine_scores_and_sorts_with_fallback_sources() -> None:
     assert all(0 <= card.score <= 100 for card in scored_pack.cards)
     assert all(isinstance(card.score, int) for card in scored_pack.cards)
 
+
+def test_every_engine_row_has_an_immutable_ordered_pick_rationale() -> None:
+    scored_pack = PickEngine(ratings_data=_ratings_data()).score_pack(
+        offered_grp_ids=(4, 3, 2, 1),
+        card_database=_card_database(),
+    )
+
+    assert all(
+        isinstance(reason, PickReason)
+        for card in scored_pack.cards
+        for reason in card.rationale.reasons
+    )
+    assert all(
+        isinstance(card.rationale.reasons, tuple)
+        for card in scored_pack.cards
+    )
+    assert all(
+        reason.kind in {
+            "rating",
+            "color",
+            "role",
+            "urgency",
+            "synergy",
+            "redundancy",
+            "unsupported_payoff",
+            "fixing",
+            "splash",
+            "tiebreaker",
+        }
+        for card in scored_pack.cards
+        for reason in card.rationale.reasons
+    )
+    with pytest.raises(FrozenInstanceError):
+        scored_pack.cards[0].rationale.reasons = ()
+
+
+def test_rationale_score_accounting_preserves_open_ramp_and_locked_math() -> None:
+    engine = PickEngine(ratings_data=_ratings_data())
+    database = _card_database()
+    database = replace(
+        database,
+        cards={
+            **database.cards,
+            1: replace(database.cards[1], set_code="TST", arena_id=1),
+            7: replace(database.cards[7], set_code="TST", arena_id=7),
+        },
+    )
+
+    for pick_index in (3, 10, 16):
+        card = engine.score_pack(
+            offered_grp_ids=(7,),
+            card_database=database,
+            pool_grp_ids=(1, 2),
+            pick_index=pick_index,
+        ).cards[0]
+        color_reason = next(
+            reason for reason in card.rationale.reasons if reason.kind == "color"
+        )
+        assert color_reason.contribution == pytest.approx(
+            card.base_score * (card.color_factor - 1.0)
+        )
+        assert next(
+            reason for reason in card.rationale.reasons if reason.kind == "rating"
+        ).contribution is None
+        assert card.base_score + card.rationale.total_contribution == pytest.approx(
+            card.raw_score
+        )
+    cap_profile = _contextual_profile(
+        cards=(
+            ProfileCard(
+                key="arena_id:1",
+                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
+            ),
+            ProfileCard(
+                key="arena_id:7",
+                assignments=(
+                    RoleAssignment(Role.DRAW),
+                    RoleAssignment(Role.GO_WIDE_ENABLER),
+                    RoleAssignment(
+                        Role.FIXING,
+                        parameters=ProducedResources(("W", "U")),
+                    ),
+                ),
+            ),
+        ),
+        role_targets=(
+            RoleTarget(Role.DRAW, 1),
+            RoleTarget(Role.FIXING, 1),
+        ),
+    )
+    capped = _score_with_context(
+        database=database,
+        profile=cap_profile,
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1, 2),
+        pack_number=2,
+        pick_number=13,
+        global_pick_index=42,
+        estimated_remaining_picks=0,
+    ).cards[0]
+    assert capped.contextual_breakdown.aggregate == MAX_CONTEXTUAL_ADJUSTMENT
+    assert capped.contextual_breakdown.to_json()["aggregate"] == 6.0
+    assert capped.raw_score == pytest.approx(63.5)
+    assert capped.score == 63
+    assert capped.rationale.attributed_contribution == pytest.approx(16.0)
+    assert capped.rationale.unattributed_contribution == pytest.approx(-2.5)
+    assert capped.rationale.total_contribution == pytest.approx(13.5)
+
+    clamped = engine.score_pack(
+        offered_grp_ids=(9,),
+        card_database=database,
+        pool_grp_ids=(1, 2),
+        pick_index=16,
+    ).cards[0]
+    assert clamped.base_score == pytest.approx(100.0)
+    assert clamped.raw_score == pytest.approx(100.0)
+    assert clamped.score == 100
+    assert clamped.rationale.attributed_contribution == pytest.approx(15.0)
+    assert clamped.rationale.unattributed_contribution == pytest.approx(-15.0)
+    assert clamped.rationale.total_contribution == pytest.approx(0.0)
+
+
+def test_contextual_rationale_keeps_material_term_order_and_evidence() -> None:
+    database = _contextual_database()
+    profile = _contextual_profile(
+        cards=(
+            ProfileCard(
+                key="arena_id:1",
+                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
+            ),
+            ProfileCard(
+                key="arena_id:2",
+                assignments=(RoleAssignment(Role.DRAW_SECOND_PAYOFF),),
+            ),
+            ProfileCard(
+                key="arena_id:5",
+                assignments=(RoleAssignment(Role.DRAW),),
+            ),
+            ProfileCard(
+                key="arena_id:7",
+                assignments=(
+                    RoleAssignment(Role.DRAW),
+                    RoleAssignment(Role.GO_WIDE_ENABLER),
+                    RoleAssignment(Role.DRAW_SECOND_PAYOFF),
+                    RoleAssignment(
+                        Role.FIXING,
+                        parameters=ProducedResources(("W", "U")),
+                    ),
+                ),
+            ),
+        ),
+        role_targets=(
+            RoleTarget(Role.DRAW, 2),
+            RoleTarget(Role.FIXING, 2),
+        ),
+    )
+    card = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1, 2, 5),
+    ).cards[0]
+
+    contextual_reasons = tuple(
+        reason
+        for reason in card.rationale.reasons
+        if reason.kind
+        in {
+            "role",
+            "urgency",
+            "synergy",
+            "redundancy",
+            "unsupported_payoff",
+            "fixing",
+        }
+    )
+    assert tuple(reason.kind for reason in contextual_reasons) == (
+        "role",
+        "urgency",
+        "synergy",
+        "redundancy",
+        "unsupported_payoff",
+        "fixing",
+    )
+    assert len(card.contextual_evidence) == 6
+    assert tuple(reason.evidence for reason in contextual_reasons) == (
+        card.contextual_evidence
+    )
+    assert tuple(reason.contribution for reason in contextual_reasons) == pytest.approx(
+        (
+            card.contextual_breakdown.role,
+            card.contextual_breakdown.urgency,
+            card.contextual_breakdown.synergy,
+            card.contextual_breakdown.redundancy,
+            card.contextual_breakdown.unsupported_payoff,
+            card.contextual_breakdown.fixing,
+        )
+    )
+
+@pytest.mark.parametrize(
+    ("confidence", "material"),
+    (
+        # Profile confidence contributes to target pressure and evidence weight.
+        (0.068402, False),
+        (0.06841, True),
+    ),
+)
+def test_contextual_reasons_require_more_than_one_hundredth_point(
+    confidence: float,
+    material: bool,
+) -> None:
+    card = _score_with_context(
+        database=_contextual_database(),
+        profile=_contextual_profile(
+            cards=(
+                ProfileCard(
+                    key="arena_id:7",
+                    assignments=(RoleAssignment(Role.DRAW),),
+                ),
+            ),
+            role_targets=(RoleTarget(Role.DRAW, 1),),
+            confidence=confidence,
+        ),
+        offered_grp_ids=(7,),
+        pool_grp_ids=(),
+    ).cards[0]
+
+    assert (
+        card.contextual_breakdown.role == pytest.approx(0.01)
+        if not material
+        else card.contextual_breakdown.role > 0.01
+    )
+    role_reasons = tuple(
+        reason for reason in card.rationale.reasons if reason.kind == "role"
+    )
+    assert bool(role_reasons) is material
+    assert bool(card.contextual_evidence) is material
+    if material:
+        assert role_reasons[0].evidence == "fills draw deficit (0/1)"
+
+
+def test_splash_and_actual_pair_tiebreak_reasons_retain_provenance() -> None:
+    splash_card = next(
+        card
+        for card in PickEngine(ratings_data=_splash_ratings_data())
+        .score_pack(
+            offered_grp_ids=(105,),
+            card_database=_splash_card_database(),
+            pool_grp_ids=(101, 102, 101, 102, 103, 104),
+            pick_index=10,
+        )
+        .cards
+    )
+    splash_reason = next(
+        reason for reason in splash_card.rationale.reasons if reason.kind == "splash"
+    )
+    assert splash_reason.contribution is None
+    assert splash_reason.evidence == splash_card.splash.reasons
+
+    tiebreak_pack = PickEngine(
+        ratings_data=_msh_pair_tiebreaker_data(),
+    ).score_pack(
+        offered_grp_ids=(31, 32),
+        card_database=_msh_pair_tiebreaker_database(),
+        pool_grp_ids=(20, 21),
+        pick_index=3,
+    )
+    assert any(
+        reason.kind == "tiebreaker" for reason in tiebreak_pack.cards[0].rationale.reasons
+    )
+    assert not any(
+        reason.kind == "tiebreaker" for reason in tiebreak_pack.cards[1].rationale.reasons
+    )
+
+
+def test_concise_rationale_is_hedged_and_uses_human_whole_point_terms() -> None:
+    card = PickEngine().score_pack(
+        offered_grp_ids=(6,),
+        card_database=_card_database(),
+    ).cards[0]
+    concise = render_pick_rationale_concise(scored_card=card)
+
+    assert concise == (
+        "Rating: neutral-prior estimate with no GIH data. "
+        "Color fit contributes +0 DO points."
+    )
+    assert len([sentence for sentence in concise.split(".") if sentence]) <= 3
+    assert "aggregate" not in concise
+    assert "unsupported_payoff" not in concise
+
+
+
+def test_concise_reasons_use_magnitude_ties_and_stable_nonadditive_fallback() -> None:
+    card = PickEngine().score_pack(
+        offered_grp_ids=(6,),
+        card_database=_card_database(),
+    ).cards[0]
+    card = replace(
+        card,
+        rationale=PickRationale(
+            reasons=(
+                PickReason(kind="rating", phrase="known rating"),
+                PickReason(
+                    kind="color",
+                    contribution=0.2,
+                    phrase="internal color evidence",
+                    evidence=("raw_color_label",),
+                ),
+                PickReason(
+                    kind="role",
+                    contribution=1.25,
+                    phrase="internal role evidence",
+                    evidence=("raw_role_label",),
+                ),
+                PickReason(
+                    kind="urgency",
+                    contribution=-1.25,
+                    phrase="internal urgency evidence",
+                    evidence=("raw_urgency_label",),
+                ),
+                PickReason(
+                    kind="splash",
+                    phrase="splash speculative assessment",
+                    evidence=("raw_splash_label",),
+                ),
+                PickReason(
+                    kind="tiebreaker",
+                    phrase="pair-rate comparison",
+                    evidence=("raw_tiebreaker_label",),
+                ),
+            )
+        ),
+    )
+
+    concise = render_pick_rationale_concise(scored_card=card)
+
+    assert concise == (
+        "Rating: known rating. "
+        "Role fit contributes +1 DO points. "
+        "Timing contributes -1 DO points."
+    )
+    assert "raw_" not in concise
+    assert "internal" not in concise
+    fallback = replace(
+        card,
+        rationale=PickRationale(
+            reasons=(
+                PickReason(kind="rating", phrase="known rating"),
+                PickReason(
+                    kind="color",
+                    contribution=0.0,
+                    phrase="color",
+                    evidence=("raw_color_label",),
+                ),
+                PickReason(
+                    kind="splash",
+                    phrase="splash speculative assessment",
+                    evidence=("raw_splash_label",),
+                ),
+                PickReason(
+                    kind="tiebreaker",
+                    phrase="pair-rate comparison",
+                    evidence=("raw_tiebreaker_label",),
+                ),
+            )
+        ),
+    )
+    assert render_pick_rationale_concise(scored_card=fallback) == (
+        "Rating: known rating. "
+        "Color fit contributes +0 DO points. "
+        "Speculative splash is a consideration."
+    )
+
+
+def test_rating_copy_retains_profile_confidence_for_neutral_and_fallback_ratings() -> None:
+    profile = _contextual_profile(cards=(), confidence=0.42)
+
+    neutral_card = _score_with_context(
+        database=_contextual_database(),
+        profile=profile,
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1,),
+    ).cards[0]
+    fallback_card = _score_with_context(
+        database=_contextual_database(),
+        profile=profile,
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1,),
+        ratings_data=_ratings_data(),
+    ).cards[0]
+
+    assert render_pick_rationale_concise(
+        scored_card=neutral_card
+    ).startswith(
+        "Rating: neutral-prior estimate with no GIH data "
+        "(mature profile, 42% confidence)."
+    )
+    assert render_pick_rationale_concise(
+        scored_card=fallback_card
+    ).startswith("Rating: Quick GIH win rate 55.0% (mature profile, 42% confidence).")
+
+
+def test_detailed_rationale_omits_context_without_scoring_context() -> None:
+    card = PickEngine(ratings_data=_ratings_data()).score_pack(
+        offered_grp_ids=(6,),
+        card_database=_card_database(),
+    ).cards[0]
+
+    explanation = render_pick_rationale_detailed(scored_card=card)
+
+    assert "context " not in explanation
+    assert "unknown profile" not in explanation
+
+
+def test_concise_splash_reasons_are_short_and_detailed_reasons_are_not_duplicated() -> None:
+    database = _splash_card_database()
+    engine = PickEngine(ratings_data=_splash_ratings_data())
+    speculative = next(
+        card
+        for card in engine.score_pack(
+            offered_grp_ids=(105,),
+            card_database=database,
+            pool_grp_ids=(101, 102, 101, 102),
+            pick_index=10,
+        ).cards
+    )
+    fixer = next(
+        card
+        for card in engine.score_pack(
+            offered_grp_ids=(103,),
+            card_database=database,
+            pool_grp_ids=(101, 102, 101, 102, 104, 105),
+            pick_index=12,
+        ).cards
+    )
+
+    assert "Speculative splash is a consideration." in (
+        render_pick_rationale_concise(scored_card=speculative)
+    )
+    assert "Splash fixing is available." in render_pick_rationale_concise(
+        scored_card=fixer
+    )
+    detailed = render_pick_rationale_detailed(
+        scored_card=speculative,
+    )
+    assert detailed.count("splash: ") == 1
+    assert "splash: splash:" not in detailed
+
+
+def test_populated_equal_pair_rates_do_not_create_a_tiebreak_reason() -> None:
+    scored_pack = PickEngine(
+        ratings_data=_msh_pair_tiebreaker_data(wu_rate=0.55, br_rate=0.55),
+    ).score_pack(
+        offered_grp_ids=(31, 32),
+        card_database=_msh_pair_tiebreaker_database(),
+        pool_grp_ids=(20, 21),
+        pick_index=3,
+    )
+
+    assert all(
+        not any(reason.kind == "tiebreaker" for reason in card.rationale.reasons)
+        for card in scored_pack.cards
+    )
 
 def test_set_reliability_calculation_does_not_change_card_scores() -> None:
     ratings_data = _ratings_data()
@@ -351,9 +817,8 @@ def test_freely_available_basic_land_scores_zero_and_ranks_last() -> None:
     assert basic_land.source_label == "Basic"
     assert basic_land.no_data is False
     assert basic_land.freely_available_basic is True
-    assert recommendation_explanation(
+    assert render_pick_rationale_detailed(
         scored_card=basic_land,
-        inferred_pair=None,
     ) == (
         "Arena Plains is freely available during deck building, so it receives "
         "0 DO points and ranks after draftable cards."
@@ -752,6 +1217,11 @@ def test_thin_shrunken_pair_margin_cannot_override_base_order() -> None:
     assert scored_pack.cards[0].card.grp_id == 32
     assert by_id[32].raw_score > by_id[31].raw_score
     assert abs(first_rate - second_rate) <= 0.01
+    assert all(
+        not any(reason.kind == "tiebreaker" for reason in card.rationale.reasons)
+        for card in scored_pack.cards
+    )
+
 
 
 def test_supported_material_shrunken_pair_margin_breaks_close_pick() -> None:
@@ -770,6 +1240,31 @@ def test_supported_material_shrunken_pair_margin_breaks_close_pick() -> None:
     assert scored_pack.cards[0].card.grp_id == 31
     assert by_id[31].raw_score < by_id[32].raw_score
     assert higher_rate - lower_rate > 0.01
+    winner_tiebreaker = next(
+        reason
+        for reason in by_id[31].rationale.reasons
+        if reason.kind == "tiebreaker"
+    )
+    assert winner_tiebreaker.contribution is None
+    assert winner_tiebreaker.evidence == (
+        "pair-rate comparison selected WU at 56.9% over BR at 50.0%"
+    )
+    assert not any(
+        reason.kind == "tiebreaker" for reason in by_id[32].rationale.reasons
+    )
+    winner_tiebreaker = next(
+        reason
+        for reason in by_id[31].rationale.reasons
+        if reason.kind == "tiebreaker"
+    )
+    assert winner_tiebreaker.contribution is None
+    assert winner_tiebreaker.evidence == (
+        "pair-rate comparison selected WU at 56.9% over BR at 50.0%"
+    )
+    assert not any(
+        reason.kind == "tiebreaker" for reason in by_id[32].rationale.reasons
+    )
+
 
 
 def test_pair_win_rate_tiebreaker_does_not_override_colorless_card_score() -> None:
@@ -786,6 +1281,10 @@ def test_pair_win_rate_tiebreaker_does_not_override_colorless_card_score() -> No
     assert by_id[33].pair_tiebreaker_win_rate is None
     assert by_id[33].raw_score > by_id[31].raw_score
     assert scored_pack.cards[0].card.grp_id == 33
+    assert all(
+        not any(reason.kind == "tiebreaker" for reason in card.rationale.reasons)
+        for card in scored_pack.cards
+    )
 
 
 def test_pair_win_rate_tiebreaker_does_not_override_later_pick_score() -> None:
@@ -800,6 +1299,10 @@ def test_pair_win_rate_tiebreaker_does_not_override_later_pick_score() -> None:
 
     assert scored_pack.commitment.phase == "building"
     assert scored_pack.cards[0].card.grp_id == 32
+    assert all(
+        not any(reason.kind == "tiebreaker" for reason in card.rationale.reasons)
+        for card in scored_pack.cards
+    )
 
 
 def test_pair_win_rate_tiebreaker_does_not_override_later_color_signal() -> None:
@@ -817,6 +1320,11 @@ def test_pair_win_rate_tiebreaker_does_not_override_later_color_signal() -> None
     assert by_id[31].color_fit == "off-color"
     assert by_id[32].color_fit == "on-color"
     assert scored_pack.cards[0].card.grp_id == 32
+    assert all(
+        not any(reason.kind == "tiebreaker" for reason in card.rationale.reasons)
+        for card in scored_pack.cards
+    )
+
 
 
 def test_pair_win_rate_tiebreaker_does_not_override_clear_card_signal() -> None:
@@ -832,6 +1340,10 @@ def test_pair_win_rate_tiebreaker_does_not_override_clear_card_signal() -> None:
 
     assert by_id[32].raw_score - by_id[31].raw_score > 3.0
     assert scored_pack.cards[0].card.grp_id == 32
+    assert all(
+        not any(reason.kind == "tiebreaker" for reason in card.rationale.reasons)
+        for card in scored_pack.cards
+    )
 
 
 def test_locked_pair_uses_pair_filtered_rating_when_samples_are_adequate() -> None:
@@ -1092,6 +1604,13 @@ def test_supported_single_pip_bomb_is_marked_as_a_splash_and_can_win_pick() -> N
     assert by_id[105].splash.available_sources == 3
     assert by_id[105].splash.required_sources == 3
     assert scored_pack.cards[0].card.grp_id == 105
+    splash_reason = next(
+        reason
+        for reason in by_id[105].rationale.reasons
+        if reason.kind == "splash"
+    )
+    assert splash_reason.contribution is None
+    assert splash_reason.evidence == by_id[105].splash.reasons
     rendered = "\n".join(
         format_pack_offered_event(
             event=PackOfferedEvent(
@@ -1184,6 +1703,13 @@ def test_fixing_land_is_marked_when_it_completes_active_splash_sources() -> None
         pick_index=12,
     )
     fixing_land = next(card for card in scored_pack.cards if card.card.grp_id == 103)
+    splash_reason = next(
+        reason
+        for reason in fixing_land.rationale.reasons
+        if reason.kind == "splash"
+    )
+    assert splash_reason.contribution is None
+    assert splash_reason.evidence == fixing_land.splash.reasons
 
     assert fixing_land.color_fit == "splash-fixer"
     assert fixing_land.splash.splash_color == "R"
@@ -1234,6 +1760,13 @@ def test_unsupported_a_grade_bomb_is_speculative_only_before_color_lock() -> Non
     assert "speculative splashes are disabled after color lock" in (
         locked_bomb.splash.reasons
     )
+    splash_reason = next(
+        reason
+        for reason in building_bomb.rationale.reasons
+        if reason.kind == "splash"
+    )
+    assert splash_reason.contribution is None
+    assert splash_reason.evidence == building_bomb.splash.reasons
 
 
 def test_aggressive_pool_does_not_take_an_unsupported_speculative_splash() -> None:
@@ -2669,14 +3202,13 @@ def test_explanation_exposes_context_metadata_and_material_late_terms() -> None:
         offered_grp_ids=(7,),
         pool_grp_ids=(1,),
     ).cards[0]
-    explanation = recommendation_explanation(
+    explanation = render_pick_rationale_detailed(
         scored_card=card,
-        inferred_pair="WU",
     )
 
     assert "context WU, theme patient card advantage" in explanation
-    assert "mature profile (100% confidence)" in explanation
-    assert "material terms:" in explanation
+    assert "mature profile, 100% confidence" in explanation
+    assert "material terms:" not in explanation
     assert "role +" in explanation
     assert "urgency +" in explanation
     assert "late missing-role urgency" in explanation
@@ -2732,14 +3264,28 @@ def test_contextual_adjustments_can_be_disabled_without_bypassing_profile_scorin
     disabled_card = next(card for card in disabled.cards if card.card.grp_id == 7)
     assert disabled_card.rating.metadata.source == "profile"
     assert disabled_card.contextual_pair == "WU"
+    assert disabled_card.contextual_theme == "patient card advantage"
+    assert not any(
+        reason.kind
+        in {
+            "role",
+            "urgency",
+            "synergy",
+            "redundancy",
+            "unsupported_payoff",
+            "fixing",
+        }
+        for reason in disabled_card.rationale.reasons
+    )
     assert disabled_card.contextual_profile_maturity == "mature"
     assert disabled_card.contextual_profile_confidence == pytest.approx(1.0)
-    explanation = recommendation_explanation(
+    explanation = render_pick_rationale_detailed(
         scored_card=disabled_card,
-        inferred_pair="WU",
     )
     assert "material terms:" not in explanation
     assert "fills " not in explanation
+    assert "context " not in explanation
+    assert "mature profile, 100% confidence" in explanation
 
     wrapped = score_pack(
         offered_grp_ids=(7, 8),

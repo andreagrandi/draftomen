@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -2511,6 +2510,7 @@ def test_tui_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
 async def _assert_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
     started = threading.Event()
     release = threading.Event()
+    finished = threading.Event()
     profile = _profile_with_card_ratings(card_ratings=_graded_profile_ratings())
 
     class ProfileClientFake:
@@ -2543,12 +2543,15 @@ async def _assert_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
             del set_code, event_format
             self.calls.append(force)
             started.set()
-            if not release.wait(timeout=5.0):
-                raise TimeoutError("Test did not release hosted profile refresh.")
-            return ProfileRefreshResult(
-                profile=profile,
-                outcome=ProfileRefreshOutcome.UPDATED,
-            )
+            try:
+                if not release.wait(timeout=5.0):
+                    raise TimeoutError("Test did not release hosted profile refresh.")
+                return ProfileRefreshResult(
+                    profile=profile,
+                    outcome=ProfileRefreshOutcome.UPDATED,
+                )
+            finally:
+                finished.set()
 
     client = ProfileClientFake()
     app = _tui_app(
@@ -2558,17 +2561,14 @@ async def _assert_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
 
     async with app.run_test(size=(120, 24)) as pilot:
         try:
-            start = time.monotonic()
             app.process_lines(lines=_first_pack_lines())
-            elapsed = time.monotonic() - start
-            await pilot.pause()
-
-            assert elapsed < 0.25
-            assert await asyncio.to_thread(started.wait, 0.5)
+            assert await asyncio.to_thread(started.wait, 5.0)
+            assert not finished.is_set()
             assert app.profile_refresh_in_flight is not None
             assert app.session.profile_refresh_request() is not None
 
             await pilot.press("s")
+            assert not finished.is_set()
             assert app.sort_mode == "win_rate"
 
             release.set()
@@ -2587,6 +2587,7 @@ async def _assert_slow_ratings_refresh_stays_responsive(tmp_path: Path) -> None:
             assert app.session.snapshot.progress is None
         finally:
             release.set()
+            await asyncio.to_thread(finished.wait, 5.0)
 
 
 def test_tui_drops_session_publication_after_shutdown(tmp_path: Path) -> None:
