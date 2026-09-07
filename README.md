@@ -68,22 +68,29 @@ draftomen
 
 The PySide6/QML desktop application loads card metadata when needed, watches
 Arena's standard log location, detects the set, and follows the draft
-automatically. Normal live TUI, plain-watch, CLI `watch`, and Qt sessions use
-the shared set-profile lifecycle as their sole ratings authority. They load
-the local profile cache first; if no usable profile is available, deterministic
-fallback scoring remains active and no direct 17Lands download is attempted.
-Explicit ratings-download requests, including retries of a recoverable ratings
-error, use the shared hosted-profile lifecycle for the active set and format.
-When a hosted manifest is explicitly configured, these requests force a
-manifest refresh despite the normal TTL. The refresh runs in the adapter-owned
-worker; it never invokes a direct provider loader. Force bypasses only that
-TTL: offline policy, a missing manifest or client, an injected authoritative
-profile, and HTTPS, checksum, schema, and non-regression checks still apply.
-Usable cached or in-memory profile ratings and recommendations remain active
-while a refresh runs or fails. A newer validated profile is adopted atomically
-and current recommendations update without restarting; repeated requests
-coalesce. TUI and Qt use their existing actions, and `watch --plain` adds no
-command UI.
+automatically. Terminal live TUI, plain-watch, and CLI `watch` sessions use the
+shared set-profile lifecycle as their sole ratings authority. They load a
+validated local profile cache first, so a warm valid profile is active
+immediately while an allowed hosted-profile refresh proceeds. If the production
+manifest (or an explicit override) is absent, inaccessible, invalid, or has no
+profile for the set, the cached profile is retained; with no usable cache,
+deterministic fallback scoring remains active and no direct 17Lands download is
+attempted.
+Terminal watch uses
+`https://www.draftomen.com/profiles/manifest.json` by default. Use
+`--profile-manifest-url URL` to override that manifest, or
+`--offline-profiles` to select profile-only offline mode. The latter prevents
+profile manifest and artifact networking but does not disable Scryfall card
+metadata, card images, or static card-data networking.
+In the TUI, press `d` to request the existing hosted-profile refresh. It
+bypasses the manifest TTL only: an unchanged result leaves cached ratings
+active, a newer validated profile updates recommendations without restarting,
+and a failed refresh reports the failure while retaining cached ratings (or
+deterministic fallback when no ratings exist). Repeated requests coalesce;
+`watch --plain` has no command UI.
+The Qt desktop command still requires an explicit
+`--profile-manifest-url` for hosted profiles; its default URL and native ratings
+presentation remain issue #354 work outside this terminal change.
 
 ### Terminal interface
 
@@ -93,14 +100,22 @@ the watch, replay, build, backtest, benchmark, data-refresh,
 
 ```bash
 draftomen-tui
+draftomen-tui watch
 draftomen-tui watch --plain
+draftomen-tui watch --offline-profiles
+draftomen-tui watch --profile-manifest-url "$PROFILE_MANIFEST_URL"
 ```
+
+Terminal `watch` and `watch --plain` use the production hosted manifest by
+default. `--profile-manifest-url` selects an alternate HTTPS manifest, and
+`--offline-profiles` disables only profile networking; Scryfall card data,
+images, and other static data sources retain their own network/cache behavior.
 
 To generate a deterministic set profile from pinned input files, use
 `generate-profile` with explicit set, format, stage, timezone-aware timestamp,
 card-database, and output paths. The producer and cache workflow, including
-remote manifest fields, validation, refresh, recovery, and opt-in live
-loading, is documented in [set profiles](docs/set-profiles.md).
+remote manifest fields, validation, refresh, recovery, and explicit provider
+ingestion, is documented in [set profiles](docs/set-profiles.md).
 
 ### Static set card data
 
@@ -137,28 +152,61 @@ In the TUI, press `r` to retry a recoverable card-data error. Network repair is
 available only before draft start; after `DraftStartedEvent`, retries use the
 local cache only.
 
-### Optional remote set profiles
+### Hosted set profiles and profile-only offline mode
 
-Set profiles are local-first: live scoring uses a validated flat cache before
-any refresh, and remains offline when no manifest URL is configured. To opt in
-to a producer-hosted HTTPS manifest, pass the URL explicitly:
+Terminal set-profile loading is local-first and hosted by default. A validated
+flat cache is used before any network refresh, so a warm valid cache remains
+active while the production manifest is checked. The default terminal manifest
+is:
+
+```text
+https://www.draftomen.com/profiles/manifest.json
+```
+
+Override it for a different producer-hosted HTTPS manifest:
 
 ```bash
 draftomen-tui watch --profile-manifest-url "$PROFILE_MANIFEST_URL"
 draftomen-tui watch --plain --profile-manifest-url "$PROFILE_MANIFEST_URL"
+```
+
+Use `--offline-profiles` for profile-only offline operation:
+
+```bash
+draftomen-tui watch --offline-profiles
+draftomen-tui watch --plain --offline-profiles
+```
+
+This flag selects `ProfileNetworkPolicy.OFFLINE` for set profiles only. It does
+not disable Scryfall card metadata, card images, or static card-data networking.
+When the hosted manifest or artifact is missing, unreachable, invalid, or
+weaker than the cached profile, the last-good cache remains authoritative. If
+there is no usable cache, deterministic fallback scoring remains active; Draft
+Omen does not load ratings directly from 17Lands in a live session.
+
+Press `d` in the Textual TUI to request a forced hosted-profile refresh for the
+active set. A successful newer profile is adopted atomically and current
+recommendations update in place; an unchanged result leaves the cache active.
+If refresh fails, the UI reports the failure and retains cached ratings, or
+retains deterministic fallback when no empirical profile is available. The
+plain watcher has no command UI. Manual `refresh-profile` remains an explicit
+producer/client operation:
+
+```bash
+draftomen-tui refresh-profile --set-code SET --format FORMAT \
+  --manifest-url "$PROFILE_MANIFEST_URL"
+```
+
+The desktop live command accepts an explicit manifest override:
+
+```bash
 draftomen --profile-manifest-url "$PROFILE_MANIFEST_URL"
 ```
 
-The same profile can be refreshed manually with
-`draftomen-tui refresh-profile --set-code SET --format FORMAT
---manifest-url "$PROFILE_MANIFEST_URL"` and an optional `--app-dir PATH`.
-Refresh validates the manifest and artifact, keeps the last-good cache on
-failure, and reports compact maturity/outcome status. Draft Omen does not
-bundle a hosted profile manifest; profile hosting remains separate from
-runtime.
-The default hosted manifest URL and native default ratings presentation remain
-outside this change (#353 and #354); these explicit opt-in commands do not
-imply a default URL.
+The terminal default does not change Qt/native default-URL or ratings-
+presentation work owned by issue #354. Draft Omen does not bundle a hosted
+manifest; producer generation, website publication, and Python/native release
+workflows remain independent of terminal profile consumption.
 
 For development-only semantic analysis, use the reproducible [card corpus
 workflow](docs/corpus.md). It keeps pinned source bytes and locks outside
@@ -166,7 +214,7 @@ tracked data and emits deterministic artifacts for offline consumers.
 
 Use the arrow keys or `j`/`k` to browse cards, `s` to change the ranking,
 `b` to open the current build, `c` to configure the view and optional splash
-recommendations, and `q` to quit.
+recommendations, `d` to refresh the hosted profile in the TUI, and `q` to quit.
 
 ### Visual development
 

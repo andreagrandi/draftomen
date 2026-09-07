@@ -37,6 +37,7 @@ from draftomen.pool import (
 from draftomen.preferences import TuiVisibilityPreferences, tui_preferences_path
 from draftomen.profile_client import (
     ProfileClient,
+    ProfileNetworkPolicy,
     ProfileRefreshOutcome,
     ProfileRefreshResult,
 )
@@ -395,22 +396,19 @@ async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
         await pilot.press("d")
         await pilot.pause()
         assert isinstance(app.screen, MissingRatingsScreen)
-        dialog = app.screen
-        prompt_title = str(dialog.query_one("#missing-ratings-title", Static).render())
-        prompt_message = str(
-            dialog.query_one("#missing-ratings-message", Static).render()
-        )
-        assert "Refresh 17Lands data for MSH" in prompt_title
-        assert "ratings are active" in prompt_message
-        assert "No local" not in prompt_title
-        assert "neutral-prior" not in prompt_message
+        recommendations_before_cancel = app.session.snapshot.recommendations
 
         await pilot.click("#cancel-ratings-download")
         await pilot.pause()
         assert not isinstance(app.screen, MissingRatingsScreen)
-        ready_notice = app._rating_notices_by_set["MSH"]
-        assert "17Lands data ready for MSH" in ready_notice
-        assert "neutral-prior" not in ready_notice
+        assert client.calls == [False]
+        assert app.session.profile_refresh_request() is None
+        assert app.profile_refresh_in_flight is None
+        assert app.session.snapshot.recommendations == recommendations_before_cancel
+        cancelled_notice = app._rating_notices_by_set["MSH"]
+        assert "Hosted profile refresh cancelled for MSH" in cancelled_notice
+        assert "existing cached ratings remain active" in cancelled_notice
+        assert "Hosted profile is current" not in cancelled_notice
 
         await pilot.press("d")
         await pilot.pause()
@@ -433,6 +431,72 @@ async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
             app.session.snapshot.set_profile.refresh_outcome
             == ProfileRefreshOutcome.UNCHANGED.value
         )
+        assert "Hosted profile unchanged for MSH" in app._rating_notices_by_set["MSH"]
+
+
+@pytest.mark.parametrize(
+    "use_offline_profile_client",
+    (False, True),
+    ids=("no-client", "offline-profile-client"),
+)
+def test_tui_rejected_ratings_refresh_does_not_stick_without_profile_client(
+    tmp_path: Path,
+    use_offline_profile_client: bool,
+) -> None:
+    asyncio.run(
+        _assert_rejected_ratings_refresh_does_not_stick(
+            tmp_path=tmp_path,
+            use_offline_profile_client=use_offline_profile_client,
+        )
+    )
+
+
+async def _assert_rejected_ratings_refresh_does_not_stick(
+    tmp_path: Path,
+    *,
+    use_offline_profile_client: bool = False,
+) -> None:
+    _write_profile_with_card_ratings(
+        tmp_path=tmp_path,
+        card_ratings=_graded_profile_ratings(),
+    )
+    profile_client = (
+        ProfileClient(
+            app_dir=tmp_path / "app",
+            manifest_url="https://profiles.example.test/manifest.json",
+            network_policy=ProfileNetworkPolicy.OFFLINE,
+        )
+        if use_offline_profile_client
+        else None
+    )
+    app = _tui_app(
+        tmp_path=tmp_path,
+        profile_client=profile_client,
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+        assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
+        recommendations = app.session.snapshot.recommendations
+
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, MissingRatingsScreen)
+        await pilot.click("#download-ratings")
+
+        for _ in range(20):
+            await pilot.pause(0.05)
+            notice = app._rating_notices_by_set.get("MSH", "")
+            if "refresh unavailable" in notice:
+                break
+
+        notice = app._rating_notices_by_set["MSH"]
+        assert "refresh unavailable" in notice
+        assert "Refreshing hosted profile" not in notice
+        assert app.session.profile_refresh_request() is None
+        assert app.profile_refresh_in_flight is None
+        assert app.session.snapshot.recommendations == recommendations
 
 
 def test_tui_discards_stale_worker_snapshot_after_newer_ui_publication(
@@ -606,6 +670,7 @@ async def _assert_fixture_stream_updates_pack_panel(tmp_path: Path) -> None:
         assert "Pick: P1P1" in status
         assert "Pool: 0" in status
         assert "Data: neutral prior" in status
+        assert "deterministic fallback" in status
         assert "Card data from 17Lands (17lands.com)" in status
 
 
@@ -2711,6 +2776,11 @@ async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
             is initial_snapshot.current_scored_pack
         )
         assert failed_snapshot.recommendations == initial_snapshot.recommendations
+        failure_notice = app._rating_notices_by_set["MSH"]
+        assert "Hosted profile refresh failed for MSH" in failure_notice
+        assert "cached ratings remain active" in failure_notice
+        assert "Hosted profile unchanged" not in failure_notice
+        assert "hosted refresh failed; cached ratings active" in _status_text(app=app)
         assert len(failed_snapshot.errors) == 1
         assert "Error: 17Lands ratings failed for MSH" in _status_text(app=app)
         error = failed_snapshot.errors[0]
