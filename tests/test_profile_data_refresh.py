@@ -215,8 +215,8 @@ def test_prepare_selects_supported_formats_in_set_and_format_order(
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        ("active", [("aaa", "PremierDraft")]),
-        ("historical", [("aaa", "TradDraft")]),
+        ("active", [("aaa", "PremierDraft"), ("aaa", "TradDraft")]),
+        ("historical", []),
     ],
 )
 def test_prepare_supports_active_and_historical_pair_selection(
@@ -236,6 +236,34 @@ def test_prepare_supports_active_and_historical_pair_selection(
     )
 
     assert [(pair.set_code, pair.event_format) for pair in plan.pairs] == expected
+
+
+def test_prepare_keeps_hob_quickdraft_active_when_another_format_is_live(
+    tmp_path: Path,
+) -> None:
+    card_dir = tmp_path / "card-data"
+    _write_card_artifact(card_dir, set_code="hob", set_name="HOB")
+    filters = _filters(
+        available={"HOB": ["QuickDraft", "PremierDraft"]},
+        live={"HOB": ["PremierDraft"]},
+    )
+
+    active = refresh.prepare_profile_data_refresh(
+        card_data_dir=card_dir,
+        mode="active",
+        fetch_json=lambda _url, _timeout: filters,
+    )
+    historical = refresh.prepare_profile_data_refresh(
+        card_data_dir=card_dir,
+        mode="historical",
+        fetch_json=lambda _url, _timeout: filters,
+    )
+
+    assert [(pair.set_code, pair.event_format) for pair in active.pairs] == [
+        ("hob", "PremierDraft"),
+        ("hob", "QuickDraft"),
+    ]
+    assert [(pair.set_code, pair.event_format) for pair in historical.pairs] == []
 
 
 def test_prepare_selector_matches_code_or_full_name_and_rejects_ambiguous(
