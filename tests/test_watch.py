@@ -75,11 +75,19 @@ def test_plain_watch_processes_appended_lines_incrementally(tmp_path: Path) -> N
         assert len(pack_events) == 1
         pack_event = pack_events[0]
         assert pack_event.snapshot.recommendations.cards
-        concise_explanation = (
-            pack_event.snapshot.recommendations.cards[0].concise_explanation
+        recommendation_state = pack_event.snapshot.recommendations
+        recommendations_by_grp_id = {
+            recommendation.card.grp_id: recommendation
+            for recommendation in recommendation_state.cards
+        }
+        assert recommendations_by_grp_id
+        assert all(
+            recommendation.concise_explanation
+            for recommendation in recommendations_by_grp_id.values()
         )
-        assert concise_explanation is not None
-        expected_recommendation = f"  Recommendation: {concise_explanation}"
+        top_explanation = recommendation_state.cards[0].concise_explanation
+        assert top_explanation
+        expected_recommendation = f"  Recommendation: {top_explanation}"
 
         assert pack_output.startswith(
             "Active account: FixturePlayer (FIXTURECLIENTID1234567890)\n"
@@ -111,20 +119,38 @@ def test_plain_watch_processes_appended_lines_incrementally(tmp_path: Path) -> N
             and line.startswith("  ")
             and line[2:4].isdigit()
         ]
+        assert ranked_rows
+        for row_index in ranked_rows:
+            row_line = output_lines[row_index]
+            grp_id = int(row_line.split("(grpId ", 1)[1].split(")", 1)[0])
+            recommendation = recommendations_by_grp_id[grp_id]
+            explanation = recommendation.concise_explanation
+            assert explanation
+            assert output_lines[row_index + 1] == (
+                f"      Why this score: {explanation}"
+            )
+        final_row_end = ranked_rows[-1] + 1
+        assert output_lines[final_row_end].startswith("      Why this score: ")
         recommendation_indices = [
             index
             for index, line in enumerate(output_lines)
             if "Recommendation:" in line
         ]
-        assert recommendation_indices == [ranked_rows[-1] + 1]
+        assert recommendation_indices == [final_row_end + 1]
         assert output_lines[recommendation_indices[0]] == expected_recommendation
         assert output_lines.count(expected_recommendation) == 1
+        confidence_line = f"  Confidence: {recommendation_state.confidence_summary}"
+        comparison_line = f"  {recommendation_state.comparison_summary}"
+        confidence_index = output_lines.index(confidence_line)
+        comparison_index = output_lines.index(comparison_line)
+        assert confidence_index == recommendation_indices[0] + 1
+        assert comparison_index == confidence_index + 1
         prior_note_index = next(
             index
             for index, line in enumerate(output_lines)
             if line.startswith("  * Prior uses ")
         )
-        assert recommendation_indices[0] < prior_note_index
+        assert comparison_index < prior_note_index
 
         _append_lines(path=log_path, lines=fixture_lines[7:8])
         _, pick_output = poll_with_events()
@@ -159,7 +185,7 @@ def test_plain_watch_formats_buffered_pack_recommendations_per_event(
             event_name="QuickDraft_MSH_20260702",
             pack_number=0,
             pick_number=1,
-            draft_pack=(105080, 104995),
+            draft_pack=(105097, 105080),
             picked_cards=(),
         ),
     ]
@@ -167,39 +193,69 @@ def test_plain_watch_formats_buffered_pack_recommendations_per_event(
     try:
         watcher._events.clear()
         watcher.session.process_lines(lines=lines)
-        published = tuple(watcher._events)
-        pack_events = [
+        captured_pack_events = [
             event
-            for event in published
+            for event in tuple(watcher._events)
             if isinstance(event.event, PackOfferedEvent)
         ]
-        assert len(pack_events) == 2
-        concise_explanations = [
-            event.snapshot.recommendations.cards[0].concise_explanation
-            for event in pack_events
-        ]
-        confidence_summaries = [
-            event.snapshot.recommendations.confidence_summary
-            for event in pack_events
-        ]
-        comparison_summaries = [
-            event.snapshot.recommendations.comparison_summary
-            for event in pack_events
-        ]
-        assert all(explanation is not None for explanation in concise_explanations)
-        assert all(confidence is not None for confidence in confidence_summaries)
-        assert all(comparison is not None for comparison in comparison_summaries)
-        assert comparison_summaries[0] != comparison_summaries[1]
+        assert len(captured_pack_events) == 2
+
+        expected_by_publication: list[dict[int, str]] = []
+        rendered_pack_events = []
+        for event_index, pack_event in enumerate(captured_pack_events):
+            expected_explanations = {
+                recommendation.card.grp_id: (
+                    f"publication-{event_index + 1}-grp-"
+                    f"{recommendation.card.grp_id}"
+                )
+                for recommendation in pack_event.snapshot.recommendations.cards
+            }
+            assert len(expected_explanations) >= 2
+            expected_by_publication.append(expected_explanations)
+            recommendation_cards = tuple(
+                replace(
+                    recommendation,
+                    concise_explanation=expected_explanations[
+                        recommendation.card.grp_id
+                    ],
+                )
+                for recommendation in pack_event.snapshot.recommendations.cards
+            )
+            if event_index == 1:
+                recommendation_cards = tuple(reversed(recommendation_cards))
+            recommendation_state = replace(
+                pack_event.snapshot.recommendations,
+                cards=recommendation_cards,
+            )
+            rendered_pack_events.append(
+                replace(
+                    pack_event,
+                    snapshot=replace(
+                        pack_event.snapshot,
+                        recommendations=recommendation_state,
+                    ),
+                )
+            )
+        shared_grp_ids = set(expected_by_publication[0]) & set(
+            expected_by_publication[1]
+        )
+        assert shared_grp_ids
+        assert all(
+            expected_by_publication[0][grp_id]
+            != expected_by_publication[1][grp_id]
+            for grp_id in shared_grp_ids
+        )
+        watcher._events = list(rendered_pack_events)
 
         output_lines = watcher._render_published_events().splitlines()
         pack_starts = [
             index
             for index, line in enumerate(output_lines)
-            if line.startswith("Pack ")
+            if line.startswith("Pack ") and " Pick " in line
         ]
         assert len(pack_starts) == 2
         for event_index, (pack_event, pack_start) in enumerate(
-            zip(pack_events, pack_starts, strict=True)
+            zip(rendered_pack_events, pack_starts, strict=True)
         ):
             pack_end = (
                 pack_starts[event_index + 1]
@@ -207,39 +263,48 @@ def test_plain_watch_formats_buffered_pack_recommendations_per_event(
                 else len(output_lines)
             )
             block_lines = output_lines[pack_start:pack_end]
-            recommendation_line = (
-                f"  Recommendation: {concise_explanations[event_index]}"
+            block_text = "\n".join(block_lines)
+            expected_explanations = expected_by_publication[event_index]
+            other_explanations = set(
+                expected_by_publication[1 - event_index].values()
             )
+            assert not any(
+                explanation in block_text for explanation in other_explanations
+            )
+            recommendation_state = pack_event.snapshot.recommendations
+            top_explanation = recommendation_state.cards[0].concise_explanation
+            assert top_explanation
+            recommendation_line = f"  Recommendation: {top_explanation}"
             ranked_rows = [
                 index
                 for index, line in enumerate(block_lines)
                 if line.startswith("  ")
                 and line[2:4].isdigit()
             ]
+            assert len(ranked_rows) >= 2
+            for row_index in ranked_rows:
+                row_line = block_lines[row_index]
+                grp_id = int(row_line.split("(grpId ", 1)[1].split(")", 1)[0])
+                assert grp_id in expected_explanations
+                assert block_lines[row_index + 1] == (
+                    f"      Why this score: {expected_explanations[grp_id]}"
+                )
+            recommendation_index = block_lines.index(recommendation_line)
+            assert recommendation_index == ranked_rows[-1] + 2
             assert block_lines.count(recommendation_line) == 1
-            assert sum("Recommendation:" in line for line in block_lines) == 1
-            assert block_lines.index(recommendation_line) == ranked_rows[-1] + 1
-            confidence_line = f"  Confidence: {confidence_summaries[event_index]}"
-            comparison_line = f"  {comparison_summaries[event_index]}"
-            assert block_lines.count(confidence_line) == 1
-            assert block_lines.count(comparison_line) == 1
-            assert block_lines.index(confidence_line) == (
-                block_lines.index(recommendation_line) + 1
-            )
-            assert block_lines.index(comparison_line) == (
-                block_lines.index(confidence_line) + 1
-            )
+            confidence_line = f"  Confidence: {recommendation_state.confidence_summary}"
+            comparison_line = f"  {recommendation_state.comparison_summary}"
+            confidence_index = block_lines.index(confidence_line)
+            comparison_index = block_lines.index(comparison_line)
+            assert confidence_index == recommendation_index + 1
+            assert comparison_index == confidence_index + 1
             prior_note_indices = [
                 index
                 for index, line in enumerate(block_lines)
                 if line.startswith("  * Prior uses ")
             ]
             if prior_note_indices:
-                assert block_lines.index(recommendation_line) < prior_note_indices[0]
-                assert block_lines.index(comparison_line) < prior_note_indices[0]
-            assert pack_event.snapshot.recommendations.cards[0].card.name in (
-                "\n".join(block_lines)
-            )
+                assert comparison_index < prior_note_indices[0]
         assert watcher._render_published_events() == ""
     finally:
         watcher.close()
@@ -265,12 +330,11 @@ def test_plain_watch_omits_recommendation_for_empty_published_cards(
             for event in watcher._events
             if isinstance(event.event, PackOfferedEvent)
         )
+        recommendation_state = published.snapshot.recommendations
         empty_recommendations = replace(
-            published.snapshot.recommendations,
+            recommendation_state,
             cards=(),
             selected_grp_id=None,
-            confidence_summary=None,
-            comparison_summary=None,
         )
         empty_snapshot = replace(
             published.snapshot,
@@ -279,10 +343,105 @@ def test_plain_watch_omits_recommendation_for_empty_published_cards(
         empty_published = replace(published, snapshot=empty_snapshot)
         watcher._events = [empty_published]
         output = watcher._render_published_events()
+        output_lines = output.splitlines()
         assert "Offered cards:" in output
-        assert any(line.startswith("  01") for line in output.splitlines())
+        assert any(line.startswith("  01") for line in output_lines)
         assert "Recommendation:" not in output
-        assert "Confidence:" not in output
+        assert "Why this score:" not in output
+        confidence_line = f"  Confidence: {recommendation_state.confidence_summary}"
+        comparison_line = f"  {recommendation_state.comparison_summary}"
+        confidence_index = output_lines.index(confidence_line)
+        comparison_index = output_lines.index(comparison_line)
+        prior_note_index = next(
+            index
+            for index, line in enumerate(output_lines)
+            if line.startswith("  * Prior uses ")
+        )
+        assert confidence_index < comparison_index < prior_note_index
+    finally:
+        watcher.close()
+
+
+@pytest.mark.parametrize("missing_explanation", [None, ""])
+def test_plain_watch_omits_missing_concise_rationale(
+    tmp_path: Path,
+    missing_explanation: str | None,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("", encoding="utf-8")
+    watcher = PlainLogWatcher(
+        log_path=log_path,
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+    )
+    fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+
+    try:
+        watcher._events.clear()
+        watcher.session.process_lines(lines=fixture_lines[:7])
+        published = next(
+            event
+            for event in watcher._events
+            if isinstance(event.event, PackOfferedEvent)
+        )
+        recommendation_state = published.snapshot.recommendations
+        assert len(recommendation_state.cards) >= 2
+        top_recommendation, valid_recommendation = recommendation_state.cards[:2]
+        valid_concise = "VALID_CONCISE_SENTINEL"
+        assert valid_recommendation.explanation != valid_concise
+        replaced_cards = tuple(
+            replace(
+                recommendation,
+                concise_explanation=(
+                    missing_explanation
+                    if recommendation.card.grp_id == top_recommendation.card.grp_id
+                    else valid_concise
+                    if recommendation.card.grp_id == valid_recommendation.card.grp_id
+                    else recommendation.concise_explanation
+                ),
+            )
+            for recommendation in recommendation_state.cards
+        )
+        replaced_recommendations = replace(
+            recommendation_state,
+            cards=replaced_cards,
+        )
+        replaced_snapshot = replace(
+            published.snapshot,
+            recommendations=replaced_recommendations,
+        )
+        watcher._events = [replace(published, snapshot=replaced_snapshot)]
+        output_lines = watcher._render_published_events().splitlines()
+        output = "\n".join(output_lines)
+        assert "Recommendation:" not in output
+        assert "VALID_CONCISE_SENTINEL" in output
+        top_row_index = next(
+            index
+            for index, line in enumerate(output_lines)
+            if f"(grpId {top_recommendation.card.grp_id})" in line
+            and line.startswith("  01")
+        )
+        assert not output_lines[top_row_index + 1].startswith(
+            "      Why this score: "
+        )
+        valid_row_index = next(
+            index
+            for index, line in enumerate(output_lines)
+            if f"(grpId {valid_recommendation.card.grp_id})" in line
+        )
+        assert output_lines[valid_row_index + 1] == (
+            f"      Why this score: {valid_concise}"
+        )
+        confidence_line = f"  Confidence: {recommendation_state.confidence_summary}"
+        comparison_line = f"  {recommendation_state.comparison_summary}"
+        confidence_index = output_lines.index(confidence_line)
+        comparison_index = output_lines.index(comparison_line)
+        prior_note_index = next(
+            index
+            for index, line in enumerate(output_lines)
+            if line.startswith("  * Prior uses ")
+        )
+        assert confidence_index < comparison_index < prior_note_index
     finally:
         watcher.close()
 
