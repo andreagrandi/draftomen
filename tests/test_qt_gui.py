@@ -2322,7 +2322,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from PySide6.QtCore import QObject, Qt, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtTest import QTest
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -2390,12 +2390,52 @@ download.forceActiveFocus()
 QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
 dialog = root.findChild(QObject, "ratingsDownloadDialog")
+background = root.findChild(QObject, "ratingsDownloadDialogBackground")
+header = root.findChild(QObject, "ratingsDownloadDialogHeader")
+title = root.findChild(QObject, "ratingsDownloadDialogTitle")
+message = root.findChild(QObject, "ratingsDownloadDialogMessage")
+footer = root.findChild(QObject, "ratingsDownloadDialogFooter")
+footer_background = root.findChild(QObject, "ratingsDownloadDialogFooterBackground")
+confirm = root.findChild(QObject, "ratingsDownloadConfirmButton")
 assert dialog is not None
 assert dialog.property("visible") is True
+assert dialog.property("modal") is True
+assert all(
+    item is not None
+    for item in (background, header, title, message, footer, footer_background, confirm)
+)
+window_width = float(root.property("width"))
+window_height = float(root.property("height"))
+dialog_width = float(dialog.property("width"))
+dialog_height = float(dialog.property("height"))
+assert dialog_width <= window_width - 32
+assert dialog_height <= window_height - 32
+assert abs(float(dialog.property("x")) - (window_width - dialog_width) / 2) <= 1
+assert abs(float(dialog.property("y")) - (window_height - dialog_height) / 2) <= 1
+assert QColor(background.property("color")) == QColor("#11142a")
+assert int(background.property("radius")) == 4
+assert float(header.property("implicitHeight")) == 52
+assert QColor(header.property("color")) == QColor("#191d3b")
+assert QColor(title.property("color")) == QColor("#f5f1e8")
+assert footer.property("alignment") != 0
+assert QColor(footer_background.property("color")) == QColor("#191d3b")
 QTest.keyClick(root, Qt.Key_Escape)
 application.processEvents()
 assert dialog.property("visible") is False
+assert download.property("activeFocus") is True
 
+download.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert dialog.property("visible") is True
+confirm.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert dialog.property("visible") is False
+assert any(isinstance(command, RequestRatingsDownload) for command in provider.commands)
+assert provider.state["ratings"]["phase"] == "loading"
+provider._replace_state(state=unavailable_state)
+application.processEvents()
 settings = root.findChild(QObject, "settingsButton")
 assert settings is not None
 settings.forceActiveFocus()

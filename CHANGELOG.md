@@ -7,6 +7,8 @@
   refreshes while retaining source pull-request and master-push coverage.
 - Classify active and historical profile refresh formats at expansion level,
   keeping every supported format in the expansion's lifecycle partition.
+- Center and theme the live ratings-refresh confirmation consistently with the
+  About and Settings dialogs while preserving keyboard focus and commands.
 - Show unchanged concise pick rationale in compact desktop card previews and
   unchanged detailed rationale in focused intel, with wrapped plain text,
   retained scrolling and no pick rationale in build previews. (#389)

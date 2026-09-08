@@ -182,30 +182,88 @@ Rectangle {
         id: ratingsDownloadDialog
         objectName: "ratingsDownloadDialog"
         property var returnFocusItem: null
-        implicitWidth: 400
+        parent: Overlay.overlay
         modal: true
         focus: true
-        parent: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape
         title: "Refresh hosted ratings?"
-        onClosed: {
-            if (returnFocusItem)
-                returnFocusItem.forceActiveFocus()
+        width: Math.min(420, Math.max(300, parent ? parent.width - 32 : 420))
+        x: parent ? Math.max(16, Math.round((parent.width - width) / 2)) : 16
+        y: parent ? Math.max(16, Math.round((parent.height - height) / 2)) : 16
+        padding: 16
+
+        Overlay.modal: Rectangle {
+            color: "#99000000"
         }
 
-        Label {
-            width: 360
-            text: "Check the hosted 17Lands profile for "
-                + root.ratings.set_code
-                + "? Cached ratings or deterministic fallback remain available while it refreshes."
-            color: Theme.text
-            wrapMode: Text.WordWrap
+        background: Rectangle {
+            objectName: "ratingsDownloadDialogBackground"
+            color: Theme.surface
+            border.color: Theme.outline
+            border.width: 1
+            radius: Theme.radius
+        }
+
+        header: Rectangle {
+            objectName: "ratingsDownloadDialogHeader"
+            implicitHeight: 52
+            color: Theme.surfaceHigh
+            border.color: Theme.outline
+            border.width: 1
+
+            Label {
+                objectName: "ratingsDownloadDialogTitle"
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                text: ratingsDownloadDialog.title
+                color: Theme.text
+                font.pixelSize: Theme.textPixelSize(18)
+                font.bold: true
+                verticalAlignment: Text.AlignVCenter
+                Accessible.name: text
+            }
+        }
+
+        onClosed: {
+            const opener = returnFocusItem
+            returnFocusItem = null
+            if (opener && opener.visible && opener.enabled)
+                opener.forceActiveFocus()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 12
+            implicitWidth: 360
+
+            Label {
+                objectName: "ratingsDownloadDialogMessage"
+                Layout.fillWidth: true
+                text: "Check the hosted 17Lands profile for "
+                    + root.ratings.set_code
+                    + "? Cached ratings or deterministic fallback remain available while it refreshes."
+                color: Theme.text
+                wrapMode: Text.WordWrap
+                Accessible.name: text
+            }
         }
 
         footer: DialogButtonBox {
+            objectName: "ratingsDownloadDialogFooter"
+            implicitHeight: 58
+            alignment: Qt.AlignRight
+            background: Rectangle {
+                objectName: "ratingsDownloadDialogFooterBackground"
+                color: Theme.surfaceHigh
+                border.color: Theme.outline
+                border.width: 1
+            }
+
             DimensionalButton {
                 objectName: "ratingsDownloadCancelButton"
                 text: "Not now"
                 accented: false
+                implicitWidth: 96
                 Accessible.name: "Cancel ratings download"
                 onClicked: ratingsDownloadDialog.close()
             }
@@ -213,6 +271,7 @@ Rectangle {
             DimensionalButton {
                 objectName: "ratingsDownloadConfirmButton"
                 text: "Refresh hosted ratings"
+                implicitWidth: 144
                 Accessible.name: "Confirm hosted ratings refresh"
                 onClicked: {
                     sessionProvider.requestRatings()
