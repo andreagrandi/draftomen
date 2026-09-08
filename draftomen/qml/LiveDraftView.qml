@@ -75,6 +75,11 @@ Item {
         return recommendations && recommendations.confidence_summary
             ? String(recommendations.confidence_summary) : ""
     }
+    readonly property string comparisonSummary: {
+        const recommendations = sessionState.recommendations
+        return recommendations && recommendations.comparison_summary
+            ? String(recommendations.comparison_summary) : ""
+    }
 
     readonly property string draftHeading: {
         const draft = sessionState.draft
@@ -180,6 +185,20 @@ Item {
                     font.pixelSize: Theme.textPixelSize(12)
                     font.bold: true
                     wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                }
+
+                Label {
+                    objectName: "recommendationComparisonSummary"
+                    visible: root.comparisonSummary.length > 0
+                    text: root.comparisonSummary
+                    textFormat: Text.PlainText
+                    color: Theme.text
+                    font.pixelSize: Theme.textPixelSize(12)
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                 }
 
                 Label {

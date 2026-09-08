@@ -6,6 +6,9 @@
 - Explain why the top DO recommendation outranks the runner-up using retained
   scoring evidence, preserve the comparison across display sorting, and record
   it in decision audits without changing evaluation identity. (#398)
+- Show the unchanged top-two DO comparison beside confidence in the TUI,
+  plain-watch pack footer, and desktop Live Draft header while preserving its
+  DO-order meaning across display sorting and buffered publications. (#399)
 - Prevent pull-request CI runs for generated-only website card-data and profile
   refreshes while retaining source pull-request and master-push coverage.
 - Classify active and historical profile refresh formats at expansion level,

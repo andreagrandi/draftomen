@@ -733,7 +733,7 @@ def startup_case(*, name, contextual_enabled, legacy):
     case_dir = Path(os.environ["DRAFTOMEN_E2E_APP_DIR"]) / name
     case_dir.mkdir(parents=True, exist_ok=True)
     log_path = case_dir / "Player.log"
-    log_path.write_text("".join(fixture_log_lines[:22]), encoding="utf-8")
+    log_path.write_text("".join(fixture_log_lines[:7]), encoding="utf-8")
     if legacy:
         seed_preferences(
             case_dir=case_dir,
@@ -928,22 +928,9 @@ bulk_file = project_root / "tests" / "fixtures" / "scryfall-default-cards-sample
 class RecordingLiveSession(LiveSession):
     def __init__(self, **kwargs):
         self.build_requests: list[dict[str, bool | int]] = []
-        self.scored_publications: list[dict[str, object]] = []
         self.app_dir = kwargs["app_dir"]
         super().__init__(**kwargs)
 
-    def _publish(self, snapshot):
-        super()._publish(snapshot=snapshot)
-        scored_pack = self.snapshot.current_scored_pack
-        if scored_pack is not None and not self.scored_publications:
-            self.scored_publications.append(
-                {
-                    "scored_pack": scored_pack,
-                    "contextual_adjustments_enabled": (
-                        self.snapshot.contextual_adjustments_enabled
-                    ),
-                }
-            )
 
     def dispatch(self, *, command: LiveSessionCommand):
         if isinstance(command, RequestBuild):
@@ -1030,14 +1017,107 @@ try:
     )
     recording_session = recording_sessions[0]
     wait_until(
-        lambda: recording_session.scored_publications,
-        "the first published startup scoring result",
+        lambda: recording_session.snapshot.draft is not None
+        and recording_session.snapshot.draft.pick_number == 5
+        and recording_session.snapshot.current_scored_pack is not None,
+        "the current startup scoring result",
     )
-    first_scoring = recording_session.scored_publications[0]
-    assert first_scoring["contextual_adjustments_enabled"] is True
-    assert first_scoring["scored_pack"].cards
+    first_scored_pack = recording_session.snapshot.current_scored_pack
+    assert first_scored_pack is not None
+    assert first_scored_pack.cards
     assert recording_session.snapshot.contextual_adjustments_enabled is True
     assert root.property("currentSurface") == "live"
+    first_comparison_summary = first_scored_pack.comparison_summary
+    assert isinstance(first_comparison_summary, str)
+    comparison = root.findChild(QObject, "recommendationComparisonSummary")
+    confidence = root.findChild(QObject, "recommendationConfidenceSummary")
+    live_view = root.findChild(QObject, "liveDraftView")
+    ranking = root.findChild(QObject, "rankingSelector")
+    assert (
+        comparison is not None
+        and confidence is not None
+        and live_view is not None
+        and ranking is not None
+    )
+    wait_until(
+        lambda: provider.state["recommendations"]["comparison_summary"]
+        == first_comparison_summary,
+        "the published production recommendation comparison",
+    )
+    assert comparison.isVisible()
+    assert comparison.property("text") == first_comparison_summary
+
+    def assert_comparison_layout(*, width: int, height: int) -> None:
+        root.resize(width, height)
+        application.processEvents()
+        assert comparison.isVisible()
+        assert comparison.property("text") == first_comparison_summary
+        assert comparison.width() > 0
+        assert comparison.height() > 0
+        assert float(comparison.property("implicitHeight")) <= (
+            comparison.height() + 1
+        )
+        assert float(comparison.property("paintedHeight")) <= (
+            comparison.height() + 1
+        )
+        comparison_top_left = comparison.mapToScene(QPointF(0, 0))
+        comparison_bottom_right = comparison.mapToScene(
+            QPointF(comparison.width(), comparison.height())
+        )
+        live_top_left = live_view.mapToScene(QPointF(0, 0))
+        live_bottom_right = live_view.mapToScene(
+            QPointF(live_view.width(), live_view.height())
+        )
+        ranking_top_left = ranking.mapToScene(QPointF(0, 0))
+        assert comparison_top_left.x() >= live_top_left.x() - 1
+        assert comparison_top_left.y() >= live_top_left.y() - 1
+        assert comparison_bottom_right.x() <= live_bottom_right.x() + 1
+        assert comparison_bottom_right.y() <= live_bottom_right.y() + 1
+        assert comparison_bottom_right.x() <= ranking_top_left.x() + 1
+        if confidence.isVisible():
+            confidence_bottom_right = confidence.mapToScene(
+                QPointF(confidence.width(), confidence.height())
+            )
+            assert comparison_top_left.y() >= confidence_bottom_right.y() - 1
+
+    for ranking_mode in ("win_rate", "alsa", "mv"):
+        provider.changeRanking(ranking_mode)
+        wait_until(
+            lambda: provider.state["recommendations"]["ranking_mode"]
+            == ranking_mode,
+            ranking_mode + " production recommendation sort",
+        )
+        assert provider.state["recommendations"]["comparison_summary"] == (
+            first_comparison_summary
+        )
+        assert comparison.property("text") == first_comparison_summary
+
+    for recommendation in provider.state["recommendations"]["cards"][:2]:
+        grp_id = recommendation["card"]["grp_id"]
+        provider.chooseRecommendation(grp_id)
+        wait_until(
+            lambda: provider.state["recommendations"]["selected_grp_id"] == grp_id,
+            "the focused production recommendation",
+        )
+        assert comparison.property("text") == first_comparison_summary
+        assert provider.state["recommendations"]["comparison_summary"] == (
+            first_comparison_summary
+        )
+    provider.changeRanking("score")
+    wait_until(
+        lambda: provider.state["recommendations"]["ranking_mode"] == "score",
+        "the restored production recommendation sort",
+    )
+    assert provider.state["recommendations"]["comparison_summary"] == (
+        first_comparison_summary
+    )
+
+
+    assert_comparison_layout(width=1440, height=900)
+    assert_comparison_layout(width=760, height=900)
+    assert_comparison_layout(width=680, height=640)
+
+
     root.resize(760, 900)
     application.processEvents()
     live_preview = root.findChild(QObject, "narrowLiveCardPreview")
@@ -1174,7 +1254,58 @@ try:
     application.processEvents()
     assert root.property("currentSurface") == "live"
     with log_path.open(mode="a", encoding="utf-8") as log_file:
-        log_file.writelines(fixture_log_lines[22:])
+        log_file.writelines(fixture_log_lines[22:49])
+    wait_until(
+        lambda: (provider.state.get("draft") or {}).get("pack_number") == 1,
+        "the published subsequent production pack",
+    )
+    wait_until(
+        lambda: (provider.state.get("draft") or {}).get("pack_number") == 1
+        and recording_session.snapshot.current_scored_pack is not None,
+        "the scored subsequent production pack",
+    )
+    second_snapshot = recording_session.snapshot
+    second_scored_pack = second_snapshot.current_scored_pack
+    assert second_scored_pack is not None
+    second_comparison_summary = second_scored_pack.comparison_summary
+    assert isinstance(second_comparison_summary, str)
+    assert second_comparison_summary != first_comparison_summary
+    wait_until(
+        lambda: provider.state["recommendations"]["comparison_summary"]
+        == second_comparison_summary,
+        "the subsequent production recommendation comparison",
+    )
+    assert comparison.isVisible()
+    assert comparison.property("text") == second_comparison_summary
+
+    single_card_recommendations = replace(
+        second_snapshot.recommendations,
+        cards=second_snapshot.recommendations.cards[:1],
+        comparison_summary=None,
+    )
+    recording_session._publish(
+        replace(
+            second_snapshot,
+            recommendations=single_card_recommendations,
+        )
+    )
+    wait_until(
+        lambda: provider.state["recommendations"]["comparison_summary"] is None,
+        "the cleared single-card production comparison",
+    )
+    assert comparison.isVisible() is False
+    recording_session._publish(second_snapshot)
+    wait_until(
+        lambda: provider.state["recommendations"]["comparison_summary"]
+        == second_comparison_summary,
+        "the restored subsequent production comparison",
+    )
+    assert comparison.isVisible()
+    assert comparison.property("text") == second_comparison_summary
+
+    with log_path.open(mode="a", encoding="utf-8") as log_file:
+        log_file.writelines(fixture_log_lines[49:])
+
     build_view = root.findChild(QObject, "buildView")
     assert build_view is not None
     wait_until(
@@ -1389,7 +1520,7 @@ fixture_log_lines = fixture_log_path.read_text(encoding="utf-8").splitlines(
 )
 log_path = app_dir / "Player.log"
 log_path.parent.mkdir(parents=True, exist_ok=True)
-log_path.write_text("".join(fixture_log_lines[:22]), encoding="utf-8")
+log_path.write_text("".join(fixture_log_lines[:7]), encoding="utf-8")
 bulk_file = project_root / "tests" / "fixtures" / "scryfall-default-cards-sample.jsonl"
 
 
@@ -1763,7 +1894,7 @@ try:
     assert preview.property("recommendation") is None
     assert explanation.property("text") == ""
     with log_path.open(mode="a", encoding="utf-8") as log_file:
-        log_file.writelines(fixture_log_lines[22:])
+        log_file.writelines(fixture_log_lines[7:])
     wait_until(
         lambda: (provider.state.get("draft") or {}).get("completed") is True,
         "the completed fixture draft",
@@ -4514,6 +4645,26 @@ assert narrow_filter is not None and narrow_filter.isVisible()
 assert narrow_live_preview is not None and narrow_live_preview.isVisible()
 assert narrow_live_pool is not None and narrow_live_pool.isVisible() is False
 assert narrow_row is not None and narrow_row.height() >= 100
+comparison = root.findChild(QObject, "recommendationComparisonSummary")
+assert comparison is not None
+state_before_markup = dict(provider.state)
+recommendations_with_markup = dict(state_before_markup["recommendations"])
+markup_summary = (
+    "DO recommendation: <b>Alpha & Beta</b> ranks ahead of <i>Gamma</i> "
+    "because this deliberately long plain-text comparison wraps without markup."
+)
+recommendations_with_markup["comparison_summary"] = markup_summary
+state_with_markup = dict(state_before_markup)
+state_with_markup["recommendations"] = recommendations_with_markup
+provider._replace_state(state=state_with_markup)
+application.processEvents()
+assert comparison.isVisible()
+assert comparison.property("text") == markup_summary
+assert comparison.width() > 0
+assert float(comparison.property("paintedHeight")) <= comparison.height() + 1
+provider._replace_state(state=state_before_markup)
+application.processEvents()
+
 assert narrow_row.width() == narrow_controls.width()
 assert narrow_live_preview.width() == narrow_controls.width()
 assert_visual_item_inside(narrow_controls, narrow_filter)
