@@ -714,11 +714,16 @@ def test_execute_reports_content_object_conflict_without_manifest_mutation(
         _manifest_for_profile(set_code="aaa", event_format="QuickDraft"),
     )
     ratings = _ratings(set_code="aaa", event_format="QuickDraft")
+    card_database = SetCardData.from_gzip_bytes(
+        card_path.read_bytes(),
+        expected_set_code="aaa",
+        expected_set_name="Alpha Set",
+    ).to_card_database()
     generation = generate_set_profile(
         set_code="aaa",
         event_format="QuickDraft",
         stage="early",
-        card_database=_database(set_code="aaa", set_name="Alpha Set"),
+        card_database=card_database,
         generated_at=ratings.fetched_at,
         ratings=ratings,
     )
@@ -770,11 +775,16 @@ def test_execute_manifest_failure_preserves_old_manifest_and_leaves_valid_object
     old_manifest_bytes = manifest_path.read_bytes()
     old_manifest_mtime = manifest_path.stat().st_mtime_ns
     ratings = _ratings(set_code="aaa", event_format="QuickDraft")
+    card_database = SetCardData.from_gzip_bytes(
+        card_path.read_bytes(),
+        expected_set_code="aaa",
+        expected_set_name="Alpha Set",
+    ).to_card_database()
     generation = generate_set_profile(
         set_code="aaa",
         event_format="QuickDraft",
         stage="early",
-        card_database=_database(set_code="aaa", set_name="Alpha Set"),
+        card_database=card_database,
         generated_at=ratings.fetched_at,
         ratings=ratings,
     )

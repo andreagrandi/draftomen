@@ -512,13 +512,13 @@ def generate_set_profile(
             skip_counts=skip_counts,
             structure_targets=normalized_structure_targets,
         )
+        if config.include_role_profile:
+            role_profile = _compile_roles(
+                card_database=card_database,
+                set_code=normalized_set,
+                skip_counts=skip_counts,
+            )
         if normalized_stage == ProfileGenerationStage.MATURE:
-            if config.include_role_profile:
-                role_profile = _compile_roles(
-                    card_database=card_database,
-                    set_code=normalized_set,
-                    skip_counts=skip_counts,
-                )
             pair_profiles = _mature_pair_profiles(
                 pair_profiles=pair_profiles,
                 pair_decks=pair_decks,

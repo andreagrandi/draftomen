@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime
@@ -35,6 +36,7 @@ from draftomen.pool_ledger import (
     PoolRoleLedger,
     project_pool_role_ledger,
 )
+from draftomen.profile_generation import generate_set_profile
 from draftomen.ranking import RANKING_MODES, rank_scored_cards
 from draftomen.replay import format_pack_offered_event
 from draftomen.set_profile import (
@@ -3542,6 +3544,61 @@ def test_explanation_exposes_context_metadata_and_material_late_terms() -> None:
     assert "role +" in explanation
     assert "urgency +" in explanation
     assert "late missing-role urgency" in explanation
+
+
+def test_generated_early_semantic_profile_contributes_without_live_ratings() -> None:
+    database = _contextual_database()
+    database = replace(
+        database,
+        cards={
+            **database.cards,
+            7: replace(
+                database.cards[7],
+                types=("Instant",),
+                type_line="Instant",
+                oracle_text="Draw two cards.",
+            ),
+        },
+    )
+    ratings = replace(
+        _contextual_ratings().primary,
+        set_code="TST",
+        event_format="QuickDraft",
+    )
+    generated = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=database,
+        source_manifest=None,
+        generated_at=datetime(1970, 1, 1, tzinfo=UTC),
+        ratings=ratings,
+    )
+    profile = SetProfile.from_json(json.loads(generated.profile.to_bytes()))
+
+    enabled = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1,),
+        ratings_data=None,
+    ).cards[0]
+    disabled = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1,),
+        ratings_data=None,
+        contextual_adjustments_enabled=False,
+    ).cards[0]
+
+    assert enabled.contextual_breakdown.role > 0
+    assert enabled.contextual_evidence
+    assert enabled.contextual_profile_maturity == "early"
+    assert disabled.contextual_breakdown.role == 0
+    assert disabled.contextual_evidence == ()
+    assert disabled.rating.gih_win_rate == enabled.rating.gih_win_rate
+
 
 def test_contextual_adjustments_can_be_disabled_without_bypassing_profile_scoring() -> None:
     database = _contextual_database()
