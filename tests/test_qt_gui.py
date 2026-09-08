@@ -1495,7 +1495,14 @@ def check_mode(*, detailed, width, height, expected, stress):
     host.resize(width, height)
     preview.forceActiveFocus()
     preview.setProperty("detailedIntel", detailed)
-    application.processEvents()
+    wait_until(
+        lambda: explanation.property("text") == expected
+        and (
+            not stress
+            or details.property("contentHeight") > details.height() + 1
+        ),
+        "the preview mode layout",
+    )
     assert explanation.property("text") == expected, (detailed, width, height)
     assert_contained(preview, details, explanation)
     if not detailed:
