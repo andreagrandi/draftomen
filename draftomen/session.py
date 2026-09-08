@@ -3466,7 +3466,7 @@ class LiveSession:
         self._prepare_card_database_for_set(set_code=state.set_code)
         if not self._transition_is_current(generation=transition_generation):
             return
-        self._card_data_network_open = False
+        self._card_data_network_open = state.completed
         selection_generation = self._select_state(
             state=state,
             recovered=True,
@@ -3482,7 +3482,7 @@ class LiveSession:
             self._card_data_local_lookup_attempted = True
             if not self._load_card_data_for_set(
                 set_code=state.set_code,
-                allow_network=False,
+                allow_network=state.completed,
                 transition_generation=selection_generation,
             ):
                 return

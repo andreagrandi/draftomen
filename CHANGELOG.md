@@ -17,6 +17,8 @@
   About and Settings dialogs while preserving keyboard focus and commands.
 - Show grades for empirical profile ratings by applying the existing 17Lands
   grading scale to the published positive-sample GIH distribution.
+- Fetch hosted card metadata when restoring a completed draft with an empty
+  local cache, while keeping active recovered drafts offline.
 - Show unchanged concise pick rationale in compact desktop card previews and
   unchanged detailed rationale in focused intel, with wrapped plain text,
   retained scrolling and no pick rationale in build previews. (#389)

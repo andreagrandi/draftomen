@@ -4567,6 +4567,45 @@ def test_live_session_recovered_state_uses_offline_card_data_and_closes_fence(
     assert recovered.draft is not None
 
 
+def test_live_session_recovered_completed_state_can_fetch_card_data(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    state = replace(
+        _draft_state(
+            account_id="recovered-account",
+            screen_name="Recovered",
+            draft_id="recovered-draft",
+            updated_at="2026-08-30T10:00:00+00:00",
+            pool_grp_ids=(104894,),
+        ),
+        completed=True,
+        completed_at="2026-08-30T10:01:00+00:00",
+    )
+    save_draft_state(state=state, app_dir=app_dir)
+    calls: list[tuple[str, bool]] = []
+    database = _fixture_set_card_database(set_code="TST")
+
+    def card_data_loader(set_code: str, *, allow_network: bool) -> CardDatabase:
+        calls.append((set_code, allow_network))
+        return database
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        set_card_data_loader=card_data_loader,
+        app_dir=app_dir,
+    )
+
+    recovered = session.dispatch(
+        command=ChooseAccount(account_id="recovered-account")
+    )
+
+    assert calls == [("TST", True)]
+    assert recovered.card_data.phase == DataLoadPhase.READY
+    assert recovered.draft is not None
+    assert recovered.draft.completed is True
+
+
 def test_live_session_recovery_resets_local_attempt_for_new_set(
     tmp_path: Path,
 ) -> None:
