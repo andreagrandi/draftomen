@@ -15,6 +15,8 @@
   keeping every supported format in the expansion's lifecycle partition.
 - Center and theme the live ratings-refresh confirmation consistently with the
   About and Settings dialogs while preserving keyboard focus and commands.
+- Show grades for empirical profile ratings by applying the existing 17Lands
+  grading scale to the published positive-sample GIH distribution.
 - Show unchanged concise pick rationale in compact desktop card previews and
   unchanged detailed rationale in focused intel, with wrapped plain text,
   retained scrolling and no pick rationale in build previews. (#389)

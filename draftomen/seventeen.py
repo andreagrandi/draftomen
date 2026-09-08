@@ -647,7 +647,7 @@ class SeventeenLandsFormatData:
         if stats is None:
             return None
 
-        return _letter_grade_for_metric(
+        return letter_grade_for_metric(
             value=stats.gih_win_rate,
             distribution=_gih_win_rate_distribution(stats=self.card_ratings.values()),
         )
@@ -2524,7 +2524,7 @@ def _gih_win_rate_distribution(
     )
 
 
-def _letter_grade_for_metric(
+def letter_grade_for_metric(
     *,
     value: float | None,
     distribution: tuple[float, ...],
