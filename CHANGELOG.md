@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Compile deterministic semantic card roles into EARLY empirical profiles so
+  contextual scoring can use Oracle metadata before public draft data exists.
+  (#410)
 - Show each ranked plain-watch card's unchanged concise pick rationale directly
   below its row while preserving buffered publication identity and replay output.
   (#405)

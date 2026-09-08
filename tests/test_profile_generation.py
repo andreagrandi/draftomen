@@ -26,6 +26,7 @@ from draftomen.seventeen import (
     SeventeenCardStats,
     SeventeenLandsFormatData,
 )
+from draftomen.semantic_roles import Role
 from draftomen.set_profile import ProfileMaturity, SetProfile
 
 
@@ -150,6 +151,102 @@ def test_early_stage_has_all_pairs_and_beta_binomial_rates() -> None:
     assert card.gih_win_rate.samples == 10
     assert card.gih_win_rate.value == pytest.approx((6 + 250) / 510)
     assert SetProfile.from_json(json.loads(result.profile.to_bytes())) == result.profile
+
+
+def test_early_stage_compiles_semantic_roles_without_public_drafts() -> None:
+    kwargs = dict(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=_database(),
+        source_manifest=None,
+        generated_at=GENERATED_AT,
+        ratings=_ratings(),
+    )
+    result = generate_set_profile(config=_config(), **kwargs)
+    loaded = SetProfile.from_json(json.loads(result.profile.to_bytes()))
+
+    assert loaded == result.profile
+    assert loaded.maturity is ProfileMaturity.EARLY
+    assert loaded.roles_are_compatible
+    assert loaded.samples is not None
+    assert loaded.samples.total == 0
+    wu = loaded.pair("WU")
+    assert wu is not None
+    assert wu.role_targets == ()
+    assert wu.removal_targets == ()
+
+    draw = loaded.resolve_roles(_database().cards[1])
+    assert draw.source == "compiled_profile"
+    assert any(assignment.role is Role.DRAW for assignment in draw.assignments)
+    removal = loaded.resolve_roles(_database().cards[2])
+    assert removal.source == "compiled_profile"
+    assert any(assignment.role is Role.HARD_REMOVAL for assignment in removal.assignments)
+
+    repeated = generate_set_profile(config=_config(), **kwargs)
+    assert repeated.profile.to_bytes() == result.profile.to_bytes()
+
+    scaled = generate_set_profile(
+        config=replace(_config(), confidence_sample_scale=100.0),
+        **kwargs,
+    )
+    assert scaled.profile.confidence != result.profile.confidence
+    assert scaled.profile.role_profile == result.profile.role_profile
+
+    without_roles = generate_set_profile(
+        config=replace(_config(), include_role_profile=False),
+        **kwargs,
+    )
+    assert without_roles.profile.role_profile is None
+    assert without_roles.profile.pairs == result.profile.pairs
+    assert without_roles.profile.card_ratings == result.profile.card_ratings
+
+
+def test_early_role_compilation_skips_unresolved_cards_safely() -> None:
+    database = _database()
+    unresolved_card = replace(
+        database.cards[2],
+        types=("Instant",),
+        type_line="Instant",
+        oracle_text=None,
+        keywords=(),
+    )
+    database = CardDatabase(cards={**database.cards, 2: unresolved_card})
+    result = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=database,
+        source_manifest=None,
+        generated_at=GENERATED_AT,
+        ratings=_ratings(),
+        config=_config(),
+    )
+    loaded = SetProfile.from_json(json.loads(result.profile.to_bytes()))
+
+    assert loaded.maturity is ProfileMaturity.EARLY
+    assert loaded.role_profile is not None
+    draw = loaded.resolve_roles(database.cards[1])
+    assert draw.source == "compiled_profile"
+    assert any(assignment.role is Role.DRAW for assignment in draw.assignments)
+    assert loaded.resolve_roles(database.cards[2]).assignments == ()
+
+    all_unclassifiable = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=CardDatabase(cards={2: unresolved_card}),
+        source_manifest=None,
+        generated_at=GENERATED_AT,
+        ratings=_ratings(),
+        config=_config(),
+    )
+    assert all_unclassifiable.profile.maturity is ProfileMaturity.EARLY
+    assert all_unclassifiable.profile.role_profile is None
+    all_unclassifiable_wu = all_unclassifiable.profile.pair("WU")
+    assert all_unclassifiable_wu is not None
+    assert all_unclassifiable_wu.performance is not None
+    assert all_unclassifiable_wu.performance.samples == 10
 
 
 def test_generated_early_profile_changes_public_pick_order_with_published_rate() -> None:
