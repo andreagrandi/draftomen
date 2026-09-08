@@ -27,8 +27,8 @@ from draftomen.events import (
 from draftomen.profile_client import ProfileClient, ProfileRefreshResult
 from draftomen.replay import (
     format_draft_completed_event,
-    format_pack_offered_event,
     format_pick_made_event,
+    format_ranked_pack,
 )
 from draftomen.session import (
     DataLoadPhase,
@@ -320,10 +320,20 @@ class PlainLogWatcher:
                     return []
                 raise RuntimeError("Shared live session did not score the offered pack.")
             card_database = self._presentation_card_database()
-            pack_lines = format_pack_offered_event(
+            concise_explanation: str | None = None
+            recommendations = published.snapshot.recommendations.cards
+            if recommendations:
+                concise_explanation = recommendations[0].concise_explanation
+            recommendation_line = (
+                None
+                if concise_explanation is None
+                else f"  Recommendation: {concise_explanation}"
+            )
+            pack_lines = format_ranked_pack(
                 event=event,
                 card_database=card_database,
                 scored_pack=published.scored_pack,
+                recommendation_line=recommendation_line,
             )
             account_label = _account_label(
                 published=published,

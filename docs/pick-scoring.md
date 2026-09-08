@@ -343,6 +343,12 @@ the same card rationale through `rationale`, `concise_explanation`, and
 `render_pick_rationale_concise` and `render_pick_rationale_detailed`. Replay
 uses the detailed renderer for the recommendation on every nonempty pack.
 
+Plain `watch` prints exactly one indented `Recommendation:` line after the
+ranked rows for each pack whose event snapshot has recommendations. The line
+uses that snapshot's top recommendation's unchanged concise explanation, so
+buffered packs retain their own rationale. Packs without recommendations emit
+no recommendation line. Replay continues to use the detailed explanation.
+
 In the live TUI, the focused offered-card details show the applied session
 recommendation's unchanged concise explanation below the existing card facts
 under `Why this score:`. The focused-details visibility preference controls the

@@ -12,7 +12,7 @@ import pytest
 
 from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import CardDatabase, CardInfo, build_card_database_from_bulk_file
-from draftomen.events import EXPECTED_PICKS_PER_PACK
+from draftomen.events import EXPECTED_PICKS_PER_PACK, PackOfferedEvent
 from draftomen.pool import draft_state_path, load_draft_state
 from draftomen.profile_client import (
     ProfileClient,
@@ -20,7 +20,7 @@ from draftomen.profile_client import (
     ProfileRefreshOutcome,
     ProfileRefreshResult,
 )
-from draftomen.session import DataLoadPhase
+from draftomen.session import DataLoadPhase, LiveSessionEvent
 from draftomen.set_profile import (
     CardRating,
     RateEstimate,
@@ -54,35 +54,212 @@ def test_plain_watch_processes_appended_lines_incrementally(tmp_path: Path) -> N
     )
     fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
 
-    assert watcher.poll_once() == ""
+    def poll_with_events() -> tuple[tuple[LiveSessionEvent, ...], str]:
+        watcher._events.clear()
+        watcher.session.poll_once()
+        published = tuple(watcher._events)
+        return published, watcher._render_published_events()
 
-    _append_lines(path=log_path, lines=fixture_lines[:7])
-    pack_output = watcher.poll_once()
+    try:
+        published, initial_output = poll_with_events()
+        assert published == ()
+        assert initial_output == ""
 
-    assert pack_output.startswith(
-        "Active account: FixturePlayer (FIXTURECLIENTID1234567890)\n"
-        "Status: active account FixturePlayer (FIXTURECLIENTID1234567890)\n\n"
-        "Draft started: QuickDraft_MSH_20260702 "
-        "(set MSH, draft 00000000-0000-4000-8000-000000000004)\n"
+        _append_lines(path=log_path, lines=fixture_lines[:7])
+        published, pack_output = poll_with_events()
+        pack_events = [
+            event
+            for event in published
+            if isinstance(event.event, PackOfferedEvent)
+        ]
+        assert len(pack_events) == 1
+        pack_event = pack_events[0]
+        assert pack_event.snapshot.recommendations.cards
+        concise_explanation = (
+            pack_event.snapshot.recommendations.cards[0].concise_explanation
+        )
+        assert concise_explanation is not None
+        expected_recommendation = f"  Recommendation: {concise_explanation}"
+
+        assert pack_output.startswith(
+            "Active account: FixturePlayer (FIXTURECLIENTID1234567890)\n"
+            "Status: active account FixturePlayer (FIXTURECLIENTID1234567890)\n\n"
+            "Draft started: QuickDraft_MSH_20260702 "
+            "(set MSH, draft 00000000-0000-4000-8000-000000000004)\n"
+        )
+        assert "Active account: FixturePlayer (FIXTURECLIENTID1234567890)" in (
+            pack_output
+        )
+        assert "Draft started: QuickDraft_MSH_20260702" in pack_output
+        assert "Status: active account FixturePlayer" in pack_output
+        assert "data neutral prior" in pack_output
+        assert "Pack 1 Pick 1" in pack_output
+        assert "Fixture Spider (grpId 105097)" in pack_output
+        assert "Chosen card:" not in pack_output
+        assert pack_output.index("Status: active account FixturePlayer") < (
+            pack_output.index("Pack 1 Pick 1")
+        )
+        assert pack_output.index("Pack 1 Pick 1") < pack_output.index("Data source: ")
+        assert pack_output.index("Data source: ") < pack_output.index("Offered cards:")
+
+        output_lines = pack_output.splitlines()
+        pack_start = output_lines.index("Pack 1 Pick 1")
+        ranked_rows = [
+            index
+            for index, line in enumerate(output_lines)
+            if index > pack_start
+            and line.startswith("  ")
+            and line[2:4].isdigit()
+        ]
+        recommendation_indices = [
+            index
+            for index, line in enumerate(output_lines)
+            if "Recommendation:" in line
+        ]
+        assert recommendation_indices == [ranked_rows[-1] + 1]
+        assert output_lines[recommendation_indices[0]] == expected_recommendation
+        assert output_lines.count(expected_recommendation) == 1
+        prior_note_index = next(
+            index
+            for index, line in enumerate(output_lines)
+            if line.startswith("  * Prior uses ")
+        )
+        assert recommendation_indices[0] < prior_note_index
+
+        _append_lines(path=log_path, lines=fixture_lines[7:8])
+        _, pick_output = poll_with_events()
+        assert pick_output == "Chosen card: Fixture Spider [G] (grpId 105097)\n\n"
+        assert "Recommendation:" not in pick_output
+
+        _, empty_output = poll_with_events()
+        assert empty_output == ""
+        assert "Recommendation:" not in empty_output
+    finally:
+        watcher.close()
+
+
+def test_plain_watch_formats_buffered_pack_recommendations_per_event(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    watcher = PlainLogWatcher(
+        log_path=log_path,
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
     )
-    assert "Active account: FixturePlayer (FIXTURECLIENTID1234567890)" in pack_output
-    assert "Draft started: QuickDraft_MSH_20260702" in pack_output
-    assert "Status: active account FixturePlayer" in pack_output
-    assert "data neutral prior" in pack_output
-    assert "Pack 1 Pick 1" in pack_output
-    assert "Fixture Spider (grpId 105097)" in pack_output
-    assert "Chosen card:" not in pack_output
-    assert pack_output.index("Status: active account FixturePlayer") < (
-        pack_output.index("Pack 1 Pick 1")
+    lines = [
+        _pack_line(
+            event_name="QuickDraft_MSH_20260702",
+            pack_number=0,
+            pick_number=0,
+            draft_pack=(105097,),
+            picked_cards=(),
+        ),
+        _pack_line(
+            event_name="QuickDraft_MSH_20260702",
+            pack_number=0,
+            pick_number=1,
+            draft_pack=(9001,),
+            picked_cards=(),
+        ),
+    ]
+
+    try:
+        watcher._events.clear()
+        watcher.session.process_lines(lines=lines)
+        published = tuple(watcher._events)
+        pack_events = [
+            event
+            for event in published
+            if isinstance(event.event, PackOfferedEvent)
+        ]
+        assert len(pack_events) == 2
+        concise_explanations = [
+            event.snapshot.recommendations.cards[0].concise_explanation
+            for event in pack_events
+        ]
+        assert all(explanation is not None for explanation in concise_explanations)
+        assert concise_explanations[0] != concise_explanations[1]
+
+        output_lines = watcher._render_published_events().splitlines()
+        pack_starts = [
+            index
+            for index, line in enumerate(output_lines)
+            if line.startswith("Pack ")
+        ]
+        assert len(pack_starts) == 2
+        for event_index, (pack_event, pack_start) in enumerate(
+            zip(pack_events, pack_starts, strict=True)
+        ):
+            pack_end = (
+                pack_starts[event_index + 1]
+                if event_index + 1 < len(pack_starts)
+                else len(output_lines)
+            )
+            block_lines = output_lines[pack_start:pack_end]
+            recommendation_line = (
+                f"  Recommendation: {concise_explanations[event_index]}"
+            )
+            ranked_rows = [
+                index
+                for index, line in enumerate(block_lines)
+                if line.startswith("  ")
+                and line[2:4].isdigit()
+            ]
+            assert block_lines.count(recommendation_line) == 1
+            assert sum("Recommendation:" in line for line in block_lines) == 1
+            assert block_lines.index(recommendation_line) == ranked_rows[-1] + 1
+            prior_note_indices = [
+                index
+                for index, line in enumerate(block_lines)
+                if line.startswith("  * Prior uses ")
+            ]
+            if prior_note_indices:
+                assert block_lines.index(recommendation_line) < prior_note_indices[0]
+            assert pack_event.snapshot.recommendations.cards[0].card.name in (
+                "\n".join(block_lines)
+            )
+    finally:
+        watcher.close()
+
+
+def test_plain_watch_omits_recommendation_for_empty_published_cards(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("", encoding="utf-8")
+    watcher = PlainLogWatcher(
+        log_path=log_path,
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
     )
-    assert pack_output.index("Pack 1 Pick 1") < pack_output.index("Data source: ")
-    assert pack_output.index("Data source: ") < pack_output.index("Offered cards:")
+    fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
 
-    _append_lines(path=log_path, lines=fixture_lines[7:8])
-    pick_output = watcher.poll_once()
+    try:
+        watcher._events.clear()
+        watcher.session.process_lines(lines=fixture_lines[:7])
+        published = next(
+            event
+            for event in watcher._events
+            if isinstance(event.event, PackOfferedEvent)
+        )
+        empty_recommendations = replace(
+            published.snapshot.recommendations,
+            cards=(),
+            selected_grp_id=None,
+        )
+        empty_snapshot = replace(
+            published.snapshot,
+            recommendations=empty_recommendations,
+        )
+        empty_published = replace(published, snapshot=empty_snapshot)
 
-    assert pick_output == "Chosen card: Fixture Spider [G] (grpId 105097)\n\n"
-    assert watcher.poll_once() == ""
+        formatted_lines = watcher._format_event(published=empty_published)
+        assert "Offered cards:" in formatted_lines
+        assert any(line.startswith("  01") for line in formatted_lines)
+        assert "Recommendation:" not in "\n".join(formatted_lines)
+    finally:
+        watcher.close()
 
 
 def test_plain_watch_loads_selected_card_data_during_poll_and_formats_current_db(
@@ -424,6 +601,7 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
         assert tuple(card.card.grp_id for card in snapshot.recommendations.cards) == (2, 1)
         refreshed_output = watcher.process_lines(lines=[])
         assert "Status: Profile: mature (updated)" in refreshed_output
+        assert "Recommendation:" not in refreshed_output
         assert snapshot.set_profile.profile_version == refreshed_profile.profile_version
     finally:
         release.set()
@@ -957,13 +1135,21 @@ def test_plain_watch_account_switch_announces_and_separates_state(
 
 def _fixture_card_database() -> CardDatabase:
     database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
-    return replace(
-        database,
-        cards={
-            grp_id: replace(card, set_code="msh")
-            for grp_id, card in database.cards.items()
-        },
+    cards = {
+        grp_id: replace(card, set_code="msh")
+        for grp_id, card in database.cards.items()
+    }
+    cards[9001] = CardInfo(
+        grp_id=9001,
+        name="Plains",
+        colors=("W",),
+        mana_value=0.0,
+        rarity="basic",
+        types=("Basic Land — Plains",),
+        mana_cost=None,
+        set_code="msh",
     )
+    return replace(database, cards=cards)
 
 
 def _small_card_database() -> CardDatabase:
