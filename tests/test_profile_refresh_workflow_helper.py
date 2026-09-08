@@ -446,8 +446,11 @@ def test_active_historical_modes_reuse_fresh_aggregate_cache(
     active = workflow.generate_website(selection_mode="active", **common)
     historical = workflow.generate_website(selection_mode="historical", **common)
 
-    assert [pair["event_format"] for pair in active["profiles"]["selected"]] == ["PremierDraft"]
-    assert [pair["event_format"] for pair in historical["profiles"]["selected"]] == ["TradDraft"]
+    assert [pair["event_format"] for pair in active["profiles"]["selected"]] == [
+        "PremierDraft",
+        "TradDraft",
+    ]
+    assert historical["profiles"]["selected"] == []
     assert active["status"] == historical["status"] == "success"
     assert requests == ["https://www.17lands.com/data/filters"] * 2
 

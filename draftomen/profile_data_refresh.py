@@ -252,11 +252,21 @@ def prepare_profile_data_refresh(
     for identity in identities:
         if selector_identity is not None and identity[:2] != selector_identity[:2]:
             continue
-        available_formats = available.get(identity[0], frozenset())
+        available_formats = frozenset(
+            event_format
+            for event_format in SUPPORTED_FORMATS
+            if event_format in available.get(identity[0], frozenset())
+        )
+        live_formats = frozenset(
+            event_format
+            for event_format in SUPPORTED_FORMATS
+            if event_format in live.get(identity[0], frozenset())
+        )
+        expansion_is_live = bool(available_formats.intersection(live_formats))
         if normalized_mode == "active":
-            formats = available_formats.intersection(live.get(identity[0], frozenset()))
+            formats = available_formats if expansion_is_live else frozenset()
         elif normalized_mode == "historical":
-            formats = available_formats.difference(live.get(identity[0], frozenset()))
+            formats = available_formats if not expansion_is_live else frozenset()
         else:
             formats = available_formats
         for event_format in SUPPORTED_FORMATS:
