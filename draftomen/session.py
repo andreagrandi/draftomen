@@ -258,6 +258,7 @@ class RecommendationState:
     selected_grp_id: int | None = None
     source_summary: str | None = None
     confidence_summary: str | None = None
+    comparison_summary: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2180,6 +2181,7 @@ class LiveSession:
                 ranking_mode=self._ranking_mode,
                 phase=scored_pack.commitment.phase,
             ),
+            comparison_summary=scored_pack.comparison_summary,
         )
 
     def _recommendation(

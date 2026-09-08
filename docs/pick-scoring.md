@@ -343,6 +343,47 @@ the same card rationale through `rationale`, `concise_explanation`, and
 `render_pick_rationale_concise` and `render_pick_rationale_detailed`. Replay
 uses the detailed renderer for the recommendation on every nonempty pack.
 
+## Top-two recommendation comparison
+
+After final DO recommendation ordering, each `ScoredPack` may include one
+`comparison_summary` for the first two draftable, non-basic cards. It is
+`None` when fewer than two such cards exist. The engine composes this text once
+from the ordered scored cards; `RecommendationState` publishes it unchanged
+regardless of the active display sort, and decision audit records serialize the
+same nullable value. Because it is explanatory presentation rather than a
+scoring input, it does not participate in evaluation identity.
+
+The comparison follows ranking evidence in this order:
+
+1. When the winner has retained open-pick tiebreaker evidence, the engine
+   directly reruns the existing eligibility and material-margin check for the
+   top two cards. A qualifying result names the preferred color pair and its
+   percentage-point rate advantage; it never reuses prose that may describe a
+   different card.
+2. If deterministic close-pick ordering retained an order that a direct
+   top-two base-key comparison does not explain, the text describes that
+   ordering without inventing a score gap.
+3. Equal displayed DO scores name the actual next base-key discriminator:
+   unrounded score, base rating, or original offered-pack order.
+4. Otherwise, the comparison reports the difference between the two displayed
+   whole-number DO scores.
+
+For a score advantage, retained arithmetic is grouped into rating, color, each
+contextual reason kind, and the unattributed accounting remainder. Only
+positive winner-minus-runner-up deltas support the explanation. Factors are
+ordered by their unrounded positive contribution, with rationale-kind order as
+the deterministic tie-breaker, and the shortest prefix exceeding half of all
+positive support is named. The remainder is called `score limits and small
+adjustments` because it can contain clamps, caps, rounding, and omitted tiny
+terms. Splash and tiebreaker reasons are nonadditive and are never counted as
+point factors.
+
+Displayed point gaps remain whole numbers and named factor contributions are
+not separately rounded or claimed to sum to that gap. The existing confidence
+classification supplies only compact uncertainty wording: early/open picks
+ask the drafter to stay flexible, close picks remain explicitly close, and no
+new threshold or confidence model is introduced.
+
 Plain `watch` prints exactly one indented `Recommendation:` line after the
 ranked rows for each pack whose event snapshot has recommendations. The line
 uses that snapshot's top recommendation's unchanged concise explanation, so

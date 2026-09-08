@@ -425,6 +425,7 @@ def _decision_payload(
         "offered_grp_ids": list(event.offered_grp_ids),
         "pool_before_pick": list(event.pool_grp_ids),
         "source_summary": scored_pack.source_summary,
+        "comparison_summary": scored_pack.comparison_summary,
         "algorithm": {
             "name": "draftomen.pickengine.PickEngine",
             "app_version": app_version,
@@ -606,6 +607,7 @@ def _evaluation_identity_payload(*, evaluation: AuditRecord) -> AuditRecord:
     """Keep evaluation ids stable as rationale fields are added additively."""
 
     identity = dict(evaluation)
+    identity.pop("comparison_summary", None)
     recommendation = identity.get("recommendation")
     if isinstance(recommendation, dict):
         identity["recommendation"] = _without_rationale_fields(

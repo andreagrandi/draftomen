@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Explain why the top DO recommendation outranks the runner-up using retained
+  scoring evidence, preserve the comparison across display sorting, and record
+  it in decision audits without changing evaluation identity. (#398)
 - Prevent pull-request CI runs for generated-only website card-data and profile
   refreshes while retaining source pull-request and master-push coverage.
 - Classify active and historical profile refresh formats at expansion level,

@@ -23,6 +23,7 @@ from draftomen.pickengine import (
     PickRationale,
     PickScoringContext,
     ScoredPack,
+    _recommendation_comparison_summary,
     build_pick_scoring_context,
     recommendation_confidence_summary,
     render_pick_rationale_concise,
@@ -893,6 +894,322 @@ def test_recommendation_confidence_summary_uses_shared_open_pick_copy() -> None:
         ranking_mode="score",
         phase="building",
     ) is None
+
+
+def test_engine_comparison_filters_basics_and_wires_real_score_pack() -> None:
+    engine = PickEngine(ratings_data=_ratings_data())
+    database = _card_database()
+
+    assert (
+        engine.score_pack(
+            offered_grp_ids=(),
+            card_database=database,
+        ).comparison_summary
+        is None
+    )
+    assert (
+        engine.score_pack(
+            offered_grp_ids=(1,),
+            card_database=database,
+        ).comparison_summary
+        is None
+    )
+    assert (
+        engine.score_pack(
+            offered_grp_ids=(13,),
+            card_database=database,
+        ).comparison_summary
+        is None
+    )
+    assert (
+        engine.score_pack(
+            offered_grp_ids=(1, 13),
+            card_database=database,
+        ).comparison_summary
+        is None
+    )
+
+    scored_pack = engine.score_pack(
+        offered_grp_ids=(1, 2, 13),
+        card_database=database,
+    )
+    summary = scored_pack.comparison_summary
+    assert summary is not None
+    assert summary.startswith("DO recommendation: ")
+    assert scored_pack.cards[0].card.name in summary
+    assert scored_pack.cards[1].card.name in summary
+    assert "Arena Plains" not in summary
+
+    higher_looking_basic_pack = PickEngine(
+        ratings_data=_rated_basic_and_zero_data(),
+    ).score_pack(
+        offered_grp_ids=(120, 105, 121),
+        card_database=_splash_card_database(),
+    )
+    higher_looking_summary = higher_looking_basic_pack.comparison_summary
+    assert higher_looking_summary is not None
+    assert "Mountain" not in higher_looking_summary
+
+
+def test_real_msh_pair_comparison_uses_pair_rates_and_open_hedge() -> None:
+    scored_pack = PickEngine(
+        ratings_data=_msh_pair_tiebreaker_data(),
+    ).score_pack(
+        offered_grp_ids=(31, 32),
+        card_database=_msh_pair_tiebreaker_database(),
+        pool_grp_ids=(20, 21),
+        pick_index=3,
+    )
+
+    summary = scored_pack.comparison_summary
+    assert summary is not None
+    assert "Blue WU Lane Card ranks ahead of Red BR Lane Card" in summary
+    assert "favors WU by 6.7 percentage points." in summary
+    assert "DO point" not in summary
+    assert summary.endswith("early/open close pick; stay flexible.")
+
+
+@pytest.mark.parametrize(
+    ("base_scores", "contributions", "expected"),
+    [
+        (
+            (70.0, 60.0),
+            ({}, {}),
+            "DO recommendation: Alpha leads Beta by 10 DO points, mainly from rating.",
+        ),
+        (
+            (60.0, 60.0),
+            ({"color": 10.0}, {}),
+            "DO recommendation: Alpha leads Beta by 10 DO points, mainly from color fit.",
+        ),
+        (
+            (60.0, 60.0),
+            ({"role": 4.0}, {}),
+            "DO recommendation: Alpha leads Beta by 4 DO points, mainly from role fit.",
+        ),
+    ],
+)
+def test_comparison_attributes_rating_color_and_context(
+    base_scores: tuple[float, float],
+    contributions: tuple[dict[str, float], dict[str, float]],
+    expected: str,
+) -> None:
+    cards = _comparison_cards(
+        base_scores=base_scores,
+        contributions=contributions,
+    )
+
+    assert _render_comparison(cards, phase="building") == expected
+
+
+def test_comparison_selects_majority_prefix_and_omits_opposing_factors() -> None:
+    majority_cards = _comparison_cards(
+        base_scores=(60.0, 60.0),
+        contributions=(
+            {"role": 4.0, "urgency": 3.0, "synergy": 3.0},
+            {},
+        ),
+    )
+    assert _render_comparison(majority_cards, phase="building") == (
+        "DO recommendation: Alpha leads Beta by 10 DO points, mainly from "
+        "role fit and timing."
+    )
+
+    opposing_cards = _comparison_cards(
+        base_scores=(60.0, 60.0),
+        contributions=(
+            {"color": 8.0},
+            {"color": 2.0, "role": 4.0},
+        ),
+    )
+    assert _render_comparison(opposing_cards, phase="building") == (
+        "DO recommendation: Alpha leads Beta by 2 DO points, mainly from "
+        "color fit. close pick."
+    )
+    assert "role fit" not in _render_comparison(opposing_cards, phase="building")
+
+
+def test_comparison_attributes_cap_accounting_remainder() -> None:
+    engine = PickEngine(ratings_data=_ratings_data())
+    database = _card_database()
+    database = replace(
+        database,
+        cards={
+            **database.cards,
+            1: replace(database.cards[1], set_code="TST", arena_id=1),
+            7: replace(database.cards[7], set_code="TST", arena_id=7),
+        },
+    )
+    clamped = engine.score_pack(
+        offered_grp_ids=(9,),
+        card_database=database,
+        pool_grp_ids=(1, 2),
+        pick_index=16,
+    ).cards[0]
+    runner_up = replace(
+        clamped,
+        card=replace(clamped.card, name="Beta"),
+        original_index=1,
+        raw_score=95.0,
+        score=95,
+        rationale=replace(
+            clamped.rationale,
+            unattributed_contribution=-20.0,
+        ),
+    )
+    top = replace(
+        clamped,
+        card=replace(clamped.card, name="Alpha"),
+        original_index=0,
+    )
+
+    assert _render_comparison((top, runner_up), phase="building") == (
+        "DO recommendation: Alpha leads Beta by 5 DO points, mainly from "
+        "score limits and small adjustments."
+    )
+
+
+def test_displayed_score_ties_explain_each_actual_resolution() -> None:
+    unrounded = _comparison_cards(
+        base_scores=(60.0, 60.0),
+        raw_scores=(60.4, 60.1),
+        scores=(60, 60),
+    )
+    assert _render_comparison(unrounded, phase="building") == (
+        "DO recommendation: Alpha and Beta tie on the displayed score; "
+        "Alpha ranks first on the unrounded score. close pick."
+    )
+
+    base_rating = _comparison_cards(
+        base_scores=(60.0, 60.0),
+        base_ratings=(0.70, 0.60),
+        raw_scores=(60.0, 60.0),
+        scores=(60, 60),
+    )
+    assert _render_comparison(base_rating, phase="building") == (
+        "DO recommendation: Alpha and Beta tie on the displayed score; "
+        "Alpha ranks first on the base rating. close pick."
+    )
+
+    offered_order = _comparison_cards(
+        base_scores=(60.0, 60.0),
+        base_ratings=(0.60, 0.60),
+        raw_scores=(60.0, 60.0),
+        scores=(60, 60),
+    )
+    assert _render_comparison(offered_order, phase="building") == (
+        "DO recommendation: Alpha and Beta tie on the displayed score; "
+        "Alpha appeared earlier in the offered pack. close pick."
+    )
+
+
+def test_pair_rate_precedence_uses_direct_runner_up_and_compact_hedge() -> None:
+    cards = _comparison_cards(
+        base_scores=(60.0, 60.0),
+        raw_scores=(60.0, 60.0),
+        scores=(60, 60),
+        pair_rates=(0.606, 0.539),
+        pair_names=("WU", "BR"),
+        tiebreaker_indices=(0,),
+    )
+
+    assert _render_comparison(cards, phase="open") == (
+        "DO recommendation: Alpha ranks ahead of Beta because the open-pick "
+        "pair tiebreaker favors WU by 6.7 percentage points. "
+        "early/open close pick; stay flexible."
+    )
+
+    small_difference = _comparison_cards(
+        base_scores=(60.0, 60.0),
+        raw_scores=(60.0, 60.0),
+        scores=(60, 60),
+        pair_rates=(0.6001, 0.6000),
+        pair_names=("WU", "BR"),
+        tiebreaker_indices=(0,),
+    )
+    assert "less than 0.1 percentage points" in _render_comparison(
+        small_difference,
+        phase="open",
+    )
+
+
+def test_pair_rate_comparison_does_not_quote_stale_third_card_provenance() -> None:
+    cards = _comparison_cards(
+        names=("Alpha", "Beta", "Gamma"),
+        base_scores=(60.0, 60.0, 60.0),
+        raw_scores=(60.0, 60.0, 60.0),
+        scores=(60, 60, 60),
+        pair_rates=(0.606, 0.539, 0.700),
+        pair_names=("WU", "BR", "RG"),
+        tiebreaker_indices=(0,),
+        tiebreaker_evidence="pair-rate comparison selected WU over RG",
+    )
+
+    summary = _render_comparison(cards, phase="open")
+    assert "favors WU by 6.7 percentage points" in summary
+    assert "BR" not in summary
+    assert "Gamma" not in summary
+    assert "RG" not in summary
+
+
+@pytest.mark.parametrize(
+    ("pair_rates", "pair_names"),
+    [
+        ((0.600, 0.600), ("WU", "BR")),
+        ((None, 0.600), ("WU", "BR")),
+        ((0.606, 0.539), (None, "BR")),
+    ],
+)
+def test_equal_or_missing_pair_metadata_falls_through_to_score_explanation(
+    pair_rates: tuple[float | None, float | None],
+    pair_names: tuple[str | None, str | None],
+) -> None:
+    cards = _comparison_cards(
+        base_scores=(62.0, 60.0),
+        pair_rates=pair_rates,
+        pair_names=pair_names,
+        tiebreaker_indices=(0,),
+    )
+
+    assert _render_comparison(cards, phase="open") == (
+        "DO recommendation: Alpha leads Beta by 2 DO points, mainly from "
+        "rating. early/open close pick; stay flexible."
+    )
+
+
+def test_close_group_fallback_describes_order_without_inventing_gap() -> None:
+    cards = _comparison_cards(
+        base_scores=(60.0, 61.0),
+        raw_scores=(60.0, 61.0),
+        scores=(60, 61),
+    )
+
+    assert _render_comparison(cards, phase="building") == (
+        "DO recommendation: Alpha ranks ahead of Beta after deterministic "
+        "close-pick ordering. close pick."
+    )
+
+
+def test_comparison_uses_displayed_whole_point_gap_and_open_hedge() -> None:
+    cards = _comparison_cards(
+        base_scores=(60.6, 59.4),
+        raw_scores=(60.6, 59.4),
+        scores=(61, 59),
+    )
+    assert _render_comparison(cards, phase="building") == (
+        "DO recommendation: Alpha leads Beta by 2 DO points, mainly from "
+        "rating. close pick."
+    )
+
+    open_cards = _comparison_cards(
+        base_scores=(70.0, 60.0),
+        raw_scores=(70.0, 60.0),
+        scores=(70, 60),
+    )
+    assert _render_comparison(open_cards, phase="open") == (
+        "DO recommendation: Alpha leads Beta by 10 DO points, mainly from "
+        "rating. early/open pick — stay flexible."
+    )
 
 
 def test_commitment_ramp_changes_same_card_score_by_pick_index() -> None:
@@ -3409,6 +3726,123 @@ def test_disabled_contextual_adjustments_preserve_locked_splash_behavior() -> No
         and card.contextual_evidence == ()
         for card in disabled.cards
     )
+
+
+
+def _render_comparison(
+    cards: tuple,
+    *,
+    phase: str,
+    require_material_rate_margin: bool = False,
+) -> str | None:
+    return _recommendation_comparison_summary(
+        cards=cards,
+        phase=phase,
+        config=PickEngine().config,
+        require_material_rate_margin=require_material_rate_margin,
+    )
+
+
+def _comparison_cards(
+    *,
+    names: tuple[str, ...] = ("Alpha", "Beta"),
+    base_scores: tuple[float, ...] = (60.0, 60.0),
+    raw_scores: tuple[float, ...] | None = None,
+    scores: tuple[int, ...] | None = None,
+    base_ratings: tuple[float, ...] | None = None,
+    contributions: tuple[dict[str, float], ...] | None = None,
+    remainders: tuple[float, ...] | None = None,
+    pair_rates: tuple[float | None, ...] | None = None,
+    pair_names: tuple[str | None, ...] | None = None,
+    pair_weights: tuple[float | None, ...] | None = None,
+    tiebreaker_indices: tuple[int, ...] = (),
+    tiebreaker_evidence: str | None = None,
+) -> tuple:
+    pack = PickEngine().score_pack(
+        offered_grp_ids=tuple(range(1, len(names) + 1)),
+        card_database=_card_database(),
+    )
+    if contributions is None:
+        contributions = tuple({} for _ in names)
+    if remainders is None:
+        if raw_scores is None:
+            remainders = tuple(0.0 for _ in names)
+        else:
+            remainders = tuple(
+                raw
+                - base_scores[index]
+                - sum(contributions[index].values())
+                for index, raw in enumerate(raw_scores)
+            )
+    if raw_scores is None:
+        raw_scores = tuple(
+            base_scores[index]
+            + sum(contributions[index].values())
+            + remainders[index]
+            for index in range(len(names))
+        )
+    if scores is None:
+        scores = tuple(int(raw + 0.5) for raw in raw_scores)
+    if base_ratings is None:
+        base_ratings = tuple(base / 100.0 for base in base_scores)
+    if pair_rates is None:
+        pair_rates = tuple(None for _ in names)
+    if pair_names is None:
+        pair_names = tuple(None for _ in names)
+    if pair_weights is None:
+        pair_weights = tuple(
+            1.0 if pair_rate is not None else None
+            for pair_rate in pair_rates
+        )
+
+    comparison_cards = []
+    for index, card in enumerate(pack.cards):
+        reasons = [
+            PickReason(
+                kind="rating",
+                phrase="synthetic baseline rating",
+            )
+        ]
+        reasons.extend(
+            PickReason(
+                kind=kind,
+                contribution=contribution,
+                phrase=f"synthetic {kind} contribution",
+            )
+            for kind, contribution in contributions[index].items()
+        )
+        if index in tiebreaker_indices:
+            reasons.append(
+                PickReason(
+                    kind="tiebreaker",
+                    phrase="synthetic pair-rate comparison",
+                    evidence=(
+                        tiebreaker_evidence
+                        or "pair-rate comparison selected the first card"
+                    ),
+                )
+            )
+        comparison_cards.append(
+            replace(
+                card,
+                card=replace(card.card, name=names[index]),
+                original_index=index,
+                base_rating=base_ratings[index],
+                base_score=base_scores[index],
+                raw_score=raw_scores[index],
+                score=scores[index],
+                pair_tiebreaker_pair=pair_names[index],
+                pair_tiebreaker_win_rate=pair_rates[index],
+                pair_tiebreaker_weight=pair_weights[index],
+                score_sort_index=index,
+                freely_available_basic=False,
+                rationale=PickRationale(
+                    reasons=tuple(reasons),
+                    unattributed_contribution=remainders[index],
+                ),
+            )
+        )
+    return tuple(comparison_cards)
 
 
 def _score_with_context(
