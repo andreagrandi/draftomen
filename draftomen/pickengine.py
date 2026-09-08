@@ -38,6 +38,7 @@ from draftomen.seventeen import (
     RatingSourceMetadata,
     ResolvedCardRating,
     SeventeenLandsData,
+    letter_grade_for_metric,
 )
 from draftomen.splash import (
     SplashAssessment,
@@ -422,6 +423,27 @@ def _profile_rating_lookup(
         if card_key not in matched_keys:
             distribution.append(card_rating.gih_win_rate.value)
             matched_keys.add(card_key)
+    grade_distribution = tuple(
+        rating.gih_win_rate
+        for rating in runtime_ratings.values()
+        if rating.sample_counts.games_in_hand > 0
+        and rating.gih_win_rate is not None
+    )
+    runtime_ratings = {
+        grp_id: replace(
+            rating,
+            letter_grade=(
+                letter_grade_for_metric(
+                    value=rating.gih_win_rate,
+                    distribution=grade_distribution,
+                )
+                if rating.sample_counts.games_in_hand > 0
+                else None
+            ),
+        )
+        for grp_id, rating in runtime_ratings.items()
+    }
+
 
     return _ProfileRatingLookup(
         ratings_by_grp_id=runtime_ratings,
