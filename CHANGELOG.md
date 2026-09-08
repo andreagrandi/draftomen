@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Show each plain-watch pack's unchanged concise top recommendation immediately
+  after its ranked rows while preserving event-specific text for buffered packs
+  and omitting recommendation output when none is available. (#388)
 - Show each focused offered card's unchanged session pick rationale below its
   TUI facts, keep it mouse-wheel accessible in short terminals, and omit pick
   rationale from build context. (#387)

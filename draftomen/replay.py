@@ -277,16 +277,65 @@ def format_pack_offered_event(
     pick_engine: PickEngine | None = None,
     scored_pack: ScoredPack | None = None,
 ) -> list[str]:
-    """Format a pack offer with the same plain text replay uses.
-    Live watch mode calls this so pack rendering stays byte-compatible.
-    """
+    """Format a pack offer with the same plain text replay uses."""
 
-    return _format_pack(
+    if scored_pack is None:
+        engine = pick_engine if pick_engine is not None else PickEngine()
+        pick_index = _draft_pick_index(event=event)
+        scored_pack = engine.score_pack(
+            offered_grp_ids=event.offered_grp_ids,
+            card_database=card_database,
+            pool_grp_ids=event.pool_grp_ids,
+            pick_index=pick_index,
+            pack_number=event.pack_number,
+            pick_number=event.pick_number,
+            global_pick_index=pick_index,
+            estimated_remaining_picks=max(0, EXPECTED_TOTAL_PICKS - pick_index),
+        )
+    lines = format_ranked_pack(
         event=event,
         card_database=card_database,
-        pick_engine=pick_engine,
         scored_pack=scored_pack,
     )
+    if scored_pack.cards:
+        lines.append(
+            "Recommendation: "
+            + render_pick_rationale_detailed(
+                scored_card=scored_pack.cards[0],
+            )
+        )
+    return lines
+
+
+def format_ranked_pack(
+    *,
+    event: PackOfferedEvent,
+    card_database: CardDatabase,
+    scored_pack: ScoredPack,
+    recommendation_line: str | None = None,
+) -> list[str]:
+    """Format a scored pack's ranked cards for plain text output."""
+
+    lines = [
+        f"Pack {event.pack_number + 1} Pick {event.pick_number + 1}",
+        _format_pack_status(scored_pack=scored_pack),
+        f"Data source: {scored_pack.source_summary}",
+    ]
+    unresolved_count = len(
+        card_database.unresolved_grp_ids(
+            grp_ids=(*event.offered_grp_ids, *event.pool_grp_ids),
+        )
+    )
+    if unresolved_count > 0:
+        lines.append(f"Warning: {unresolved_count} unresolved card metadata")
+
+    lines.append("Offered cards:")
+    lines.extend(_format_scored_cards(cards=scored_pack.cards))
+    if recommendation_line is not None:
+        lines.append(recommendation_line)
+    if any(card.no_data for card in scored_pack.cards):
+        lines.append("  * Prior uses neutral prior adjusted by ALSA when available.")
+    return lines
 
 
 def format_pick_made_event(
@@ -343,54 +392,6 @@ def _format_account(*, header: _ReplayHeader) -> str:
         return header.account_id
 
     return f"{header.screen_name} ({header.account_id})"
-
-
-def _format_pack(
-    *,
-    event: PackOfferedEvent,
-    card_database: CardDatabase,
-    pick_engine: PickEngine | None,
-    scored_pack: ScoredPack | None = None,
-) -> list[str]:
-    if scored_pack is None:
-        engine = pick_engine if pick_engine is not None else PickEngine()
-        pick_index = _draft_pick_index(event=event)
-        scored_pack = engine.score_pack(
-            offered_grp_ids=event.offered_grp_ids,
-            card_database=card_database,
-            pool_grp_ids=event.pool_grp_ids,
-            pick_index=pick_index,
-            pack_number=event.pack_number,
-            pick_number=event.pick_number,
-            global_pick_index=pick_index,
-            estimated_remaining_picks=max(0, EXPECTED_TOTAL_PICKS - pick_index),
-        )
-    lines = [
-        f"Pack {event.pack_number + 1} Pick {event.pick_number + 1}",
-        _format_pack_status(scored_pack=scored_pack),
-        f"Data source: {scored_pack.source_summary}",
-    ]
-    unresolved_count = len(
-        card_database.unresolved_grp_ids(
-            grp_ids=(*event.offered_grp_ids, *event.pool_grp_ids),
-        )
-    )
-    if unresolved_count > 0:
-        lines.append(f"Warning: {unresolved_count} unresolved card metadata")
-
-    lines.append("Offered cards:")
-    lines.extend(_format_scored_cards(cards=scored_pack.cards))
-    if any(card.no_data for card in scored_pack.cards):
-        lines.append("  * Prior uses neutral prior adjusted by ALSA when available.")
-    if scored_pack.cards:
-        lines.append(
-            "Recommendation: "
-            + render_pick_rationale_detailed(
-                scored_card=scored_pack.cards[0],
-            )
-        )
-
-    return lines
 
 
 def _draft_pick_index(*, event: PackOfferedEvent) -> int:
