@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Prevent pull-request CI runs for generated-only website card-data and profile
+  refreshes while retaining source pull-request and master-push coverage.
 - Show unchanged concise pick rationale in compact desktop card previews and
   unchanged detailed rationale in focused intel, with wrapped plain text,
   retained scrolling and no pick rationale in build previews. (#389)
