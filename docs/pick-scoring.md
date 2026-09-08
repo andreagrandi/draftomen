@@ -394,11 +394,14 @@ and replace or clear it only when the session publishes a new pack value.
 Therefore a comparison always describes DO recommendation order, even while
 the visible rows are sorted by 17L WR, ALSA, or mana value.
 
-Plain `watch` prints exactly one indented `Recommendation:` line after the
-ranked rows for each pack whose event snapshot has recommendations. The line
-uses that snapshot's top recommendation's unchanged concise explanation, so
-buffered packs retain their own rationale. Packs without recommendations emit
-no recommendation line. Replay continues to use the detailed explanation.
+Plain `watch` prints every ranked draftable row followed immediately by its
+event snapshot's unchanged, nonempty session concise explanation under
+`Why this score:`. Each buffered publication owns the values shown beside its
+rows; missing explanations produce no placeholder line. The existing top
+`Recommendation:` footer remains when the snapshot's top recommendation has a
+nonempty concise explanation, and the optional `Confidence:`, comparison, and
+neutral-prior footers retain their existing order. Standalone replay keeps its
+detailed top rationale and byte-identical output.
 
 In the live TUI, the focused offered-card details show the applied session
 recommendation's unchanged concise explanation below the existing card facts

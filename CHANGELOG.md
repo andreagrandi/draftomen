@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Show each ranked plain-watch card's unchanged concise pick rationale directly
+  below its row while preserving buffered publication identity and replay output.
+  (#405)
 - Explain why the top DO recommendation outranks the runner-up using retained
   scoring evidence, preserve the comparison across display sorting, and record
   it in decision audits without changing evaluation identity. (#398)

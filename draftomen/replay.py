@@ -5,7 +5,7 @@ Completion events append the same build sheet used by live plain watch.
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -315,6 +315,7 @@ def format_ranked_pack(
     recommendation_line: str | None = None,
     confidence_summary: str | None = None,
     comparison_summary: str | None = None,
+    concise_explanations: Mapping[int, str] | None = None,
 ) -> list[str]:
     """Format a scored pack's ranked cards for plain text output."""
 
@@ -332,7 +333,12 @@ def format_ranked_pack(
         lines.append(f"Warning: {unresolved_count} unresolved card metadata")
 
     lines.append("Offered cards:")
-    lines.extend(_format_scored_cards(cards=scored_pack.cards))
+    lines.extend(
+        _format_scored_cards(
+            cards=scored_pack.cards,
+            concise_explanations=concise_explanations,
+        )
+    )
     if recommendation_line is not None:
         lines.append(recommendation_line)
     if confidence_summary is not None:
@@ -435,7 +441,11 @@ def _format_splash_status(*, scored_pack: ScoredPack) -> str | None:
     )
 
 
-def _format_scored_cards(*, cards: tuple[ScoredCard, ...]) -> list[str]:
+def _format_scored_cards(
+    *,
+    cards: tuple[ScoredCard, ...],
+    concise_explanations: Mapping[int, str] | None = None,
+) -> list[str]:
     if not cards:
         return []
 
@@ -463,6 +473,10 @@ def _format_scored_cards(*, cards: tuple[ScoredCard, ...]) -> list[str]:
             f"{_format_mana_value(scored_card.card):>4}  "
             f"{scored_card.source_label}"
         )
+        if concise_explanations is not None:
+            explanation = concise_explanations.get(scored_card.card.grp_id)
+            if explanation:
+                lines.append(f"      Why this score: {explanation}")
 
     return lines
 
