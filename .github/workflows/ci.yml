@@ -4,6 +4,9 @@ on:
   pull_request:
     branches:
       - master
+    paths-ignore:
+      - website/public/card-data/**
+      - website/public/profiles/**
   push:
     branches:
       - master
