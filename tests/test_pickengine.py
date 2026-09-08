@@ -698,7 +698,7 @@ def test_profile_identity_precedence_casefolding_and_zero_arena_id() -> None:
     assert scored.normalization.upper_rating == pytest.approx(0.6995)
 
 
-def test_profile_rating_preserves_gih_samples_alsa_and_missing_provider_fields() -> None:
+def test_profile_rating_preserves_evidence_and_computes_grade() -> None:
     database = _contextual_database()
     profile = _test_profile(
         maturity=ProfileMaturity.EARLY,
@@ -725,26 +725,39 @@ def test_profile_rating_preserves_gih_samples_alsa_and_missing_provider_fields()
                 ),
                 average_last_seen_at=2.0,
             ),
+            CardRating(
+                card_key="ARENA_ID:3",
+                gih_win_rate=RateEstimate(
+                    raw_value=0.55,
+                    value=0.55,
+                    samples=5,
+                    prior_value=0.50,
+                    source="test",
+                ),
+            ),
         ),
     )
     scored = PickEngine(set_profile=profile).score_pack(
-        offered_grp_ids=(1, 2),
+        offered_grp_ids=(1, 2, 3),
         card_database=database,
     )
     by_id = {card.card.grp_id: card for card in scored.cards}
     positive = by_id[1].rating
     zero = by_id[2].rating
+    middle = by_id[3].rating
 
     assert positive.gih_win_rate == pytest.approx(0.61)
     assert positive.sample_counts.games_in_hand == 7
     assert positive.average_last_seen_at == pytest.approx(3.5)
+    assert positive.letter_grade == "B"
     assert zero.gih_win_rate == pytest.approx(0.52)
     assert zero.sample_counts.games_in_hand == 0
     assert zero.average_last_seen_at == pytest.approx(2.0)
-    for rating in (positive, zero):
+    assert zero.letter_grade is None
+    assert middle.letter_grade == "D"
+    for rating in (positive, zero, middle):
         assert rating.opening_hand_win_rate is None
         assert rating.drawn_improvement_win_rate is None
-        assert rating.letter_grade is None
         assert rating.neutral_prior_score is None
         assert rating.metadata.fallback_reason is None
         assert rating.metadata.source == "profile"
