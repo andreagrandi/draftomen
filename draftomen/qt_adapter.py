@@ -333,7 +333,7 @@ class GuiPreferencesAdapter(QObject):
     def eventFilter(self, _watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.ApplicationFontChange:
             self.applicationFontPixelSizeChanged.emit()
-        return super().eventFilter(_watched, event)
+        return False
 
     @Property(bool, notify=preferencesChanged)
     def compactDensity(self) -> bool:

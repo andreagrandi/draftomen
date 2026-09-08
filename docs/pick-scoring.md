@@ -356,6 +356,14 @@ whole panel, and its contents remain reachable with mouse-wheel scrolling in
 short terminals. Build context never shows pick rationale, including in the
 focused sidebar.
 
+The desktop `CardPreview` renders a recommendation's unchanged concise
+explanation in compact mode and its unchanged detailed explanation in
+focused-intel mode. Both current Live Draft preview layouts use focused intel;
+compact recommendation rendering remains a component capability rather than a
+separate Live Draft option. Explanations wrap as plain text and remain reachable
+through the existing details scrolling. Build previews receive build-card
+values and show no pick rationale.
+
 
 
 ## Splash recommendations
