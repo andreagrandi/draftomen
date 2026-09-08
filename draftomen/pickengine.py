@@ -752,6 +752,7 @@ class ScoredPack:
     splash_state: SplashState
     role_ledger: PoolRoleLedger | None = None
     scoring_context: PickScoringContext | None = None
+    comparison_summary: str | None = None
 
 
 class PickEngine:
@@ -915,6 +916,12 @@ class PickEngine:
             config=self.config,
             require_material_rate_margin=require_material_rate_margin,
         )
+        comparison_summary = _recommendation_comparison_summary(
+            cards=sorted_cards,
+            phase=commitment.phase,
+            config=self.config,
+            require_material_rate_margin=require_material_rate_margin,
+        )
         return ScoredPack(
             cards=sorted_cards,
             normalization=normalization,
@@ -923,6 +930,7 @@ class PickEngine:
             splash_state=splash_state,
             role_ledger=role_ledger,
             scoring_context=active_context,
+            comparison_summary=comparison_summary,
         )
 
     def _best_on_color_score(
@@ -2659,6 +2667,185 @@ def _scored_card_base_sort_key(
         -card.base_rating,
         card.original_index,
     )
+
+
+def _recommendation_comparison_summary(
+    *,
+    cards: tuple[ScoredCard, ...],
+    phase: str,
+    config: PickEngineConfig,
+    require_material_rate_margin: bool,
+) -> str | None:
+    """Explain why the first DO recommendation outranks its runner-up."""
+    draftable_cards: list[ScoredCard] = []
+    for card in cards:
+        if card.freely_available_basic:
+            continue
+        draftable_cards.append(card)
+        if len(draftable_cards) == 2:
+            break
+    if len(draftable_cards) < 2:
+        return None
+
+    top, second = draftable_cards
+    if any(reason.kind == "tiebreaker" for reason in top.rationale.reasons):
+        tiebreaker_provenance: dict[int, str] = {}
+        comparison = _compare_early_pair_tiebreaker(
+            left=top,
+            right=second,
+            config=config,
+            require_material_rate_margin=require_material_rate_margin,
+            tiebreaker_provenance=tiebreaker_provenance,
+        )
+        if (
+            comparison < 0
+            and top.original_index in tiebreaker_provenance
+            and top.pair_tiebreaker_pair
+            and second.pair_tiebreaker_pair
+            and top.pair_tiebreaker_win_rate is not None
+            and second.pair_tiebreaker_win_rate is not None
+        ):
+            difference = (
+                top.pair_tiebreaker_win_rate
+                - second.pair_tiebreaker_win_rate
+            )
+            rendered_difference = f"{difference * 100:.1f}"
+            advantage = (
+                "less than 0.1 percentage points"
+                if rendered_difference == "0.0"
+                else f"{rendered_difference} percentage points"
+            )
+            summary = (
+                f"DO recommendation: {top.card.name} ranks ahead of "
+                f"{second.card.name} because the open-pick pair tiebreaker "
+                f"favors {top.pair_tiebreaker_pair} by {advantage}."
+            )
+            return _append_comparison_hedge(
+                summary=summary,
+                cards=cards,
+                phase=phase,
+            )
+
+    confidence = recommendation_confidence_summary(
+        cards=cards,
+        ranking_mode="score",
+        phase=phase,
+    )
+    hedge = _comparison_hedge(confidence=confidence)
+
+    def render(summary: str) -> str:
+        return f"{summary} {hedge}" if hedge is not None else summary
+
+    if _scored_card_base_sort_key(top) >= _scored_card_base_sort_key(second):
+        return render(
+            f"DO recommendation: {top.card.name} ranks ahead of "
+            f"{second.card.name} after deterministic close-pick ordering."
+        )
+
+    if top.score == second.score:
+        if top.raw_score != second.raw_score:
+            resolution = f"{top.card.name} ranks first on the unrounded score."
+        elif top.base_rating != second.base_rating:
+            resolution = f"{top.card.name} ranks first on the base rating."
+        else:
+            resolution = f"{top.card.name} appeared earlier in the offered pack."
+        return render(
+            f"DO recommendation: {top.card.name} and {second.card.name} "
+            f"tie on the displayed score; {resolution}"
+        )
+
+    score_gap = top.score - second.score
+    factor_buckets = _comparison_factor_buckets(card=top)
+    second_buckets = _comparison_factor_buckets(card=second)
+    positive_deltas = sorted(
+        (
+            (kind, value - second_buckets[kind])
+            for kind, value in factor_buckets.items()
+            if value - second_buckets[kind] > 0.0
+        ),
+        key=lambda item: (
+            -item[1],
+            (
+                _PICK_REASON_KINDS.index(item[0])
+                if item[0] in _PICK_REASON_KINDS
+                else len(_PICK_REASON_KINDS)
+            ),
+        ),
+    )
+    total_positive_support = sum(
+        contribution for _, contribution in positive_deltas
+    )
+    selected_factors: list[str] = []
+    selected_support = 0.0
+    for kind, contribution in positive_deltas:
+        selected_factors.append(_comparison_factor_label(kind=kind))
+        selected_support += contribution
+        if selected_support > total_positive_support / 2.0:
+            break
+    assert selected_factors
+    factors = _join_comparison_factors(selected_factors)
+    point_label = "DO point" if score_gap == 1 else "DO points"
+    return render(
+        f"DO recommendation: {top.card.name} leads {second.card.name} "
+        f"by {score_gap} {point_label}, mainly from {factors}."
+    )
+
+
+def _append_comparison_hedge(
+    *,
+    summary: str,
+    cards: tuple[ScoredCard, ...],
+    phase: str,
+) -> str:
+    confidence = recommendation_confidence_summary(
+        cards=cards,
+        ranking_mode="score",
+        phase=phase,
+    )
+    hedge = _comparison_hedge(confidence=confidence)
+    return f"{summary} {hedge}" if hedge is not None else summary
+
+
+def _comparison_hedge(*, confidence: str | None) -> str | None:
+    if confidence is None:
+        return None
+    if confidence.startswith("early/open"):
+        if "close pick" in confidence:
+            return "early/open close pick; stay flexible."
+        return "early/open pick — stay flexible."
+    if confidence.startswith("close pick"):
+        return "close pick."
+    return None
+
+
+def _comparison_factor_buckets(*, card: ScoredCard) -> dict[str, float]:
+    buckets = {
+        kind: 0.0
+        for kind in _PICK_REASON_KINDS
+        if kind not in {"rating", "splash", "tiebreaker"}
+    }
+    buckets["rating"] = card.base_score
+    for reason in card.rationale.reasons:
+        if reason.kind in buckets and reason.contribution is not None:
+            buckets[reason.kind] += reason.contribution
+    buckets["accounting_remainder"] = card.rationale.unattributed_contribution
+    return buckets
+
+
+def _comparison_factor_label(*, kind: str) -> str:
+    if kind == "rating":
+        return "rating"
+    if kind == "accounting_remainder":
+        return "score limits and small adjustments"
+    return _CONCISE_REASON_LABELS[kind].lower()
+
+
+def _join_comparison_factors(factors: list[str]) -> str:
+    if len(factors) == 1:
+        return factors[0]
+    if len(factors) == 2:
+        return f"{factors[0]} and {factors[1]}"
+    return ", ".join(factors[:-1]) + f", and {factors[-1]}"
 
 
 def _percentile(*, values: tuple[float, ...], percentile: float) -> float | None:

@@ -3108,6 +3108,11 @@ def test_live_session_accountless_pick_retains_recommendations_and_colors(
 
     session.process_lines(lines=fixture_lines[2:10])
     before_pick = session.snapshot
+    scored_pack = before_pick.current_scored_pack
+    assert scored_pack is not None
+    comparison_summary = scored_pack.comparison_summary
+    assert comparison_summary is not None
+    assert before_pick.recommendations.comparison_summary == comparison_summary
     before_scores = tuple(
         (recommendation.score, recommendation.win_rate)
         for recommendation in before_pick.recommendations.cards
@@ -3133,6 +3138,24 @@ def test_live_session_accountless_pick_retains_recommendations_and_colors(
     assert after_pick.ratings == before_pick.ratings
     assert after_pick.current_scored_pack is before_pick.current_scored_pack
     assert after_pick.pool.current_colors == before_pick.pool.current_colors
+    assert after_pick.recommendations.comparison_summary == comparison_summary
+    first_scored_pack = before_pick.current_scored_pack
+    replacement: LiveSessionSnapshot | None = None
+    for line in fixture_lines[11:]:
+        candidate = session.process_lines(lines=(line,))
+        if (
+            candidate.current_scored_pack is not None
+            and candidate.current_scored_pack is not first_scored_pack
+        ):
+            replacement = candidate
+            break
+    assert replacement is not None
+    replacement_scored_pack = replacement.current_scored_pack
+    assert replacement_scored_pack is not None
+    replacement_summary = replacement_scored_pack.comparison_summary
+    assert replacement_summary is not None
+    assert replacement_summary != comparison_summary
+    assert replacement.recommendations.comparison_summary == replacement_summary
 
     published.clear()
     session.process_lines(lines=(fixture_lines[132],))
@@ -3143,6 +3166,7 @@ def test_live_session_accountless_pick_retains_recommendations_and_colors(
     cleared = completion_publication.snapshot
     assert cleared.recommendations.cards == ()
     assert cleared.pool.current_colors == ()
+    assert cleared.recommendations.comparison_summary is None
 
 
 def test_live_session_startup_scan_processes_previous_then_current_once(
@@ -3484,6 +3508,13 @@ def test_live_session_cached_profile_scores_all_ranking_modes_and_audits_choice(
     assert ratings.rated_cards == 2
     assert ratings.total_cards == 14
     assert ratings.last_successful_update == profile.generated_at
+    scored_pack = session.snapshot.current_scored_pack
+    assert scored_pack is not None
+    comparison_summary = scored_pack.comparison_summary
+    assert comparison_summary is not None
+    assert session.snapshot.recommendations.comparison_summary == (
+        comparison_summary
+    )
     recommendations = session.snapshot.recommendations.cards
     assert {card.source_label for card in recommendations} == {
         "Profile",
@@ -3518,6 +3549,7 @@ def test_live_session_cached_profile_scores_all_ranking_modes_and_audits_choice(
             recommendation.card.grp_id: recommendation.concise_explanation
             for recommendation in snapshot.recommendations.cards
         } == initial_concise_explanations
+        assert snapshot.recommendations.comparison_summary == comparison_summary
 
     assert top_cards_by_mode == {
         "score": 104894,

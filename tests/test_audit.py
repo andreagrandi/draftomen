@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -188,6 +189,138 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
     assert completion["picked_grp_ids"] == [102]
     assert completion["pick_count"] == 1
     assert completion["inferred"] is False
+
+
+@pytest.mark.parametrize(
+    ("comparison_summary",),
+    ((None,), ("DO recommendation: Alpha leads Beta by 10 DO points.",)),
+)
+def test_audit_decision_serializes_comparison_summary(
+    tmp_path: Path,
+    comparison_summary: str | None,
+) -> None:
+    state = _draft_state()
+    offer = _pack_event()
+    engine = PickEngine()
+    scored_pack = replace(
+        engine.score_pack(
+            offered_grp_ids=offer.offered_grp_ids,
+            card_database=_card_database(),
+            pool_grp_ids=offer.pool_grp_ids,
+            pick_index=1,
+        ),
+        comparison_summary=comparison_summary,
+    )
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    store.record_decision(
+        state=state,
+        event=offer,
+        scored_pack=scored_pack,
+        config=engine.config,
+        ratings_data=engine.ratings_data,
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert records[0]["comparison_summary"] == comparison_summary
+    assert all(
+        "comparison_summary" not in candidate
+        for candidate in records[0]["candidates"]
+    )
+
+
+def test_audit_comparison_summary_is_excluded_from_evaluation_identity() -> None:
+    state = _draft_state()
+    offer = _pack_event()
+    engine = PickEngine()
+    scored_pack = engine.score_pack(
+        offered_grp_ids=offer.offered_grp_ids,
+        card_database=_card_database(),
+        pool_grp_ids=offer.pool_grp_ids,
+        pick_index=1,
+    )
+    evaluation = audit_module._decision_payload(
+        state=state,
+        event=offer,
+        scored_pack=scored_pack,
+        config=engine.config,
+        ratings_data=engine.ratings_data,
+        app_version="test",
+        decision_id="decision-a",
+    )
+
+    missing = dict(evaluation)
+    missing.pop("comparison_summary", None)
+    null = dict(evaluation)
+    null["comparison_summary"] = None
+    text = dict(evaluation)
+    text["comparison_summary"] = "DO recommendation: explanatory text."
+
+    identities = {
+        json.dumps(
+            audit_module._evaluation_identity_payload(evaluation=variant),
+            sort_keys=True,
+        )
+        for variant in (missing, null, text)
+    }
+    assert len(identities) == 1
+
+    changed_scoring = dict(evaluation)
+    candidates = list(evaluation["candidates"])
+    first_candidate = dict(candidates[0])
+    first_scoring = dict(first_candidate["scoring"])
+    first_scoring["score"] += 1
+    first_candidate["scoring"] = first_scoring
+    candidates[0] = first_candidate
+    changed_scoring["candidates"] = candidates
+    assert audit_module._evaluation_identity_payload(
+        evaluation=changed_scoring,
+    ) != audit_module._evaluation_identity_payload(evaluation=evaluation)
+
+
+def test_audit_comparison_summary_changes_do_not_duplicate_decisions(
+    tmp_path: Path,
+) -> None:
+    state = _draft_state()
+    offer = _pack_event()
+    engine = PickEngine()
+    scored_pack = engine.score_pack(
+        offered_grp_ids=offer.offered_grp_ids,
+        card_database=_card_database(),
+        pool_grp_ids=offer.pool_grp_ids,
+        pick_index=1,
+    )
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    store.record_decision(
+        state=state,
+        event=offer,
+        scored_pack=replace(scored_pack, comparison_summary=None),
+        config=engine.config,
+        ratings_data=engine.ratings_data,
+    )
+    store.record_decision(
+        state=state,
+        event=offer,
+        scored_pack=replace(
+            scored_pack,
+            comparison_summary="DO recommendation: explanatory text.",
+        ),
+        config=engine.config,
+        ratings_data=engine.ratings_data,
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert len(records) == 1
+    assert records[0]["comparison_summary"] is None
 
 
 def test_audit_context_provenance_omits_pool_but_preserves_profile_and_evidence(
