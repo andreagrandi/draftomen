@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Show each focused offered card's unchanged session pick rationale below its
+  TUI facts, keep it mouse-wheel accessible in short terminals, and omit pick
+  rationale from build context. (#387)
 - Add deterministic TUI CI coverage proving hosted profile refresh workers stay
   blocked while keyboard input remains responsive.
 - Add immutable per-card pick rationale with exact evidence and score accounting,

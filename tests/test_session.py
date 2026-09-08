@@ -2319,6 +2319,7 @@ def test_live_session_ordinary_draft_progression_keeps_profile_request(
 
 def test_live_session_newer_profile_result_updates_state_and_scores_current_pack(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     older = _fixture_empirical_profile(
         profile_version="empirical-1.0",
@@ -2331,11 +2332,12 @@ def test_live_session_newer_profile_result_updates_state_and_scores_current_pack
         second_gih=0.90,
     )
     published: list[LiveSessionSnapshot] = []
+    profile_client = _ProfileClientStub({"TST": older})
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
         card_database=_fixture_set_card_database(set_code="TST"),
-        profile_client=_ProfileClientStub({"TST": older}),
+        profile_client=profile_client,
         snapshot_publisher=published.append,
     )
     snapshot = session.process_lines(
@@ -2352,6 +2354,46 @@ def test_live_session_newer_profile_result_updates_state_and_scores_current_pack
     assert [
         recommendation.card.grp_id for recommendation in snapshot.recommendations.cards
     ] == [104894, 104976]
+    initial_concise_explanations = {
+        recommendation.card.grp_id: recommendation.concise_explanation
+        for recommendation in snapshot.recommendations.cards
+    }
+    card_data_before = snapshot.card_data
+    card_image_before = snapshot.card_image
+    selected_image_request_before = session.selected_card_image_request()
+    recommendation_image_requests_before = session.recommendation_image_requests()
+
+    provider_calls: list[object] = []
+
+    def guarded_opener(request: object, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        provider_calls.append(request)
+        raise AssertionError("profile and card-data acquisition must not recur")
+
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        guarded_opener,
+    )
+    monkeypatch.setattr(
+        "draftomen.seventeen.urllib.request.urlopen",
+        guarded_opener,
+    )
+
+    def forbidden_cached_profile(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("profile cache must not reload during completion")
+
+    def forbidden_profile_refresh(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("profile refresh must not recur during completion")
+
+    monkeypatch.setattr(profile_client, "load_cached", forbidden_cached_profile)
+    monkeypatch.setattr(
+        profile_client,
+        "refresh",
+        forbidden_profile_refresh,
+        raising=False,
+    )
     publication_count = len(published)
 
     session.complete_profile_refresh(
@@ -2364,6 +2406,28 @@ def test_live_session_newer_profile_result_updates_state_and_scores_current_pack
 
     assert len(published) - publication_count == 1
     authority_snapshot = published[-1]
+    updated_concise_explanations = {
+        recommendation.card.grp_id: recommendation.concise_explanation
+        for recommendation in authority_snapshot.recommendations.cards
+    }
+    assert any(
+        updated_concise_explanations[grp_id] != concise_explanation
+        for grp_id, concise_explanation in initial_concise_explanations.items()
+    )
+    assert {
+        recommendation.card.grp_id: recommendation.concise_explanation
+        for recommendation in snapshot.recommendations.cards
+    } == initial_concise_explanations
+    assert authority_snapshot.card_data == card_data_before
+    assert authority_snapshot.card_image == card_image_before
+    assert session.selected_card_image_request() == selected_image_request_before
+    assert (
+        session.recommendation_image_requests()
+        == recommendation_image_requests_before
+    )
+    assert profile_client.load_calls == [("TST", QUICK_DRAFT_FORMAT)]
+    assert session.profile_refresh_request() is None
+    assert provider_calls == []
     assert authority_snapshot.set_profile.profile_version == newer.profile_version
     assert session._set_profile == newer
     assert session._set_profile.fingerprint == newer.fingerprint
@@ -3430,6 +3494,10 @@ def test_live_session_cached_profile_scores_all_ranking_modes_and_audits_choice(
         for recommendation in recommendations
         if recommendation.source_label == "Profile"
     )
+    initial_concise_explanations = {
+        recommendation.card.grp_id: recommendation.concise_explanation
+        for recommendation in recommendations
+    }
     assert {
         recommendation.card.grp_id: recommendation.win_rate
         for recommendation in profile_recommendations
@@ -3446,6 +3514,10 @@ def test_live_session_cached_profile_scores_all_ranking_modes_and_audits_choice(
         assert tuple(card.rank for card in snapshot.recommendations.cards) == tuple(
             range(1, 15)
         )
+        assert {
+            recommendation.card.grp_id: recommendation.concise_explanation
+            for recommendation in snapshot.recommendations.cards
+        } == initial_concise_explanations
 
     assert top_cards_by_mode == {
         "score": 104894,
@@ -3453,6 +3525,7 @@ def test_live_session_cached_profile_scores_all_ranking_modes_and_audits_choice(
         "alsa": 104976,
         "mv": 105080,
     }
+
     expected_recommendation = top_cards_by_mode["mv"]
     for line in fixture_lines[pack_line_index + 1 :]:
         session.process_lines(lines=(line,))

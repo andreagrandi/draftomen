@@ -85,6 +85,7 @@ from draftomen.session import (
     LiveSessionSnapshot,
     OperationKind,
     PoolState,
+    Recommendation,
     ProfileRefreshRequest,
     RequestBacktest,
     RequestBuild,
@@ -501,6 +502,12 @@ class DraftomenTuiApp(App[None]):
         border-left: solid $accent;
     }
 
+    #sidebar-scroll {
+        height: 1fr;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
     #pack-title {
         height: 1;
         text-style: bold;
@@ -712,6 +719,7 @@ class DraftomenTuiApp(App[None]):
         self._open_backtest_when_ready = False
         self._current_pack_event: PackOfferedEvent | None = None
         self._current_pack: ScoredPack | None = None
+        self._recommendations_by_grp_id: dict[int, Recommendation] = {}
         self._rating_prompted_sets: set[str] = set()
         self._rating_prompt_open_sets: set[str] = set()
         self._rating_notices_by_set: dict[str, str] = {}
@@ -785,9 +793,10 @@ class DraftomenTuiApp(App[None]):
                 with VerticalScroll(id="build-scroll", can_focus=True):
                     yield Static("Build view: no picked cards yet.", id="build-view")
             with Vertical(id="sidebar"):
-                yield Static("Pool: no draft yet", id="pool-summary")
-                yield Static("", id="card-image-preview")
-                yield CardDetailsPanel("Focused card: none", id="focused-card")
+                with VerticalScroll(id="sidebar-scroll", can_focus=False):
+                    yield Static("Pool: no draft yet", id="pool-summary")
+                    yield Static("", id="card-image-preview")
+                    yield CardDetailsPanel("Focused card: none", id="focused-card")
         with Vertical(id="ratings-download-panel"):
             yield Static("", id="ratings-download-label")
             yield ProgressBar(
@@ -1423,6 +1432,9 @@ class DraftomenTuiApp(App[None]):
         self._draft_id = None if draft is None else draft.draft_id
         self._current_pack_event = snapshot.current_pack_event
         self._current_pack = snapshot.current_scored_pack
+        self._recommendations_by_grp_id = {
+            item.card.grp_id: item for item in snapshot.recommendations.cards
+        }
         if snapshot.status.phase == ApplicationPhase.DRAFT_COMPLETE:
             self._pick_label = "complete"
         elif snapshot.current_pack_event is not None:
@@ -2292,7 +2304,7 @@ class DraftomenTuiApp(App[None]):
             mana_icons_enabled=self.mana_icons_enabled,
             long_colorless=True,
         )
-        focused_card.update(
+        facts = (
             "Focused card details\n"
             f"{section} {rank}/{total_count}\n"
             f"{_format_card_name(card=card)}\n"
@@ -2308,6 +2320,13 @@ class DraftomenTuiApp(App[None]):
             f"ALSA (avg last seen): {_format_alsa(scored_card=scored_card)}\n"
             f"Data source: {_format_tui_source_label(scored_card=scored_card)}"
         )
+        details = Text.from_markup(facts)
+        if self._view_mode == "pack":
+            recommendation = self._recommendations_by_grp_id.get(card.grp_id)
+            if recommendation is not None and recommendation.concise_explanation:
+                details.append("\n\nWhy this score:\n")
+                details.append(recommendation.concise_explanation)
+        focused_card.update(details)
 
     def _render_card_image_preview(self, *, card: CardInfo | None) -> None:
         image_panel = self.query_one("#card-image-preview", Static)

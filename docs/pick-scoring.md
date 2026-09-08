@@ -343,6 +343,13 @@ the same card rationale through `rationale`, `concise_explanation`, and
 `render_pick_rationale_concise` and `render_pick_rationale_detailed`. Replay
 uses the detailed renderer for the recommendation on every nonempty pack.
 
+In the live TUI, the focused offered-card details show the applied session
+recommendation's unchanged concise explanation below the existing card facts
+under `Why this score:`. The focused-details visibility preference controls the
+whole panel, and its contents remain reachable with mouse-wheel scrolling in
+short terminals. Build context never shows pick rationale, including in the
+focused sidebar.
+
 
 
 ## Splash recommendations

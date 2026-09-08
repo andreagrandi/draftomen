@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import replace
@@ -45,6 +46,7 @@ from draftomen.session import (
     CardView,
     ChangeRanking,
     DataLoadPhase,
+    LiveSessionSnapshot,
     OperationKind,
     SetCardDataLoader,
 )
@@ -302,46 +304,43 @@ def test_tui_ready_ratings_download_refreshes_hosted_profile(
 async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
     tmp_path: Path,
 ) -> None:
-    profile = load_set_profile(
-        Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json",
-        expected_set_code="TST",
-        expected_format=QUICK_DRAFT_FORMAT,
-    )
-    if profile.role_profile is not None:
-        profile = replace(
-            profile,
-            set_code="MSH",
-            role_profile=replace(profile.role_profile, set_code="MSH"),
-        )
-    else:
-        profile = replace(profile, set_code="MSH")
-    profile = replace(
-        profile,
+    old_profile = _profile_with_card_ratings(
         card_ratings=(
-            CardRating(
+            _card_rating(
                 card_key="arena_id:104894",
-                gih_win_rate=RateEstimate(
-                    raw_value=0.90,
-                    value=0.90,
-                    samples=2_000,
-                    prior_value=0.50,
-                    source="17lands",
-                ),
-                average_last_seen_at=3.0,
+                gih=0.90,
+                samples=2_000,
+                alsa=3.0,
             ),
-            CardRating(
+            _card_rating(
                 card_key="arena_id:104976",
-                gih_win_rate=RateEstimate(
-                    raw_value=0.10,
-                    value=0.10,
-                    samples=2_000,
-                    prior_value=0.50,
-                    source="17lands",
-                ),
-                average_last_seen_at=1.0,
+                gih=0.10,
+                samples=2_000,
+                alsa=1.0,
             ),
         ),
     )
+    new_profile = replace(
+        old_profile,
+        generated_at="2026-08-30T00:00:00+00:00",
+        card_ratings=(
+            _card_rating(
+                card_key="arena_id:104894",
+                gih=0.10,
+                samples=2_000,
+                alsa=3.0,
+            ),
+            _card_rating(
+                card_key="arena_id:104976",
+                gih=0.90,
+                samples=2_000,
+                alsa=1.0,
+            ),
+        ),
+    )
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+    image_calls: list[str] = []
 
     class ProfileClientFake:
         manifest_url = "https://profiles.example.test/manifest.json"
@@ -356,7 +355,7 @@ async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
             event_format: str,
         ) -> SetProfileLoadResult:
             return SetProfileLoadResult(
-                profile=profile,
+                profile=old_profile,
                 source="cache",
             )
 
@@ -367,70 +366,112 @@ async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
             *,
             force: bool,
         ) -> ProfileRefreshResult:
+            del set_code, event_format
             self.calls.append(force)
+            if len(self.calls) == 1:
+                refresh_started.set()
+                if not release_refresh.wait(timeout=5.0):
+                    raise TimeoutError("Test did not release hosted profile refresh.")
             return ProfileRefreshResult(
-                profile=profile,
+                profile=new_profile,
                 outcome=ProfileRefreshOutcome.UPDATED,
             )
+
+    def image_opener(request: object, **kwargs: object) -> BytesIO:
+        del kwargs
+        image_calls.append(str(getattr(request, "full_url")))
+        raise AssertionError("profile refresh must not acquire card images")
 
     client = ProfileClientFake()
     app = _tui_app(
         tmp_path=tmp_path,
         profile_client=cast(ProfileClient, client),
+        image_preview_enabled=False,
+        card_image_opener=image_opener,
     )
 
     async with app.run_test(size=(120, 30)) as pilot:
-        app.process_lines(lines=_first_pack_lines())
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if (
-                client.calls == [False]
-                and app.session.snapshot.ratings.phase == DataLoadPhase.READY
-            ):
-                break
+        try:
+            app.process_lines(lines=_first_pack_lines())
+            assert await asyncio.to_thread(refresh_started.wait, 5.0)
 
-        assert client.calls == [False]
-        assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
+            old_snapshot = app.session.snapshot
+            old_recommendations = old_snapshot.recommendations
+            old_id, old_rationale = _assert_focused_pack_rationale(
+                app=app,
+                snapshot=old_snapshot,
+            )
+            old_text = _focused_card_text(app=app)
+            assert old_id == old_recommendations.cards[0].card.grp_id
+            assert old_rationale
+            assert image_calls == []
 
-        await pilot.press("d")
-        await pilot.pause()
-        assert isinstance(app.screen, MissingRatingsScreen)
-        recommendations_before_cancel = app.session.snapshot.recommendations
+            release_refresh.set()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if (
+                    client.calls == [False]
+                    and app.session.profile_refresh_request() is None
+                    and app.profile_refresh_in_flight is None
+                ):
+                    break
 
-        await pilot.click("#cancel-ratings-download")
-        await pilot.pause()
-        assert not isinstance(app.screen, MissingRatingsScreen)
-        assert client.calls == [False]
-        assert app.session.profile_refresh_request() is None
-        assert app.profile_refresh_in_flight is None
-        assert app.session.snapshot.recommendations == recommendations_before_cancel
-        cancelled_notice = app._rating_notices_by_set["MSH"]
-        assert "Hosted profile refresh cancelled for MSH" in cancelled_notice
-        assert "existing cached ratings remain active" in cancelled_notice
-        assert "Hosted profile is current" not in cancelled_notice
+            assert client.calls == [False]
+            assert app.session.profile_refresh_request() is None
+            assert app.profile_refresh_in_flight is None
+            new_snapshot = app.session.snapshot
+            new_id, new_rationale = _assert_focused_pack_rationale(
+                app=app,
+                snapshot=new_snapshot,
+            )
+            new_text = _focused_card_text(app=app)
+            assert new_id == 104976
+            assert new_rationale
+            assert new_text != old_text
+            assert image_calls == []
 
-        await pilot.press("d")
-        await pilot.pause()
-        assert isinstance(app.screen, MissingRatingsScreen)
-        await pilot.click("#download-ratings")
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if (
-                client.calls == [False, True]
-                and app.session.profile_refresh_request() is None
-                and app.profile_refresh_in_flight is None
-            ):
-                break
+            await pilot.press("d")
+            await pilot.pause()
+            assert isinstance(app.screen, MissingRatingsScreen)
+            recommendations_before_cancel = app.session.snapshot.recommendations
 
-        assert client.calls == [False, True]
-        assert app.session.profile_refresh_request() is None
-        assert app.profile_refresh_in_flight is None
-        assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
-        assert (
-            app.session.snapshot.set_profile.refresh_outcome
-            == ProfileRefreshOutcome.UNCHANGED.value
-        )
-        assert "Hosted profile unchanged for MSH" in app._rating_notices_by_set["MSH"]
+            await pilot.click("#cancel-ratings-download")
+            await pilot.pause()
+            assert not isinstance(app.screen, MissingRatingsScreen)
+            assert client.calls == [False]
+            assert app.session.profile_refresh_request() is None
+            assert app.profile_refresh_in_flight is None
+            assert app.session.snapshot.recommendations == recommendations_before_cancel
+            cancelled_notice = app._rating_notices_by_set["MSH"]
+            assert "Hosted profile refresh cancelled for MSH" in cancelled_notice
+            assert "existing cached ratings remain active" in cancelled_notice
+            assert "Hosted profile is current" not in cancelled_notice
+
+            await pilot.press("d")
+            await pilot.pause()
+            assert isinstance(app.screen, MissingRatingsScreen)
+            await pilot.click("#download-ratings")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if (
+                    client.calls == [False, True]
+                    and app.session.profile_refresh_request() is None
+                    and app.profile_refresh_in_flight is None
+                ):
+                    break
+
+            assert client.calls == [False, True]
+            assert app.session.profile_refresh_request() is None
+            assert app.profile_refresh_in_flight is None
+            assert app.session.snapshot.ratings.phase == DataLoadPhase.READY
+            assert (
+                app.session.snapshot.set_profile.refresh_outcome
+                == ProfileRefreshOutcome.UNCHANGED.value
+            )
+            assert "Hosted profile unchanged for MSH" in app._rating_notices_by_set["MSH"]
+            assert image_calls == []
+        finally:
+            release_refresh.set()
 
 
 @pytest.mark.parametrize(
@@ -512,7 +553,17 @@ async def _assert_tui_discards_stale_worker_snapshot(tmp_path: Path) -> None:
     app = _tui_app(tmp_path=tmp_path, poll_enabled=False)
 
     async with app.run_test(size=(120, 24)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+
         snapshot_a = app.session.snapshot
+        selected_a_grp_id, rationale_a = _assert_focused_pack_rationale(
+            app=app,
+            snapshot=snapshot_a,
+        )
+        assert rationale_a
+        text_a = _focused_card_text(app=app)
+
         worker = threading.Thread(
             target=app._publish_session_snapshot,
             args=(snapshot_a,),
@@ -520,16 +571,50 @@ async def _assert_tui_discards_stale_worker_snapshot(tmp_path: Path) -> None:
         worker.start()
         worker.join()
 
-        snapshot_b = app.session.dispatch(
-            command=ChangeRanking(ranking_mode="win_rate"),
+        recommendations_b = replace(
+            snapshot_a.recommendations,
+            ranking_mode="win_rate",
+            cards=tuple(
+                replace(
+                    recommendation,
+                    concise_explanation=(
+                        f"New evidence for grpId {recommendation.card.grp_id}."
+                    ),
+                )
+                for recommendation in snapshot_a.recommendations.cards
+            ),
         )
+        snapshot_b = replace(
+            snapshot_a,
+            recommendations=recommendations_b,
+        )
+        with app.session._state_lock:
+            app.session._snapshot = snapshot_b
+        app._apply_session_snapshot(snapshot_b)
+
         assert app.session.snapshot is snapshot_b
         assert app.sort_mode == snapshot_b.recommendations.ranking_mode
+        selected_b_grp_id, rationale_b = _assert_focused_pack_rationale(
+            app=app,
+            snapshot=snapshot_b,
+        )
+        assert selected_b_grp_id == selected_a_grp_id
+        assert rationale_b
+        assert rationale_b != rationale_a
+        text_b = _focused_card_text(app=app)
+        assert text_b != text_a
 
         await pilot.pause()
 
         assert app.session.snapshot is snapshot_b
         assert app.sort_mode == snapshot_b.recommendations.ranking_mode
+        _assert_focused_pack_rationale(app=app, snapshot=snapshot_b)
+
+        app._apply_session_snapshot(snapshot_a)
+        _assert_focused_pack_rationale(app=app, snapshot=snapshot_a)
+
+        app._apply_session_snapshot(snapshot_b)
+        _assert_focused_pack_rationale(app=app, snapshot=snapshot_b)
 
 
 def test_tui_splash_details_use_plain_color_and_mana_language() -> None:
@@ -1560,6 +1645,10 @@ async def _assert_config_updates_columns_and_rank_cycle(tmp_path: Path) -> None:
 async def _assert_pack_navigation_preserves_focus_and_details(
     tmp_path: Path,
 ) -> None:
+    _write_profile_with_card_ratings(
+        tmp_path=tmp_path,
+        card_ratings=_graded_profile_ratings(),
+    )
     app = _tui_app(tmp_path=tmp_path)
 
     async with app.run_test(size=(140, 30)) as pilot:
@@ -1570,44 +1659,122 @@ async def _assert_pack_navigation_preserves_focus_and_details(
         card_index = app.visible_column_keys.index("card")
         second_card_name = str(table.get_row_at(1)[card_index])
 
-        assert app.focused == table
-        assert table.cursor_type == "row"
+        def assert_focus_and_rationale() -> int:
+            assert app.focused == table
+            assert table.cursor_type == "row"
+            grp_id, _ = _assert_focused_pack_rationale(
+                app=app,
+                snapshot=app.session.snapshot,
+            )
+            return grp_id
+
         assert "Focused card details" in _focused_card_text(app=app)
+        first_grp_id = assert_focus_and_rationale()
 
         await pilot.press("down")
         await pilot.pause()
 
         assert table.cursor_coordinate.row == 1
         assert second_card_name in _focused_card_text(app=app)
+        second_grp_id = assert_focus_and_rationale()
+        assert second_grp_id != first_grp_id
 
         app.process_lines(lines=[])
         await pilot.pause()
 
-        assert app.focused == table
         assert table.cursor_coordinate.row == 1
-        assert second_card_name in _focused_card_text(app=app)
+        assert_focus_and_rationale()
 
         await pilot.press("tab")
         await pilot.pause()
 
-        assert app.focused == table
+        assert_focus_and_rationale()
 
         await pilot.press("right")
         await pilot.pause()
 
-        assert app.focused == table
         assert table.cursor_coordinate.row == 2
+        assert_focus_and_rationale()
 
         await pilot.press("left")
         await pilot.pause()
 
         assert table.cursor_coordinate.row == 1
+        assert_focus_and_rationale()
 
         await pilot.press("up")
         await pilot.pause()
 
         assert table.cursor_coordinate.row == 0
+        assert_focus_and_rationale()
 
+        expected_modes = ("win_rate", "alsa", "mv", "score")
+        for expected_mode in expected_modes:
+            await pilot.press("s")
+            await pilot.pause()
+            assert app.sort_mode == expected_mode
+            assert_focus_and_rationale()
+
+
+def test_tui_pack_build_and_next_pack_restore_snapshot_rationale(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(
+        _assert_pack_build_and_next_pack_restore_rationale(tmp_path=tmp_path)
+    )
+
+
+async def _assert_pack_build_and_next_pack_restore_rationale(
+    *,
+    tmp_path: Path,
+) -> None:
+    _write_profile_with_card_ratings(
+        tmp_path=tmp_path,
+        card_ratings=_graded_profile_ratings(),
+    )
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 30)) as pilot:
+        app.process_lines(lines=_first_pick_lines())
+        await pilot.pause()
+        initial_snapshot = app.session.snapshot
+        _, initial_rationale = _assert_focused_pack_rationale(
+            app=app,
+            snapshot=initial_snapshot,
+        )
+        assert initial_rationale
+
+        await _save_tui_config(
+            app=app,
+            pilot=pilot,
+            focused_card_details=False,
+        )
+        focused_card = app.query_one("#focused-card", Static)
+        assert focused_card.display is False
+        assert "Why this score:" not in app.export_screenshot(simplify=True)
+
+        await _save_tui_config(
+            app=app,
+            pilot=pilot,
+            focused_card_details=True,
+        )
+        assert focused_card.display is True
+        _assert_focused_pack_rationale(app=app, snapshot=initial_snapshot)
+
+        await pilot.press("b")
+        await pilot.pause()
+        assert app._view_mode == "build"
+        assert "Why this score:" not in _focused_card_text(app=app)
+        assert "Why this score:" not in app.build_view_text
+        assert "Focused card details" in _focused_card_text(app=app)
+
+        app.process_lines(lines=_full_fixture_lines()[10:13])
+        await pilot.pause()
+        assert app._view_mode == "pack"
+        _assert_focused_pack_rationale(
+            app=app,
+            snapshot=app.session.snapshot,
+        )
 
 def test_tui_sidebar_updates_pool_distribution_and_curve(
     tmp_path: Path,
@@ -2113,6 +2280,123 @@ async def _assert_backtest_missing_history_is_read_only(tmp_path: Path) -> None:
         assert "Summary: no comparable picks; 1 skipped." in app.backtest_view_text
         assert state_path.read_text(encoding="utf-8") == before
 
+
+
+def test_tui_long_pack_rationale_is_reachable_in_narrow_sidebar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_long_pack_rationale_is_reachable(
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+        )
+    )
+
+
+async def _assert_long_pack_rationale_is_reachable(
+    *,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeTgpImage:
+        def __init__(
+            self,
+            image: str,
+            width: int | None = None,
+            height: object = None,
+        ) -> None:
+            del image, width, height
+
+        def __rich_console__(self, *args: object) -> list[str]:
+            return ["<local image>"]
+
+    monkeypatch.setattr("draftomen.tui.TgpImage", FakeTgpImage)
+    fixture_database = _fixture_card_database()
+    image_uri = "https://cards.example/spider.jpg"
+    image_path = tmp_path / "spider.jpg"
+    image_path.write_bytes(b"local image")
+    app = _tui_app(
+        tmp_path=tmp_path,
+        card_database=CardDatabase(
+            cards=fixture_database.cards,
+            image_uris_by_name={"fixture spider": image_uri},
+        ),
+        image_preview_enabled=True,
+        card_image_opener=lambda *args, **kwargs: BytesIO(b"unused"),
+    )
+    long_rationale = (
+        "[literal] This applied recommendation explanation is intentionally long "
+        "so that the focused sidebar must scroll through complete text without "
+        "truncating or interpreting markup. "
+        "The score reflects the current evidence and remains unchanged while "
+        "the viewport moves through this content. "
+        "Final rationale sentence remains reachable."
+    )
+
+    async with app.run_test(size=(60, 24)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+        base_snapshot = app.session.snapshot
+        applied_snapshot = replace(
+            base_snapshot,
+            recommendations=replace(
+                base_snapshot.recommendations,
+                cards=tuple(
+                    replace(
+                        recommendation,
+                        concise_explanation=long_rationale,
+                    )
+                    for recommendation in base_snapshot.recommendations.cards
+                ),
+            ),
+        )
+        app._apply_session_snapshot(applied_snapshot)
+        await pilot.pause()
+
+        table = app.query_one("#pack-table", DataTable)
+        cards = app._sorted_cards()
+        image_row = next(
+            index
+            for index, scored_card in enumerate(cards)
+            if scored_card.card.grp_id == 105097
+        )
+        app._card_image_uris_by_grp_id[105097] = image_uri
+        app._card_image_paths_by_uri[image_uri] = image_path
+        app._move_pack_cursor_to(row=image_row)
+        await pilot.pause()
+
+        assert table.cursor_coordinate.row == image_row
+        assert long_rationale in _focused_card_text(app=app)
+        assert "[literal]" in _focused_card_text(app=app)
+        assert app.visible_column_keys == (
+            "rank",
+            "win_rate",
+            "grade",
+            "score",
+            "card",
+            "colors",
+        )
+        image_panel = app.query_one("#card-image-preview", Static)
+        assert image_panel.display is True
+        assert image_panel.size.height > 0
+
+        sidebar_scroll = app.query_one("#sidebar-scroll", VerticalScroll)
+        assert sidebar_scroll.styles.overflow_x == "hidden"
+        assert sidebar_scroll.size.width <= 60
+        sidebar_scroll.scroll_end(animate=False)
+        await pilot.pause()
+        assert sidebar_scroll.scroll_offset.y > 0
+        screen_capture = app.export_screenshot(simplify=True)
+        assert re.search(
+            r"Final.*rationale.*sentence.*remains.*reachable\.",
+            screen_capture,
+            flags=re.DOTALL,
+        )
+
+        await pilot.press("tab")
+        await pilot.pause()
+        assert app.focused is table
 
 
 def test_tui_card_image_preserves_ratio_with_auto_height(
@@ -3219,6 +3503,33 @@ def _course_snapshot_line(*, course_id: str) -> str:
             ]
         }
     )
+
+def _assert_focused_pack_rationale(
+    *,
+    app: DraftomenTuiApp,
+    snapshot: LiveSessionSnapshot,
+) -> tuple[int, str | None]:
+    selected = app._focused_pack_card()
+    assert selected is not None
+    _, scored_card = selected
+    recommendation = next(
+        recommendation
+        for recommendation in snapshot.recommendations.cards
+        if recommendation.card.grp_id == scored_card.card.grp_id
+    )
+    rationale = recommendation.concise_explanation
+    marker = "\n\nWhy this score:\n"
+    facts, separator, displayed_rationale = _focused_card_text(app=app).partition(
+        marker
+    )
+    assert facts
+    if rationale:
+        assert separator == marker
+        assert displayed_rationale == rationale
+    else:
+        assert separator == ""
+        assert displayed_rationale == ""
+    return scored_card.card.grp_id, rationale
 
 
 def _first_pack_lines() -> list[str]:
