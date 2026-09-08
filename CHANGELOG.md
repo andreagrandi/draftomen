@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Show unchanged concise pick rationale in compact desktop card previews and
+  unchanged detailed rationale in focused intel, with wrapped plain text,
+  retained scrolling and no pick rationale in build previews. (#389)
 - Show each plain-watch pack's unchanged concise top recommendation immediately
   after its ranked rows while preserving event-specific text for buffered packs
   and omitting recommendation output when none is available. (#388)

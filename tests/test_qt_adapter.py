@@ -2183,6 +2183,36 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         profile_client=profile_client,
     )
     adapter.start()
+
+    def recommendation_model_row(*, grp_id: int) -> dict[str, object]:
+        model = adapter.recommendationsModel
+        for index in range(model.rowCount()):
+            row = model.data(
+                model.index(index, 0),
+                RecommendationListModel.MODEL_DATA_ROLE,
+            )
+            if not isinstance(row, dict):
+                continue
+            card = row.get("card")
+            if isinstance(card, dict) and card.get("grp_id") == grp_id:
+                return row
+        raise AssertionError(f"Recommendation model is missing grp_id {grp_id}.")
+
+    def assert_rationale_parity(
+        *,
+        expected: Recommendation,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        state_row = next(
+            card
+            for card in adapter.state["recommendations"]["cards"]
+            if card["card"]["grp_id"] == expected.card.grp_id
+        )
+        model_row = recommendation_model_row(grp_id=expected.card.grp_id)
+        for row in (state_row, model_row):
+            assert row["concise_explanation"] == expected.concise_explanation
+            assert row["explanation"] == expected.explanation
+        return state_row, model_row
+
     try:
         _process_until(
             application=qcore_application,
@@ -2200,13 +2230,10 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         assert initial_recommendation.contextual_pair == "WU"
         assert initial_recommendation.contextual_evidence
         assert initial_recommendation.contextual_breakdown.aggregate > 0
-        initial_state_recommendation = next(
-            card
-            for card in adapter.state["recommendations"]["cards"]
-            if card["card"]["grp_id"] == 104894
+        initial_state_recommendation, initial_model_recommendation = (
+            assert_rationale_parity(expected=initial_recommendation)
         )
         initial_state_score = initial_state_recommendation["score"]
-        initial_state_explanation = initial_state_recommendation["explanation"]
 
         adapter.requestBacktest()
         _process_until(
@@ -2243,18 +2270,25 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
             for recommendation in sessions[0].snapshot.recommendations.cards
             if recommendation.card.grp_id == 104894
         )
-        disabled_state_recommendation = next(
-            card
-            for card in adapter.state["recommendations"]["cards"]
-            if card["card"]["grp_id"] == 104894
+        disabled_state_recommendation, disabled_model_recommendation = (
+            assert_rationale_parity(expected=disabled_recommendation)
         )
         assert disabled_recommendation.contextual_evidence == ()
         assert disabled_recommendation.contextual_breakdown.aggregate == 0
         assert disabled_recommendation.score < initial_recommendation.score
         assert disabled_state_recommendation["score"] < initial_state_score
         assert (
-            disabled_state_recommendation["explanation"]
-            != initial_state_explanation
+            disabled_recommendation.concise_explanation
+            != initial_recommendation.concise_explanation
+        )
+        assert disabled_recommendation.explanation != initial_recommendation.explanation
+        assert (
+            disabled_model_recommendation["concise_explanation"]
+            != initial_model_recommendation["concise_explanation"]
+        )
+        assert (
+            disabled_model_recommendation["explanation"]
+            != initial_model_recommendation["explanation"]
         )
         assert len(image_calls) == image_calls_after_enabled_backtest
         assert len(profile_calls) == profile_calls_after_enabled_backtest
@@ -2296,10 +2330,8 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
             for recommendation in sessions[0].snapshot.recommendations.cards
             if recommendation.card.grp_id == 104894
         )
-        enabled_state_recommendation = next(
-            card
-            for card in adapter.state["recommendations"]["cards"]
-            if card["card"]["grp_id"] == 104894
+        enabled_state_recommendation, enabled_model_recommendation = (
+            assert_rationale_parity(expected=enabled_recommendation)
         )
         assert enabled_recommendation.contextual_evidence
         assert enabled_recommendation.contextual_breakdown.aggregate > 0
@@ -2309,8 +2341,17 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
             > disabled_state_recommendation["score"]
         )
         assert (
-            enabled_state_recommendation["explanation"]
-            != disabled_state_recommendation["explanation"]
+            enabled_recommendation.concise_explanation
+            != disabled_recommendation.concise_explanation
+        )
+        assert enabled_recommendation.explanation != disabled_recommendation.explanation
+        assert (
+            enabled_model_recommendation["concise_explanation"]
+            != disabled_model_recommendation["concise_explanation"]
+        )
+        assert (
+            enabled_model_recommendation["explanation"]
+            != disabled_model_recommendation["explanation"]
         )
         image_calls_after_enable = len(image_calls)
         profile_calls_after_enable = len(profile_calls)

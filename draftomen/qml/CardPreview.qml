@@ -14,6 +14,10 @@ Rectangle {
     // wide preview can opt into a larger bounded image.
     property real detailedImageMaximumWidth: 200
     property real detailedImageWidthRatio: 0.52
+    readonly property bool hasPickRationale: Boolean(
+        recommendation
+            && recommendation.concise_explanation !== undefined
+    )
 
     readonly property bool imageCurrent: Boolean(
         recommendation
@@ -232,9 +236,22 @@ Rectangle {
             Layout.maximumWidth: root.detailedIntel
                 ? Math.max(0, root.detailedContentWidth - root.imageFrameWidth)
                 : root.width
-            Layout.preferredHeight: root.detailedIntel
-                ? root.imageFrameHeight
-                : previewDetailsColumn.implicitHeight
+            Layout.preferredHeight: {
+                if (root.detailedIntel)
+                    return root.imageFrameHeight
+                if (!root.hasPickRationale)
+                    return previewDetailsColumn.implicitHeight
+                return Math.min(
+                    previewDetailsColumn.implicitHeight,
+                    Math.max(
+                        0,
+                        root.height - Theme.panelPadding * 2
+                            - previewHeading.implicitHeight
+                            - root.imageFrameHeight
+                            - previewLayout.rowSpacing * 2
+                    )
+                )
+            }
             contentWidth: width
             contentHeight: previewDetailsColumn.implicitHeight
             clip: true
@@ -416,8 +433,9 @@ Rectangle {
                             return root.recommendation.explanation
                                 || "Explanation unavailable."
                         }
-                        return root.recommendation.explanation || ""
+                        return root.recommendation.concise_explanation || ""
                     }
+                    textFormat: Text.PlainText
                     color: Theme.textMuted
                     font.pixelSize: Theme.textPixelSize(12)
                     wrapMode: Text.WordWrap

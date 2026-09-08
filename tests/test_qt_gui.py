@@ -843,6 +843,16 @@ def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
             return found
     return None
 
+def selected_recommendation(state):
+    recommendations = state["recommendations"]
+    selected_grp_id = recommendations["selected_grp_id"]
+    return next(
+        recommendation
+        for recommendation in recommendations["cards"]
+        if recommendation["card"]["grp_id"] == selected_grp_id
+    )
+
+
 def image_source(image: QObject) -> str:
     source = image.property("source")
     return source.toString() if isinstance(source, QUrl) else str(source)
@@ -1034,6 +1044,23 @@ try:
     assert live_preview is not None
     live_image = live_preview.findChild(QObject, "cardPreviewImage")
     assert live_image is not None
+    live_explanation = live_preview.findChild(QObject, "cardPreviewExplanation")
+    assert live_explanation is not None
+    wait_until(
+        lambda: any(
+            recommendation["card"]["grp_id"]
+            == provider.state["recommendations"]["selected_grp_id"]
+            for recommendation in provider.state["recommendations"]["cards"]
+        ),
+        "the selected production recommendation",
+    )
+    first_recommendation = selected_recommendation(provider.state)
+    assert first_recommendation["explanation"]
+    wait_until(
+        lambda: live_explanation.property("text")
+            == first_recommendation["explanation"],
+        "the visible initial recommendation rationale",
+    )
     wait_until(
         lambda: provider.state["card_image"]["phase"] == "ready"
         and live_preview.property("imageCurrent") is True
@@ -1055,14 +1082,24 @@ try:
         for card in provider.state["recommendations"]["cards"]
         if card["card"]["grp_id"] != first_recommendation_grp_id
     )
+    next_recommendation = next(
+        card
+        for card in provider.state["recommendations"]["cards"]
+        if card["card"]["grp_id"] == next_recommendation_grp_id
+    )
+    assert next_recommendation["explanation"]
     provider.chooseRecommendation(next_recommendation_grp_id)
     wait_until(
         lambda: provider.state["card_image"]["grp_id"] == next_recommendation_grp_id
         and provider.state["card_image"]["phase"] == "ready"
+        and provider.state["recommendations"]["selected_grp_id"]
+            == next_recommendation_grp_id
         and live_preview.property("imageCurrent") is True
         and live_image.isVisible()
+        and live_explanation.property("text")
+            == next_recommendation["explanation"]
         and image_source(live_image) != first_recommendation_source,
-        "the visible changed recommendation image",
+        "the visible changed recommendation image and rationale",
     )
     next_recommendation_source = image_source(live_image)
     assert next_recommendation_source
@@ -1084,6 +1121,9 @@ try:
     build_preview = root.findChild(QObject, "narrowBuildCardPreview")
     assert build_preview is not None
     build_image = build_preview.findChild(QObject, "cardPreviewImage")
+    build_explanation = build_preview.findChild(QObject, "cardPreviewExplanation")
+    assert build_explanation is not None
+    assert build_explanation.property("text") == ""
     assert build_image is not None
     first_build_grp_id = provider.state["build"]["spells"][1]["card"]["grp_id"]
     wait_until(
@@ -1108,6 +1148,7 @@ try:
         "the visible changed build image",
     )
     next_build_source = image_source(build_image)
+    assert build_explanation.property("text") == ""
     assert next_build_source
 
     root.setProperty("currentSurface", "live")
@@ -1154,6 +1195,7 @@ try:
     }
     assert provider.state["pool"]["total_cards"] == 42
     assert build_view.property("hasBuild") is True
+    assert build_explanation.property("text") == ""
 
 
     root.setProperty("currentSurface", "backtest")
@@ -1196,6 +1238,570 @@ finally:
     completed = _run_qml_probe(
         probe,
         timeout=20,
+        environment={"DRAFTOMEN_E2E_APP_DIR": str(app_dir)},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
+def test_qml_card_preview_explanation_modes_and_refresh_offscreen(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    probe = """
+import json
+import os
+import time
+import urllib.parse
+from dataclasses import replace
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QPointF, QUrl, Qt
+from PySide6.QtGui import QFontMetricsF, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen.carddb import build_card_database_from_bulk_file
+from draftomen.cardimages import CardImageService
+from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.session import LiveSession
+
+
+def wait_until(predicate, description):
+    deadline = time.monotonic() + 8
+    while not predicate():
+        application.processEvents()
+        if time.monotonic() >= deadline:
+            raise AssertionError("Timed out waiting for " + description)
+        time.sleep(0.005)
+    application.processEvents()
+
+
+class _Response:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return None
+
+    def read(self, maximum):
+        return self.payload[:maximum]
+
+
+def metadata_opener(request, timeout):
+    del timeout
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
+    exact_name = query["exact"][0]
+    image_uri = (
+        "https://images.example/"
+        + urllib.parse.quote(exact_name, safe="")
+        + ".png"
+    )
+    return _Response(
+        json.dumps({"image_uris": {"normal": image_uri}}).encode("utf-8")
+    )
+
+
+def image_opener(request, timeout):
+    del request, timeout
+    return _Response(
+        (project_root / "draftomen" / "assets" / "draftomen_logo.png").read_bytes()
+    )
+
+
+def load_image_database():
+    database = build_card_database_from_bulk_file(path=bulk_file)
+    return replace(
+        database,
+        cards={
+            grp_id: replace(card, image_uri=None)
+            for grp_id, card in database.cards.items()
+        },
+        image_uris_by_name={},
+    )
+
+
+def find_visual_item(item, object_name):
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+def selected_recommendation(state):
+    recommendations = state["recommendations"]
+    selected_grp_id = recommendations["selected_grp_id"]
+    return next(
+        recommendation
+        for recommendation in recommendations["cards"]
+        if recommendation["card"]["grp_id"] == selected_grp_id
+    )
+
+
+def rect_in(item, ancestor):
+    top_left = item.mapToItem(ancestor, QPointF(0, 0))
+    bottom_right = item.mapToItem(
+        ancestor,
+        QPointF(item.width(), item.height()),
+    )
+    return top_left, bottom_right
+
+
+def assert_contained(preview, details, explanation):
+    details_top_left, details_bottom_right = rect_in(details, preview)
+    label_top_left, label_bottom_right = rect_in(explanation, preview)
+    bounds = (
+        preview.width(),
+        preview.height(),
+        details_top_left,
+        details_bottom_right,
+        label_top_left,
+        label_bottom_right,
+    )
+    assert details_top_left.x() >= -1, bounds
+    assert details_top_left.y() >= -1, bounds
+    assert details_bottom_right.x() <= preview.width() + 1, bounds
+    assert details_bottom_right.y() <= preview.height() + 1, bounds
+    assert label_top_left.x() >= -1, bounds
+    assert label_bottom_right.x() <= preview.width() + 1, bounds
+    assert (
+        float(explanation.property("paintedWidth")) <= explanation.width() + 1
+    ), bounds
+
+
+project_root = Path.cwd()
+app_dir = Path(os.environ["DRAFTOMEN_E2E_APP_DIR"])
+fixture_log_path = project_root / "tests" / "fixtures" / "quick-draft-msh-player.log"
+fixture_log_lines = fixture_log_path.read_text(encoding="utf-8").splitlines(
+    keepends=True
+)
+log_path = app_dir / "Player.log"
+log_path.parent.mkdir(parents=True, exist_ok=True)
+log_path.write_text("".join(fixture_log_lines[:22]), encoding="utf-8")
+bulk_file = project_root / "tests" / "fixtures" / "scryfall-default-cards-sample.jsonl"
+
+
+class RecordingLiveSession(LiveSession):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        recording_sessions.append(self)
+
+
+recording_sessions = []
+
+
+def factory(publish):
+    return RecordingLiveSession(
+        log_path=log_path,
+        card_database=load_image_database(),
+        app_dir=app_dir,
+        poll_interval=0.01,
+        contextual_adjustments_enabled=True,
+        snapshot_publisher=publish,
+        card_image_service=CardImageService(
+            cache_dir=app_dir / "card-images",
+            opener=image_opener,
+            metadata_opener=metadata_opener,
+            monotonic_clock=lambda: 0.0,
+            sleep=lambda seconds: None,
+        ),
+    )
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+preferences = GuiPreferencesAdapter(app_dir=app_dir)
+provider = LiveSessionAdapter(
+    session_factory=factory,
+    poll_interval_ms=10,
+    startup_scan=True,
+)
+
+qml = b'''
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+
+ApplicationWindow {
+    id: host
+    property bool useOverride: false
+    property var overrideRecommendation: null
+    readonly property var selectedRecommendation: {
+        const recommendationState = sessionProvider.state.recommendations
+        if (!recommendationState || !recommendationState.cards)
+            return null
+        for (let index = 0; index < recommendationState.cards.length; index++) {
+            const recommendation = recommendationState.cards[index]
+            if (recommendation.card.grp_id
+                    === recommendationState.selected_grp_id)
+                return recommendation
+        }
+        return recommendationState.cards.length > 0
+            ? recommendationState.cards[0] : null
+    }
+    width: 550
+    height: 600
+    visible: true
+
+    CardPreview {
+        id: preview
+        objectName: "cardPreviewProbe"
+        anchors.fill: parent
+        recommendation: host.useOverride
+            ? host.overrideRecommendation : host.selectedRecommendation
+        imageState: sessionProvider.state.card_image
+    }
+}
+'''
+
+engine = QQmlApplicationEngine()
+qml_directory = project_root / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("guiPreferences", preferences)
+component = QQmlComponent(engine)
+component.setData(
+    qml,
+    QUrl.fromLocalFile(str(qml_directory / "CardPreviewProbe.qml")),
+)
+assert component.status() == QQmlComponent.Status.Ready, [
+    error.toString() for error in component.errors()
+]
+host = component.create()
+assert host is not None
+host.show()
+preview = host.findChild(QObject, "cardPreviewProbe")
+assert preview is not None
+details = preview.findChild(QObject, "cardPreviewDetails")
+explanation = preview.findChild(QObject, "cardPreviewExplanation")
+assert details is not None
+assert explanation is not None
+
+
+def check_mode(*, detailed, width, height, expected, stress):
+    host.resize(width, height)
+    preview.forceActiveFocus()
+    preview.setProperty("detailedIntel", detailed)
+    application.processEvents()
+    assert explanation.property("text") == expected, (detailed, width, height)
+    assert_contained(preview, details, explanation)
+    if not detailed:
+        assert details.property("activeFocusOnTab") is False
+    if not stress:
+        return
+    assert details.property("contentHeight") > details.height() + 1, (
+        detailed,
+        width,
+        height,
+        details.property("contentHeight"),
+        details.height(),
+    )
+    details.forceActiveFocus()
+    QTest.keyClick(host, Qt.Key_End)
+    application.processEvents()
+    maximum = max(0, details.property("contentHeight") - details.height())
+    assert abs(details.property("contentY") - maximum) <= 1, (
+        detailed,
+        width,
+        height,
+        details.property("contentY"),
+        maximum,
+    )
+    label_bottom = explanation.mapToItem(
+        details,
+        QPointF(0, explanation.height()),
+    ).y()
+    assert -1 <= label_bottom <= details.height() + 1, (
+        detailed,
+        width,
+        height,
+        label_bottom,
+        details.height(),
+    )
+    QTest.keyClick(host, Qt.Key_Home)
+    application.processEvents()
+    assert details.property("contentY") <= 1
+
+
+try:
+    provider.start()
+    wait_until(
+        lambda: recording_sessions,
+        "the worker-created production session",
+    )
+    recording_session = recording_sessions[0]
+    wait_until(
+        lambda: recording_session.snapshot.recommendations.cards
+        and provider.state["recommendations"]["cards"]
+        and provider.state["recommendations"]["selected_grp_id"] is not None,
+        "the first production recommendation publication",
+    )
+    initial_snapshot = recording_session.snapshot
+    initial_recommendation = selected_recommendation(provider.state)
+    initial_immutable = next(
+        recommendation
+        for recommendation in initial_snapshot.recommendations.cards
+        if recommendation.card.grp_id
+            == initial_recommendation["card"]["grp_id"]
+    )
+    initial_concise = initial_immutable.concise_explanation
+    initial_detailed = initial_immutable.explanation
+    assert initial_concise
+    assert initial_detailed
+    assert initial_concise != initial_detailed
+    wait_until(
+        lambda: explanation.property("text") == initial_concise,
+        "the compact production explanation",
+    )
+    check_mode(
+        detailed=False,
+        width=360,
+        height=600,
+        expected=initial_concise,
+        stress=False,
+    )
+    check_mode(
+        detailed=True,
+        width=360,
+        height=600,
+        expected=initial_detailed,
+        stress=False,
+    )
+    check_mode(
+        detailed=False,
+        width=550,
+        height=600,
+        expected=initial_concise,
+        stress=False,
+    )
+    check_mode(
+        detailed=True,
+        width=550,
+        height=600,
+        expected=initial_detailed,
+        stress=False,
+    )
+    check_mode(
+        detailed=True,
+        width=550,
+        height=430,
+        expected=initial_detailed,
+        stress=False,
+    )
+
+    replacement_concise = "Published concise replacement."
+    replacement_detailed = "Published detailed replacement."
+    replacement = replace(
+        initial_immutable,
+        concise_explanation=replacement_concise,
+        explanation=replacement_detailed,
+    )
+    replacement_snapshot = replace(
+        recording_session.snapshot,
+        recommendations=replace(
+            recording_session.snapshot.recommendations,
+            cards=tuple(
+                replacement
+                if recommendation.card.grp_id == replacement.card.grp_id
+                else recommendation
+                for recommendation in recording_session.snapshot.recommendations.cards
+            ),
+            selected_grp_id=replacement.card.grp_id,
+        ),
+    )
+    recording_session._publish(replacement_snapshot)
+    wait_until(
+        lambda: provider.state["recommendations"]["selected_grp_id"]
+            == replacement.card.grp_id
+        and explanation.property("text") == replacement_detailed,
+        "the retained detailed replacement explanation",
+    )
+    preview.setProperty("detailedIntel", False)
+    application.processEvents()
+    assert explanation.property("text") == replacement_concise, (
+        explanation.property("text"),
+        replacement_concise,
+    )
+    preview.setProperty("detailedIntel", True)
+    application.processEvents()
+    assert explanation.property("text") == replacement_detailed, (
+        explanation.property("text"),
+        replacement_detailed,
+    )
+
+    other_recommendation = next(
+        recommendation
+        for recommendation in recording_session.snapshot.recommendations.cards
+        if recommendation.card.grp_id != replacement.card.grp_id
+    )
+    provider.chooseRecommendation(other_recommendation.card.grp_id)
+    wait_until(
+        lambda: provider.state["recommendations"]["selected_grp_id"]
+            == other_recommendation.card.grp_id
+        and preview.property("recommendation")["card"]["grp_id"]
+            == other_recommendation.card.grp_id
+        and explanation.property("text")
+            == other_recommendation.explanation,
+        "the selected recommendation identity and detailed explanation",
+    )
+    preview.setProperty("detailedIntel", False)
+    application.processEvents()
+    assert explanation.property("text") == other_recommendation.concise_explanation
+
+    literal_text = "<b>literal</b> & punctuation"
+    literal_recommendation = replace(
+        initial_immutable,
+        concise_explanation=literal_text,
+        explanation=literal_text,
+    )
+    literal_snapshot = replace(
+        recording_session.snapshot,
+        recommendations=replace(
+            recording_session.snapshot.recommendations,
+            cards=tuple(
+                literal_recommendation
+                if recommendation.card.grp_id == literal_recommendation.card.grp_id
+                else recommendation
+                for recommendation in recording_session.snapshot.recommendations.cards
+            ),
+            selected_grp_id=literal_recommendation.card.grp_id,
+        ),
+    )
+    recording_session._publish(literal_snapshot)
+    wait_until(
+        lambda: explanation.property("text") == literal_text,
+        "the literal compact explanation",
+    )
+    host.resize(550, 600)
+    application.processEvents()
+    literal_width = QFontMetricsF(
+        explanation.property("font")
+    ).horizontalAdvance(literal_text)
+    assert abs(explanation.property("paintedWidth") - literal_width) <= 1
+
+    compact_long = (
+        "Compact paragraph one uses ordinary words and enough content to wrap "
+        "across several lines. It also includes literal <b>literal</b> & "
+        "punctuation. " * 14
+        + "\\n\\nCompact paragraph two keeps the explanation genuinely long "
+        "so the existing Flickable must scroll rather than truncate it. "
+        * 14
+        + "\\n\\nCompact final sentence."
+    )
+    detailed_long = (
+        "Detailed paragraph one uses ordinary words and enough content to wrap "
+        "across several lines. It also includes literal <b>literal</b> & "
+        "punctuation. " * 24
+        + "\\n\\nDetailed paragraph two keeps the explanation genuinely long "
+        "so the existing Flickable must scroll rather than truncate it. "
+        * 24
+        + "\\n\\nDetailed final sentence."
+    )
+    stress_recommendation = replace(
+        initial_immutable,
+        concise_explanation=compact_long,
+        explanation=detailed_long,
+    )
+    stress_snapshot = replace(
+        recording_session.snapshot,
+        recommendations=replace(
+            recording_session.snapshot.recommendations,
+            cards=tuple(
+                stress_recommendation
+                if recommendation.card.grp_id == stress_recommendation.card.grp_id
+                else recommendation
+                for recommendation in recording_session.snapshot.recommendations.cards
+            ),
+            selected_grp_id=stress_recommendation.card.grp_id,
+        ),
+    )
+    recording_session._publish(stress_snapshot)
+    wait_until(
+        lambda: explanation.property("text") == compact_long,
+        "the retained compact stress explanation",
+    )
+    for detailed, width, height, expected in (
+        (False, 360, 600, compact_long),
+        (True, 360, 600, detailed_long),
+        (False, 550, 600, compact_long),
+        (True, 550, 600, detailed_long),
+        (True, 550, 430, detailed_long),
+    ):
+        check_mode(
+            detailed=detailed,
+            width=width,
+            height=height,
+            expected=expected,
+            stress=True,
+        )
+
+    host.setProperty("useOverride", True)
+    host.setProperty("overrideRecommendation", None)
+    preview.forceActiveFocus()
+    preview.setProperty("detailedIntel", False)
+    application.processEvents()
+    assert preview.property("recommendation") is None
+    assert explanation.property("text") == ""
+    with log_path.open(mode="a", encoding="utf-8") as log_file:
+        log_file.writelines(fixture_log_lines[22:])
+    wait_until(
+        lambda: (provider.state.get("draft") or {}).get("completed") is True,
+        "the completed fixture draft",
+    )
+    provider.requestBuild("")
+    wait_until(
+        lambda: provider.state.get("build") is not None
+        and provider.state["build"]["spells"],
+        "the completed fixture build",
+    )
+    host.resize(550, 250)
+    application.processEvents()
+    build_card = provider.state["build"]["spells"][0]
+    build_grp_id = build_card["card"]["grp_id"]
+    host.setProperty("overrideRecommendation", build_card)
+    provider.focusBuildCard(build_grp_id)
+    build_name = preview.findChild(QObject, "cardPreviewName")
+    build_facts = preview.findChild(QObject, "cardPreviewFacts")
+    build_image = preview.findChild(QObject, "cardPreviewImage")
+    assert build_name is not None
+    assert build_facts is not None
+    assert build_image is not None
+    wait_until(
+        lambda: explanation.property("text") == ""
+        and build_name.property("text") == build_card["card"]["name"]
+        and preview.property("imageCurrent") is True
+        and provider.state["card_image"]["phase"] == "ready"
+        and build_image.isVisible(),
+        "the build-card preview image and empty rationale",
+    )
+    assert build_facts.property("text")
+    assert "MV" in build_facts.property("text")
+    assert details.height() > 0
+    assert build_name.isVisible()
+    assert build_facts.isVisible()
+finally:
+    preferences.shutdown()
+    provider.shutdown()
+    provider.wait_for_shutdown()
+    host.close()
+    del engine
+"""
+    completed = _run_qml_probe(
+        probe,
+        timeout=25,
         environment={"DRAFTOMEN_E2E_APP_DIR": str(app_dir)},
     )
 
