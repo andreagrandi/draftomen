@@ -1738,11 +1738,14 @@ async def _assert_pack_build_and_next_pack_restore_rationale(
         app.process_lines(lines=_first_pick_lines())
         await pilot.pause()
         initial_snapshot = app.session.snapshot
+        initial_summary = initial_snapshot.recommendations.comparison_summary
+        assert initial_summary is not None
         _, initial_rationale = _assert_focused_pack_rationale(
             app=app,
             snapshot=initial_snapshot,
         )
         assert initial_rationale
+        assert initial_summary in _focused_card_text(app=app)
 
         await _save_tui_config(
             app=app,
@@ -1767,14 +1770,29 @@ async def _assert_pack_build_and_next_pack_restore_rationale(
         assert "Why this score:" not in _focused_card_text(app=app)
         assert "Why this score:" not in app.build_view_text
         assert "Focused card details" in _focused_card_text(app=app)
+        assert initial_summary not in _focused_card_text(app=app)
 
         app.process_lines(lines=_full_fixture_lines()[10:13])
         await pilot.pause()
         assert app._view_mode == "pack"
+        next_snapshot = app.session.snapshot
+        next_summary = next_snapshot.recommendations.comparison_summary
+        assert next_summary is not None
+        assert next_summary != initial_summary
         _assert_focused_pack_rationale(
             app=app,
-            snapshot=app.session.snapshot,
+            snapshot=next_snapshot,
         )
+        cleared_snapshot = replace(
+            next_snapshot,
+            recommendations=replace(
+                next_snapshot.recommendations,
+                comparison_summary=None,
+            ),
+        )
+        app._apply_session_snapshot(cleared_snapshot)
+        assert app._pack_comparison_summary is None
+        assert "DO recommendation:" not in _focused_card_text(app=app)
 
 def test_tui_sidebar_updates_pool_distribution_and_curve(
     tmp_path: Path,
@@ -2333,6 +2351,10 @@ async def _assert_long_pack_rationale_is_reachable(
         "the viewport moves through this content. "
         "Final rationale sentence remains reachable."
     )
+    comparison_summary = (
+        "DO recommendation: Fixture Spider ranks ahead of Fixture Split Card "
+        "because the rating evidence is stronger."
+    )
 
     async with app.run_test(size=(60, 24)) as pilot:
         app.process_lines(lines=_first_pack_lines())
@@ -2349,6 +2371,7 @@ async def _assert_long_pack_rationale_is_reachable(
                     )
                     for recommendation in base_snapshot.recommendations.cards
                 ),
+                comparison_summary=comparison_summary,
             ),
         )
         app._apply_session_snapshot(applied_snapshot)
@@ -2369,6 +2392,7 @@ async def _assert_long_pack_rationale_is_reachable(
         assert table.cursor_coordinate.row == image_row
         assert long_rationale in _focused_card_text(app=app)
         assert "[literal]" in _focused_card_text(app=app)
+        assert comparison_summary in _focused_card_text(app=app)
         assert app.visible_column_keys == (
             "rank",
             "win_rate",
@@ -2384,12 +2408,14 @@ async def _assert_long_pack_rationale_is_reachable(
         sidebar_scroll = app.query_one("#sidebar-scroll", VerticalScroll)
         assert sidebar_scroll.styles.overflow_x == "hidden"
         assert sidebar_scroll.size.width <= 60
+        top_capture = app.export_screenshot(simplify=True)
+        assert "DO recommendation:" not in top_capture
         sidebar_scroll.scroll_end(animate=False)
         await pilot.pause()
         assert sidebar_scroll.scroll_offset.y > 0
         screen_capture = app.export_screenshot(simplify=True)
         assert re.search(
-            r"Final.*rationale.*sentence.*remains.*reachable\.",
+            r"DO.*recommendation:.*Fixture.*Spider.*ranks.*ahead",
             screen_capture,
             flags=re.DOTALL,
         )
@@ -3518,10 +3544,21 @@ def _assert_focused_pack_rationale(
         if recommendation.card.grp_id == scored_card.card.grp_id
     )
     rationale = recommendation.concise_explanation
+    comparison = snapshot.recommendations.comparison_summary
+    text = _focused_card_text(app=app)
+    if comparison is not None:
+        confidence = app._recommendation_confidence_label()
+        comparison_suffix = (
+            f"\n\nConfidence: {confidence}\n{comparison}"
+            if confidence is not None
+            else f"\n\n{comparison}"
+        )
+        assert text.endswith(comparison_suffix)
+        text = text[: -len(comparison_suffix)]
+    else:
+        assert "DO recommendation:" not in text
     marker = "\n\nWhy this score:\n"
-    facts, separator, displayed_rationale = _focused_card_text(app=app).partition(
-        marker
-    )
+    facts, separator, displayed_rationale = text.partition(marker)
     assert facts
     if rationale:
         assert separator == marker

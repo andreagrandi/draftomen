@@ -313,6 +313,8 @@ def format_ranked_pack(
     card_database: CardDatabase,
     scored_pack: ScoredPack,
     recommendation_line: str | None = None,
+    confidence_summary: str | None = None,
+    comparison_summary: str | None = None,
 ) -> list[str]:
     """Format a scored pack's ranked cards for plain text output."""
 
@@ -333,10 +335,13 @@ def format_ranked_pack(
     lines.extend(_format_scored_cards(cards=scored_pack.cards))
     if recommendation_line is not None:
         lines.append(recommendation_line)
+    if confidence_summary is not None:
+        lines.append(f"  Confidence: {confidence_summary}")
+    if comparison_summary is not None:
+        lines.append(f"  {comparison_summary}")
     if any(card.no_data for card in scored_pack.cards):
         lines.append("  * Prior uses neutral prior adjusted by ALSA when available.")
     return lines
-
 
 def format_pick_made_event(
     *,

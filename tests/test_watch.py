@@ -152,14 +152,14 @@ def test_plain_watch_formats_buffered_pack_recommendations_per_event(
             event_name="QuickDraft_MSH_20260702",
             pack_number=0,
             pick_number=0,
-            draft_pack=(105097,),
+            draft_pack=(105097, 104976),
             picked_cards=(),
         ),
         _pack_line(
             event_name="QuickDraft_MSH_20260702",
             pack_number=0,
             pick_number=1,
-            draft_pack=(9001,),
+            draft_pack=(105080, 104995),
             picked_cards=(),
         ),
     ]
@@ -178,8 +178,18 @@ def test_plain_watch_formats_buffered_pack_recommendations_per_event(
             event.snapshot.recommendations.cards[0].concise_explanation
             for event in pack_events
         ]
+        confidence_summaries = [
+            event.snapshot.recommendations.confidence_summary
+            for event in pack_events
+        ]
+        comparison_summaries = [
+            event.snapshot.recommendations.comparison_summary
+            for event in pack_events
+        ]
         assert all(explanation is not None for explanation in concise_explanations)
-        assert concise_explanations[0] != concise_explanations[1]
+        assert all(confidence is not None for confidence in confidence_summaries)
+        assert all(comparison is not None for comparison in comparison_summaries)
+        assert comparison_summaries[0] != comparison_summaries[1]
 
         output_lines = watcher._render_published_events().splitlines()
         pack_starts = [
@@ -209,6 +219,16 @@ def test_plain_watch_formats_buffered_pack_recommendations_per_event(
             assert block_lines.count(recommendation_line) == 1
             assert sum("Recommendation:" in line for line in block_lines) == 1
             assert block_lines.index(recommendation_line) == ranked_rows[-1] + 1
+            confidence_line = f"  Confidence: {confidence_summaries[event_index]}"
+            comparison_line = f"  {comparison_summaries[event_index]}"
+            assert block_lines.count(confidence_line) == 1
+            assert block_lines.count(comparison_line) == 1
+            assert block_lines.index(confidence_line) == (
+                block_lines.index(recommendation_line) + 1
+            )
+            assert block_lines.index(comparison_line) == (
+                block_lines.index(confidence_line) + 1
+            )
             prior_note_indices = [
                 index
                 for index, line in enumerate(block_lines)
@@ -216,9 +236,11 @@ def test_plain_watch_formats_buffered_pack_recommendations_per_event(
             ]
             if prior_note_indices:
                 assert block_lines.index(recommendation_line) < prior_note_indices[0]
+                assert block_lines.index(comparison_line) < prior_note_indices[0]
             assert pack_event.snapshot.recommendations.cards[0].card.name in (
                 "\n".join(block_lines)
             )
+        assert watcher._render_published_events() == ""
     finally:
         watcher.close()
 
@@ -247,19 +269,65 @@ def test_plain_watch_omits_recommendation_for_empty_published_cards(
             published.snapshot.recommendations,
             cards=(),
             selected_grp_id=None,
+            confidence_summary=None,
+            comparison_summary=None,
         )
         empty_snapshot = replace(
             published.snapshot,
             recommendations=empty_recommendations,
         )
         empty_published = replace(published, snapshot=empty_snapshot)
-
-        formatted_lines = watcher._format_event(published=empty_published)
-        assert "Offered cards:" in formatted_lines
-        assert any(line.startswith("  01") for line in formatted_lines)
-        assert "Recommendation:" not in "\n".join(formatted_lines)
+        watcher._events = [empty_published]
+        output = watcher._render_published_events()
+        assert "Offered cards:" in output
+        assert any(line.startswith("  01") for line in output.splitlines())
+        assert "Recommendation:" not in output
+        assert "Confidence:" not in output
     finally:
         watcher.close()
+
+
+def test_plain_watch_omits_comparison_for_one_published_card(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("", encoding="utf-8")
+    watcher = PlainLogWatcher(
+        log_path=log_path,
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+    )
+    fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+
+    try:
+        watcher._events.clear()
+        watcher.session.process_lines(lines=fixture_lines[:7])
+        published = next(
+            event
+            for event in watcher._events
+            if isinstance(event.event, PackOfferedEvent)
+        )
+        recommendations = published.snapshot.recommendations
+        one_card_recommendations = replace(
+            recommendations,
+            cards=recommendations.cards[:1],
+            selected_grp_id=recommendations.cards[0].card.grp_id,
+            comparison_summary=None,
+        )
+        one_card_snapshot = replace(
+            published.snapshot,
+            recommendations=one_card_recommendations,
+        )
+        one_card_published = replace(published, snapshot=one_card_snapshot)
+
+        watcher._events = [one_card_published]
+        output = watcher._render_published_events()
+        assert "Recommendation:" in output
+        assert "DO recommendation:" not in output
+    finally:
+        watcher.close()
+
+
 
 
 def test_plain_watch_loads_selected_card_data_during_poll_and_formats_current_db(

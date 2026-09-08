@@ -719,6 +719,7 @@ class DraftomenTuiApp(App[None]):
         self._open_backtest_when_ready = False
         self._current_pack_event: PackOfferedEvent | None = None
         self._current_pack: ScoredPack | None = None
+        self._pack_comparison_summary: str | None = None
         self._recommendations_by_grp_id: dict[int, Recommendation] = {}
         self._rating_prompted_sets: set[str] = set()
         self._rating_prompt_open_sets: set[str] = set()
@@ -1431,6 +1432,7 @@ class DraftomenTuiApp(App[None]):
             self._set_code = draft.set_code
         self._draft_id = None if draft is None else draft.draft_id
         self._current_pack_event = snapshot.current_pack_event
+        self._pack_comparison_summary = snapshot.recommendations.comparison_summary
         self._current_pack = snapshot.current_scored_pack
         self._recommendations_by_grp_id = {
             item.card.grp_id: item for item in snapshot.recommendations.cards
@@ -2326,6 +2328,12 @@ class DraftomenTuiApp(App[None]):
             if recommendation is not None and recommendation.concise_explanation:
                 details.append("\n\nWhy this score:\n")
                 details.append(recommendation.concise_explanation)
+            if self._pack_comparison_summary is not None:
+                details.append("\n\n")
+                confidence_label = self._recommendation_confidence_label()
+                if confidence_label is not None:
+                    details.append(f"Confidence: {confidence_label}\n")
+                details.append(self._pack_comparison_summary)
         focused_card.update(details)
 
     def _render_card_image_preview(self, *, card: CardInfo | None) -> None:

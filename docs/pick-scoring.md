@@ -384,6 +384,16 @@ classification supplies only compact uncertainty wording: early/open picks
 ask the drafter to stay flexible, close picks remain explicitly close, and no
 new threshold or confidence model is introduced.
 
+The same engine text appears beside confidence in three live locations: the
+TUI focused offered-card panel, the plain-watch footer after each eligible
+pack's ranked rows, and the desktop Live Draft header beside the preview. Each
+surface omits an absent comparison. Plain watch uses the publication's own
+snapshot so buffered packs keep their original explanation. The TUI and
+desktop retain the comparison when focus or the active display sort changes
+and replace or clear it only when the session publishes a new pack value.
+Therefore a comparison always describes DO recommendation order, even while
+the visible rows are sorted by 17L WR, ALSA, or mana value.
+
 Plain `watch` prints exactly one indented `Recommendation:` line after the
 ranked rows for each pack whose event snapshot has recommendations. The line
 uses that snapshot's top recommendation's unchanged concise explanation, so

@@ -320,8 +320,9 @@ class PlainLogWatcher:
                     return []
                 raise RuntimeError("Shared live session did not score the offered pack.")
             card_database = self._presentation_card_database()
+            recommendation_state = published.snapshot.recommendations
             concise_explanation: str | None = None
-            recommendations = published.snapshot.recommendations.cards
+            recommendations = recommendation_state.cards
             if recommendations:
                 concise_explanation = recommendations[0].concise_explanation
             recommendation_line = (
@@ -334,6 +335,8 @@ class PlainLogWatcher:
                 card_database=card_database,
                 scored_pack=published.scored_pack,
                 recommendation_line=recommendation_line,
+                confidence_summary=recommendation_state.confidence_summary,
+                comparison_summary=recommendation_state.comparison_summary,
             )
             account_label = _account_label(
                 published=published,
