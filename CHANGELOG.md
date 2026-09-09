@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Compose explicitly supplied same-set aggregate ratings independently by card
+  and color pair, with versioned source provenance and conservative cross-format
+  confidence for QuickDraft fallbacks. (#420)
 - Generate hosted profiles through aggregate-only staged acquisition, retain
   prior empirical profiles when evidence is unavailable, and publish canonical
   batch provenance without exposing diagnostic inputs. (#416)

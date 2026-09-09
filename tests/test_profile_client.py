@@ -24,6 +24,9 @@ from draftomen.profile_client import (
 )
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.set_profile import (
+    AggregateEvidence,
+    CardRating,
+    RateEstimate,
     SET_PROFILE_SCHEMA_VERSION,
     ProfileMaturity,
     SetProfile,
@@ -78,6 +81,46 @@ def _profile(*, version: str = "1.0-semantic", generated_at: str = "2026-08-29T0
     return SetProfile.from_json(value)
 
 
+def _schema_two_profile(
+    *,
+    profile_version: str = "2.0-aggregate",
+    generated_at: str = "2026-08-30T02:00:00+00:00",
+) -> SetProfile:
+    early = load_set_profile(FIXTURE_DIR / "early.json")
+    authority = AggregateEvidence(
+        source_format="quickdraft",
+        fallback_reason=None,
+        confidence=1.0,
+    )
+    card_rate = RateEstimate(
+        raw_value=0.62,
+        value=0.61,
+        samples=1_000,
+        prior_value=0.5,
+        source="17lands:card-ratings",
+        aggregate_evidence=authority,
+    )
+    pair_rate = RateEstimate(
+        raw_value=0.58,
+        value=0.57,
+        samples=1_000,
+        prior_value=0.5,
+        source="17lands:color-ratings",
+        aggregate_evidence=authority,
+    )
+    pair = replace(early.pairs[0], performance=pair_rate)
+    return replace(
+        early,
+        profile_version=profile_version,
+        generated_at=generated_at,
+        pairs=(pair,),
+        card_ratings=(
+            CardRating(card_key="oracle_id:aggregate-card", gih_win_rate=card_rate),
+        ),
+        schema_version=2,
+    )
+
+
 def _bundled_profile() -> SetProfile:
     return load_set_profile(
         BASELINE_PATH,
@@ -110,7 +153,7 @@ def _artifact(
     artifact = ProfileManifestArtifact(
         set_code=profile.set_code,
         event_format=profile.event_format,
-        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+        set_profile_schema_version=profile.schema_version,
         profile_version=profile.profile_version if profile_version is None else profile_version,
         generated_at=profile.generated_at if generated_at is None else generated_at,
         url=url,
@@ -287,6 +330,72 @@ def test_hosted_refresh_supersedes_bundled_baseline_without_mutating_resource(tm
     assert client.profile_path("HOB", "QuickDraft").read_bytes() == refreshed.to_bytes()
     assert bundled_path.read_bytes() == bundled_before
     assert calls == [MANIFEST_URL, ARTIFACT_URL]
+
+
+def test_refresh_installs_and_loads_schema_two_aggregate_profile(tmp_path: Path) -> None:
+    profile = _schema_two_profile()
+    artifact, packed = _artifact(profile)
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for({MANIFEST_URL: _manifest(artifact), ARTIFACT_URL: packed}),
+    )
+
+    refreshed = client.refresh("TST", "QuickDraft", force=True)
+    loaded = client.load_cached("TST", "QuickDraft")
+
+    assert refreshed.outcome is ProfileRefreshOutcome.UPDATED
+    assert refreshed.profile == profile
+    assert loaded.profile == profile
+    assert loaded.profile.schema_version == 2
+    card_rate = loaded.profile.card_ratings[0].gih_win_rate
+    assert card_rate.aggregate_evidence == AggregateEvidence("quickdraft", None, 1.0)
+    pair = loaded.profile.pair("WU")
+    assert pair is not None
+    assert pair.performance is not None
+    assert pair.performance.aggregate_evidence == AggregateEvidence("quickdraft", None, 1.0)
+
+
+def test_refresh_schema_mismatch_preserves_last_good_schema_two_profile(tmp_path: Path) -> None:
+    installed_profile = _schema_two_profile()
+    installed_artifact, installed_packed = _artifact(installed_profile)
+    payloads = {
+        MANIFEST_URL: _manifest(installed_artifact),
+        ARTIFACT_URL: installed_packed,
+    }
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for(payloads),
+        manifest_ttl_seconds=0,
+    )
+
+    installed = client.refresh("TST", "QuickDraft", force=True)
+    assert installed.outcome is ProfileRefreshOutcome.UPDATED
+
+    newer_profile = _schema_two_profile(
+        profile_version="2.1-aggregate",
+        generated_at="2026-08-31T02:00:00+00:00",
+    )
+    newer_artifact, newer_packed = _artifact(newer_profile)
+    mismatched_artifact = replace(newer_artifact, set_profile_schema_version=1)
+    payloads.update(
+        {
+            MANIFEST_URL: _manifest(
+                mismatched_artifact,
+                published_at="2026-08-31T12:00:00+00:00",
+            ),
+            ARTIFACT_URL: newer_packed,
+        }
+    )
+
+    rejected = client.refresh("TST", "QuickDraft", force=True)
+    loaded = client.load_cached("TST", "QuickDraft")
+
+    assert rejected.outcome is ProfileRefreshOutcome.ARTIFACT_INVALID
+    assert rejected.profile == installed_profile
+    assert loaded.profile == installed_profile
+    assert client.profile_path("TST", "QuickDraft").read_bytes() == installed_profile.to_bytes()
 
 
 def test_load_cached_is_local_only_and_offline_zero_network(tmp_path: Path) -> None:

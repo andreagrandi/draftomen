@@ -364,6 +364,16 @@ def _resolved_profile_rating(
     card_rating: CardRating,
 ) -> ResolvedCardRating:
     gih_rate = card_rating.gih_win_rate
+    if gih_rate.samples == 0:
+        source_format = None
+        fallback_reason = None
+    elif profile.schema_version == 1:
+        source_format = profile.event_format
+        fallback_reason = None
+    else:
+        evidence = gih_rate.aggregate_evidence
+        source_format = None if evidence is None else evidence.source_format
+        fallback_reason = None if evidence is None else evidence.fallback_reason
     return ResolvedCardRating(
         grp_id=card.grp_id,
         name=card.name,
@@ -385,8 +395,8 @@ def _resolved_profile_rating(
         metadata=RatingSourceMetadata(
             requested_format=profile.event_format,
             source=PROFILE_RATING_SOURCE,
-            source_format=profile.event_format,
-            fallback_reason=None,
+            source_format=source_format,
+            fallback_reason=fallback_reason,
         ),
     )
 

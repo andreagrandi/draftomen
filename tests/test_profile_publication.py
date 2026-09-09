@@ -328,6 +328,27 @@ def test_validate_profile_generation_returns_immutable_canonical_payload() -> No
     with pytest.raises(FrozenInstanceError):
         validated.profile_bytes = b""
 
+def test_validate_profile_generation_rejects_report_schema_mismatch() -> None:
+    generation = _valid_generation()
+    malformed = replace(
+        generation,
+        report=replace(
+            generation.report,
+            set_profile_schema_version=generation.profile.schema_version + 1,
+        ),
+    )
+
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="Generation report schema does not match the profile",
+    ):
+        publication.validate_profile_generation(
+            generation=malformed,
+            set_code="tst",
+            event_format="quickdraft",
+            stage="metadata",
+        )
+
 
 
 

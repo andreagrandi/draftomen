@@ -32,7 +32,7 @@ from draftomen.qt_gui import (
 )
 from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_mock import MockSessionAdapter
-from draftomen.set_profile import SET_PROFILE_SCHEMA_VERSION, load_set_profile
+from draftomen.set_profile import load_set_profile
 
 
 FIXTURE_ACCOUNT_ID = "FIXTURECLIENTID1234567890"
@@ -2637,7 +2637,7 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_gui import _fixed_font_family
 from draftomen.session import LiveSession
-from draftomen.set_profile import SET_PROFILE_SCHEMA_VERSION, load_set_profile
+from draftomen.set_profile import load_set_profile
 
 
 def wait_until(predicate, description):
@@ -2692,7 +2692,7 @@ artifact_bytes = gzip.compress(updated_profile.to_bytes(), mtime=0)
 artifact = ProfileManifestArtifact(
     set_code=updated_profile.set_code,
     event_format=updated_profile.event_format,
-    set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+    set_profile_schema_version=updated_profile.schema_version,
     profile_version=updated_profile.profile_version,
     generated_at=updated_profile.generated_at,
     url=artifact_url,

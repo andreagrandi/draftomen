@@ -27,11 +27,12 @@ def _artifact(
     event_format: str,
     *,
     url: str | None = None,
+    schema_version: int = SET_PROFILE_SCHEMA_VERSION,
 ) -> ProfileManifestArtifact:
     return ProfileManifestArtifact(
         set_code=set_code,
         event_format=event_format,
-        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+        set_profile_schema_version=schema_version,
         profile_version="release-candidate",
         generated_at=GENERATED_AT,
         url=(
@@ -65,6 +66,12 @@ def test_manifest_round_trip_is_canonical_and_sorted(tmp_path: Path) -> None:
     assert load_profile_manifest(path) == manifest
     assert path.read_bytes() == payload
 
+
+def test_manifest_accepts_each_supported_set_profile_schema_version() -> None:
+    for schema_version in (1, 2):
+        artifact = _artifact("TST", "QuickDraft", schema_version=schema_version)
+        restored = ProfileManifestArtifact.from_json(artifact.to_json())
+        assert restored.set_profile_schema_version == schema_version
 
 def test_selection_requires_exact_normalized_set_and_format() -> None:
     artifact = _artifact("TST", "QuickDraft")

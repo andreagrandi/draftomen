@@ -10,6 +10,7 @@ import draftomen.set_profile as set_profile_module
 from draftomen.config import COLOR_PAIRS
 from draftomen.semantic_roles import CompiledRoleProfile, ProfileCard, Role, RoleAssignment
 from draftomen.set_profile import (
+    AggregateEvidence,
     CardRating,
     NumericTarget,
     PairProfile,
@@ -57,6 +58,12 @@ def test_mature_profile_round_trip_covers_all_pairs_and_optional_sections() -> N
     assert wu.synergy[0].first_card == "oracle_id:wu-bomb"
     assert wu.scarcity[0].card_key == "oracle_id:wu-bomb"
     assert SetProfile.from_json(profile.to_json()).to_bytes() == profile.to_bytes()
+
+def test_schema_one_baseline_round_trip_preserves_canonical_bytes() -> None:
+    path = Path(__file__).parents[1] / "draftomen" / "baseline_profiles" / "hob-quickdraft.json"
+    profile = load_set_profile(path, expected_set_code="HOB", expected_format="QuickDraft")
+    assert profile.schema_version == 1
+    assert profile.to_bytes() == path.read_bytes()
 
 def test_profile_fingerprint_is_stable_across_round_trip() -> None:
     profile = load_set_profile(FIXTURE_DIR / "mature.json")
@@ -141,7 +148,6 @@ def test_domain_graph_is_deeply_immutable() -> None:
     assert role_profile is not None
     assert isinstance(role_profile.cards, tuple)
 
-
 def test_strict_parser_rejects_missing_required_duplicate_unknown_and_future_schema() -> None:
     payload = json.loads((FIXTURE_DIR / "early.json").read_text(encoding="utf-8"))
     payload.pop("confidence")
@@ -158,8 +164,10 @@ def test_strict_parser_rejects_missing_required_duplicate_unknown_and_future_sch
     with pytest.raises(SetProfileSchemaError, match="Unsupported color pair"):
         SetProfile.from_json(unknown_pair)
 
+    unsupported = json.loads((FIXTURE_DIR / "future-schema.json").read_text(encoding="utf-8"))
+    unsupported["schema_version"] = 3
     with pytest.raises(SetProfileSchemaError, match="Unsupported set profile schema"):
-        load_set_profile(FIXTURE_DIR / "future-schema.json")
+        SetProfile.from_json(unsupported)
 
 
 def test_strict_loader_rejects_future_nested_role_schema_and_safe_loader_ignores_roles(tmp_path: Path) -> None:
@@ -433,8 +441,6 @@ def test_semantic_roles_survive_absent_empirical_sections_and_incompatible_data_
     assert fallback.source == "local_classifier"
     assert fallback.diagnostics == ("profile_incompatible_versions:used_local_classifier",)
     assert Role.RAMP not in fallback.assignments
-
-
 def _rate(
     *,
     raw_value: float | None = 0.55,
@@ -442,6 +448,7 @@ def _rate(
     samples: int = 12,
     prior_value: float = 0.50,
     source: str = "17lands",
+    aggregate_evidence: AggregateEvidence | None = None,
 ) -> RateEstimate:
     return RateEstimate(
         raw_value=raw_value,
@@ -449,6 +456,7 @@ def _rate(
         samples=samples,
         prior_value=prior_value,
         source=source,
+        aggregate_evidence=aggregate_evidence,
     )
 
 
@@ -543,6 +551,120 @@ def test_rate_estimate_zero_samples_is_prior_only() -> None:
 
     with pytest.raises(SetProfileSchemaError, match="raw_value"):
         _rate(raw_value=None, samples=1)
+
+def test_aggregate_evidence_round_trip_is_strict() -> None:
+    evidence = AggregateEvidence(" PremierDraft ", "thin-exact-evidence", 0.65)
+    assert evidence.to_json() == {
+        "source_format": "premierdraft",
+        "fallback_reason": "thin-exact-evidence",
+        "confidence": 0.65,
+    }
+    assert AggregateEvidence.from_json(evidence.to_json()) == evidence
+
+    with pytest.raises(SetProfileSchemaError, match="exactly"):
+        AggregateEvidence.from_json(
+            {
+                "source_format": "premierdraft",
+                "fallback_reason": None,
+                "confidence": 0.5,
+                "extra": True,
+            }
+        )
+    with pytest.raises(SetProfileSchemaError, match="fallback reason"):
+        AggregateEvidence("premierdraft", "unknown", 0.5)
+    with pytest.raises(SetProfileSchemaError, match="path separators"):
+        AggregateEvidence("premier/draft", None, 0.5)
+
+
+def test_schema_two_aggregate_authority_is_required_and_schema_one_rejects_it() -> None:
+    exact = AggregateEvidence("quickdraft", None, 1.0)
+    fallback = AggregateEvidence("premierdraft", "missing-exact-evidence", 0.65)
+    exact_rate = _rate(aggregate_evidence=exact)
+    fallback_rate = _rate(aggregate_evidence=fallback)
+    profile = SetProfile(
+        set_code="TST",
+        event_format="quickdraft",
+        profile_version="generator-2",
+        generated_at="2026-08-30T00:00:00+00:00",
+        source=set_profile_module.SourceMetadata(provider="fixture"),
+        maturity=ProfileMaturity.EARLY,
+        samples=None,
+        confidence=0.4,
+        pairs=(PairProfile("WU", performance=exact_rate),),
+        card_ratings=(CardRating("oracle_id:a", fallback_rate),),
+        schema_version=2,
+    )
+    restored = SetProfile.from_json(profile.to_json())
+    assert restored == profile
+    assert restored.card_ratings[0].gih_win_rate.aggregate_evidence == fallback
+
+    with pytest.raises(SetProfileSchemaError, match="schema-1"):
+        SetProfile(
+            set_code=profile.set_code,
+            event_format=profile.event_format,
+            profile_version=profile.profile_version,
+            generated_at=profile.generated_at,
+            source=profile.source,
+            maturity=profile.maturity,
+            samples=profile.samples,
+            confidence=profile.confidence,
+            pairs=(),
+            card_ratings=(CardRating("oracle_id:a", exact_rate),),
+            schema_version=1,
+        )
+    with pytest.raises(SetProfileSchemaError, match="require aggregate authority"):
+        SetProfile(
+            set_code=profile.set_code,
+            event_format=profile.event_format,
+            profile_version=profile.profile_version,
+            generated_at=profile.generated_at,
+            source=profile.source,
+            maturity=profile.maturity,
+            samples=profile.samples,
+            confidence=profile.confidence,
+            pairs=(),
+            card_ratings=(CardRating("oracle_id:a", _rate()),),
+            schema_version=2,
+        )
+
+
+def test_schema_two_requires_pair_authority_and_rejects_invalid_combinations() -> None:
+    base = {
+        "set_code": "TST",
+        "profile_version": "generator-2",
+        "generated_at": "2026-08-30T00:00:00+00:00",
+        "source": set_profile_module.SourceMetadata(provider="fixture"),
+        "maturity": ProfileMaturity.EARLY,
+        "samples": None,
+        "confidence": 0.4,
+        "card_ratings": (),
+        "schema_version": 2,
+    }
+    with pytest.raises(SetProfileSchemaError):
+        SetProfile(
+            event_format="quickdraft",
+            pairs=(PairProfile("WU", performance=_rate()),),
+            **base,
+        )
+
+    invalid = (
+        ("quickdraft", AggregateEvidence("quickdraft", "thin-exact-evidence", 0.5)),
+        ("premierdraft", AggregateEvidence("traddraft", "missing-exact-evidence", 0.5)),
+        ("quickdraft", AggregateEvidence("alchemydraft", "missing-exact-evidence", 0.5)),
+        ("quickdraft", AggregateEvidence("premierdraft", None, 0.5)),
+    )
+    for event_format, evidence in invalid:
+        with pytest.raises(SetProfileSchemaError):
+            SetProfile(
+                event_format=event_format,
+                pairs=(
+                    PairProfile(
+                        "WU",
+                        performance=_rate(aggregate_evidence=evidence),
+                    ),
+                ),
+                **base,
+            )
 
 
 def test_card_ratings_reject_duplicate_card_identities() -> None:
