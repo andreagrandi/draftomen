@@ -26,17 +26,54 @@ from draftomen.card_data_export import (
     prepare_set_data_export,
     publish_set_data_export,
 )
+from draftomen.profile_batch_generation import (
+    ProfileBatchGenerationError,
+    generate_staged_profile_batch,
+)
 from draftomen.profile_data_refresh import (
     FILTERS_ENDPOINT,
+    PROFILE_BASE_URL,
     Pair,
     Plan as ProfilePlan,
-    Result as ProfileResult,
-    execute_profile_data_refresh,
+    _now,
+    _reuse_or_publish_object,
     prepare_profile_data_refresh,
 )
-from draftomen.seventeen import SEVENTEEN_LANDS_ATTRIBUTION
-from draftomen.profile_manifest import ProfileManifestError, load_profile_manifest
-
+from draftomen.profile_input_acquisition import (
+    CardMetadataAdapter,
+    SeventeenLandsPublicDraftAdapter,
+    SeventeenLandsRatingsAdapter,
+)
+from draftomen.profile_input_cache import ProfileInputCache
+from draftomen.profile_manifest import (
+    ProfileManifestArtifact,
+    ProfileManifestError,
+    load_profile_manifest,
+)
+from draftomen.profile_publication import (
+    ProfilePublicationError,
+    build_profile_manifest,
+    publish_profile_manifest,
+)
+from draftomen.profile_refresh_execution import (
+    DEFAULT_PROFILE_REFRESH_CACHE_POLICY,
+    ProfileRefreshExecutionError,
+    execute_profile_refresh_plan,
+)
+from draftomen.refresh_plan import (
+    LifecycleMetadata,
+    PlannedEnvironment,
+    RefreshPlan,
+)
+from draftomen.seventeen import (
+    HTTP_TIMEOUT_SECONDS,
+    SEVENTEEN_LANDS_ATTRIBUTION,
+    SEVENTEEN_LANDS_EXPANSIONS_ENDPOINT,
+    SeventeenLandsExpansionInventory,
+    _default_fetch_json,
+    fetch_17lands_format_data,
+    parse_17lands_expansion_inventory,
+)
 
 FetchJson: TypeAlias = Callable[[str, int], Any]
 Clock: TypeAlias = Callable[[], datetime]
@@ -257,6 +294,196 @@ def _profile_plan_with_real_paths(plan: ProfilePlan, *, card_data_dir: Path) -> 
     )
 
 
+def _acquire_inventory(
+    *,
+    inventory_file: Path | None,
+    fetch_json: FetchJson | None,
+    root: Path,
+) -> tuple[SeventeenLandsExpansionInventory, Path, Any]:
+    """Read one expansion snapshot and return the path used by static export."""
+
+    temporary: Any = None
+    try:
+        if inventory_file is None:
+            fetcher = _default_fetch_json if fetch_json is None else fetch_json
+            payload = fetcher(
+                SEVENTEEN_LANDS_EXPANSIONS_ENDPOINT,
+                HTTP_TIMEOUT_SECONDS,
+            )
+        else:
+            payload = json.loads(Path(inventory_file).read_bytes().decode("utf-8"))
+        inventory = parse_17lands_expansion_inventory(payload)
+        if inventory_file is not None:
+            return inventory, Path(inventory_file), temporary
+        temporary = tempfile.TemporaryDirectory(prefix=".profile-refresh-inventory-", dir=root)
+        path = Path(temporary.name) / "expansions.json"
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        return inventory, path, temporary
+    except Exception:
+        if temporary is not None:
+            temporary.cleanup()
+        raise
+
+
+def _manual_refresh_plan(
+    pair: Pair,
+    *,
+    inventory: SeventeenLandsExpansionInventory,
+) -> RefreshPlan:
+    """Bind exactly one already-selected pair to one strict refresh plan."""
+
+    environment = PlannedEnvironment(
+        set_code=pair.set_code,
+        event_format=pair.event_format.casefold(),
+        lifecycle=None,
+        reasons=("hosted-selection",),
+    )
+    return RefreshPlan(
+        selection_mode="manual",
+        event_format=environment.event_format,
+        environments=(environment,),
+        inventory_source_url=inventory.source_url,
+        inventory_payload_digest=inventory.source_payload_digest,
+        lifecycle=LifecycleMetadata(
+            provider="17Lands hosted filters",
+            source_url=FILTERS_ENDPOINT,
+            version="filters-v1",
+            classifications=(),
+        ),
+        selection_set_code=environment.set_code,
+    )
+
+
+def _profile_manifest_artifact(
+    *,
+    generation: Any,
+) -> ProfileManifestArtifact:
+    report = generation.report
+    profile = generation.profile
+    return ProfileManifestArtifact(
+        set_code=report.set_code,
+        event_format=report.event_format,
+        set_profile_schema_version=report.set_profile_schema_version,
+        profile_version=profile.profile_version,
+        generated_at=report.generated_at,
+        url=f"{PROFILE_BASE_URL.rstrip('/')}/{report.gzip_sha256}.json.gz",
+        gzip_bytes=report.gzip_bytes,
+        profile_bytes=report.profile_bytes,
+        gzip_sha256=report.gzip_sha256,
+        profile_sha256=report.profile_sha256,
+        maturity=profile.maturity,
+    )
+
+
+def _materialize_profiles(
+    *,
+    profiles_dir: Path,
+    command_now: datetime,
+    candidates: Sequence[tuple[Pair, Any]],
+    failures: list[dict[str, str]],
+) -> tuple[list[Pair], bool]:
+    """Publish validated objects, then atomically merge one manifest."""
+
+    if not candidates:
+        return [], False
+    try:
+        existing_manifest = load_profile_manifest(profiles_dir / "manifest.json")
+    except (OSError, ProfileManifestError):
+        for pair, _result in candidates:
+            failures.append(
+                _failure(
+                    stage="profile-execution",
+                    category="execution-failed",
+                    set_code=pair.set_code,
+                    event_format=pair.event_format,
+                )
+            )
+        return [], False
+
+    prepared: list[tuple[Pair, ProfileManifestArtifact, bytes, Path]] = []
+    for pair, result in candidates:
+        try:
+            generation = result.generation
+            validated = result.validated
+            if generation is None or validated is None:
+                raise ValueError("validated profile payload is missing")
+            artifact = _profile_manifest_artifact(generation=generation)
+            if not isinstance(validated.gzip_bytes, bytes):
+                raise TypeError("validated profile gzip is invalid")
+            prepared.append(
+                (
+                    pair,
+                    artifact,
+                    validated.gzip_bytes,
+                    profiles_dir / "objects" / f"{artifact.gzip_sha256}.json.gz",
+                )
+            )
+        except (AttributeError, TypeError, ValueError, ProfileManifestError):
+            failures.append(
+                _failure(
+                    stage="profile-execution",
+                    category="profile-validation-failed",
+                    set_code=pair.set_code,
+                    event_format=pair.event_format,
+                )
+            )
+
+    published: list[tuple[Pair, ProfileManifestArtifact]] = []
+    for pair, artifact, payload, object_path in prepared:
+        try:
+            # Reuse the existing content-addressed publication primitive.  It
+            # preserves prior identities when a conflicting object is found.
+            _reuse_or_publish_object(path=object_path, payload=payload)
+        except (OSError, ValueError):
+            failures.append(
+                _failure(
+                    stage="profile-execution",
+                    category="object-publish-failed",
+                    set_code=pair.set_code,
+                    event_format=pair.event_format,
+                )
+            )
+            continue
+        published.append((pair, artifact))
+
+    if not published:
+        return [], False
+
+    existing_artifacts = {
+        (artifact.set_code, artifact.event_format): artifact
+        for artifact in existing_manifest.artifacts
+    }
+    replacements = {pair.identity: artifact for pair, artifact in published}
+    replacement_changed = any(
+        existing_artifacts.get(identity) != artifact
+        for identity, artifact in replacements.items()
+    )
+    if replacement_changed:
+        existing_artifacts.update(replacements)
+        try:
+            merged_manifest = build_profile_manifest(
+                tuple(existing_artifacts.values()),
+                published_at=command_now,
+            )
+            publish_profile_manifest(profiles_dir / "manifest.json", merged_manifest)
+        except (OSError, ProfileManifestError, ProfilePublicationError, TypeError, ValueError):
+            for pair, _artifact in published:
+                failures.append(
+                    _failure(
+                        stage="profile-execution",
+                        category="manifest-publish-failed",
+                        set_code=pair.set_code,
+                        event_format=pair.event_format,
+                    )
+                )
+            return [], False
+        return [pair for pair, _artifact in published], True
+    return [pair for pair, _artifact in published], False
+
+
 def _base_bytes(repo_root: Path, base_commit: str, relative_path: str) -> bytes | None:
     shown = subprocess.run(
         ["git", "show", f"{base_commit}:{relative_path}"],
@@ -292,24 +519,24 @@ def _collect_assets(
     base_commit: str,
     static_successes: Sequence[str],
     static_already_valid: Sequence[str],
-    profile_result: ProfileResult | None,
+    successful_pairs: Sequence[Pair],
 ) -> list[dict[str, object]]:
     selected_paths: set[str] = {
         (_CARD_DATA_ROOT / f"{code}.json.gz").as_posix()
         for code in (*static_successes, *static_already_valid)
     }
-    if profile_result is not None and profile_result.successful_pairs:
+    if successful_pairs:
         selected_paths.add((_PROFILES_ROOT / "manifest.json").as_posix())
         selected_paths.update(
             (_CARD_DATA_ROOT / f"{pair.set_code}.json.gz").as_posix()
-            for pair in profile_result.successful_pairs
+            for pair in successful_pairs
         )
         profiles_dir = repo_root / _PROFILES_ROOT
         try:
             manifest = load_profile_manifest(profiles_dir / "manifest.json")
         except (OSError, ProfileManifestError) as error:
             raise _BundleError("successful profile manifest could not be loaded") from error
-        for pair in profile_result.successful_pairs:
+        for pair in successful_pairs:
             artifact = manifest.select(set_code=pair.set_code, event_format=pair.event_format)
             if artifact is None or not _SHA256_PATTERN.fullmatch(artifact.gzip_sha256):
                 raise _BundleError("successful profile object is not in the manifest")
@@ -369,6 +596,9 @@ def generate_website(
     bulk_file: Path | None = None,
     fetch_json: FetchJson | None = None,
     clock: Clock | None = None,
+    card_metadata_adapter: CardMetadataAdapter | None = None,
+    ratings_adapter: SeventeenLandsRatingsAdapter | None = None,
+    public_draft_adapter: SeventeenLandsPublicDraftAdapter | None = None,
 ) -> dict[str, object]:
     """Generate selected website data and persist a report plus delta bundle."""
 
@@ -383,6 +613,7 @@ def generate_website(
     profiles_dir = root / _PROFILES_ROOT
     bundle.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(bundle / "generated", ignore_errors=True)
+    shutil.rmtree(bundle / "batch-reports", ignore_errors=True)
     for old in (bundle / "result.json", bundle / "summary.md"):
         old.unlink(missing_ok=True)
 
@@ -406,115 +637,241 @@ def generate_website(
     static_successes: list[str] = []
     static_already_valid: list[str] = []
     profile_plan: ProfilePlan | None = None
-    profile_result: ProfileResult | None = None
+    inventory: SeventeenLandsExpansionInventory | None = None
+    inventory_path: Path | None = None
+    inventory_temporary: Any = None
 
     try:
-        static_plan = prepare_set_data_export(
-            selector=None,
-            output_dir=static_dir,
-            inventory_file=inventory_file,
-            bulk_file=bulk_file,
-        )
-        report["static"] = {
-            "discovery_complete": True,
-            "eligible_count": static_plan.total,
-            "already_valid_count": len(static_plan.already_valid),
-            "selected": [_identity_json(candidate.identity) for candidate in static_plan.pending],
-            "successful": [],
-        }
-        static_already_valid = [
-            identity.set_code for identity in static_plan.already_valid
-        ]
-    except Exception:
-        failures.append(_failure(stage="static-discovery", category="discovery-failed"))
-
-    if static_plan is not None:
         try:
-            for candidate in static_plan.pending:
-                try:
-                    publish_set_data_export(candidate=candidate)
-                except Exception:
-                    failures.append(_static_failure(candidate))
-                else:
-                    static_successes.append(candidate.identity.set_code)
-            report["static"]["successful"] = list(static_successes)
-        except Exception:
-            # A failure in the loop itself must not turn a selected candidate into
-            # an unreported success.
-            completed = set(static_successes)
-            for candidate in static_plan.pending:
-                if candidate.identity.set_code not in completed and not any(
-                    failure.get("set_code") == candidate.identity.set_code
-                    and failure.get("stage") == "static-write"
-                    for failure in failures
-                ):
-                    failures.append(_static_failure(candidate))
-            report["static"]["successful"] = list(static_successes)
-
-    try:
-        if static_plan is None:
-            planning_source = static_dir
-            profile_plan = prepare_profile_data_refresh(
-                profile_selector,
-                card_data_dir=planning_source,
-                mode=profile_mode,
+            inventory, inventory_path, inventory_temporary = _acquire_inventory(
+                inventory_file=inventory_file,
                 fetch_json=fetch_json,
-                filters_url=FILTERS_ENDPOINT,
+                root=root,
             )
-        else:
-            with tempfile.TemporaryDirectory(prefix=".profile-refresh-plan-", dir=root) as temporary:
-                planning_dir = Path(temporary)
-                _prepare_planning_view(static_plan, output_dir=static_dir, planning_dir=planning_dir)
-                planned = prepare_profile_data_refresh(
-                    profile_selector,
-                    card_data_dir=planning_dir,
-                    mode=profile_mode,
-                    fetch_json=fetch_json,
-                    filters_url=FILTERS_ENDPOINT,
-                )
-                profile_plan = _profile_plan_with_real_paths(planned, card_data_dir=static_dir)
-        assert profile_plan is not None
-        report["profiles"]["planning_complete"] = True
-        report["profiles"]["selected"] = [pair.to_json() for pair in profile_plan.pairs]
-    except Exception:
-        failures.append(_failure(stage="profile-planning", category="planning-failed"))
+        except Exception:
+            # Do not ask the exporter or planner to invent provenance after an
+            # inventory failure; both bounded failures remain visible.
+            failures.append(_failure(stage="static-discovery", category="discovery-failed"))
+            failures.append(_failure(stage="profile-planning", category="planning-failed"))
 
+        if inventory is not None and inventory_path is not None:
+            try:
+                static_plan = prepare_set_data_export(
+                    selector=None,
+                    output_dir=static_dir,
+                    inventory_file=inventory_path,
+                    bulk_file=bulk_file,
+                )
+                report["static"] = {
+                    "discovery_complete": True,
+                    "eligible_count": static_plan.total,
+                    "already_valid_count": len(static_plan.already_valid),
+                    "selected": [
+                        _identity_json(candidate.identity) for candidate in static_plan.pending
+                    ],
+                    "successful": [],
+                }
+                static_already_valid = [
+                    identity.set_code for identity in static_plan.already_valid
+                ]
+            except Exception:
+                failures.append(_failure(stage="static-discovery", category="discovery-failed"))
+
+        if inventory is not None:
+            if static_plan is not None:
+                try:
+                    for candidate in static_plan.pending:
+                        try:
+                            publish_set_data_export(candidate=candidate)
+                        except Exception:
+                            failures.append(_static_failure(candidate))
+                        else:
+                            static_successes.append(candidate.identity.set_code)
+                    report["static"]["successful"] = list(static_successes)
+                except Exception:
+                    # A failure in the loop itself must not turn a selected
+                    # candidate into an unreported success.
+                    completed = set(static_successes)
+                    for candidate in static_plan.pending:
+                        if candidate.identity.set_code not in completed and not any(
+                            failure.get("set_code") == candidate.identity.set_code
+                            and failure.get("stage") == "static-write"
+                            for failure in failures
+                        ):
+                            failures.append(_static_failure(candidate))
+                    report["static"]["successful"] = list(static_successes)
+
+            try:
+                if static_plan is None:
+                    planning_source = static_dir
+                    profile_plan = prepare_profile_data_refresh(
+                        profile_selector,
+                        card_data_dir=planning_source,
+                        mode=profile_mode,
+                        fetch_json=fetch_json,
+                        filters_url=FILTERS_ENDPOINT,
+                    )
+                else:
+                    with tempfile.TemporaryDirectory(
+                        prefix=".profile-refresh-plan-", dir=root
+                    ) as temporary:
+                        planning_dir = Path(temporary)
+                        _prepare_planning_view(
+                            static_plan,
+                            output_dir=static_dir,
+                            planning_dir=planning_dir,
+                        )
+                        planned = prepare_profile_data_refresh(
+                            profile_selector,
+                            card_data_dir=planning_dir,
+                            mode=profile_mode,
+                            fetch_json=fetch_json,
+                            filters_url=FILTERS_ENDPOINT,
+                        )
+                        profile_plan = _profile_plan_with_real_paths(
+                            planned,
+                            card_data_dir=static_dir,
+                        )
+                assert profile_plan is not None
+                report["profiles"]["planning_complete"] = True
+                report["profiles"]["selected"] = [
+                    pair.to_json() for pair in profile_plan.pairs
+                ]
+            except Exception:
+                failures.append(_failure(stage="profile-planning", category="planning-failed"))
+    finally:
+        if inventory_temporary is not None:
+            inventory_temporary.cleanup()
+
+    successful_pairs: list[Pair] = []
     if profile_plan is not None:
+        candidates: list[tuple[Pair, Any]] = []
         try:
-            profile_result = execute_profile_data_refresh(
-                profile_plan,
-                profiles_dir=profiles_dir,
-                cache_dir=cache_dir,
-                fetch_json=fetch_json,
+            command_now = _now(clock=clock)
+            cache = ProfileInputCache(
+                cache_dir,
+                policy=DEFAULT_PROFILE_REFRESH_CACHE_POLICY,
                 clock=clock,
             )
-            report["profiles"]["successful"] = [
-                pair.to_json() for pair in profile_result.successful_pairs
-            ]
-            report["profiles"]["manifest_changed"] = profile_result.manifest_changed
-            failures.extend(
-                _failure(
-                    stage="profile-execution",
-                    category=failure.category,
-                    set_code=failure.set_code,
-                    event_format=failure.event_format,
+            effective_ratings_adapter = ratings_adapter
+            if effective_ratings_adapter is None:
+                def fetch_ratings(
+                    *,
+                    set_code: str,
+                    event_format: str,
+                    fetched_at: datetime,
+                    timeout_seconds: int,
+                ) -> Any:
+                    return fetch_17lands_format_data(
+                        set_code=set_code,
+                        event_format=event_format,
+                        fetched_at=fetched_at,
+                        fetch_json=fetch_json,
+                        timeout_seconds=timeout_seconds,
+                    )
+
+                effective_ratings_adapter = SeventeenLandsRatingsAdapter(
+                    fetch_ratings=fetch_ratings,
                 )
-                for failure in profile_result.failures
-            )
         except Exception:
-            if not profile_plan.pairs:
-                failures.append(
-                    _failure(stage="profile-execution", category="execution-failed")
-                )
-            resolved: set[tuple[str, str]] = set()
-            for failure in failures:
-                if failure.get("stage") == "profile-execution":
-                    code = failure.get("set_code")
-                    event_format = failure.get("event_format")
-                    if code is not None and event_format is not None:
-                        resolved.add((code, event_format.casefold()))
             for pair in profile_plan.pairs:
-                if _pair_key(pair) not in resolved:
+                failures.append(
+                    _failure(
+                        stage="profile-execution",
+                        category="execution-failed",
+                        set_code=pair.set_code,
+                        event_format=pair.event_format,
+                    )
+                )
+        else:
+            for pair in profile_plan.pairs:
+                try:
+                    staged_plan = _manual_refresh_plan(pair, inventory=inventory)
+                    with tempfile.TemporaryDirectory(
+                        prefix=".profile-refresh-staged-", dir=root
+                    ) as staged:
+                        staged_dir = Path(staged)
+                        execute_profile_refresh_plan(
+                            plan=staged_plan,
+                            cache=cache,
+                            output_dir=staged_dir,
+                            offline=False,
+                            card_metadata_adapter=card_metadata_adapter,
+                            ratings_adapter=effective_ratings_adapter,
+                            public_draft_adapter=public_draft_adapter,
+                            clock=clock,
+                            include_public_drafts=False,
+                        )
+                        batch = generate_staged_profile_batch(
+                            plan=staged_plan,
+                            staged_dir=staged_dir,
+                            generated_at=command_now,
+                        )
+                        report_path = bundle / "batch-reports" / f"{batch.plan_sha256}.json"
+                        try:
+                            report_path.parent.mkdir(parents=True, exist_ok=True)
+                            report_path.write_bytes(batch.to_bytes())
+                        except OSError:
+                            failures.append(
+                                _failure(
+                                    stage="bundle",
+                                    category="report-write-failed",
+                                    set_code=pair.set_code,
+                                    event_format=pair.event_format,
+                                )
+                            )
+
+                        result = batch.environments[0]
+                        if not result.publication_eligible:
+                            reason = result.failure_reason
+                            category = (
+                                reason.value
+                                if hasattr(reason, "value")
+                                else reason
+                                if isinstance(reason, str) and reason
+                                else "execution-failed"
+                            )
+                            failures.append(
+                                _failure(
+                                    stage="profile-execution",
+                                    category=category,
+                                    set_code=pair.set_code,
+                                    event_format=pair.event_format,
+                                )
+                            )
+                        elif (
+                            result.selection is None
+                            or result.selection.stage.value not in {"early", "mature"}
+                        ):
+                            failures.append(
+                                _failure(
+                                    stage="profile-execution",
+                                    category="empirical-evidence-unavailable",
+                                    set_code=pair.set_code,
+                                    event_format=pair.event_format,
+                                )
+                            )
+                        elif result.generation is None or result.validated is None:
+                            failures.append(
+                                _failure(
+                                    stage="profile-execution",
+                                    category="profile-validation-failed",
+                                    set_code=pair.set_code,
+                                    event_format=pair.event_format,
+                                )
+                            )
+                        elif not pair.static_path.is_file():
+                            failures.append(
+                                _failure(
+                                    stage="profile-execution",
+                                    category="static-artifact-invalid",
+                                    set_code=pair.set_code,
+                                    event_format=pair.event_format,
+                                )
+                            )
+                        else:
+                            candidates.append((pair, result))
+                except (OSError, ProfileBatchGenerationError, ProfileRefreshExecutionError):
                     failures.append(
                         _failure(
                             stage="profile-execution",
@@ -524,6 +881,17 @@ def generate_website(
                         )
                     )
 
+            successful_pairs, manifest_changed = _materialize_profiles(
+                profiles_dir=profiles_dir,
+                command_now=command_now,
+                candidates=candidates,
+                failures=failures,
+            )
+            report["profiles"]["successful"] = [
+                pair.to_json() for pair in successful_pairs
+            ]
+            report["profiles"]["manifest_changed"] = manifest_changed
+
     try:
         report["generated_assets"] = _collect_assets(
             static_already_valid=static_already_valid,
@@ -531,7 +899,7 @@ def generate_website(
             bundle_dir=bundle,
             base_commit=base_commit,
             static_successes=static_successes,
-            profile_result=profile_result,
+            successful_pairs=successful_pairs,
         )
     except Exception:
         shutil.rmtree(bundle / "generated", ignore_errors=True)
