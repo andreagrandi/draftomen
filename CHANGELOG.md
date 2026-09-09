@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Generate hosted profiles through aggregate-only staged acquisition, retain
+  prior empirical profiles when evidence is unavailable, and publish canonical
+  batch provenance without exposing diagnostic inputs. (#416)
 - Add explicit aggregate-only profile acquisition for Oracle metadata and
   17Lands card/color evidence, with verified-cache fallback and privacy-safe
   provenance preserved through staged generation and batch reports. (#415)

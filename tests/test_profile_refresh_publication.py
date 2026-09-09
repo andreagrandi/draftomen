@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import gzip
 import hashlib
 import json
 import os
@@ -11,16 +11,19 @@ from typing import Any
 
 import pytest
 
-import draftomen.profile_data_refresh as profile_refresh_module
+from draftomen.carddb import build_card_database_from_bulk_file
 from draftomen.profile_manifest import ProfileManifest
+from draftomen.semantic_roles import Role
+from draftomen.set_profile import SetProfile
+from draftomen.seventeen import SeventeenLandsError
 import scripts.profile_refresh_publication as publication
 import scripts.profile_refresh_workflow as workflow
-from draftomen.seventeen import SeventeenLandsError, save_17lands_format_data
 from tests.test_profile_refresh_workflow_helper import (
     NOW,
     _git_base_commit,
     _manifest,
-    _ratings,
+    _partial_producer_bundle,
+    _producer_bundle,
     _source,
     _static,
 )
@@ -62,115 +65,6 @@ def _candidate_from_base(source: Path, destination: Path, base_commit: str) -> N
     subprocess.run(["git", "clean", "-fdx"], cwd=destination, check=True, stdout=subprocess.PIPE)
 
 
-def _producer_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, Path, dict[str, Any]]:
-    import draftomen.card_data_export as card_export
-
-    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
-    generator = tmp_path / "generator"
-    _static(generator / "website/public/card-data", set_code="old", set_name="Old Set")
-    inventory, bulk = _source(tmp_path)
-    _manifest(generator)
-    base_commit = _git_base_commit(generator)
-    cache = tmp_path / "cache"
-    save_17lands_format_data(_ratings(), app_dir=cache)
-    bundle = tmp_path / "bundle"
-    report = workflow.generate_website(
-        base_commit=base_commit,
-        selection_mode="one",
-        selector="new",
-        repo_root=generator,
-        bundle_dir=bundle,
-        cache_dir=cache,
-        inventory_file=inventory,
-        bulk_file=bulk,
-        fetch_json=lambda _url, _timeout: {
-            "formats_by_expansion": {"NEW": ["PremierDraft"]},
-            "live_formats_by_expansion": {},
-        },
-        clock=lambda: NOW,
-    )
-    candidate = tmp_path / "candidate"
-    _candidate_from_base(generator, candidate, base_commit)
-    return generator, candidate, bundle, report
-
-def _partial_producer_bundle(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[Path, Path, Path, str, dict[str, Any]]:
-    import draftomen.card_data_export as card_export
-
-    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
-    root = tmp_path / "generator"
-    _static(root / "website/public/card-data", set_code="old", set_name="Old Set")
-    inventory, bulk = _source(tmp_path)
-    _manifest(root)
-    base_commit = _git_base_commit(root)
-    cache = tmp_path / "cache"
-    save_17lands_format_data(_ratings(event_format="PremierDraft"), app_dir=cache)
-    save_17lands_format_data(_ratings(event_format="TradDraft"), app_dir=cache)
-    filters = {
-        "formats_by_expansion": {"NEW": ["PremierDraft", "TradDraft"]},
-        "live_formats_by_expansion": {},
-    }
-    first = workflow.generate_website(
-        base_commit=base_commit,
-        selection_mode="all",
-        selector=None,
-        repo_root=root,
-        bundle_dir=tmp_path / "first-bundle",
-        cache_dir=cache,
-        inventory_file=inventory,
-        bulk_file=bulk,
-        fetch_json=lambda _url, _timeout: filters,
-        clock=lambda: NOW,
-    )
-    assert first["status"] == "success"
-    assert {pair["event_format"] for pair in first["profiles"]["successful"]} == {
-        "PremierDraft",
-        "TradDraft",
-    }
-    published_base = _git_commit(root, "publish initial profile pair")
-
-    original_loader = profile_refresh_module.load_or_refresh_17lands_format_data
-
-    def changed_loader(**kwargs: Any) -> Any:
-        if kwargs["event_format"] == "TradDraft":
-            raise SeventeenLandsError("injected provider outage")
-        ratings = original_loader(**kwargs)
-        changed_stats = dict(ratings.card_ratings)
-        changed_stats[1] = replace(changed_stats[1], gih_win_rate=0.61)
-        return replace(ratings, card_ratings=changed_stats)
-
-    monkeypatch.setattr(
-        profile_refresh_module,
-        "load_or_refresh_17lands_format_data",
-        changed_loader,
-    )
-    bundle = tmp_path / "bundle"
-    report = workflow.generate_website(
-        base_commit=published_base,
-        selection_mode="all",
-        selector=None,
-        repo_root=root,
-        bundle_dir=bundle,
-        cache_dir=cache,
-        inventory_file=inventory,
-        bulk_file=bulk,
-        fetch_json=lambda _url, _timeout: filters,
-        clock=lambda: NOW,
-    )
-    assert report["status"] == "failed"
-    assert {pair["event_format"] for pair in report["profiles"]["successful"]} == {"PremierDraft"}
-    assert any(
-        failure["event_format"] == "TradDraft"
-        and failure["category"] == "ratings-unavailable"
-        for failure in report["failures"]
-    )
-    assert report["generated_assets"]
-    candidate = tmp_path / "candidate"
-    _candidate_from_base(root, candidate, published_base)
-    return root, candidate, bundle, published_base, report
-
 
 def test_prepare_publication_stages_real_producer_delta(
     tmp_path: Path,
@@ -190,9 +84,46 @@ def test_prepare_publication_stages_real_producer_delta(
     assert returned == report
     paths = {asset["path"] for asset in report["generated_assets"]}
     assert paths
-    for relative in paths:
-        assert (candidate / relative).read_bytes() == (bundle / "generated" / relative).read_bytes()
+    for descriptor in report["generated_assets"]:
+        relative = descriptor["path"]
+        bundle_bytes = (bundle / "generated" / relative).read_bytes()
+        candidate_bytes = (candidate / relative).read_bytes()
+        assert candidate_bytes == bundle_bytes
+        assert descriptor["bytes"] == len(bundle_bytes)
+        assert descriptor["sha256"] == hashlib.sha256(bundle_bytes).hexdigest()
+    assert all("batch-reports" not in relative for relative in paths)
+    assert not (candidate / "website/public/batch-reports").exists()
     assert (candidate / "website/public/card-data/old.json.gz").is_file()
+
+    manifest = ProfileManifest.from_bytes(
+        (candidate / "website/public/profiles/manifest.json").read_bytes()
+    )
+    artifact = manifest.select(set_code="new", event_format="PremierDraft")
+    assert artifact is not None
+    object_path = candidate / "website/public/profiles/objects" / f"{artifact.gzip_sha256}.json.gz"
+    object_bytes = object_path.read_bytes()
+    profile_bytes = gzip.decompress(object_bytes)
+    assert artifact.gzip_bytes == len(object_bytes)
+    assert artifact.gzip_sha256 == hashlib.sha256(object_bytes).hexdigest()
+    assert artifact.profile_bytes == len(profile_bytes)
+    assert artifact.profile_sha256 == hashlib.sha256(profile_bytes).hexdigest()
+    profile = SetProfile.from_json(json.loads(profile_bytes))
+    assert profile.roles_are_compatible
+    _, source_bulk = _source(tmp_path)
+    metadata = build_card_database_from_bulk_file(path=source_bulk)
+    resolution = profile.resolve_roles(metadata.cards[1002])
+    assert any(assignment.role is Role.DRAW for assignment in resolution.assignments)
+    assert any(rating.gih_win_rate.samples > 0 for rating in profile.card_ratings)
+    pair = profile.pair("WU")
+    assert pair is not None
+    assert pair.performance is not None
+    assert pair.performance.samples > 0
+
+    old_artifact = manifest.select(set_code="old", event_format="PremierDraft")
+    assert old_artifact is not None
+    assert (
+        candidate / "website/public/profiles/objects" / f"{old_artifact.gzip_sha256}.json.gz"
+    ).is_file()
 
 
 def test_prepare_rejects_protected_root_staleness_before_staging(
@@ -724,7 +655,7 @@ def test_publish_partial_keeps_master_unchanged_and_lists_every_failure(
         for line in summary_text.splitlines()
         if line.startswith("- ")
     }
-    assert "profile-execution: ratings-unavailable: new: TradDraft" in rendered_failures
+    assert "profile-execution: empirical-evidence-unavailable: new: TradDraft" in rendered_failures
 
 
     maintained_path = candidate / "website/public/card-data/maintainer.json.gz"
