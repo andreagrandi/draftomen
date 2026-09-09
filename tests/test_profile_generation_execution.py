@@ -62,6 +62,7 @@ def _report(
     ratings: bool = False,
     drafts: bool = False,
     path: Path | None = None,
+    outcome: ProfileInputAcquisitionOutcome = ProfileInputAcquisitionOutcome.ACQUIRED,
 ) -> ProfileInputSourceReport:
     source = ProfileInputSource(
         name=name,
@@ -71,7 +72,7 @@ def _report(
     digest = None if path is None else hashlib.sha256(path.read_bytes()).hexdigest()
     return ProfileInputSourceReport(
         source=source,
-        outcome=ProfileInputAcquisitionOutcome.ACQUIRED,
+        outcome=outcome,
         cache_lookup_outcome=ProfileInputCacheOutcome.FRESH,
         cache_store_outcome=ProfileInputCacheOutcome.FRESH,
         source_version="fixture-v1",
@@ -89,6 +90,7 @@ def _bundle(
     *,
     ratings: bool = False,
     drafts: bool = False,
+    ratings_outcome: ProfileInputAcquisitionOutcome = ProfileInputAcquisitionOutcome.ACQUIRED,
     card_database: CardDatabase | None = None,
     tmp_path: Path,
 ) -> ProfileInputAcquisitionResult:
@@ -116,7 +118,12 @@ def _bundle(
         )
         ratings_value = replace(ratings_value, set_code=environment.set_code, fetched_at=NOW)
         ratings_report = replace(
-            _report(environment, "17lands-ratings", ratings=True),
+            _report(
+                environment,
+                "17lands-ratings",
+                ratings=True,
+                outcome=ratings_outcome,
+            ),
             rating_rows=len(ratings_value.card_ratings),
             rating_samples=sum(
                 row.sample_counts.games_in_hand for row in ratings_value.card_ratings.values()
@@ -171,12 +178,14 @@ def _stage(
     *,
     ratings: bool = False,
     drafts: bool = False,
+    ratings_outcome: ProfileInputAcquisitionOutcome = ProfileInputAcquisitionOutcome.ACQUIRED,
     card_database: CardDatabase | None = None,
 ) -> Path:
     acquired = _bundle(
         environment,
         ratings=ratings,
         drafts=drafts,
+        ratings_outcome=ratings_outcome,
         card_database=card_database,
         tmp_path=tmp_path,
     )
@@ -239,6 +248,139 @@ def test_metadata_bundle_is_publication_eligible_with_validated_payload(tmp_path
     assert result.profile_size == len(result.profile_bytes)
     assert result.to_bytes().endswith(b"\n")
     assert "validated" in result.to_json()
+
+
+@pytest.mark.parametrize(
+    ("ratings_outcome", "fallback_state"),
+    [
+        pytest.param(ProfileInputAcquisitionOutcome.ACQUIRED, "none", id="live"),
+        pytest.param(ProfileInputAcquisitionOutcome.CACHED, "none", id="fresh-cache"),
+        pytest.param(ProfileInputAcquisitionOutcome.STALE, "verified-stale-cache", id="stale-fallback"),
+        pytest.param(
+            ProfileInputAcquisitionOutcome.OFFLINE_REUSED,
+            "verified-offline-cache",
+            id="offline-fallback",
+        ),
+    ],
+)
+def test_generation_json_preserves_exact_input_provenance(
+    tmp_path: Path,
+    ratings_outcome: ProfileInputAcquisitionOutcome,
+    fallback_state: str,
+) -> None:
+    environment = _environment()
+    bundle_path = _stage(
+        tmp_path,
+        environment,
+        ratings=True,
+        drafts=True,
+        ratings_outcome=ratings_outcome,
+    )
+    generated_at = NOW + timedelta(days=1)
+    result = generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=generated_at,
+    )
+
+    assert result.publication_eligible
+    assert result.generation is not None
+    assert result.generation.report.generated_at == generated_at.isoformat()
+    authority = json.loads((bundle_path / "bundle.json").read_text())
+    expected = [
+        {
+            "role": "card_database",
+            "name": "card-metadata",
+            "sha256": authority["sources"]["card_database"]["sha256"],
+            "source_version": "fixture-v1",
+            "requested_set": "TST",
+            "requested_format": "quickdraft",
+            "source_format": "",
+            "acquired_at": NOW.isoformat(),
+            "outcome": "acquired",
+            "fallback_state": "none",
+        },
+        {
+            "role": "seventeen_lands_ratings",
+            "name": "17lands-ratings",
+            "sha256": authority["sources"]["ratings"]["sha256"],
+            "source_version": "fixture-v1",
+            "requested_set": "TST",
+            "requested_format": "quickdraft",
+            "source_format": "quickdraft",
+            "acquired_at": NOW.isoformat(),
+            "outcome": ratings_outcome.value,
+            "fallback_state": fallback_state,
+        },
+        {
+            "role": "seventeen_lands_public_drafts",
+            "name": "17lands-public-drafts",
+            "sha256": authority["sources"]["public_drafts"]["sha256"],
+            "source_version": "fixture-v1",
+            "requested_set": "TST",
+            "requested_format": "quickdraft",
+            "source_format": "quickdraft",
+            "acquired_at": NOW.isoformat(),
+            "outcome": "acquired",
+            "fallback_state": "none",
+        },
+    ]
+    assert result.to_json()["input_sources"] == expected
+
+
+def test_unpinned_unavailable_ratings_provenance_is_retained(tmp_path: Path) -> None:
+    environment = _environment()
+    bundle_path = _stage(tmp_path, environment)
+    result = generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW + timedelta(days=1),
+    )
+
+    assert result.publication_eligible
+    ratings = next(
+        source for source in result.to_json()["input_sources"] if source["role"] == "seventeen_lands_ratings"
+    )
+    assert ratings == {
+        "role": "seventeen_lands_ratings",
+        "name": "17lands-ratings",
+        "sha256": "",
+        "source_version": "",
+        "requested_set": "TST",
+        "requested_format": "quickdraft",
+        "source_format": "quickdraft",
+        "acquired_at": "",
+        "outcome": "unavailable",
+        "fallback_state": "none",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("name", "https://unsafe.example/source", id="url"),
+        pytest.param("source_version", "/tmp/secret", id="path"),
+        pytest.param("requested_set", "TST\nsecret", id="control"),
+        pytest.param("unknown", "value", id="unknown-key"),
+    ],
+)
+def test_generation_json_rejects_unsafe_or_unknown_input_source_fields(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    environment = _environment()
+    bundle_path = _stage(tmp_path, environment)
+    result = generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW,
+    )
+    source = dict(result.input_sources[0])
+    source[field] = value
+
+    with pytest.raises(ProfileGenerationExecutionError):
+        replace(result, input_sources=(source,))
 
 
 def test_generated_identity_is_validated_against_requested_environment(

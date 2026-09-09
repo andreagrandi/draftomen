@@ -11,6 +11,7 @@ import pytest
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.profile_generation import generate_set_profile
+from draftomen.profile_generation_execution import generate_staged_environment_profile
 from draftomen.profile_generation_stage_policy import select_profile_generation_stage
 from draftomen.profile_input_acquisition import (
     CardMetadataAdapter,
@@ -233,8 +234,10 @@ def test_staged_bundle_selector_uses_loaded_role_reports(
         environment=environment,
     )
     selection = select_profile_generation_stage(
-        ratings_report=bundle.ratings_source,
-        public_draft_report=bundle.public_draft_source,
+        ratings_report=bundle.ratings_source if bundle.ratings is not None else None,
+        public_draft_report=(
+            bundle.public_draft_source if bundle.public_drafts is not None else None
+        ),
     )
     assert selection.stage.value == expected_stage
 
@@ -705,6 +708,23 @@ def test_partial_optional_staging_failure_preserves_siblings(
     assert execution.load_staged_profile_build_bundle(
         tmp_path / "output" / "bundles" / second.bundle_id
     ).public_drafts is not None
+    generated = generate_staged_environment_profile(
+        bundle_path=tmp_path / "output" / "bundles" / first.bundle_id,
+        environment=first.environment,
+        generated_at=NOW,
+    )
+    assert generated.publication_eligible
+    assert generated.selection is not None
+    assert generated.selection.stage.value == "early"
+    unavailable_drafts = next(
+        source
+        for source in generated.input_sources
+        if source["role"] == "seventeen_lands_public_drafts"
+    )
+    assert unavailable_drafts["outcome"] == "unavailable"
+    assert unavailable_drafts["sha256"] == ""
+    assert unavailable_drafts["source_version"] == ""
+    assert unavailable_drafts["acquired_at"] == ""
 
 
 def test_objects_precede_bundle_authority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1141,3 +1161,100 @@ def test_environment_reasons_round_trip_verbatim() -> None:
 
     assert value["reasons"] == ["requested by weekly operator review"]
     assert execution._parse_environment(value) == environment
+
+
+def test_aggregate_only_staged_authority_uses_null_draft_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        execution,
+        "acquire_profile_build_bundle",
+        lambda **kwargs: _acquisition_with_optional_inputs(
+            kwargs["environment"], include_ratings=True, include_public_drafts=False
+        ),
+    )
+    result = execution.execute_profile_refresh_plan(
+        plan=_plan(),
+        cache=_cache(tmp_path),
+        output_dir=tmp_path / "output",
+        offline=True,
+        include_public_drafts=False,
+        clock=lambda: NOW,
+    )
+    item = result.environments[0]
+    assert item.sources[2] is None
+    assert not any("public-drafts" in reason for reason in item.skip_reasons)
+    bundle_dir = tmp_path / "output" / "bundles" / item.bundle_id
+    authority = json.loads((bundle_dir / "bundle.json").read_bytes())
+    assert authority["sources"]["public_drafts"] is None
+    assert authority["inputs"]["public_drafts"] is None
+    loaded = execution.load_staged_profile_build_bundle(bundle_dir)
+    assert loaded.public_drafts is None
+    assert loaded.public_draft_source is None
+
+
+@pytest.mark.parametrize("tamper", ("draft-input-with-null-report", "null-ratings-report"))
+def test_loader_rejects_invalid_null_source_authority_pairs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    monkeypatch.setattr(
+        execution,
+        "acquire_profile_build_bundle",
+        lambda **kwargs: _acquisition_with_optional_inputs(
+            kwargs["environment"], include_ratings=True, include_public_drafts=False
+        ),
+    )
+    result = execution.execute_profile_refresh_plan(
+        plan=_plan(),
+        cache=_cache(tmp_path),
+        output_dir=tmp_path / "output",
+        offline=True,
+        include_public_drafts=False,
+        clock=lambda: NOW,
+    )
+    bundle_dir = (
+        tmp_path / "output" / "bundles" / result.environments[0].bundle_id
+    )
+    authority_path = bundle_dir / "bundle.json"
+    authority = json.loads(authority_path.read_bytes())
+    if tamper == "draft-input-with-null-report":
+        authority["inputs"]["public_drafts"] = {
+            "attribution": "fixture",
+            "content_bytes": 1,
+            "license": "CC0",
+            "sha256": "b" * 64,
+            "source_name": "17lands-public-drafts",
+        }
+    else:
+        authority["sources"]["ratings"] = None
+    authority_path.write_bytes(
+        (
+            json.dumps(
+                authority,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+
+    with pytest.raises(execution.ProfileRefreshExecutionError):
+        execution.load_staged_profile_build_bundle(bundle_dir)
+
+
+def test_refresh_include_public_drafts_must_be_bool_before_execution(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(execution.ProfileRefreshExecutionError, match="include_public_drafts"):
+        execution.execute_profile_refresh_plan(
+            plan=_plan(),
+            cache=_cache(tmp_path),
+            output_dir=tmp_path / "output",
+            offline=True,
+            include_public_drafts=1,  # type: ignore[arg-type]
+            clock=lambda: NOW,
+        )
+    assert not (tmp_path / "output").exists()

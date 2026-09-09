@@ -122,7 +122,7 @@ class ProfileRefreshEnvironmentResult:
     mode: str
     bundle_id: str
     outcome: ProfileRefreshEnvironmentOutcome | str
-    sources: tuple[ProfileInputSourceReport, ...] = ()
+    sources: tuple[ProfileInputSourceReport | None, ...] = ()
     skip_reasons: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
     schema_version: int = PROFILE_REFRESH_EXECUTION_SCHEMA_VERSION
@@ -149,7 +149,18 @@ class ProfileRefreshEnvironmentResult:
             raise ProfileRefreshExecutionError("environment outcome is invalid") from error
         object.__setattr__(self, "outcome", normalized)
         reports = tuple(self.sources)
-        if any(not isinstance(report, ProfileInputSourceReport) for report in reports):
+        if len(reports) != len(_INPUT_ROLES):
+            raise ProfileRefreshExecutionError("environment source reports are invalid")
+        if any(
+            report is None
+            for role, report in zip(_INPUT_ROLES, reports, strict=True)
+            if role != _INPUT_DRAFTS
+        ):
+            raise ProfileRefreshExecutionError("required environment source report is missing")
+        if any(
+            report is not None and not isinstance(report, ProfileInputSourceReport)
+            for report in reports
+        ):
             raise ProfileRefreshExecutionError("environment source reports are invalid")
         object.__setattr__(self, "sources", reports)
         object.__setattr__(self, "skip_reasons", _tokens(self.skip_reasons))
@@ -165,8 +176,10 @@ class ProfileRefreshEnvironmentResult:
     def available_input_roles(self) -> tuple[str, ...]:
         return tuple(
             role
-            for role, report in zip(_INPUT_ROLES, self.sources, strict=False)
-            if report.sha256 is not None and report.content_bytes is not None
+            for role, report in zip(_INPUT_ROLES, self.sources, strict=True)
+            if report is not None
+            and report.sha256 is not None
+            and report.content_bytes is not None
         )
 
     @property
@@ -265,10 +278,13 @@ def execute_profile_refresh_plan(
     ratings_adapter: SeventeenLandsRatingsAdapter | None = None,
     public_draft_adapter: SeventeenLandsPublicDraftAdapter | None = None,
     clock: Clock | None = None,
+    include_public_drafts: bool = True,
 ) -> ProfileRefreshExecutionResult:
     """Acquire and stage every plan environment sequentially, isolating
     failures per environment; no profile generator or publisher is called."""
 
+    if not isinstance(include_public_drafts, bool):
+        raise ProfileRefreshExecutionError("include_public_drafts must be a bool")
     normalized_plan, digest = _validate_execution_inputs(
         plan=plan,
         cache=cache,
@@ -296,6 +312,7 @@ def execute_profile_refresh_plan(
                 card_metadata_adapter=card_metadata_adapter,
                 ratings_adapter=ratings_adapter,
                 public_draft_adapter=public_draft_adapter,
+                include_public_drafts=include_public_drafts,
                 clock=clock,
             )
         )
@@ -419,7 +436,9 @@ def load_staged_profile_build_bundle(
     for role, report in zip(_INPUT_ROLES, reports, strict=True):
         input_value = inputs[role]
         if report is None:
-            raise ProfileRefreshExecutionError("staged source report is missing")
+            if role != _INPUT_DRAFTS or input_value is not None:
+                raise ProfileRefreshExecutionError("staged source report is missing")
+            continue
         if input_value is None:
             if report.sha256 is not None or report.content_bytes is not None:
                 raise ProfileRefreshExecutionError("missing input has a content pin")
@@ -431,6 +450,8 @@ def load_staged_profile_build_bundle(
             raise ProfileRefreshExecutionError("input source pin does not match authority")
 
     card_report, ratings_report, drafts_report = reports
+    if card_report is None or ratings_report is None:
+        raise ProfileRefreshExecutionError("required staged source report is missing")
     card_input = inputs[_INPUT_CARD]
     if card_input is None:
         raise ProfileRefreshExecutionError("card database input is missing")
@@ -462,6 +483,8 @@ def load_staged_profile_build_bundle(
     public_manifest: PublicDumpManifest | None = None
     drafts_input = inputs[_INPUT_DRAFTS]
     if drafts_input is not None:
+        if drafts_report is None:
+            raise ProfileRefreshExecutionError("public-draft source report is missing")
         digest, content_bytes = _verify_role_object(
             role=drafts_input, objects=objects, model="public drafts"
         )
@@ -491,9 +514,9 @@ def load_staged_profile_build_bundle(
             card_database=card_database,
             card_metadata=card_report,
             ratings=ratings,
-            ratings_source=ratings_report if ratings is not None else None,
+            ratings_source=ratings_report,
             public_drafts=public_manifest,
-            public_draft_source=drafts_report if public_manifest is not None else None,
+            public_draft_source=drafts_report,
         )
     except (TypeError, ValueError, CardDatabaseError, SeventeenLandsError, PublicDumpError) as error:
         raise ProfileRefreshExecutionError("staged profile input bundle is invalid") from error
@@ -505,7 +528,7 @@ def _failed_result(
     plan_sha256: str,
     mode: str,
     bundle_dir: Path,
-    reports: tuple[ProfileInputSourceReport, ...],
+    reports: tuple[ProfileInputSourceReport | None, ...],
     skip_reasons: tuple[str, ...] | list[str],
     diagnostics: tuple[str, ...] | list[str],
 ) -> ProfileRefreshEnvironmentResult:
@@ -544,6 +567,7 @@ def _execute_environment(
     ratings_adapter: SeventeenLandsRatingsAdapter | None,
     public_draft_adapter: SeventeenLandsPublicDraftAdapter | None,
     clock: Clock | None,
+    include_public_drafts: bool,
 ) -> ProfileRefreshEnvironmentResult:
     bundle_id = _bundle_id(environment)
     diagnostics: list[str] = []
@@ -556,6 +580,7 @@ def _execute_environment(
             card_metadata_adapter=card_metadata_adapter,
             ratings_adapter=ratings_adapter,
             public_draft_adapter=public_draft_adapter,
+            include_public_drafts=include_public_drafts,
             offline=offline,
             clock=clock,
         )
@@ -566,23 +591,33 @@ def _execute_environment(
             plan_sha256=plan_sha256,
             mode=mode,
             bundle_dir=output_dir / "bundles" / bundle_id,
-            reports=_failure_reports(environment),
+            reports=_failure_reports(environment, include_public_drafts=include_public_drafts),
             skip_reasons=(
                 "card-database-unavailable",
                 "17lands-ratings-unavailable",
-                "17lands-public-drafts-unavailable",
+                *(
+                    ("17lands-public-drafts-unavailable",)
+                    if include_public_drafts
+                    else ()
+                ),
             ),
             diagnostics=diagnostics,
         )
 
     skip_reasons.extend(acquisition.skip_reasons)
-    reports = _acquisition_reports(acquisition, environment)
-    if reports[1].sha256 is None and not any(
+    reports = _acquisition_reports(
+        acquisition, environment, include_public_drafts=include_public_drafts
+    )
+    ratings_report = reports[1]
+    if ratings_report is not None and ratings_report.sha256 is None and not any(
         reason.startswith("17lands-ratings-") for reason in skip_reasons
     ):
         skip_reasons.append("17lands-ratings-unavailable")
-    if reports[2].sha256 is None and not any(
-        reason.startswith("17lands-public-drafts-") for reason in skip_reasons
+    drafts_report = reports[2]
+    if (
+        drafts_report is not None
+        and drafts_report.sha256 is None
+        and not any(reason.startswith("17lands-public-drafts-") for reason in skip_reasons)
     ):
         skip_reasons.append("17lands-public-drafts-unavailable")
     if acquisition.bundle is None:
@@ -647,18 +682,25 @@ class _RequiredStageFailure(RuntimeError):
 def _stage_bundle(
     *,
     bundle: ProfileBuildBundle,
-    reports: tuple[ProfileInputSourceReport, ...],
+    reports: tuple[ProfileInputSourceReport | None, ...],
     bundle_dir: Path,
     plan_sha256: str,
     mode: str,
     skip_reasons: list[str],
-) -> tuple[tuple[ProfileInputSourceReport, ...], tuple[str, ...], tuple[str, ...]]:
+) -> tuple[
+    tuple[ProfileInputSourceReport | None, ...], tuple[str, ...], tuple[str, ...]
+]:
     parent = bundle_dir.parent
     _owned_directory(parent, create=True)
     if bundle_dir.exists() or bundle_dir.is_symlink():
         if bundle_dir.is_symlink() or not bundle_dir.is_dir():
             raise _RequiredStageFailure("bundle destination is invalid")
 
+    card_report, ratings_report, drafts_report = reports
+    if card_report is None or ratings_report is None:
+        raise _RequiredStageFailure("required source report is missing")
+    if bundle.public_drafts is not None and drafts_report is None:
+        raise _RequiredStageFailure("public-draft source report is missing")
     temporary = Path(tempfile.mkdtemp(prefix=f".{bundle_dir.name}.", dir=str(parent)))
     objects = temporary / "objects"
     objects.mkdir()
@@ -671,20 +713,24 @@ def _stage_bundle(
         inputs[_INPUT_CARD] = {
             "content_bytes": card_size,
             "sha256": card_digest,
-            "source_name": _safe_source_name(reports[0].source.name),
+            "source_name": _safe_source_name(card_report.source.name),
         }
-        adjusted[0] = _reconcile_report(reports[0], digest=card_digest, content_bytes=card_size)
+        adjusted[0] = _reconcile_report(
+            card_report, digest=card_digest, content_bytes=card_size
+        )
         if bundle.ratings is None and (
-            reports[1].sha256 is not None or reports[1].content_bytes is not None
+            ratings_report.sha256 is not None or ratings_report.content_bytes is not None
         ):
             skips.append("17lands-ratings-unavailable")
-            adjusted[1] = _optional_failure_report(reports[1], "17lands-ratings-unavailable")
-        if bundle.public_drafts is None and (
-            reports[2].sha256 is not None or reports[2].content_bytes is not None
+            adjusted[1] = _optional_failure_report(
+                ratings_report, "17lands-ratings-unavailable"
+            )
+        if drafts_report is not None and bundle.public_drafts is None and (
+            drafts_report.sha256 is not None or drafts_report.content_bytes is not None
         ):
             skips.append("17lands-public-drafts-unavailable")
             adjusted[2] = _optional_failure_report(
-                reports[2], "17lands-public-drafts-unavailable"
+                drafts_report, "17lands-public-drafts-unavailable"
             )
         if bundle.ratings is not None:
             try:
@@ -694,16 +740,16 @@ def _stage_bundle(
                 inputs[_INPUT_RATINGS] = {
                     "content_bytes": ratings_size,
                     "sha256": ratings_digest,
-                    "source_name": _safe_source_name(reports[1].source.name),
+                    "source_name": _safe_source_name(ratings_report.source.name),
                 }
                 adjusted[1] = _reconcile_report(
-                    reports[1], digest=ratings_digest, content_bytes=ratings_size
+                    ratings_report, digest=ratings_digest, content_bytes=ratings_size
                 )
             except Exception:  # noqa: BLE001 - optional role is isolated
                 skips.append("17lands-ratings-staging-failed")
                 diagnostics.append("ratings-input-unavailable")
                 adjusted[1] = _optional_failure_report(
-                    reports[1], "17lands-ratings-staging-failed"
+                    ratings_report, "17lands-ratings-staging-failed"
                 )
         if bundle.public_drafts is not None:
             try:
@@ -721,16 +767,16 @@ def _stage_bundle(
                     "content_bytes": drafts_size,
                     "license": _portable_provenance(source.license, PUBLIC_DRAFT_LICENSE),
                     "sha256": drafts_digest,
-                    "source_name": _safe_source_name(reports[2].source.name),
+                    "source_name": _safe_source_name(drafts_report.source.name),
                 }
                 adjusted[2] = _reconcile_report(
-                    reports[2], digest=drafts_digest, content_bytes=drafts_size
+                    drafts_report, digest=drafts_digest, content_bytes=drafts_size
                 )
             except Exception:  # noqa: BLE001 - optional role is isolated
                 skips.append("17lands-public-drafts-staging-failed")
                 diagnostics.append("public-drafts-input-unavailable")
                 adjusted[2] = _optional_failure_report(
-                    reports[2], "17lands-public-drafts-staging-failed"
+                    drafts_report, "17lands-public-drafts-staging-failed"
                 )
 
         _prune_unreferenced_objects(objects, inputs)
@@ -797,7 +843,7 @@ def _publish_failure_bundle(
     plan_sha256: str,
     mode: str,
     bundle_dir: Path,
-    reports: tuple[ProfileInputSourceReport, ...],
+    reports: tuple[ProfileInputSourceReport | None, ...],
     skip_reasons: list[str],
 ) -> None:
     parent = bundle_dir.parent
@@ -839,7 +885,7 @@ def _publish_failure_bundle_bounded(
     plan_sha256: str,
     mode: str,
     bundle_dir: Path,
-    reports: tuple[ProfileInputSourceReport, ...],
+    reports: tuple[ProfileInputSourceReport | None, ...],
     skip_reasons: list[str],
 ) -> tuple[str, ...]:
     try:
@@ -863,7 +909,7 @@ def _bundle_json(
     plan_sha256: str,
     mode: str,
     outcome: ProfileRefreshEnvironmentOutcome,
-    reports: tuple[ProfileInputSourceReport, ...],
+    reports: tuple[ProfileInputSourceReport | None, ...],
     inputs: Mapping[str, Mapping[str, Any] | None],
     skip_reasons: list[str],
 ) -> dict[str, Any]:
@@ -895,7 +941,7 @@ def _result(
     plan_sha256: str,
     mode: str,
     outcome: ProfileRefreshEnvironmentOutcome,
-    sources: tuple[ProfileInputSourceReport, ...],
+    sources: tuple[ProfileInputSourceReport | None, ...],
     skip_reasons: tuple[str, ...] | list[str],
     diagnostics: tuple[str, ...] | list[str],
 ) -> ProfileRefreshEnvironmentResult:
@@ -914,12 +960,14 @@ def _result(
 def _acquisition_reports(
     acquisition: ProfileInputAcquisitionResult,
     environment: PlannedEnvironment,
-) -> tuple[ProfileInputSourceReport, ...]:
+    *,
+    include_public_drafts: bool,
+) -> tuple[ProfileInputSourceReport | None, ...]:
     card = acquisition.source
     ratings = acquisition.ratings_source
     drafts = acquisition.public_draft_source
     if not isinstance(card, ProfileInputSourceReport):
-        return _failure_reports(environment)
+        return _failure_reports(environment, include_public_drafts=include_public_drafts)
     if ratings is None:
         ratings = _unavailable_report(
             ProfileInputSource(
@@ -929,7 +977,7 @@ def _acquisition_reports(
             ),
             "17lands-ratings-unavailable",
         )
-    if drafts is None:
+    if include_public_drafts and drafts is None:
         drafts = _unavailable_report(
             ProfileInputSource(
                 name=PUBLIC_DRAFT_SOURCE_NAME,
@@ -938,10 +986,24 @@ def _acquisition_reports(
             ),
             "17lands-public-drafts-unavailable",
         )
-    return (card, ratings, drafts)
+    return (card, ratings, drafts if include_public_drafts else None)
 
 
-def _failure_reports(environment: PlannedEnvironment) -> tuple[ProfileInputSourceReport, ...]:
+def _failure_reports(
+    environment: PlannedEnvironment, *, include_public_drafts: bool
+) -> tuple[ProfileInputSourceReport | None, ...]:
+    drafts: ProfileInputSourceReport | None = (
+        _unavailable_report(
+            ProfileInputSource(
+                name=PUBLIC_DRAFT_SOURCE_NAME,
+                set_code=environment.set_code,
+                event_format=environment.event_format,
+            ),
+            "17lands-public-drafts-unavailable",
+        )
+        if include_public_drafts
+        else None
+    )
     return (
         _unavailable_report(
             ProfileInputSource(name=CARD_METADATA_SOURCE_NAME, set_code=environment.set_code),
@@ -956,15 +1018,10 @@ def _failure_reports(environment: PlannedEnvironment) -> tuple[ProfileInputSourc
             ),
             "17lands-ratings-unavailable",
         ),
-        _unavailable_report(
-            ProfileInputSource(
-                name=PUBLIC_DRAFT_SOURCE_NAME,
-                set_code=environment.set_code,
-                event_format=environment.event_format,
-            ),
-            "17lands-public-drafts-unavailable",
-        ),
+        drafts,
     )
+
+
 
 
 def _unavailable_report(
@@ -1010,6 +1067,8 @@ def _optional_failure_report(
     return replace(
         report,
         outcome=ProfileInputAcquisitionOutcome.UNAVAILABLE,
+        source_version=None,
+        acquired_at=None,
         sha256=None,
         content_bytes=None,
         diagnostics=(*report.diagnostics, reason),

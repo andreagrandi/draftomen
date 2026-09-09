@@ -14,6 +14,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Mapping, TypeAlias
 
 from draftomen.profile_generation import (
@@ -48,6 +49,32 @@ from draftomen.refresh_plan import PlannedEnvironment, RefreshPlan
 from draftomen.set_profile import SET_PROFILE_SCHEMA_VERSION
 
 
+_BATCH_INPUT_SOURCE_KEYS = frozenset(
+    {
+        "role",
+        "name",
+        "sha256",
+        "source_version",
+        "requested_set",
+        "requested_format",
+        "source_format",
+        "acquired_at",
+        "outcome",
+        "fallback_state",
+    }
+)
+_BATCH_INPUT_SOURCE_ROLES = frozenset(
+    {"card_database", "seventeen_lands_ratings", "seventeen_lands_public_drafts"}
+)
+_BATCH_INPUT_SOURCE_OUTCOMES = frozenset(
+    {"acquired", "cached", "offline-reused", "stale", "missing", "corrupt", "unavailable"}
+)
+_BATCH_INPUT_SOURCE_FALLBACKS = frozenset(
+    {"none", "verified-stale-cache", "verified-offline-cache"}
+)
+_BATCH_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+_MAX_BATCH_INPUT_SOURCE_ROWS = 3
+_MAX_BATCH_INPUT_SOURCE_FIELD_LENGTH = 256
 PROFILE_BATCH_REPORT_SCHEMA_VERSION = 1
 PathInput: TypeAlias = str | os.PathLike[str]
 
@@ -219,34 +246,144 @@ def _safe_sources(
     report: ProfileGenerationReport,
     input_sources: tuple[Mapping[str, str], ...],
 ) -> tuple[dict[str, str], ...]:
-    rows = [
-        {
-            "attribution": _safe_text(source.attribution),
-            "license": _safe_text(source.license),
-            "name": _safe_text(source.name),
-            "sha256": _safe_text(source.sha256),
-        }
-        for source in report.sources
-    ]
-    # The staged inputs that produced the profile (card database, ratings)
-    # never reach report.sources, which only carries the public-draft
-    # manifest; surface their identity and digests so every eligible
-    # environment records the provenance of all of its inputs.
-    seen = {row["sha256"] for row in rows if row["sha256"]}
-    for item in sorted(input_sources, key=lambda entry: entry.get("role", "")):
-        digest = _safe_text(item.get("sha256", ""))
-        if not digest or digest in seen:
-            continue
-        seen.add(digest)
+    try:
+        descriptors = tuple(report.sources)
+        staged = tuple(input_sources)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ProfileBatchGenerationError("batch source provenance is invalid") from error
+    if len(descriptors) > 64 or len(staged) > _MAX_BATCH_INPUT_SOURCE_ROWS:
+        raise ProfileBatchGenerationError("batch source provenance exceeds the bound")
+
+    rows: list[dict[str, str]] = []
+    for source in descriptors:
+        digest = _safe_text(getattr(source, "sha256", ""))
+        if digest and _BATCH_SHA256_PATTERN.fullmatch(digest) is None:
+            digest = ""
         rows.append(
             {
-                "attribution": "",
-                "license": "",
-                "name": _safe_text(item.get("name", "")),
+                "attribution": _safe_text(getattr(source, "attribution", "")),
+                "license": _safe_text(getattr(source, "license", "")),
+                "name": _safe_text(getattr(source, "name", "")),
                 "sha256": digest,
             }
         )
+
+    staged_rows = [_validate_staged_source(item) for item in staged]
+    if len({row["role"] for row in staged_rows}) != len(staged_rows):
+        raise ProfileBatchGenerationError("batch staged source roles are duplicated")
+    staged_rows.sort(key=lambda item: (item["role"], item["name"], item["sha256"]))
+    consumed: set[int] = set()
+    for row in rows:
+        digest = row["sha256"]
+        if not digest:
+            continue
+        matches = [
+            index
+            for index, staged_row in enumerate(staged_rows)
+            if index not in consumed and staged_row["sha256"] == digest
+        ]
+        match = next(
+            (
+                index
+                for index in matches
+                if staged_rows[index]["name"] == row["name"]
+            ),
+            matches[0] if matches else None,
+        )
+        if match is not None:
+            row.update(staged_rows[match])
+            consumed.add(match)
+
+    for index, staged_row in enumerate(staged_rows):
+        if index not in consumed:
+            rows.append(
+                {
+                    "attribution": "",
+                    "license": "",
+                    **staged_row,
+                }
+            )
     return tuple(rows)
+
+
+def _validate_staged_source(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ProfileBatchGenerationError("batch staged source is invalid")
+    try:
+        if set(value) != _BATCH_INPUT_SOURCE_KEYS:
+            raise ProfileBatchGenerationError("batch staged source keys are invalid")
+    except (TypeError, ValueError) as error:
+        raise ProfileBatchGenerationError("batch staged source keys are invalid") from error
+
+    allowed_empty = {
+        "sha256",
+        "source_version",
+        "requested_format",
+        "source_format",
+        "acquired_at",
+    }
+    fields = {
+        key: _safe_source_text(value[key], key, allow_empty=key in allowed_empty)
+        for key in _BATCH_INPUT_SOURCE_KEYS
+    }
+    if fields["role"] not in _BATCH_INPUT_SOURCE_ROLES:
+        raise ProfileBatchGenerationError("batch staged source role is invalid")
+    if not fields["name"] or not fields["requested_set"]:
+        raise ProfileBatchGenerationError("batch staged source identity is invalid")
+    if fields["outcome"] not in _BATCH_INPUT_SOURCE_OUTCOMES:
+        raise ProfileBatchGenerationError("batch staged source outcome is invalid")
+    expected_fallback = {
+        "stale": "verified-stale-cache",
+        "offline-reused": "verified-offline-cache",
+    }.get(fields["outcome"], "none")
+    if fields["fallback_state"] not in _BATCH_INPUT_SOURCE_FALLBACKS:
+        raise ProfileBatchGenerationError("batch staged source fallback is invalid")
+    if fields["fallback_state"] != expected_fallback:
+        raise ProfileBatchGenerationError("batch staged source fallback does not match outcome")
+
+    digest = fields["sha256"]
+    if digest and _BATCH_SHA256_PATTERN.fullmatch(digest) is None:
+        raise ProfileBatchGenerationError("batch staged source digest is invalid")
+    acquired_at = fields["acquired_at"]
+    if acquired_at:
+        fields["acquired_at"] = _source_timestamp(acquired_at)
+    unavailable_optional = (
+        fields["role"]
+        in {"seventeen_lands_ratings", "seventeen_lands_public_drafts"}
+        and fields["outcome"] in {"missing", "corrupt", "unavailable"}
+    )
+    if unavailable_optional:
+        if digest or fields["source_version"] or acquired_at:
+            raise ProfileBatchGenerationError(
+                "batch unavailable optional source must have empty pins and timestamp"
+            )
+    elif not acquired_at:
+        raise ProfileBatchGenerationError("batch staged source timestamp is required")
+    return fields
+
+
+def _safe_source_text(value: Any, field_name: str, *, allow_empty: bool) -> str:
+    if (
+        not isinstance(value, str)
+        or (not allow_empty and not value)
+        or len(value) > _MAX_BATCH_INPUT_SOURCE_FIELD_LENGTH
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or "/" in value
+        or "\\" in value
+        or "://" in value
+    ):
+        raise ProfileBatchGenerationError(f"batch staged source {field_name} is invalid")
+    return value
+
+
+def _source_timestamp(value: str) -> str:
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ProfileBatchGenerationError("batch staged source timestamp is invalid") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ProfileBatchGenerationError("batch staged source timestamp is invalid")
+    return timestamp.astimezone(UTC).isoformat()
 
 
 def _environment_identity(environment: PlannedEnvironment) -> dict[str, str | None]:
