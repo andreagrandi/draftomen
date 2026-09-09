@@ -8,7 +8,7 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
 from io import BytesIO
@@ -34,6 +34,7 @@ from draftomen.public_dump import (
     PublicDumpReader,
     PublicDumpSource,
 )
+from draftomen.profile_generation import aggregate_evidence_needs_fallback
 from draftomen.refresh_plan import PlannedEnvironment
 from draftomen.seventeen import (
     SeventeenLandsError,
@@ -43,7 +44,7 @@ from draftomen.seventeen import (
     public_draft_data_url,
 )
 
-PROFILE_INPUT_ACQUISITION_SCHEMA_VERSION = 1
+PROFILE_INPUT_ACQUISITION_SCHEMA_VERSION = 2
 CARD_METADATA_ADAPTER_VERSION = 1
 CARD_METADATA_SOURCE_NAME = "card-metadata"
 RATINGS_ADAPTER_VERSION = 1
@@ -238,6 +239,18 @@ class ProfileInputSourceReport:
 
 
 @dataclass(frozen=True, slots=True)
+class ProfileAggregateCandidate:
+    """One attempted same-set aggregate ratings source and its report."""
+
+    ratings: SeventeenLandsFormatData | None = field(repr=False)
+    source: ProfileInputSourceReport
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, ProfileInputSourceReport):
+            raise ProfileInputAcquisitionError("Aggregate candidate source is invalid.")
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileBuildBundle:
     """Carry normalized inputs required by the existing profile generator.
     Raw source contents remain outside serialized acquisition reports.
@@ -248,6 +261,7 @@ class ProfileBuildBundle:
     card_metadata: ProfileInputSourceReport
     ratings: SeventeenLandsFormatData | None = field(default=None, repr=False)
     ratings_source: ProfileInputSourceReport | None = None
+    fallback_candidates: tuple[ProfileAggregateCandidate, ...] = ()
     public_drafts: PublicDumpManifest | None = field(default=None, repr=False)
     public_draft_source: ProfileInputSourceReport | None = None
 
@@ -286,6 +300,10 @@ class ProfileBuildBundle:
                 manifest=self.public_drafts,
                 report=self.public_draft_source,
             )
+        _validate_aggregate_candidates(
+            environment=self.environment,
+            candidates=self.fallback_candidates,
+        )
 
     def generator_inputs(self) -> dict[str, object]:
         """Return the values accepted by the existing profile generator.
@@ -301,6 +319,13 @@ class ProfileBuildBundle:
             values["ratings"] = self.ratings
         if self.public_drafts is not None:
             values["source_manifest"] = self.public_drafts
+        fallback_ratings = tuple(
+            candidate.ratings
+            for candidate in self.fallback_candidates
+            if candidate.ratings is not None
+        )
+        if fallback_ratings:
+            values["fallback_ratings"] = fallback_ratings
         return values
 
 
@@ -313,8 +338,9 @@ class ProfileInputAcquisitionResult:
     environment: PlannedEnvironment
     source: ProfileInputSourceReport
     bundle: ProfileBuildBundle | None = field(default=None, repr=False)
-    ratings_source: ProfileInputSourceReport | None = None
     public_draft_source: ProfileInputSourceReport | None = None
+    ratings_source: ProfileInputSourceReport | None = None
+    fallback_candidates: tuple[ProfileAggregateCandidate, ...] = ()
     skip_reasons: tuple[str, ...] = ()
     schema_version: int = PROFILE_INPUT_ACQUISITION_SCHEMA_VERSION
 
@@ -322,6 +348,14 @@ class ProfileInputAcquisitionResult:
         if self.schema_version != PROFILE_INPUT_ACQUISITION_SCHEMA_VERSION:
             raise ProfileInputAcquisitionError("Unsupported profile-input acquisition schema.")
         object.__setattr__(self, "skip_reasons", tuple(sorted(set(self.skip_reasons))))
+        _validate_aggregate_candidates(
+            environment=self.environment,
+            candidates=self.fallback_candidates,
+        )
+        if self.bundle is not None and self.bundle.fallback_candidates != self.fallback_candidates:
+            raise ProfileInputAcquisitionError(
+                "Acquisition result fallback candidates do not match its bundle."
+            )
 
     @property
     def succeeded(self) -> bool:
@@ -339,7 +373,11 @@ class ProfileInputAcquisitionResult:
 
         optional = tuple(
             report
-            for report in (self.ratings_source, self.public_draft_source)
+            for report in (
+                self.ratings_source,
+                *(candidate.source for candidate in self.fallback_candidates),
+                self.public_draft_source,
+            )
             if report is not None
         )
         return (self.source, *optional)
@@ -779,29 +817,76 @@ def acquire_profile_build_bundle(
     if metadata_result.bundle is None:
         return metadata_result
 
+    selected_ratings_adapter = (
+        ratings_adapter if ratings_adapter is not None else SeventeenLandsRatingsAdapter()
+    )
     ratings_result = _acquire_ratings(
         environment=environment,
         cache=cache,
-        adapter=ratings_adapter or SeventeenLandsRatingsAdapter(),
+        adapter=selected_ratings_adapter,
         offline=offline,
         clock=clock,
     )
+    fallback_candidates: list[ProfileAggregateCandidate] = []
+    skip_reasons = list(metadata_result.skip_reasons)
+    if ratings_result.skip_reason is not None:
+        skip_reasons.append(ratings_result.skip_reason)
+
+    if environment.event_format.casefold() == "quickdraft":
+        needs_fallback = aggregate_evidence_needs_fallback(
+            set_code=environment.set_code,
+            event_format=environment.event_format,
+            card_database=metadata_result.bundle.card_database,
+            ratings=ratings_result.ratings,
+        )
+        for actual_format in ("PremierDraft", "TradDraft"):
+            if not needs_fallback:
+                break
+            candidate_environment = replace(environment, event_format=actual_format)
+            candidate_result = _acquire_ratings(
+                environment=candidate_environment,
+                cache=cache,
+                adapter=selected_ratings_adapter,
+                offline=offline,
+                clock=clock,
+            )
+            candidate = ProfileAggregateCandidate(
+                ratings=candidate_result.ratings,
+                source=candidate_result.report,
+            )
+            fallback_candidates.append(candidate)
+            if candidate_result.skip_reason is not None:
+                skip_reasons.append(candidate_result.skip_reason)
+            needs_fallback = aggregate_evidence_needs_fallback(
+                set_code=environment.set_code,
+                event_format=environment.event_format,
+                card_database=metadata_result.bundle.card_database,
+                ratings=ratings_result.ratings,
+                fallback_ratings=tuple(
+                    candidate.ratings
+                    for candidate in fallback_candidates
+                    if candidate.ratings is not None
+                ),
+            )
+
     public_draft_result = (
         _acquire_public_drafts(
             environment=environment,
             cache=cache,
-            adapter=public_draft_adapter or SeventeenLandsPublicDraftAdapter(),
+            adapter=(
+                public_draft_adapter
+                if public_draft_adapter is not None
+                else SeventeenLandsPublicDraftAdapter()
+            ),
             offline=offline,
             clock=clock,
         )
         if include_public_drafts
         else None
     )
-    skip_reasons = list(metadata_result.skip_reasons)
-    if ratings_result.skip_reason is not None:
-        skip_reasons.append(ratings_result.skip_reason)
     if public_draft_result is not None and public_draft_result.skip_reason is not None:
         skip_reasons.append(public_draft_result.skip_reason)
+    fallback_tuple = tuple(fallback_candidates)
     return ProfileInputAcquisitionResult(
         environment=environment,
         source=metadata_result.source,
@@ -811,6 +896,7 @@ def acquire_profile_build_bundle(
             card_metadata=metadata_result.source,
             ratings=ratings_result.ratings,
             ratings_source=ratings_result.report,
+            fallback_candidates=fallback_tuple,
             public_drafts=(
                 None if public_draft_result is None else public_draft_result.manifest
             ),
@@ -819,6 +905,7 @@ def acquire_profile_build_bundle(
             ),
         ),
         ratings_source=ratings_result.report,
+        fallback_candidates=fallback_tuple,
         public_draft_source=(
             None if public_draft_result is None else public_draft_result.report
         ),
@@ -1164,7 +1251,93 @@ def _load_cached_database(
     return database, result.diagnostics
 
 
+_RATINGS_USABLE_OUTCOMES = frozenset(
+    {
+        ProfileInputAcquisitionOutcome.ACQUIRED,
+        ProfileInputAcquisitionOutcome.CACHED,
+        ProfileInputAcquisitionOutcome.OFFLINE_REUSED,
+        ProfileInputAcquisitionOutcome.STALE,
+    }
+)
+
+
+def _validate_aggregate_candidates(
+    *,
+    environment: PlannedEnvironment,
+    candidates: tuple[ProfileAggregateCandidate, ...],
+) -> None:
+    if not isinstance(candidates, tuple):
+        raise ProfileInputAcquisitionError("Aggregate candidates must be a tuple.")
+    if environment.event_format.casefold() != "quickdraft" and candidates:
+        raise ProfileInputAcquisitionError(
+            "Aggregate candidates are supported only for QuickDraft bundles."
+        )
+    formats: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, ProfileAggregateCandidate):
+            raise ProfileInputAcquisitionError("Aggregate candidates are invalid.")
+        report = candidate.source
+        source = report.source
+        if source.name != RATINGS_SOURCE_NAME:
+            raise ProfileInputAcquisitionError("Aggregate candidate source name is invalid.")
+        if source.set_code != environment.set_code:
+            raise ProfileInputAcquisitionError("Aggregate candidate source set does not match.")
+        if source.event_format not in {"premierdraft", "traddraft"}:
+            raise ProfileInputAcquisitionError(
+                "Aggregate candidate source format must be PremierDraft or TradDraft."
+            )
+        formats.append(source.event_format)
+        if candidate.ratings is None:
+            if report.outcome in _RATINGS_USABLE_OUTCOMES:
+                raise ProfileInputAcquisitionError(
+                    "Unavailable aggregate candidates cannot claim usable content."
+                )
+            if (
+                report.rating_rows not in (None, 0)
+                or report.rating_samples not in (None, 0)
+                or report.source_version is not None
+                or report.acquired_at is not None
+                or report.sha256 is not None
+                or report.content_bytes is not None
+            ):
+                raise ProfileInputAcquisitionError(
+                    "Unavailable aggregate candidate report contains usable content."
+                )
+            continue
+        if report.outcome not in _RATINGS_USABLE_OUTCOMES:
+            raise ProfileInputAcquisitionError(
+                "Aggregate candidate payload has an unavailable source report."
+            )
+        if report.source_version is None:
+            raise ProfileInputAcquisitionError(
+                "Aggregate candidate payload source version is missing."
+            )
+        candidate_environment = replace(
+            environment,
+            event_format=source.event_format,
+        )
+        _validate_ratings(
+            ratings=candidate.ratings,
+            environment=candidate_environment,
+            acquired_at=report.acquired_at,
+        )
+        if (
+            report.rating_rows is not None
+            and report.rating_rows != len(candidate.ratings.card_ratings)
+        ) or (
+            report.rating_samples is not None
+            and report.rating_samples != _rating_sample_count(candidate.ratings)
+        ):
+            raise ProfileInputAcquisitionError(
+                "Aggregate candidate report does not match its payload."
+            )
+    if formats != sorted(set(formats)):
+        raise ProfileInputAcquisitionError(
+            "Aggregate candidates must be unique and ordered PremierDraft then TradDraft."
+        )
+
 def _validate_ratings(
+
     *,
     ratings: SeventeenLandsFormatData,
     environment: PlannedEnvironment,
@@ -1597,6 +1770,7 @@ __all__ = [
     "RATINGS_SOURCE_NAME",
     "CardDatabaseFetcher",
     "CardMetadataAdapter",
+    "ProfileAggregateCandidate",
     "ProfileBuildBundle",
     "ProfileInputAcquisitionError",
     "ProfileInputAcquisitionOutcome",

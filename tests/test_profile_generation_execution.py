@@ -24,6 +24,7 @@ from draftomen.profile_generation_execution import (
     generate_staged_environment_profile,
 )
 from draftomen.profile_input_acquisition import (
+    ProfileAggregateCandidate,
     ProfileBuildBundle,
     ProfileInputAcquisitionOutcome,
     ProfileInputAcquisitionResult,
@@ -85,6 +86,74 @@ def _report(
     )
 
 
+def _aggregate_candidate(
+    environment: PlannedEnvironment,
+    event_format: str,
+    *,
+    available: bool = True,
+    outcome: ProfileInputAcquisitionOutcome = ProfileInputAcquisitionOutcome.ACQUIRED,
+) -> ProfileAggregateCandidate:
+    source = _report(
+        environment,
+        "17lands-ratings",
+        ratings=True,
+        outcome=(
+            ProfileInputAcquisitionOutcome.UNAVAILABLE
+            if not available and outcome is ProfileInputAcquisitionOutcome.ACQUIRED
+            else outcome
+        ),
+    )
+    source = replace(
+        source,
+        source=replace(source.source, event_format=event_format),
+    )
+    if not available:
+        source = replace(
+            source,
+            rating_rows=0,
+            rating_samples=0,
+            source_version=None,
+            acquired_at=None,
+        )
+        return ProfileAggregateCandidate(ratings=None, source=source)
+
+    ratings = load_17lands_format_data(
+        set_code="TST",
+        event_format="quickdraft",
+        cache_path=FIXTURE_DIR / "ratings.json",
+    )
+    ratings = replace(
+        ratings,
+        set_code=environment.set_code,
+        event_format=event_format,
+        fetched_at=NOW,
+        card_ratings={
+            grp_id: replace(
+                row,
+                sample_counts=replace(row.sample_counts, games_in_hand=500),
+            )
+            for grp_id, row in ratings.card_ratings.items()
+        },
+        pair_win_rates={
+            pair: replace(
+                row,
+                wins=300,
+                games=500,
+                win_rate=0.6,
+            )
+            for pair, row in ratings.pair_win_rates.items()
+        },
+    )
+    source = replace(
+        source,
+        rating_rows=len(ratings.card_ratings),
+        rating_samples=sum(
+            row.sample_counts.games_in_hand for row in ratings.card_ratings.values()
+        ),
+    )
+    return ProfileAggregateCandidate(ratings=ratings, source=source)
+
+
 def _bundle(
     environment: PlannedEnvironment,
     *,
@@ -93,6 +162,7 @@ def _bundle(
     ratings_outcome: ProfileInputAcquisitionOutcome = ProfileInputAcquisitionOutcome.ACQUIRED,
     card_database: CardDatabase | None = None,
     tmp_path: Path,
+    fallback_candidates: tuple[ProfileAggregateCandidate, ...] = (),
 ) -> ProfileInputAcquisitionResult:
     cards = card_database or CardDatabase.from_json(
         json.loads((FIXTURE_DIR / "card-database.json").read_text())
@@ -160,6 +230,7 @@ def _bundle(
         card_metadata=card_report,
         ratings=ratings_value,
         ratings_source=ratings_report,
+        fallback_candidates=fallback_candidates,
         public_drafts=drafts_value,
         public_draft_source=drafts_report,
     )
@@ -168,6 +239,7 @@ def _bundle(
         source=card_report,
         bundle=built,
         ratings_source=ratings_report,
+        fallback_candidates=fallback_candidates,
         public_draft_source=drafts_report,
     )
 
@@ -180,6 +252,7 @@ def _stage(
     drafts: bool = False,
     ratings_outcome: ProfileInputAcquisitionOutcome = ProfileInputAcquisitionOutcome.ACQUIRED,
     card_database: CardDatabase | None = None,
+    fallback_candidates: tuple[ProfileAggregateCandidate, ...] = (),
 ) -> Path:
     acquired = _bundle(
         environment,
@@ -187,6 +260,7 @@ def _stage(
         drafts=drafts,
         ratings_outcome=ratings_outcome,
         card_database=card_database,
+        fallback_candidates=fallback_candidates,
         tmp_path=tmp_path,
     )
 
@@ -248,6 +322,163 @@ def test_metadata_bundle_is_publication_eligible_with_validated_payload(tmp_path
     assert result.profile_size == len(result.profile_bytes)
     assert result.to_bytes().endswith(b"\n")
     assert "validated" in result.to_json()
+
+
+def test_fallback_only_ratings_promote_stage_and_keep_actual_provenance(tmp_path: Path) -> None:
+    environment = _environment()
+    candidate = _aggregate_candidate(environment, "premierdraft")
+    bundle_path = _stage(
+        tmp_path,
+        environment,
+        fallback_candidates=(candidate,),
+    )
+
+    result = generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW,
+    )
+
+    assert result.publication_eligible
+    assert result.selection is not None
+    ratings = [
+        row
+        for row in result.to_json()["input_sources"]
+        if row["role"] == "seventeen_lands_ratings"
+    ]
+    assert [row["source_format"] for row in ratings] == ["quickdraft", "premierdraft"]
+    assert ratings[0]["sha256"] == ""
+    assert ratings[0]["acquired_at"] == ""
+    assert ratings[0]["source_version"] == ""
+    assert ratings[1]["requested_format"] == "quickdraft"
+
+
+def test_unavailable_candidates_are_retained_in_source_order(tmp_path: Path) -> None:
+    environment = _environment()
+    candidates = (
+        _aggregate_candidate(environment, "premierdraft", available=False),
+        _aggregate_candidate(environment, "traddraft", available=False),
+    )
+    bundle_path = _stage(tmp_path, environment, fallback_candidates=candidates)
+
+    result = generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW,
+    )
+
+    assert result.publication_eligible
+    ratings = [
+        row
+        for row in result.to_json()["input_sources"]
+        if row["role"] == "seventeen_lands_ratings"
+    ]
+    assert [row["source_format"] for row in ratings] == [
+        "quickdraft",
+        "premierdraft",
+        "traddraft",
+    ]
+    assert all(
+        row["sha256"] == "" and row["acquired_at"] == "" and row["source_version"] == ""
+        for row in ratings
+    )
+
+
+def test_generator_receives_requested_and_fallback_inputs_without_rekeying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment()
+    candidate = _aggregate_candidate(environment, "premierdraft")
+    bundle_path = _stage(tmp_path, environment, fallback_candidates=(candidate,))
+    original_generate = execution.generate_set_profile
+    captured: dict[str, object] = {}
+
+    def capture(**kwargs: object) -> ProfileGenerationResult:
+        captured.update(kwargs)
+        return original_generate(**kwargs)
+
+    monkeypatch.setattr(execution, "generate_set_profile", capture)
+    result = generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW,
+    )
+
+    assert result.publication_eligible
+    assert captured["fallback_ratings"] == (candidate.ratings,)
+    assert captured["set_code"] == environment.set_code
+    assert captured["event_format"] == environment.event_format
+
+
+
+def test_stage_precedence_and_ties_use_independent_source_selections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment()
+    candidate = _aggregate_candidate(environment, "premierdraft")
+    bundle_path = _stage(tmp_path, environment, ratings=True, fallback_candidates=(candidate,))
+    original_select = execution.select_profile_generation_stage
+    calls: list[str | None] = []
+
+    def select(**kwargs: object) -> object:
+        report = kwargs["ratings_report"]
+        source_format = None if report is None else report.source.event_format
+        calls.append(source_format)
+        selected = original_select(**kwargs)
+        if source_format == "quickdraft":
+            return replace(selected, stage=ProfileGenerationStage.METADATA)
+        return selected
+
+    monkeypatch.setattr(execution, "select_profile_generation_stage", select)
+    result = generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW,
+    )
+
+    assert result.publication_eligible
+    assert result.selection is not None
+    assert result.selection.stage is ProfileGenerationStage.EARLY
+    assert calls == ["quickdraft", "premierdraft"]
+
+def test_ratings_provenance_allows_actual_formats_but_rejects_invalid_duplicates(
+    tmp_path: Path,
+) -> None:
+    environment = _environment()
+    candidate = _aggregate_candidate(environment, "premierdraft")
+    bundle_path = _stage(tmp_path, environment, ratings=True, fallback_candidates=(candidate,))
+    result = generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW,
+    )
+    assert result.publication_eligible
+    requested = next(
+        row
+        for row in result.input_sources
+        if row["role"] == "seventeen_lands_ratings" and row["source_format"] == "quickdraft"
+    )
+
+    with pytest.raises(ProfileGenerationExecutionError):
+        replace(result, input_sources=(*result.input_sources, dict(requested)))
+    with pytest.raises(ProfileGenerationExecutionError):
+        replace(
+            result,
+            input_sources=(
+                *result.input_sources[:-1],
+                {**result.input_sources[-1], "source_format": "sealed"},
+            ),
+        )
+    with pytest.raises(ProfileGenerationExecutionError):
+        replace(
+            result,
+            input_sources=(
+                *result.input_sources[:-1],
+                {**result.input_sources[-1], "requested_set": "OTHER"},
+            ),
+        )
 
 
 @pytest.mark.parametrize(

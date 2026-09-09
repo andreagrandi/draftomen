@@ -73,7 +73,7 @@ _BATCH_INPUT_SOURCE_FALLBACKS = frozenset(
     {"none", "verified-stale-cache", "verified-offline-cache"}
 )
 _BATCH_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
-_MAX_BATCH_INPUT_SOURCE_ROWS = 3
+_MAX_BATCH_INPUT_SOURCE_ROWS = 5
 _MAX_BATCH_INPUT_SOURCE_FIELD_LENGTH = 256
 PROFILE_BATCH_REPORT_SCHEMA_VERSION = 1
 PathInput: TypeAlias = str | os.PathLike[str]
@@ -269,9 +269,25 @@ def _safe_sources(
         )
 
     staged_rows = [_validate_staged_source(item) for item in staged]
-    if len({row["role"] for row in staged_rows}) != len(staged_rows):
+    source_keys = {
+        (
+            row["role"],
+            row["source_format"].casefold()
+            if row["role"] == "seventeen_lands_ratings"
+            else "",
+        )
+        for row in staged_rows
+    }
+    if len(source_keys) != len(staged_rows):
         raise ProfileBatchGenerationError("batch staged source roles are duplicated")
-    staged_rows.sort(key=lambda item: (item["role"], item["name"], item["sha256"]))
+    staged_rows.sort(
+        key=lambda item: (
+            item["role"],
+            item["source_format"],
+            item["name"],
+            item["sha256"],
+        )
+    )
     consumed: set[int] = set()
     for row in rows:
         digest = row["sha256"]

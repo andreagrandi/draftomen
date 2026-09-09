@@ -30,6 +30,7 @@ from draftomen.profile_input_acquisition import (
     RATINGS_SOURCE_NAME,
     CardMetadataAdapter,
     Clock,
+    ProfileAggregateCandidate,
     ProfileBuildBundle,
     ProfileInputAcquisitionOutcome,
     ProfileInputAcquisitionResult,
@@ -53,8 +54,8 @@ from draftomen.refresh_plan import PlannedEnvironment, RefreshPlan
 from draftomen.seventeen import SeventeenLandsError, SeventeenLandsFormatData
 
 
-PROFILE_REFRESH_EXECUTION_SCHEMA_VERSION = 1
-PROFILE_REFRESH_EXECUTOR_VERSION = "1"
+PROFILE_REFRESH_EXECUTION_SCHEMA_VERSION = 2
+PROFILE_REFRESH_EXECUTOR_VERSION = "2"
 
 DEFAULT_PROFILE_REFRESH_CACHE_POLICY = ProfileInputCachePolicy(
     freshness_ttl=timedelta(days=7),
@@ -123,6 +124,7 @@ class ProfileRefreshEnvironmentResult:
     bundle_id: str
     outcome: ProfileRefreshEnvironmentOutcome | str
     sources: tuple[ProfileInputSourceReport | None, ...] = ()
+    fallback_sources: tuple[ProfileInputSourceReport, ...] = ()
     skip_reasons: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
     schema_version: int = PROFILE_REFRESH_EXECUTION_SCHEMA_VERSION
@@ -162,7 +164,10 @@ class ProfileRefreshEnvironmentResult:
             for report in reports
         ):
             raise ProfileRefreshExecutionError("environment source reports are invalid")
+        fallback_reports = tuple(self.fallback_sources)
+        _validate_fallback_reports(self.environment, fallback_reports)
         object.__setattr__(self, "sources", reports)
+        object.__setattr__(self, "fallback_sources", fallback_reports)
         object.__setattr__(self, "skip_reasons", _tokens(self.skip_reasons))
         object.__setattr__(self, "diagnostics", _tokens(self.diagnostics))
         if self.schema_version != PROFILE_REFRESH_EXECUTION_SCHEMA_VERSION:
@@ -174,13 +179,22 @@ class ProfileRefreshEnvironmentResult:
 
     @property
     def available_input_roles(self) -> tuple[str, ...]:
-        return tuple(
-            role
-            for role, report in zip(_INPUT_ROLES, self.sources, strict=True)
-            if report is not None
-            and report.sha256 is not None
-            and report.content_bytes is not None
+        fallback_ratings_available = any(
+            report.sha256 is not None and report.content_bytes is not None
+            for report in self.fallback_sources
         )
+        available: list[str] = []
+        for role, report in zip(_INPUT_ROLES, self.sources, strict=True):
+            if role == _INPUT_RATINGS:
+                if (
+                    report is not None
+                    and report.sha256 is not None
+                    and report.content_bytes is not None
+                ) or fallback_ratings_available:
+                    available.append(role)
+            elif report is not None and report.sha256 is not None and report.content_bytes is not None:
+                available.append(role)
+        return tuple(available)
 
     @property
     def metadata_only(self) -> bool:
@@ -192,6 +206,7 @@ class ProfileRefreshEnvironmentResult:
             "available_input_roles": list(self.available_input_roles),
             "bundle_id": self.bundle_id,
             "environment": _environment_json(self.environment),
+            "fallback_sources": [_source_report_json(report) for report in self.fallback_sources],
             "outcome": self.outcome.value,
             "skip_reasons": _diagnostics(self.skip_reasons),
         }
@@ -366,6 +381,7 @@ def load_staged_profile_build_bundle(
             "environment",
             "outcome",
             "inputs",
+            "fallback_candidates",
             "sources",
             "skip_reasons",
         },
@@ -424,6 +440,12 @@ def load_staged_profile_build_bundle(
             _portable_provenance(input_value["attribution"], PUBLIC_DRAFT_ATTRIBUTION)
             _portable_provenance(input_value["license"], PUBLIC_DRAFT_LICENSE)
     _parse_diagnostics(value["skip_reasons"], "bundle skip reasons")
+
+    fallback_candidates = _parse_fallback_candidates(
+        value["fallback_candidates"],
+        environment=parsed_environment,
+        objects=objects,
+    )
 
     # Only objects pinned by the authority are part of the reconstructed
     # bundle.  Unreferenced entries are inert and intentionally ignored; each
@@ -515,6 +537,7 @@ def load_staged_profile_build_bundle(
             card_metadata=card_report,
             ratings=ratings,
             ratings_source=ratings_report,
+            fallback_candidates=fallback_candidates,
             public_drafts=public_manifest,
             public_draft_source=drafts_report,
         )
@@ -529,15 +552,21 @@ def _failed_result(
     mode: str,
     bundle_dir: Path,
     reports: tuple[ProfileInputSourceReport | None, ...],
+    fallback_sources: tuple[ProfileInputSourceReport, ...],
     skip_reasons: tuple[str, ...] | list[str],
     diagnostics: tuple[str, ...] | list[str],
 ) -> ProfileRefreshEnvironmentResult:
+    failure_fallback_sources = tuple(
+        _optional_candidate_failure_report(report, "required-source-failed")
+        for report in fallback_sources
+    )
     failure_authority_diagnostics = _publish_failure_bundle_bounded(
         environment=environment,
         plan_sha256=plan_sha256,
         mode=mode,
         bundle_dir=bundle_dir,
         reports=reports,
+        fallback_sources=failure_fallback_sources,
         skip_reasons=list(skip_reasons),
     )
     return _result(
@@ -546,6 +575,7 @@ def _failed_result(
         mode=mode,
         outcome=ProfileRefreshEnvironmentOutcome.FAILED,
         sources=reports,
+        fallback_sources=failure_fallback_sources,
         skip_reasons=skip_reasons,
         diagnostics=(
             *diagnostics,
@@ -592,6 +622,7 @@ def _execute_environment(
             mode=mode,
             bundle_dir=output_dir / "bundles" / bundle_id,
             reports=_failure_reports(environment, include_public_drafts=include_public_drafts),
+            fallback_sources=(),
             skip_reasons=(
                 "card-database-unavailable",
                 "17lands-ratings-unavailable",
@@ -608,6 +639,7 @@ def _execute_environment(
     reports = _acquisition_reports(
         acquisition, environment, include_public_drafts=include_public_drafts
     )
+    fallback_sources = tuple(candidate.source for candidate in acquisition.fallback_candidates)
     ratings_report = reports[1]
     if ratings_report is not None and ratings_report.sha256 is None and not any(
         reason.startswith("17lands-ratings-") for reason in skip_reasons
@@ -628,6 +660,7 @@ def _execute_environment(
             mode=mode,
             bundle_dir=output_dir / "bundles" / bundle_id,
             reports=reports,
+            fallback_sources=fallback_sources,
             skip_reasons=skip_reasons,
             diagnostics=diagnostics,
         )
@@ -639,13 +672,14 @@ def _execute_environment(
             mode=mode,
             bundle_dir=output_dir / "bundles" / bundle_id,
             reports=reports,
+            fallback_sources=fallback_sources,
             skip_reasons=skip_reasons,
             diagnostics=diagnostics,
         )
 
     bundle_dir = output_dir / "bundles" / bundle_id
     try:
-        staged_reports, stage_skips, stage_diagnostics = _stage_bundle(
+        staged_reports, staged_fallback_sources, stage_skips, stage_diagnostics = _stage_bundle(
             bundle=acquisition.bundle,
             reports=reports,
             bundle_dir=bundle_dir,
@@ -660,6 +694,7 @@ def _execute_environment(
             mode=mode,
             bundle_dir=bundle_dir,
             reports=reports,
+            fallback_sources=fallback_sources,
             skip_reasons=(*skip_reasons, "required-input-staging-failed"),
             diagnostics=diagnostics,
         )
@@ -670,6 +705,7 @@ def _execute_environment(
         mode=mode,
         outcome=ProfileRefreshEnvironmentOutcome.STAGED,
         sources=staged_reports,
+        fallback_sources=staged_fallback_sources,
         skip_reasons=(*skip_reasons, *stage_skips),
         diagnostics=(*diagnostics, *stage_diagnostics),
     )
@@ -688,7 +724,10 @@ def _stage_bundle(
     mode: str,
     skip_reasons: list[str],
 ) -> tuple[
-    tuple[ProfileInputSourceReport | None, ...], tuple[str, ...], tuple[str, ...]
+    tuple[ProfileInputSourceReport | None, ...],
+    tuple[ProfileInputSourceReport, ...],
+    tuple[str, ...],
+    tuple[str, ...],
 ]:
     parent = bundle_dir.parent
     _owned_directory(parent, create=True)
@@ -705,6 +744,8 @@ def _stage_bundle(
     objects = temporary / "objects"
     objects.mkdir()
     adjusted = list(reports)
+    adjusted_candidates = list(bundle.fallback_candidates)
+    candidate_inputs: list[dict[str, Any] | None] = [None] * len(adjusted_candidates)
     inputs: dict[str, dict[str, Any] | None] = {role: None for role in _INPUT_ROLES}
     skips = list(skip_reasons)
     diagnostics: list[str] = []
@@ -751,6 +792,36 @@ def _stage_bundle(
                 adjusted[1] = _optional_failure_report(
                     ratings_report, "17lands-ratings-staging-failed"
                 )
+        for index, candidate in enumerate(bundle.fallback_candidates):
+            if candidate.ratings is None:
+                continue
+            try:
+                digest, size = _write_bytes_object(
+                    objects, _canonical_model_bytes(candidate.ratings)
+                )
+                candidate_inputs[index] = {
+                    "content_bytes": size,
+                    "sha256": digest,
+                    "source_name": _safe_source_name(candidate.source.source.name),
+                }
+                adjusted_candidates[index] = replace(
+                    candidate,
+                    source=_reconcile_report(
+                        candidate.source, digest=digest, content_bytes=size
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - optional candidate is isolated
+                format_name = candidate.source.source.event_format
+                skips.append(f"17lands-{format_name}-staging-failed")
+                diagnostics.append("fallback-ratings-input-unavailable")
+                adjusted_candidates[index] = replace(
+                    candidate,
+                    ratings=None,
+                    source=_optional_candidate_failure_report(
+                        candidate.source,
+                        f"17lands-{format_name}-staging-failed",
+                    ),
+                )
         if bundle.public_drafts is not None:
             try:
                 source = bundle.public_drafts.sources[0]
@@ -779,7 +850,7 @@ def _stage_bundle(
                     drafts_report, "17lands-public-drafts-staging-failed"
                 )
 
-        _prune_unreferenced_objects(objects, inputs)
+        _prune_unreferenced_objects(objects, inputs, candidate_inputs)
         authority = _bundle_json(
             environment=bundle.environment,
             bundle_id=_bundle_id(bundle.environment),
@@ -788,6 +859,12 @@ def _stage_bundle(
             outcome=ProfileRefreshEnvironmentOutcome.STAGED,
             reports=tuple(adjusted),
             inputs=inputs,
+            fallback_candidates=tuple(
+                (candidate.source, input_value)
+                for candidate, input_value in zip(
+                    adjusted_candidates, candidate_inputs, strict=True
+                )
+            ),
             skip_reasons=skips,
         )
         _atomic_write_bytes(temporary / "bundle.json", _canonical_bytes(authority))
@@ -801,14 +878,22 @@ def _stage_bundle(
         if str(temporary) not in {"", "."}:
             shutil.rmtree(temporary, ignore_errors=True)
 
-    return tuple(adjusted), tuple(skips), tuple(diagnostics)
+    return (
+        tuple(adjusted),
+        tuple(candidate.source for candidate in adjusted_candidates),
+        tuple(skips),
+        tuple(diagnostics),
+    )
 
 def _prune_unreferenced_objects(
-    objects: Path, inputs: Mapping[str, Mapping[str, Any] | None]
+    objects: Path,
+    inputs: Mapping[str, Mapping[str, Any] | None],
+    candidate_inputs: tuple[Mapping[str, Any] | None, ...] = (),
 ) -> None:
+    all_inputs = (*inputs.values(), *candidate_inputs)
     referenced_names = {
         f"{input_value['sha256']}.bin"
-        for input_value in inputs.values()
+        for input_value in all_inputs
         if input_value is not None
     }
     for path in objects.iterdir():
@@ -844,6 +929,7 @@ def _publish_failure_bundle(
     mode: str,
     bundle_dir: Path,
     reports: tuple[ProfileInputSourceReport | None, ...],
+    fallback_sources: tuple[ProfileInputSourceReport, ...],
     skip_reasons: list[str],
 ) -> None:
     parent = bundle_dir.parent
@@ -856,6 +942,7 @@ def _publish_failure_bundle(
             mode=mode,
             outcome=ProfileRefreshEnvironmentOutcome.FAILED,
             reports=reports,
+            fallback_candidates=tuple((report, None) for report in fallback_sources),
             inputs={role: None for role in _INPUT_ROLES},
             skip_reasons=skip_reasons,
         )
@@ -878,7 +965,6 @@ def _publish_failure_bundle(
             shutil.rmtree(temporary, ignore_errors=True)
 
 
-
 def _publish_failure_bundle_bounded(
     *,
     environment: PlannedEnvironment,
@@ -886,6 +972,7 @@ def _publish_failure_bundle_bounded(
     mode: str,
     bundle_dir: Path,
     reports: tuple[ProfileInputSourceReport | None, ...],
+    fallback_sources: tuple[ProfileInputSourceReport, ...],
     skip_reasons: list[str],
 ) -> tuple[str, ...]:
     try:
@@ -895,6 +982,7 @@ def _publish_failure_bundle_bounded(
             mode=mode,
             bundle_dir=bundle_dir,
             reports=reports,
+            fallback_sources=fallback_sources,
             skip_reasons=skip_reasons,
         )
     except Exception:  # noqa: BLE001 - isolate failed-authority publication
@@ -911,6 +999,9 @@ def _bundle_json(
     outcome: ProfileRefreshEnvironmentOutcome,
     reports: tuple[ProfileInputSourceReport | None, ...],
     inputs: Mapping[str, Mapping[str, Any] | None],
+    fallback_candidates: tuple[
+        tuple[ProfileInputSourceReport, Mapping[str, Any] | None], ...
+    ],
     skip_reasons: list[str],
 ) -> dict[str, Any]:
     report_values = {
@@ -931,6 +1022,10 @@ def _bundle_json(
         "schema_version": PROFILE_REFRESH_EXECUTION_SCHEMA_VERSION,
         "skip_reasons": _diagnostics(skip_reasons),
         "sources": report_values,
+        "fallback_candidates": [
+            {"source": _source_report_json(report), "input": input_value}
+            for report, input_value in fallback_candidates
+        ],
         "bundle_id": bundle_id,
     }
 
@@ -942,6 +1037,7 @@ def _result(
     mode: str,
     outcome: ProfileRefreshEnvironmentOutcome,
     sources: tuple[ProfileInputSourceReport | None, ...],
+    fallback_sources: tuple[ProfileInputSourceReport, ...],
     skip_reasons: tuple[str, ...] | list[str],
     diagnostics: tuple[str, ...] | list[str],
 ) -> ProfileRefreshEnvironmentResult:
@@ -952,6 +1048,7 @@ def _result(
         bundle_id=_bundle_id(environment),
         outcome=outcome,
         sources=sources,
+        fallback_sources=fallback_sources,
         skip_reasons=tuple(skip_reasons),
         diagnostics=tuple(diagnostics),
     )
@@ -1073,6 +1170,16 @@ def _optional_failure_report(
         content_bytes=None,
         diagnostics=(*report.diagnostics, reason),
     )
+def _optional_candidate_failure_report(
+    report: ProfileInputSourceReport, reason: str
+) -> ProfileInputSourceReport:
+    """Clear all payload claims when an optional candidate cannot be staged."""
+    return replace(
+        _optional_failure_report(report, reason),
+        rating_rows=0,
+        rating_samples=0,
+    )
+
 
 def _write_bytes_object(objects: Path, payload: bytes) -> tuple[str, int]:
     return _write_stream_object(objects, BytesIO(payload))
@@ -1267,6 +1374,76 @@ def _parse_source_report(value: Any, *, role: str, environment: PlannedEnvironme
         raise ProfileRefreshExecutionError("source report is not canonical")
     return report
 
+def _parse_fallback_candidates(
+    value: Any,
+    *,
+    environment: PlannedEnvironment,
+    objects: Path,
+) -> tuple[ProfileAggregateCandidate, ...]:
+    if not isinstance(value, list) or len(value) > 2:
+        raise ProfileRefreshExecutionError("staged fallback candidates are invalid")
+    candidates: list[ProfileAggregateCandidate] = []
+    for row in value:
+        if not isinstance(row, Mapping):
+            raise ProfileRefreshExecutionError("staged fallback candidate is invalid")
+        _keys(row, {"source", "input"}, "staged fallback candidate")
+        source_value = row["source"]
+        if not isinstance(source_value, Mapping):
+            raise ProfileRefreshExecutionError("fallback source report is invalid")
+        source_identity = source_value.get("source")
+        if not isinstance(source_identity, Mapping):
+            raise ProfileRefreshExecutionError("fallback source identity is invalid")
+        event_format = source_identity.get("event_format")
+        if not isinstance(event_format, str):
+            raise ProfileRefreshExecutionError("fallback source format is invalid")
+        actual_environment = replace(environment, event_format=event_format)
+        report = _parse_source_report(
+            source_value,
+            role=_INPUT_RATINGS,
+            environment=actual_environment,
+        )
+        if report is None or report.source.event_format not in {"premierdraft", "traddraft"}:
+            raise ProfileRefreshExecutionError("fallback source format is invalid")
+        input_value = row["input"]
+        ratings: SeventeenLandsFormatData | None = None
+        if input_value is not None:
+            if not isinstance(input_value, Mapping):
+                raise ProfileRefreshExecutionError("fallback input authority is invalid")
+            _keys(input_value, {"content_bytes", "sha256", "source_name"}, "fallback input")
+            source_name = _safe_source_name(input_value["source_name"])
+            if source_name != input_value["source_name"]:
+                raise ProfileRefreshExecutionError("fallback input source name is not canonical")
+            _valid_hash(input_value["sha256"], "fallback object digest")
+            _positive_count(input_value["content_bytes"], "fallback object size")
+            if (
+                report.source.name != input_value["source_name"]
+                or report.sha256 != input_value["sha256"]
+                or report.content_bytes != input_value["content_bytes"]
+            ):
+                raise ProfileRefreshExecutionError("fallback input source pin does not match authority")
+            ratings = _load_role_model(
+                role=input_value,
+                report=report,
+                objects=objects,
+                environment=actual_environment,
+                model="ratings",
+            )
+            if report.rating_samples != sum(
+                row.sample_counts.games_in_hand for row in ratings.card_ratings.values()
+            ):
+                raise ProfileRefreshExecutionError(
+                    "fallback ratings sample availability does not match object"
+                )
+        elif report.sha256 is not None or report.content_bytes is not None:
+            raise ProfileRefreshExecutionError("missing fallback input has a content pin")
+        try:
+            candidates.append(ProfileAggregateCandidate(ratings=ratings, source=report))
+        except Exception as error:  # noqa: BLE001 - normalize candidate contract errors
+            raise ProfileRefreshExecutionError("staged fallback candidate is invalid") from error
+    _validate_fallback_reports(environment, tuple(candidate.source for candidate in candidates))
+    return tuple(candidates)
+
+
 def _mode_value(value: Any) -> str:
     if not isinstance(value, str) or value not in {"online", "offline"}:
         raise ProfileRefreshExecutionError("refresh execution mode is invalid")
@@ -1295,6 +1472,34 @@ def _source_report_json(report: ProfileInputSourceReport) -> dict[str, Any]:
         "source": _source_identity_json(report.source),
         "source_version": source_version,
     }
+
+
+def _validate_fallback_reports(
+    environment: PlannedEnvironment,
+    reports: tuple[ProfileInputSourceReport, ...],
+) -> None:
+    if environment.event_format != "quickdraft" and reports:
+        raise ProfileRefreshExecutionError(
+            "fallback source reports are supported only for QuickDraft environments"
+        )
+    if len(reports) > 2:
+        raise ProfileRefreshExecutionError("too many fallback source reports")
+    formats: list[str] = []
+    for report in reports:
+        if not isinstance(report, ProfileInputSourceReport):
+            raise ProfileRefreshExecutionError("fallback source reports are invalid")
+        source = report.source
+        if (
+            source.name != RATINGS_SOURCE_NAME
+            or source.set_code != environment.set_code
+            or source.event_format not in {"premierdraft", "traddraft"}
+        ):
+            raise ProfileRefreshExecutionError("fallback source identity is invalid")
+        formats.append(source.event_format)
+    if formats != sorted(set(formats)):
+        raise ProfileRefreshExecutionError(
+            "fallback source reports must be unique and ordered PremierDraft then TradDraft"
+        )
 
 
 def _source_identity_json(source: ProfileInputSource) -> dict[str, str | None]:
