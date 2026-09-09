@@ -380,6 +380,146 @@ class _PairObservation:
     wins: int
     games: int
 
+def _normalized_aggregate_datasets(
+    *,
+    ratings: SeventeenLandsFormatData | None,
+    fallback_ratings: Sequence[SeventeenLandsFormatData],
+    set_code: str,
+    event_format: str,
+) -> tuple[tuple[str, SeventeenLandsFormatData], ...]:
+    if ratings is not None and not isinstance(ratings, SeventeenLandsFormatData):
+        raise ProfileGenerationError("ratings must be a SeventeenLandsFormatData value.")
+    if ratings is not None and (
+        not isinstance(ratings.set_code, str)
+        or not isinstance(ratings.event_format, str)
+        or ratings.set_code.casefold() != set_code
+        or ratings.event_format.casefold() != event_format
+    ):
+        raise ProfileGenerationError("ratings set_code and event_format must match generation inputs.")
+    if not isinstance(fallback_ratings, Sequence) or any(
+        not isinstance(candidate, SeventeenLandsFormatData)
+        for candidate in fallback_ratings
+    ):
+        raise ProfileGenerationError("fallback ratings must contain SeventeenLandsFormatData values.")
+    fallback_by_format: dict[str, SeventeenLandsFormatData] = {}
+    for candidate in fallback_ratings:
+        if (
+            not isinstance(candidate.set_code, str)
+            or candidate.set_code.casefold() != set_code
+        ):
+            raise ProfileGenerationError("fallback ratings must match the requested set.")
+        if not isinstance(candidate.event_format, str):
+            raise ProfileGenerationError("fallback ratings must be PremierDraft or TradDraft.")
+        candidate_format = candidate.event_format.strip().casefold()
+        if candidate_format not in {"premierdraft", "traddraft"}:
+            raise ProfileGenerationError("fallback ratings must be PremierDraft or TradDraft.")
+        if candidate_format in fallback_by_format or (
+            ratings is not None and candidate_format == event_format
+        ):
+            raise ProfileGenerationError("duplicate aggregate source format.")
+        fallback_by_format[candidate_format] = candidate
+
+    aggregate_list: list[tuple[str, SeventeenLandsFormatData]] = []
+    if ratings is not None:
+        aggregate_list.append((event_format, ratings))
+    aggregate_list.extend(
+        (candidate_format, fallback_by_format[candidate_format])
+        for candidate_format in ("premierdraft", "traddraft")
+        if candidate_format in fallback_by_format
+    )
+    return tuple(aggregate_list)
+
+
+def _select_supported_card_observation(
+    *,
+    values: Mapping[int, _CardObservation],
+    group_ids: Sequence[int],
+) -> _CardObservation | None:
+    return next(
+        (
+            values[grp_id]
+            for grp_id in group_ids
+            if grp_id in values
+            and values[grp_id].samples >= AGGREGATE_SUPPORT_MINIMUM
+        ),
+        None,
+    )
+
+
+def _select_supported_pair_observation(
+    *,
+    values: Mapping[str, Sequence[_PairObservation]],
+    pair: str,
+) -> _PairObservation | None:
+    return next(
+        (
+            observation
+            for observation in values.get(pair, ())
+            if observation.games >= AGGREGATE_SUPPORT_MINIMUM
+        ),
+        None,
+    )
+
+
+def aggregate_evidence_needs_fallback(
+    *,
+    set_code: str,
+    event_format: str,
+    card_database: CardDatabase,
+    ratings: SeventeenLandsFormatData | None = None,
+    fallback_ratings: Sequence[SeventeenLandsFormatData] = (),
+) -> bool:
+    """Return whether QuickDraft aggregate targets have a supported evidence gap."""
+
+    if not isinstance(card_database, CardDatabase):
+        raise ProfileGenerationError("card_database must be a CardDatabase.")
+    normalized_set = _component(set_code, "set_code")
+    normalized_format = _component(event_format, "event_format")
+    aggregate_datasets = _normalized_aggregate_datasets(
+        ratings=ratings,
+        fallback_ratings=fallback_ratings,
+        set_code=normalized_set,
+        event_format=normalized_format,
+    )
+    if normalized_format != "quickdraft":
+        return False
+
+    card_observations = tuple(
+        _validated_card_observations(
+            ratings=dataset,
+            card_database=card_database,
+            set_code=normalized_set,
+            skip_counts=Counter(),
+        )[0]
+        for _, dataset in aggregate_datasets
+    )
+    canonical_groups: dict[str, list[int]] = defaultdict(list)
+    for grp_id, card in card_database.cards.items():
+        if card.unknown or card.set_code is None or card.set_code.casefold() != normalized_set:
+            continue
+        canonical_groups[profile_card_key(card)].append(grp_id)
+    for group_ids in canonical_groups.values():
+        sorted_group_ids = tuple(sorted(group_ids))
+        if not any(
+            _select_supported_card_observation(values=values, group_ids=sorted_group_ids)
+            is not None
+            for values in card_observations
+        ):
+            return True
+
+    pair_observations = tuple(
+        _validated_pair_observations(ratings=dataset, skip_counts=Counter())[0]
+        for _, dataset in aggregate_datasets
+    )
+    return any(
+        not any(
+            _select_supported_pair_observation(values=values, pair=pair) is not None
+            for values in pair_observations
+        )
+        for pair in COLOR_PAIRS
+    )
+
+
 
 def deterministic_profile_gzip(profile_bytes: bytes) -> bytes:
     """Compress profile bytes with a stable gzip header and timestamp."""
@@ -424,47 +564,17 @@ def generate_set_profile(
     timestamp = generated_at.astimezone(UTC).isoformat()
     if not isinstance(profile_version, str) or not profile_version.strip():
         raise ProfileGenerationError("profile_version must be non-empty.")
-    if ratings is not None and not isinstance(ratings, SeventeenLandsFormatData):
-        raise ProfileGenerationError("ratings must be a SeventeenLandsFormatData value.")
-    if ratings is not None and (
-        not isinstance(ratings.set_code, str)
-        or not isinstance(ratings.event_format, str)
-        or ratings.set_code.casefold() != normalized_set
-        or ratings.event_format.casefold() != normalized_format
-    ):
-        raise ProfileGenerationError("ratings set_code and event_format must match generation inputs.")
-    if not isinstance(fallback_ratings, Sequence) or any(
-        not isinstance(candidate, SeventeenLandsFormatData)
-        for candidate in fallback_ratings
-    ):
-        raise ProfileGenerationError("fallback ratings must contain SeventeenLandsFormatData values.")
-    fallback_by_format: dict[str, SeventeenLandsFormatData] = {}
-    for candidate in fallback_ratings:
-        if (
-            not isinstance(candidate.set_code, str)
-            or candidate.set_code.casefold() != normalized_set
-        ):
-            raise ProfileGenerationError("fallback ratings must match the requested set.")
-        if not isinstance(candidate.event_format, str):
-            raise ProfileGenerationError("fallback ratings must be PremierDraft or TradDraft.")
-        candidate_format = candidate.event_format.strip().casefold()
-        if candidate_format not in {"premierdraft", "traddraft"}:
-            raise ProfileGenerationError("fallback ratings must be PremierDraft or TradDraft.")
-        if candidate_format in fallback_by_format or (
-            ratings is not None and candidate_format == normalized_format
-        ):
-            raise ProfileGenerationError("duplicate aggregate source format.")
-        fallback_by_format[candidate_format] = candidate
-
-    aggregate_list: list[tuple[str, SeventeenLandsFormatData]] = []
-    if ratings is not None:
-        aggregate_list.append((normalized_format, ratings))
-    aggregate_list.extend(
-        (candidate_format, fallback_by_format[candidate_format])
-        for candidate_format in ("premierdraft", "traddraft")
-        if candidate_format in fallback_by_format
+    aggregate_datasets = _normalized_aggregate_datasets(
+        ratings=ratings,
+        fallback_ratings=fallback_ratings,
+        set_code=normalized_set,
+        event_format=normalized_format,
     )
-    aggregate_datasets = tuple(aggregate_list)
+    fallback_by_format = {
+        source_format: dataset
+        for source_format, dataset in aggregate_datasets
+        if ratings is None or dataset is not ratings
+    }
 
     manifest = source_manifest
     sources = () if manifest is None else tuple(ProfileGenerationSource.from_source(source) for source in manifest.sources)
@@ -944,14 +1054,7 @@ def _pair_profiles(
         for source_format, values, _ in prepared:
             if source_format != requested_format and requested_format != "quickdraft":
                 continue
-            candidate = next(
-                (
-                    observation
-                    for observation in values.get(pair, ())
-                    if observation.games >= AGGREGATE_SUPPORT_MINIMUM
-                ),
-                None,
-            )
+            candidate = _select_supported_pair_observation(values=values, pair=pair)
             if candidate is not None:
                 chosen = candidate
                 chosen_format = source_format
@@ -1253,14 +1356,9 @@ def _card_ratings(
         for source_format, values, _ in prepared:
             if source_format != requested_format and requested_format != "quickdraft":
                 continue
-            candidate = next(
-                (
-                    values[grp_id]
-                    for grp_id in group_ids
-                    if grp_id in values
-                    and values[grp_id].samples >= AGGREGATE_SUPPORT_MINIMUM
-                ),
-                None,
+            candidate = _select_supported_card_observation(
+                values=values,
+                group_ids=group_ids,
             )
             if candidate is not None:
                 chosen = candidate
@@ -1556,6 +1654,7 @@ __all__ = [
     "ProfileGenerationResult",
     "ProfileGenerationSource",
     "ProfileGenerationStage",
+    "aggregate_evidence_needs_fallback",
     "deterministic_profile_gzip",
     "generate_profile",
     "generate_set_profile",

@@ -328,6 +328,8 @@ def test_aggregate_only_acquisition_generates_semantic_early_batch(
     assert endpoints == [
         "scryfall:TST",
         "17lands-ratings:TST:quickdraft",
+        "17lands-ratings:TST:premierdraft",
+        "17lands-ratings:TST:traddraft",
     ]
 
 

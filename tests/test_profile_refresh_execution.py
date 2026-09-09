@@ -15,6 +15,7 @@ from draftomen.profile_generation_execution import generate_staged_environment_p
 from draftomen.profile_generation_stage_policy import select_profile_generation_stage
 from draftomen.profile_input_acquisition import (
     CardMetadataAdapter,
+    ProfileAggregateCandidate,
     ProfileBuildBundle,
     ProfileInputAcquisitionOutcome,
     ProfileInputAcquisitionResult,
@@ -272,7 +273,6 @@ def _database(set_code: str = "TST") -> CardDatabase:
         generated_at=NOW,
     )
 
-
 def _report(
     environment: PlannedEnvironment,
     name: str,
@@ -281,11 +281,12 @@ def _report(
     ratings: bool = False,
     drafts: bool = False,
     path: Path | None = None,
+    event_format: str | None = None,
 ) -> ProfileInputSourceReport:
     source = ProfileInputSource(
         name=name,
         set_code=environment.set_code,
-        event_format=None if card else environment.event_format,
+        event_format=None if card else (event_format or environment.event_format),
     )
     digest = None if path is None else hashlib.sha256(path.read_bytes()).hexdigest()
     return ProfileInputSourceReport(
@@ -309,6 +310,7 @@ def _acquisition(
     *,
     include_evidence: bool = False,
     draft_name: str = "early-data.csv",
+    fallback_candidates: tuple[ProfileAggregateCandidate, ...] = (),
 ) -> ProfileInputAcquisitionResult:
     card_report = _report(environment, "card-metadata", card=True)
     ratings = load_17lands_format_data(
@@ -348,6 +350,7 @@ def _acquisition(
         card_metadata=card_report,
         ratings=ratings if include_evidence else None,
         ratings_source=ratings_report if include_evidence else None,
+        fallback_candidates=fallback_candidates,
         public_drafts=manifest if include_evidence else None,
         public_draft_source=draft_report if include_evidence else None,
     )
@@ -356,8 +359,58 @@ def _acquisition(
         source=card_report,
         bundle=bundle,
         ratings_source=ratings_report if include_evidence else None,
+        fallback_candidates=fallback_candidates,
         public_draft_source=draft_report if include_evidence else None,
     )
+
+
+def _candidate(
+    environment: PlannedEnvironment,
+    event_format: str,
+    *,
+    available: bool = True,
+) -> ProfileAggregateCandidate:
+    actual_environment = replace(environment, event_format=event_format)
+    if not available:
+        report = ProfileInputSourceReport(
+            source=ProfileInputSource(
+                name="17lands-ratings",
+                set_code=environment.set_code,
+                event_format=event_format,
+            ),
+            outcome=ProfileInputAcquisitionOutcome.UNAVAILABLE,
+            cache_lookup_outcome=None,
+            rating_rows=0,
+            rating_samples=0,
+            diagnostics=("17lands-ratings-unavailable",),
+        )
+        return ProfileAggregateCandidate(ratings=None, source=report)
+
+    ratings = load_17lands_format_data(
+        set_code="TST",
+        event_format="quickdraft",
+        cache_path=FIXTURE_DIR / "ratings.json",
+    )
+    ratings = replace(
+        ratings,
+        set_code=environment.set_code,
+        event_format=event_format,
+        fetched_at=NOW,
+    )
+    report = _report(
+        actual_environment,
+        "17lands-ratings",
+        ratings=True,
+        event_format=event_format,
+    )
+    report = replace(
+        report,
+        rating_rows=len(ratings.card_ratings),
+        rating_samples=sum(
+            row.sample_counts.games_in_hand for row in ratings.card_ratings.values()
+        ),
+    )
+    return ProfileAggregateCandidate(ratings=ratings, source=report)
 
 
 def _acquisition_with_optional_inputs(
@@ -411,6 +464,7 @@ def test_bundle_layout_inputs_and_move_reload(tmp_path: Path, monkeypatch: pytes
         "bundle_id",
         "environment",
         "executor_version",
+        "fallback_candidates",
         "inputs",
         "mode",
         "outcome",
@@ -419,6 +473,7 @@ def test_bundle_layout_inputs_and_move_reload(tmp_path: Path, monkeypatch: pytes
         "skip_reasons",
         "sources",
     }
+    assert authority["fallback_candidates"] == []
     assert {
         role: set(authority["inputs"][role])
         for role in ("card_database", "ratings", "public_drafts")
@@ -1258,3 +1313,255 @@ def test_refresh_include_public_drafts_must_be_bool_before_execution(
             clock=lambda: NOW,
         )
     assert not (tmp_path / "output").exists()
+
+
+def _stage_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    candidates: tuple[ProfileAggregateCandidate, ...],
+) -> tuple[execution.ProfileRefreshEnvironmentResult, Path]:
+    monkeypatch.setattr(
+        execution,
+        "acquire_profile_build_bundle",
+        lambda **kwargs: _acquisition(
+            kwargs["environment"],
+            fallback_candidates=candidates,
+        ),
+    )
+    result = execution.execute_profile_refresh_plan(
+        plan=_plan(),
+        cache=_cache(tmp_path),
+        output_dir=tmp_path / "output",
+        offline=True,
+        include_public_drafts=False,
+        clock=lambda: NOW,
+    )
+    item = result.environments[0]
+    return item, tmp_path / "output" / "bundles" / item.bundle_id
+
+
+def _rewrite_authority(path: Path, authority: dict[str, object]) -> None:
+    path.write_bytes(
+        (
+            json.dumps(authority, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode()
+    )
+
+
+def _rewrite_candidate_payload(
+    bundle_dir: Path,
+    authority: dict[str, object],
+    mutate: object,
+) -> None:
+    rows = authority["fallback_candidates"]
+    assert isinstance(rows, list)
+    row = rows[0]
+    assert isinstance(row, dict)
+    input_value = row["input"]
+    assert isinstance(input_value, dict)
+    old_digest = input_value["sha256"]
+    assert isinstance(old_digest, str)
+    old_path = bundle_dir / "objects" / f"{old_digest}.bin"
+    payload = json.loads(old_path.read_bytes())
+    assert isinstance(payload, dict)
+    assert callable(mutate)
+    mutate(payload)
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+    (bundle_dir / "objects" / f"{digest}.bin").write_bytes(encoded)
+    if digest != old_digest:
+        old_path.unlink()
+    input_value["sha256"] = digest
+    input_value["content_bytes"] = len(encoded)
+    source = row["source"]
+    assert isinstance(source, dict)
+    source["sha256"] = digest
+    source["content_bytes"] = len(encoded)
+    _rewrite_authority(bundle_dir / "bundle.json", authority)
+
+
+def test_fallback_candidates_round_trip_with_order_and_portable_objects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _environment()
+    candidates = (_candidate(environment, "PremierDraft"), _candidate(environment, "TradDraft"))
+    item, bundle_dir = _stage_fallback(tmp_path, monkeypatch, candidates)
+    authority_path = bundle_dir / "bundle.json"
+    authority = json.loads(authority_path.read_bytes())
+    rows = authority["fallback_candidates"]
+    assert [row["source"]["source"]["event_format"] for row in rows] == [
+        "premierdraft",
+        "traddraft",
+    ]
+    assert all(row["input"] is not None for row in rows)
+    assert rows[0]["input"]["sha256"] != rows[1]["input"]["sha256"]
+    assert str(tmp_path).encode() not in authority_path.read_bytes()
+    assert [report.source.event_format for report in item.fallback_sources] == [
+        "premierdraft",
+        "traddraft",
+    ]
+    moved_root = tmp_path / "moved"
+    shutil.move(str(tmp_path / "output"), moved_root)
+    loaded = execution.load_staged_profile_build_bundle(
+        moved_root / "bundles" / item.bundle_id
+    )
+    assert [candidate.source.source.event_format for candidate in loaded.fallback_candidates] == [
+        "premierdraft",
+        "traddraft",
+    ]
+    assert all(candidate.ratings is not None for candidate in loaded.fallback_candidates)
+
+
+def test_unavailable_fallback_has_null_input_and_empty_array_is_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _environment()
+    unavailable = (_candidate(environment, "PremierDraft", available=False),)
+    item, bundle_dir = _stage_fallback(tmp_path, monkeypatch, unavailable)
+    authority = json.loads((bundle_dir / "bundle.json").read_bytes())
+    assert authority["fallback_candidates"][0]["input"] is None
+    assert authority["fallback_candidates"][0]["source"]["sha256"] is None
+    loaded = execution.load_staged_profile_build_bundle(bundle_dir)
+    assert loaded.fallback_candidates[0].ratings is None
+    assert item.available_input_roles == ("card_database",)
+    assert item.metadata_only
+    assert item.to_json()["fallback_sources"][0]["sha256"] is None
+
+    empty_item, empty_dir = _stage_fallback(tmp_path, monkeypatch, ())
+    empty_authority_path = empty_dir / "bundle.json"
+    empty_authority = json.loads(empty_authority_path.read_bytes())
+    assert empty_authority["fallback_candidates"] == []
+    assert execution.load_staged_profile_build_bundle(empty_dir).fallback_candidates == ()
+    empty_authority.pop("fallback_candidates")
+    _rewrite_authority(empty_authority_path, empty_authority)
+    with pytest.raises(execution.ProfileRefreshExecutionError):
+        execution.load_staged_profile_build_bundle(empty_dir)
+    assert empty_item.fallback_sources == ()
+
+
+def test_fallback_ratings_count_once_as_available_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _environment()
+    item, bundle_dir = _stage_fallback(
+        tmp_path, monkeypatch, (_candidate(environment, "PremierDraft"),)
+    )
+    assert item.available_input_roles == ("card_database", "ratings")
+    assert not item.metadata_only
+    assert item.to_json()["available_input_roles"].count("ratings") == 1
+    loaded = execution.load_staged_profile_build_bundle(bundle_dir)
+    assert loaded.ratings is None
+    assert loaded.fallback_candidates[0].ratings is not None
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "missing",
+        "digest",
+        "size",
+        "object",
+        "wrong-set",
+        "unsupported-format",
+        "duplicate",
+        "reversed",
+        "object-format",
+        "timestamp",
+        "source-version",
+        "old-schema",
+    ),
+)
+def test_loader_rejects_strict_fallback_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    environment = _environment()
+    candidates = (_candidate(environment, "PremierDraft"), _candidate(environment, "TradDraft"))
+    _, bundle_dir = _stage_fallback(tmp_path, monkeypatch, candidates)
+    authority_path = bundle_dir / "bundle.json"
+    authority = json.loads(authority_path.read_bytes())
+    rows = authority["fallback_candidates"]
+    assert isinstance(rows, list)
+    first = rows[0]
+    assert isinstance(first, dict)
+    first_input = first["input"]
+    assert isinstance(first_input, dict)
+    digest = first_input["sha256"]
+    assert isinstance(digest, str)
+    object_path = bundle_dir / "objects" / f"{digest}.bin"
+
+    if tamper == "missing":
+        object_path.unlink()
+    elif tamper == "digest":
+        first_input["sha256"] = "0" * 64
+        _rewrite_authority(authority_path, authority)
+    elif tamper == "size":
+        first_input["content_bytes"] += 1
+        _rewrite_authority(authority_path, authority)
+    elif tamper == "object":
+        object_path.write_bytes(b"corrupt")
+    elif tamper == "wrong-set":
+        _rewrite_candidate_payload(
+            bundle_dir, authority, lambda payload: payload.update({"set_code": "BAD"})
+        )
+    elif tamper == "unsupported-format":
+        first["source"]["source"]["event_format"] = "sealed"
+        _rewrite_authority(authority_path, authority)
+    elif tamper == "duplicate":
+        duplicate = json.loads(json.dumps(rows[0]))
+        rows[1] = duplicate
+        _rewrite_authority(authority_path, authority)
+    elif tamper == "reversed":
+        authority["fallback_candidates"] = list(reversed(rows))
+        _rewrite_authority(authority_path, authority)
+    elif tamper == "object-format":
+        _rewrite_candidate_payload(
+            bundle_dir,
+            authority,
+            lambda payload: payload.update({"event_format": "TradDraft"}),
+        )
+    elif tamper == "timestamp":
+        _rewrite_candidate_payload(
+            bundle_dir,
+            authority,
+            lambda payload: payload.update({"fetched_at": "2026-08-31T13:00:00+00:00"}),
+        )
+    elif tamper == "source-version":
+        first["source"]["source_version"] = None
+        _rewrite_authority(authority_path, authority)
+    else:
+        authority["schema_version"] = 1
+        _rewrite_authority(authority_path, authority)
+
+    with pytest.raises(execution.ProfileRefreshExecutionError):
+        execution.load_staged_profile_build_bundle(bundle_dir)
+
+
+def test_candidate_staging_failure_is_optional_and_drops_pins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _environment()
+    candidate = _candidate(environment, "PremierDraft")
+    calls = 0
+    original = execution._write_bytes_object
+
+    def fail_candidate(objects: Path, payload: bytes) -> tuple[str, int]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("candidate object unavailable")
+        return original(objects, payload)
+
+    monkeypatch.setattr(execution, "_write_bytes_object", fail_candidate)
+    item, bundle_dir = _stage_fallback(tmp_path, monkeypatch, (candidate,))
+    authority = json.loads((bundle_dir / "bundle.json").read_bytes())
+    row = authority["fallback_candidates"][0]
+    assert row["input"] is None
+    assert row["source"]["sha256"] is None
+    assert row["source"]["content_bytes"] is None
+    assert "17lands-premierdraft-staging-failed" in item.skip_reasons
+    assert item.available_input_roles == ("card_database",)
+    loaded = execution.load_staged_profile_build_bundle(bundle_dir)
+    assert loaded.fallback_candidates[0].ratings is None

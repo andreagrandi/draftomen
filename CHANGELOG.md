@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Publish QuickDraft profiles from eligible same-set Premier/Traditional
+  aggregate evidence when exact coverage is incomplete, preserving actual
+  source provenance and replacing fallback sections on later exact refreshes.
+  (#421)
 - Compose explicitly supplied same-set aggregate ratings independently by card
   and color pair, with versioned source provenance and conservative cross-format
   confidence for QuickDraft fallbacks. (#420)

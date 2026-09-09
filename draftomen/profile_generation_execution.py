@@ -63,11 +63,12 @@ _GENERATION_FALLBACK_STATES = frozenset(
     {"none", "verified-stale-cache", "verified-offline-cache"}
 )
 _GENERATION_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
-_MAX_INPUT_SOURCE_ROWS = 3
+_MAX_INPUT_SOURCE_ROWS = 5
 _MAX_INPUT_SOURCE_FIELD_LENGTH = 256
 
 
-PROFILE_GENERATION_EXECUTION_SCHEMA_VERSION = 1
+PROFILE_GENERATION_EXECUTION_SCHEMA_VERSION = 2
+_GENERATION_STAGE_RANK = {"metadata": 0, "early": 1, "mature": 2}
 _MAX_DIAGNOSTICS = 64
 _MAX_DIAGNOSTIC_FIELD_LENGTH = 128
 
@@ -188,13 +189,19 @@ class ProfileGenerationEnvironmentResult:
         if len(input_sources) > _MAX_INPUT_SOURCE_ROWS:
             raise ProfileGenerationExecutionError("profile generation input sources exceed the bound")
         normalized_sources: list[dict[str, str]] = []
-        roles: set[str] = set()
+        source_keys: set[tuple[str, ...]] = set()
         for item in input_sources:
-            normalized = _validate_input_source(item)
+            normalized = _validate_input_source(item, environment=self.environment)
             role = normalized["role"]
-            if role in roles:
+            source_format = normalized["source_format"]
+            key = (
+                (role, source_format.casefold())
+                if role == "seventeen_lands_ratings"
+                else (role,)
+            )
+            if key in source_keys:
                 raise ProfileGenerationExecutionError("profile generation input source roles are duplicated")
-            roles.add(role)
+            source_keys.add(key)
             normalized_sources.append(normalized)
         object.__setattr__(self, "input_sources", tuple(normalized_sources))
 
@@ -406,12 +413,37 @@ def generate_staged_environment_profile(
         )
 
     try:
-        selection = select_profile_generation_stage(
-            ratings_report=bundle.ratings_source if bundle.ratings is not None else None,
-            public_draft_report=(
-                bundle.public_draft_source if bundle.public_drafts is not None else None
-            ),
-            thresholds=thresholds,
+        public_draft_report = (
+            bundle.public_draft_source if bundle.public_drafts is not None else None
+        )
+        ratings_reports: list[Any] = []
+        if bundle.ratings is not None and bundle.ratings_source is not None:
+            ratings_reports.append(bundle.ratings_source)
+        ratings_reports.extend(
+            candidate.source
+            for candidate in bundle.fallback_candidates
+            if candidate.ratings is not None
+        )
+        if not ratings_reports:
+            selections = (
+                select_profile_generation_stage(
+                    ratings_report=None,
+                    public_draft_report=public_draft_report,
+                    thresholds=thresholds,
+                ),
+            )
+        else:
+            selections = tuple(
+                select_profile_generation_stage(
+                    ratings_report=ratings_report,
+                    public_draft_report=public_draft_report,
+                    thresholds=thresholds,
+                )
+                for ratings_report in ratings_reports
+            )
+        selection = max(
+            selections,
+            key=lambda value: _GENERATION_STAGE_RANK[value.stage.value],
         )
     except Exception:  # noqa: BLE001 - policy failures are finite and path-free
         return _failure(
@@ -501,12 +533,18 @@ def generate_staged_environment_profile(
 
 
 def _project_input_sources(*, environment: PlannedEnvironment, bundle: Any) -> tuple[dict[str, str], ...]:
-    rows: list[dict[str, str]] = []
-    for role, source_report in (
+    source_reports: list[tuple[str, Any]] = [
         ("card_database", bundle.card_metadata),
         ("seventeen_lands_ratings", bundle.ratings_source),
-        ("seventeen_lands_public_drafts", bundle.public_draft_source),
-    ):
+    ]
+    source_reports.extend(
+        ("seventeen_lands_ratings", candidate.source)
+        for candidate in bundle.fallback_candidates
+    )
+    source_reports.append(("seventeen_lands_public_drafts", bundle.public_draft_source))
+
+    rows: list[dict[str, str]] = []
+    for role, source_report in source_reports:
         if source_report is None:
             continue
         outcome = (
@@ -540,7 +578,11 @@ def _fallback_state(outcome: Any) -> str:
     return "none"
 
 
-def _validate_input_source(value: Any) -> dict[str, str]:
+def _validate_input_source(
+    value: Any,
+    *,
+    environment: PlannedEnvironment,
+) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise ProfileGenerationExecutionError("profile generation input source is invalid")
     try:
@@ -565,6 +607,23 @@ def _validate_input_source(value: Any) -> dict[str, str]:
         raise ProfileGenerationExecutionError("profile generation input source name is invalid")
     if not fields["requested_set"]:
         raise ProfileGenerationExecutionError("profile generation input source requested set is invalid")
+    if fields["requested_set"].casefold() != environment.set_code.casefold():
+        raise ProfileGenerationExecutionError("profile generation input source set does not match")
+    requested_format = environment.event_format.casefold()
+    if fields["requested_format"].casefold() != requested_format:
+        raise ProfileGenerationExecutionError("profile generation input source format does not match")
+    source_format = fields["source_format"].casefold()
+    if fields["role"] == "card_database":
+        if source_format:
+            raise ProfileGenerationExecutionError("card database source format is invalid")
+    elif fields["role"] == "seventeen_lands_ratings":
+        allowed_formats = {requested_format}
+        if requested_format == "quickdraft":
+            allowed_formats.update({"premierdraft", "traddraft"})
+        if source_format not in allowed_formats:
+            raise ProfileGenerationExecutionError("profile generation ratings source format is invalid")
+    elif source_format != requested_format:
+        raise ProfileGenerationExecutionError("profile generation public-draft source format is invalid")
 
     try:
         outcome = ProfileInputAcquisitionOutcome(fields["outcome"])

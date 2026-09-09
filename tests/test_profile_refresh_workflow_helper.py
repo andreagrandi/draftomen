@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import gzip
+import io
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,13 @@ import pytest
 import scripts.profile_refresh_workflow as workflow
 from draftomen.card_data_export import build_card_database_from_scryfall_cards
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.profile_generation import generate_set_profile
+from draftomen.config import COLOR_PAIRS
+from draftomen.pickengine import PickEngine
+from draftomen.profile_client import ProfileClient, ProfileRefreshOutcome
+from draftomen.profile_generation import (
+    AGGREGATE_FALLBACK_CONFIDENCE_FACTOR,
+    generate_set_profile,
+)
 from draftomen.profile_refresh_execution import DEFAULT_PROFILE_REFRESH_CACHE_POLICY
 from draftomen.profile_input_acquisition import (
     CardMetadataAdapter,
@@ -260,6 +267,186 @@ def _fixture_adapters(
     return card_adapter, ratings_adapter, public_adapter, ratings_requests, public_draft_calls
 
 
+def _lci_database() -> CardDatabase:
+    return CardDatabase.from_json(
+        json.loads(
+            (Path(__file__).parent / "fixtures/profile-generation/lci-card-database.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+
+
+def _lci_sources(directory: Path) -> tuple[Path, Path]:
+    """Materialize hosted static-export inputs from the shared LCI fixture."""
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/profile-generation/lci-card-database.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cards = []
+    for card in fixture["cards"].values():
+        source = dict(card)
+        source["set_name"] = "The Lost Caverns of Ixalan"
+        source["cmc"] = source["mana_value"]
+        cards.append(source)
+    inventory = directory / "lci-inventory.json"
+    bulk = directory / "lci-default-cards.jsonl"
+    inventory.write_text(json.dumps(["LCI"]), encoding="utf-8")
+    bulk.write_text(
+        "".join(json.dumps(card, ensure_ascii=False) + "\n" for card in cards),
+        encoding="utf-8",
+    )
+    return inventory, bulk
+
+
+def _lci_ratings(
+    event_format: str,
+    *,
+    card_rates: tuple[float, float],
+    pair_rate: float | None,
+    fetched_at: datetime = NOW,
+) -> SeventeenLandsFormatData:
+    database = _lci_database()
+    card_values = {}
+    for (grp_id, card), rate in zip(sorted(database.cards.items()), card_rates, strict=True):
+        card_values[grp_id] = SeventeenCardStats(
+            grp_id=grp_id,
+            name=card.name,
+            color="".join(card.colors),
+            rarity=card.rarity,
+            average_last_seen_at=None,
+            gih_win_rate=rate,
+            opening_hand_win_rate=None,
+            drawn_improvement_win_rate=None,
+            sample_counts=RatingSampleCounts(
+                seen=1000,
+                picked=1000,
+                games_played=1000,
+                opening_hand=1000,
+                games_in_hand=1000,
+            ),
+        )
+    pairs = (
+        {
+            pair: ColorPairWinRate(
+                pair=pair,
+                wins=int(pair_rate * 1000),
+                games=1000,
+                win_rate=pair_rate,
+            )
+            for pair in COLOR_PAIRS
+        }
+        if pair_rate is not None
+        else {}
+    )
+    return SeventeenLandsFormatData(
+        set_code="LCI",
+        event_format=event_format,
+        fetched_at=fetched_at,
+        card_ratings=card_values,
+        pair_win_rates=pairs,
+    )
+
+
+def _lci_adapters(
+    ratings_by_format: dict[str, SeventeenLandsFormatData | None],
+) -> tuple[
+    CardMetadataAdapter,
+    SeventeenLandsRatingsAdapter,
+    SeventeenLandsPublicDraftAdapter,
+    list[tuple[str, str]],
+    list[str],
+]:
+    database = _lci_database()
+    rating_requests: list[tuple[str, str]] = []
+    public_draft_calls: list[str] = []
+
+    def fetch_database(*, set_code: str, timeout_seconds: int) -> CardDatabase:
+        del timeout_seconds
+        assert set_code.casefold() == "lci"
+        return database
+
+    def fetch_ratings(
+        *,
+        set_code: str,
+        event_format: str,
+        fetched_at: datetime,
+        timeout_seconds: int,
+    ) -> SeventeenLandsFormatData:
+        del timeout_seconds
+        assert set_code.casefold() == "lci"
+        normalized_format = event_format.casefold()
+        rating_requests.append((set_code, normalized_format))
+        ratings = ratings_by_format.get(normalized_format)
+        if ratings is None:
+            raise SeventeenLandsError(f"ratings unavailable for {normalized_format}")
+        return replace(ratings, fetched_at=fetched_at)
+
+    def fetch_public_drafts(**kwargs: Any) -> None:
+        del kwargs
+        public_draft_calls.append("fetch")
+        pytest.fail("hosted producer must not fetch public drafts")
+
+    class FailOnPublicDraftSource(SeventeenLandsPublicDraftAdapter):
+        def source_for(self, *, environment: Any) -> Any:
+            del environment
+            public_draft_calls.append("source")
+            pytest.fail("hosted producer must not inspect public-draft source")
+
+    return (
+        CardMetadataAdapter(fetch_database=fetch_database),
+        SeventeenLandsRatingsAdapter(fetch_ratings=fetch_ratings),
+        FailOnPublicDraftSource(fetch_public_drafts=fetch_public_drafts),
+        rating_requests,
+        public_draft_calls,
+    )
+
+
+class _LocalProfileResponse:
+    def __init__(self, payload: bytes, url: str) -> None:
+        self._stream = io.BytesIO(payload)
+        self.url = url
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def geturl(self) -> str:
+        return self.url
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+def _local_profile_opener(repo_root: Path, manifest_url: str):
+    profiles = repo_root / "website/public/profiles"
+
+    def opener(request: Any, *, timeout: float) -> _LocalProfileResponse:
+        del timeout
+        url = request.full_url
+        if url == manifest_url:
+            payload = (profiles / "manifest.json").read_bytes()
+        else:
+            payload = (profiles / "objects" / url.rsplit("/", 1)[-1]).read_bytes()
+        return _LocalProfileResponse(payload, url)
+
+    return opener
+
+
+def _lci_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, Path, CardDatabase, str]:
+    import draftomen.card_data_export as card_export
+
+    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
+    root = tmp_path / "repository"
+    inventory, bulk = _lci_sources(tmp_path)
+    _manifest(root)
+    base_commit = _git_base_commit(root)
+    return root, inventory, bulk, _lci_database(), base_commit
+
+
 def _candidate_from_base(source: Path, destination: Path, base_commit: str) -> None:
     shutil.copytree(source, destination)
     subprocess.run(
@@ -290,7 +477,7 @@ def _git_commit(root: Path, message: str) -> str:
         "GIT_COMMITTER_EMAIL": "test@example.invalid",
     }
     subprocess.run(
-        ["git", "commit", "-m", message],
+        ["git", "-c", "commit.gpgSign=false", "commit", "-m", message],
         cwd=root,
         check=True,
         stdout=subprocess.PIPE,
@@ -1087,3 +1274,319 @@ def test_delta_bundle_compares_generated_assets_to_base_commit(
     assert old.read_bytes() == old_bytes
     assert old.stat().st_mtime_ns == old_mtime
     assert requests == ["https://www.17lands.com/data/filters"] * 2
+
+
+def test_lci_fallback_then_exact_refresh_reaches_profile_consumer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, inventory, bulk, card_database, base_commit = _lci_workspace(tmp_path, monkeypatch)
+    cache = tmp_path / "cache"
+    manifest_url = "https://www.draftomen.com/profiles/manifest.json"
+    clock_value = [NOW]
+    variants: dict[str, SeventeenLandsFormatData | None] = {
+        "quickdraft": None,
+        "premierdraft": _lci_ratings(
+            "PremierDraft",
+            card_rates=(0.70, 0.40),
+            pair_rate=0.62,
+        ),
+        "traddraft": None,
+    }
+    (
+        card_adapter,
+        ratings_adapter,
+        public_adapter,
+        rating_requests,
+        public_draft_calls,
+    ) = _lci_adapters(variants)
+
+    def fetch_filters(url: str, timeout: int) -> dict[str, Any]:
+        del timeout
+        assert url == "https://www.17lands.com/data/filters"
+        return {
+            "formats_by_expansion": {"LCI": ["QuickDraft"]},
+            "live_formats_by_expansion": {},
+        }
+
+    def generate(bundle_name: str) -> dict[str, object]:
+        return workflow.generate_website(
+            base_commit=base_commit,
+            selection_mode="one",
+            selector="lci",
+            repo_root=root,
+            bundle_dir=tmp_path / bundle_name,
+            cache_dir=cache,
+            inventory_file=inventory,
+            bulk_file=bulk,
+            fetch_json=fetch_filters,
+            clock=lambda: clock_value[0],
+            card_metadata_adapter=card_adapter,
+            ratings_adapter=ratings_adapter,
+            public_draft_adapter=public_adapter,
+        )
+
+    first = generate("first-bundle")
+    assert first["status"] == "success"
+    assert first["profiles"]["selected"] == [
+        {
+            "event_format": "QuickDraft",
+            "set_code": "lci",
+            "set_name": "The Lost Caverns of Ixalan",
+        }
+    ]
+    first_manifest_path = root / "website/public/profiles/manifest.json"
+    first_manifest_bytes = first_manifest_path.read_bytes()
+    first_manifest = load_profile_manifest(first_manifest_path)
+    first_artifact = first_manifest.select(set_code="LCI", event_format="QuickDraft")
+    assert first_artifact is not None
+    first_object_path = (
+        root
+        / "website/public/profiles/objects"
+        / f"{first_artifact.gzip_sha256}.json.gz"
+    )
+    first_object_bytes = first_object_path.read_bytes()
+
+    first_batch = json.loads(
+        next((tmp_path / "first-bundle/batch-reports").glob("*.json")).read_bytes()
+    )
+    first_environment = first_batch["environments"][0]
+    assert first_environment["environment"] == {
+        "event_format": "quickdraft",
+        "lifecycle": None,
+        "set_code": "LCI",
+    }
+    first_rating_sources = [
+        source
+        for source in first_environment["sources"]
+        if source["role"] == "seventeen_lands_ratings"
+    ]
+    assert [(source["source_format"], source["outcome"]) for source in first_rating_sources] == [
+        ("premierdraft", "acquired"),
+        ("quickdraft", "unavailable"),
+    ]
+    unavailable = first_rating_sources[1]
+    assert unavailable["sha256"] == ""
+    assert unavailable["source_version"] == ""
+    assert unavailable["acquired_at"] == ""
+    assert first_artifact.set_code == "lci"
+    assert first_artifact.event_format == "quickdraft"
+    assert first_artifact.maturity.value == "early"
+
+    def profile_card_evidence(profile: SetProfile, grp_id: int):
+        card = card_database.cards[grp_id]
+        key = f"oracle_id:{card.oracle_id}"
+        rating = next(item for item in profile.card_ratings if item.card_key == key)
+        return rating.gih_win_rate.aggregate_evidence
+
+    def profile_pair_evidence(profile: SetProfile):
+        pair = profile.pair("UB")
+        assert pair is not None and pair.performance is not None
+        return pair.performance.aggregate_evidence
+
+    client = ProfileClient(
+        tmp_path / "consumer",
+        manifest_url=manifest_url,
+        opener=_local_profile_opener(root, manifest_url),
+        clock=lambda: clock_value[0],
+        manifest_ttl_seconds=0,
+    )
+    first_refresh = client.refresh("LCI", "QuickDraft", force=True)
+    assert first_refresh.outcome is ProfileRefreshOutcome.UPDATED
+    first_profile = first_refresh.profile
+    assert first_refresh.manifest is not None
+    assert first_refresh.manifest.select(set_code="LCI", event_format="QuickDraft") == first_artifact
+    assert (first_profile.set_code, first_profile.event_format) == ("lci", "quickdraft")
+    first_card_evidence = profile_card_evidence(first_profile, 87185)
+    first_pair_evidence = profile_pair_evidence(first_profile)
+    assert first_card_evidence is not None
+    assert first_pair_evidence is not None
+    assert first_card_evidence.source_format == "premierdraft"
+    assert first_card_evidence.fallback_reason == "missing-exact-evidence"
+    assert first_card_evidence.confidence == pytest.approx(
+        AGGREGATE_FALLBACK_CONFIDENCE_FACTOR
+    )
+    assert first_pair_evidence.source_format == "premierdraft"
+    assert first_pair_evidence.fallback_reason == "missing-exact-evidence"
+    assert first_pair_evidence.confidence == pytest.approx(
+        AGGREGATE_FALLBACK_CONFIDENCE_FACTOR
+    )
+
+    first_scored = PickEngine(set_profile=first_profile).score_pack(
+        offered_grp_ids=(87185, 87235),
+        card_database=card_database,
+    )
+    first_scored_by_id = {card.card.grp_id: card for card in first_scored.cards}
+    assert {
+        grp_id: (
+            card.rating.metadata.requested_format,
+            card.rating.metadata.source,
+            card.rating.metadata.source_format,
+            card.rating.metadata.fallback_reason,
+        )
+        for grp_id, card in first_scored_by_id.items()
+    } == {
+        87185: ("quickdraft", "profile", "premierdraft", "missing-exact-evidence"),
+        87235: ("quickdraft", "profile", "premierdraft", "missing-exact-evidence"),
+    }
+
+    clock_value[0] = NOW + timedelta(days=8)
+    variants["quickdraft"] = _lci_ratings(
+        "QuickDraft",
+        card_rates=(0.42, 0.73),
+        pair_rate=None,
+    )
+    variants["premierdraft"] = _lci_ratings(
+        "PremierDraft",
+        card_rates=(0.70, 0.40),
+        pair_rate=0.62,
+    )
+    mixed = generate("mixed-bundle")
+    assert mixed["status"] == "success"
+    mixed_manifest = load_profile_manifest(first_manifest_path)
+    mixed_artifact = mixed_manifest.select(set_code="LCI", event_format="QuickDraft")
+    assert mixed_artifact is not None
+    assert mixed_artifact.gzip_sha256 != first_artifact.gzip_sha256
+    mixed_refresh = client.refresh("LCI", "QuickDraft", force=True)
+    assert mixed_refresh.outcome is ProfileRefreshOutcome.UPDATED
+    mixed_profile = mixed_refresh.profile
+    mixed_card_evidence = profile_card_evidence(mixed_profile, 87185)
+    mixed_pair_evidence = profile_pair_evidence(mixed_profile)
+    assert mixed_card_evidence is not None
+    assert mixed_pair_evidence is not None
+    assert mixed_card_evidence.source_format == "quickdraft"
+    assert mixed_card_evidence.fallback_reason is None
+    assert mixed_card_evidence.confidence == pytest.approx(1.0)
+    assert mixed_pair_evidence.source_format == "premierdraft"
+    assert mixed_pair_evidence.fallback_reason == "missing-exact-evidence"
+    assert mixed_pair_evidence.confidence == pytest.approx(
+        AGGREGATE_FALLBACK_CONFIDENCE_FACTOR
+    )
+    mixed_scored = PickEngine(set_profile=mixed_profile).score_pack(
+        offered_grp_ids=(87185, 87235),
+        card_database=card_database,
+    )
+    mixed_scored_by_id = {card.card.grp_id: card for card in mixed_scored.cards}
+    assert {
+        grp_id: (
+            card.rating.metadata.source_format,
+            card.rating.metadata.fallback_reason,
+        )
+        for grp_id, card in mixed_scored_by_id.items()
+    } == {
+        87185: ("quickdraft", None),
+        87235: ("quickdraft", None),
+    }
+    assert mixed_profile.pair("UB") is not None
+    assert mixed_profile.pair("UB").performance is not None  # type: ignore[union-attr]
+    assert mixed_profile.pair("UB").performance.aggregate_evidence == mixed_pair_evidence  # type: ignore[union-attr]
+
+    first_role_profile = first_profile.role_profile
+    assert first_role_profile is not None
+    assert mixed_profile.role_profile == first_role_profile
+    assert mixed_refresh.profile.fingerprint != first_refresh.profile.fingerprint
+
+    clock_value[0] = NOW + timedelta(days=16)
+    variants["quickdraft"] = _lci_ratings(
+        "QuickDraft",
+        card_rates=(0.43, 0.74),
+        pair_rate=0.58,
+    )
+    exact = generate("exact-bundle")
+    assert exact["status"] == "success"
+    exact_manifest = load_profile_manifest(first_manifest_path)
+    exact_artifact = exact_manifest.select(set_code="LCI", event_format="QuickDraft")
+    assert exact_artifact is not None
+    assert exact_artifact.gzip_sha256 != mixed_artifact.gzip_sha256
+    exact_refresh = client.refresh("LCI", "QuickDraft", force=True)
+    assert exact_refresh.outcome is ProfileRefreshOutcome.UPDATED
+    exact_profile = exact_refresh.profile
+    assert (exact_profile.set_code, exact_profile.event_format) == ("lci", "quickdraft")
+    exact_card_evidence = profile_card_evidence(exact_profile, 87185)
+    exact_pair_evidence = profile_pair_evidence(exact_profile)
+    assert exact_card_evidence is not None
+    assert exact_pair_evidence is not None
+    assert exact_card_evidence.source_format == "quickdraft"
+    assert exact_card_evidence.fallback_reason is None
+    assert exact_card_evidence.confidence == pytest.approx(1.0)
+    assert exact_pair_evidence.source_format == "quickdraft"
+    assert exact_pair_evidence.fallback_reason is None
+    assert exact_pair_evidence.confidence == pytest.approx(1.0)
+    exact_scored = PickEngine(set_profile=exact_profile).score_pack(
+        offered_grp_ids=(87185, 87235),
+        card_database=card_database,
+    )
+    assert {
+        grp_id: (
+            card.rating.metadata.requested_format,
+            card.rating.metadata.source_format,
+            card.rating.metadata.fallback_reason,
+        )
+        for grp_id, card in {card.card.grp_id: card for card in exact_scored.cards}.items()
+    } == {
+        87185: ("quickdraft", "quickdraft", None),
+        87235: ("quickdraft", "quickdraft", None),
+    }
+    assert exact_profile.role_profile == first_role_profile
+    assert exact_refresh.profile.fingerprint not in {
+        first_refresh.profile.fingerprint,
+        mixed_refresh.profile.fingerprint,
+    }
+    assert exact_artifact.set_code == "lci"
+    assert exact_artifact.event_format == "quickdraft"
+    assert exact_refresh.manifest is not None
+    assert exact_refresh.manifest.select(set_code="LCI", event_format="QuickDraft") == exact_artifact
+    exact_manifest_bytes = first_manifest_path.read_bytes()
+    exact_object_path = (
+        root
+        / "website/public/profiles/objects"
+        / f"{exact_artifact.gzip_sha256}.json.gz"
+    )
+    exact_object_bytes = exact_object_path.read_bytes()
+
+    clock_value[0] = NOW + timedelta(days=24)
+    variants["quickdraft"] = _lci_ratings(
+        "QuickDraft",
+        card_rates=(0.44, 0.75),
+        pair_rate=0.59,
+    )
+
+    def fail_manifest(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise OSError("injected manifest publication failure")
+
+    monkeypatch.setattr(workflow, "publish_profile_manifest", fail_manifest)
+    failed = generate("failed-bundle")
+    assert failed["status"] == "failed"
+    assert failed["profiles"]["successful"] == []
+    assert any(
+        failure["category"] == "manifest-publish-failed"
+        for failure in failed["failures"]
+    )
+    assert first_manifest_path.read_bytes() == exact_manifest_bytes
+    assert exact_object_path.read_bytes() == exact_object_bytes
+
+    failed_refresh = client.refresh("LCI", "QuickDraft", force=True)
+    assert failed_refresh.outcome is ProfileRefreshOutcome.UNCHANGED
+    assert failed_refresh.profile == exact_profile
+    loaded = client.load_cached("LCI", "QuickDraft")
+    assert loaded.profile == exact_profile
+    failed_scored = PickEngine(set_profile=failed_refresh.profile).score_pack(
+        offered_grp_ids=(87185, 87235),
+        card_database=card_database,
+    )
+    assert {
+        card.rating.metadata.source_format
+        for card in failed_scored.cards
+    } == {"quickdraft"}
+    assert rating_requests == [
+        ("LCI", "quickdraft"),
+        ("LCI", "premierdraft"),
+        ("LCI", "quickdraft"),
+        ("LCI", "premierdraft"),
+        ("LCI", "quickdraft"),
+        ("LCI", "quickdraft"),
+    ]
+    assert public_draft_calls == []
+    assert first_manifest_bytes != first_manifest_path.read_bytes()
+    assert first_object_bytes == first_object_path.read_bytes()

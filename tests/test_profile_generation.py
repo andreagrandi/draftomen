@@ -15,6 +15,7 @@ from draftomen.profile_generation import (
     ProfileGenerationConfig,
     ProfileGenerationError,
     ProfileGenerationStage,
+    aggregate_evidence_needs_fallback,
     deterministic_profile_gzip,
     generate_set_profile,
 )
@@ -152,6 +153,91 @@ def _format_ratings(
                 win_rate=None if pair_games == 0 else pair_wins / pair_games,
             )
         },
+    )
+
+
+def _complete_ratings(event_format: str = "QuickDraft") -> SeventeenLandsFormatData:
+    ratings = _format_ratings(event_format)
+    return replace(
+        ratings,
+        pair_win_rates={
+            pair: ColorPairWinRate(pair=pair, wins=600, games=1000, win_rate=0.60)
+            for pair in COLOR_PAIRS
+        },
+    )
+
+
+def test_aggregate_evidence_coverage_requires_all_cards_and_pairs() -> None:
+    complete = _complete_ratings()
+    assert not aggregate_evidence_needs_fallback(
+        set_code="TST",
+        event_format="QuickDraft",
+        card_database=_database(),
+        ratings=complete,
+    )
+
+    card_gap = replace(complete, card_ratings={1: complete.card_ratings[1]})
+    assert aggregate_evidence_needs_fallback(
+        set_code="TST",
+        event_format="QuickDraft",
+        card_database=_database(),
+        ratings=card_gap,
+    )
+
+    pair_gap = replace(
+        complete,
+        pair_win_rates={
+            pair: value
+            for pair, value in complete.pair_win_rates.items()
+            if pair != COLOR_PAIRS[-1]
+        },
+    )
+    assert aggregate_evidence_needs_fallback(
+        set_code="TST",
+        event_format="QuickDraft",
+        card_database=_database(),
+        ratings=pair_gap,
+    )
+
+
+def test_aggregate_evidence_coverage_accepts_one_supported_duplicate_arena_id() -> None:
+    database = CardDatabase(
+        cards={
+            **_database().cards,
+            3: replace(_database().cards[1], grp_id=3),
+        }
+    )
+    complete = _complete_ratings()
+    duplicate_id_ratings = replace(
+        complete,
+        card_ratings={
+            2: complete.card_ratings[2],
+            3: replace(complete.card_ratings[1], grp_id=3),
+        },
+    )
+    assert not aggregate_evidence_needs_fallback(
+        set_code="TST",
+        event_format="QuickDraft",
+        card_database=database,
+        ratings=duplicate_id_ratings,
+    )
+
+
+def test_aggregate_evidence_non_quick_validates_candidates_then_returns_false() -> None:
+    with pytest.raises(ProfileGenerationError, match="fallback ratings"):
+        aggregate_evidence_needs_fallback(
+            set_code="TST",
+            event_format="PremierDraft",
+            card_database=_database(),
+            ratings=_format_ratings("PremierDraft"),
+            fallback_ratings=(object(),),  # type: ignore[tuple-item]
+        )
+    assert not aggregate_evidence_needs_fallback(
+        set_code="TST",
+        event_format="PremierDraft",
+        card_database=_database(),
+        ratings=_format_ratings("PremierDraft"),
+        fallback_ratings=(_format_ratings("TradDraft"),),
     )
 
 
