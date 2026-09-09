@@ -34,7 +34,8 @@ from draftomen.semantic_roles import (
 if TYPE_CHECKING:
     from draftomen.carddb import CardInfo
 
-SET_PROFILE_SCHEMA_VERSION = 1
+SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS = (1, 2)
+SET_PROFILE_SCHEMA_VERSION = 2
 SET_PROFILE_DIRECTORY_NAME = "set-profiles"
 GENERIC_PROFILE_GENERATED_AT = "1970-01-01T00:00:00+00:00"
 
@@ -151,6 +152,65 @@ class SampleSummary:
             ),
         )
 
+@dataclass(frozen=True, slots=True)
+class AggregateEvidence:
+    """Authority metadata for one aggregate rate estimate."""
+
+    source_format: str
+    fallback_reason: str | None
+    confidence: float
+
+    def __post_init__(self) -> None:
+        source_format = _non_empty_string(self.source_format, "aggregate_evidence.source_format").casefold()
+        if "/" in source_format or "\\" in source_format:
+            raise SetProfileSchemaError(
+                "aggregate_evidence.source_format cannot contain path separators."
+            )
+        object.__setattr__(self, "source_format", source_format)
+        if self.fallback_reason is not None:
+            reason = _non_empty_string(
+                self.fallback_reason,
+                "aggregate_evidence.fallback_reason",
+            )
+            if reason not in {
+                "missing-exact-evidence",
+                "thin-exact-evidence",
+                "invalid-exact-evidence",
+            }:
+                raise SetProfileSchemaError(
+                    f"Unsupported aggregate fallback reason {reason!r}."
+                )
+            object.__setattr__(self, "fallback_reason", reason)
+        object.__setattr__(
+            self,
+            "confidence",
+            _bounded_number(self.confidence, "aggregate_evidence.confidence"),
+        )
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "source_format": self.source_format,
+            "fallback_reason": self.fallback_reason,
+            "confidence": self.confidence,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> AggregateEvidence:
+        _object(value, "aggregate_evidence")
+        expected = {"source_format", "fallback_reason", "confidence"}
+        if set(value) != expected:
+            raise SetProfileSchemaError(
+                "aggregate_evidence must contain exactly source_format, fallback_reason, and confidence."
+            )
+        fallback_reason = value["fallback_reason"]
+        if fallback_reason is not None and not isinstance(fallback_reason, str):
+            raise SetProfileSchemaError("aggregate_evidence.fallback_reason must be a string or null.")
+        return cls(
+            source_format=value["source_format"],
+            fallback_reason=fallback_reason,
+            confidence=value["confidence"],
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class RateEstimate:
@@ -161,6 +221,7 @@ class RateEstimate:
     samples: int
     prior_value: float
     source: str
+    aggregate_evidence: AggregateEvidence | None = None
 
     def __post_init__(self) -> None:
         raw_value = None
@@ -174,6 +235,17 @@ class RateEstimate:
             raise SetProfileSchemaError("rate.raw_value must be None when rate.samples is zero.")
         if samples > 0 and raw_value is None:
             raise SetProfileSchemaError("rate.raw_value is required when rate.samples is positive.")
+        if self.aggregate_evidence is not None and not isinstance(
+            self.aggregate_evidence,
+            AggregateEvidence,
+        ):
+            raise SetProfileSchemaError(
+                "rate.aggregate_evidence must be an AggregateEvidence or None."
+            )
+        if samples == 0 and self.aggregate_evidence is not None:
+            raise SetProfileSchemaError(
+                "rate.aggregate_evidence must be None when rate.samples is zero."
+            )
         object.__setattr__(self, "raw_value", raw_value)
         object.__setattr__(self, "value", value)
         object.__setattr__(self, "samples", samples)
@@ -181,13 +253,16 @@ class RateEstimate:
         object.__setattr__(self, "source", source)
 
     def to_json(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "raw_value": self.raw_value,
             "value": self.value,
             "samples": self.samples,
             "prior_value": self.prior_value,
             "source": self.source,
         }
+        if self.aggregate_evidence is not None:
+            result["aggregate_evidence"] = self.aggregate_evidence.to_json()
+        return result
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> RateEstimate:
@@ -197,12 +272,19 @@ class RateEstimate:
             raise SetProfileSchemaError("Missing required field rate.raw_value.")
         if raw_value is not None:
             raw_value = _bounded_number(raw_value, "rate.raw_value")
+        aggregate_value = value.get("aggregate_evidence")
+        aggregate_evidence = (
+            None
+            if aggregate_value is None
+            else AggregateEvidence.from_json(aggregate_value)
+        )
         return cls(
             raw_value=raw_value,
             value=_required_number(value, "value", "rate.value"),
             samples=_required_int(value, "samples", "rate.samples"),
             prior_value=_required_number(value, "prior_value", "rate.prior_value"),
             source=_required_string(value, "source", "rate.source"),
+            aggregate_evidence=aggregate_evidence,
         )
 
 
@@ -716,8 +798,18 @@ class SetProfile:
     pairs: tuple[PairProfile, ...]
     role_profile: CompiledRoleProfile | None = None
     card_ratings: tuple[CardRating, ...] = ()
-
+    schema_version: int = 1
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.schema_version, bool)
+            or not isinstance(self.schema_version, int)
+            or self.schema_version not in SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS
+        ):
+            raise SetProfileSchemaError(
+                f"Unsupported set profile schema {self.schema_version!r}; "
+                f"supported versions are {SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS}."
+            )
+        object.__setattr__(self, "schema_version", self.schema_version)
         set_code = _non_empty_string(self.set_code, "set_code").casefold()
         event_format = _non_empty_string(self.event_format, "format").casefold()
         if "/" in set_code or "\\" in set_code or "/" in event_format or "\\" in event_format:
@@ -759,6 +851,12 @@ class SetProfile:
             field_name="card_ratings",
         )
         object.__setattr__(self, "card_ratings", normalized_card_ratings)
+        _validate_aggregate_authority(
+            schema_version=self.schema_version,
+            requested_format=event_format,
+            pairs=normalized_pairs,
+            card_ratings=normalized_card_ratings,
+        )
         if self.role_profile is not None:
             if not isinstance(self.role_profile, CompiledRoleProfile):
                 raise SetProfileSchemaError("role_profile must be a CompiledRoleProfile or None.")
@@ -816,7 +914,7 @@ class SetProfile:
             "generated_at": self.generated_at,
             "maturity": self.maturity.value,
             "profile_version": self.profile_version,
-            "schema_version": SET_PROFILE_SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "set_code": self.set_code,
             "source": self.source.to_json(),
         }
@@ -845,9 +943,10 @@ class SetProfile:
     def from_json(cls, value: Mapping[str, Any]) -> SetProfile:
         _object(value, "set profile")
         schema_version = _required_int(value, "schema_version", "schema_version")
-        if schema_version != SET_PROFILE_SCHEMA_VERSION:
+        if schema_version not in SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS:
             raise SetProfileSchemaError(
-                f"Unsupported set profile schema {schema_version}; expected {SET_PROFILE_SCHEMA_VERSION}."
+                f"Unsupported set profile schema {schema_version}; "
+                f"supported versions are {SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS}."
             )
         pair_values = value.get("pair_profiles", [])
         if not isinstance(pair_values, list):
@@ -879,6 +978,7 @@ class SetProfile:
             confidence=_required_number(value, "confidence", "confidence"),
             pairs=pair_profiles,
             role_profile=role_profile,
+            schema_version=schema_version,
             card_ratings=card_ratings,
         )
 
@@ -1079,6 +1179,49 @@ def _parse_role_profile(value: Any, *, set_code: Any) -> CompiledRoleProfile | N
     if nested_set != normalized_set:
         raise SetProfileSchemaError("role_profile.set_code must match set_code.")
     return role_profile
+
+
+def _validate_aggregate_authority(
+    *,
+    schema_version: int,
+    requested_format: str,
+    pairs: tuple[PairProfile, ...],
+    card_ratings: tuple[CardRating, ...],
+) -> None:
+    rates = [item.gih_win_rate for item in card_ratings]
+    rates.extend(
+        pair.performance
+        for pair in pairs
+        if pair.performance is not None
+    )
+    for rate in rates:
+        evidence = rate.aggregate_evidence
+        if schema_version == 1:
+            if evidence is not None:
+                raise SetProfileSchemaError(
+                    "schema-1 profiles cannot contain aggregate authority."
+                )
+            continue
+        if rate.samples > 0 and evidence is None:
+            raise SetProfileSchemaError(
+                "schema-2 positive aggregate rates require aggregate authority."
+            )
+        if evidence is None:
+            continue
+        if evidence.source_format == requested_format:
+            if evidence.fallback_reason is not None:
+                raise SetProfileSchemaError(
+                    "Exact aggregate authority cannot include a fallback reason."
+                )
+            continue
+        if (
+            requested_format != "quickdraft"
+            or evidence.source_format not in {"premierdraft", "traddraft"}
+            or evidence.fallback_reason is None
+        ):
+            raise SetProfileSchemaError(
+                "Cross-format aggregate authority is only valid for QuickDraft fallbacks."
+            )
 
 
 def _has_empirical_evidence(

@@ -40,6 +40,7 @@ from draftomen.profile_generation import generate_set_profile
 from draftomen.ranking import RANKING_MODES, rank_scored_cards
 from draftomen.replay import format_pack_offered_event
 from draftomen.set_profile import (
+    AggregateEvidence,
     CardPairSynergy,
     CardRating,
     PairProfile,
@@ -764,6 +765,103 @@ def test_profile_rating_preserves_evidence_and_computes_grade() -> None:
         assert rating.metadata.fallback_reason is None
         assert rating.metadata.source == "profile"
         assert rating.neutral_prior is False
+
+def test_profile_rating_metadata_consumes_versioned_aggregate_authority() -> None:
+    database = _contextual_database()
+    fallback_rate = replace(
+        _profile_rate(0.61, samples=7),
+        aggregate_evidence=AggregateEvidence(
+            source_format="PremierDraft",
+            fallback_reason="missing-exact-evidence",
+            confidence=0.65,
+        ),
+    )
+    exact_rate = replace(
+        _profile_rate(0.55, samples=5),
+        aggregate_evidence=AggregateEvidence(
+            source_format="QuickDraft",
+            fallback_reason=None,
+            confidence=1.0,
+        ),
+    )
+    zero_rate = RateEstimate(
+        raw_value=None,
+        value=0.52,
+        samples=0,
+        prior_value=0.50,
+        source="test",
+    )
+    schema_two = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        schema_version=2,
+        card_ratings=(
+            CardRating(
+                card_key="ARENA_ID:1",
+                gih_win_rate=fallback_rate,
+                average_last_seen_at=3.5,
+            ),
+            CardRating(card_key="ARENA_ID:2", gih_win_rate=zero_rate),
+            CardRating(card_key="ARENA_ID:3", gih_win_rate=exact_rate),
+        ),
+    )
+    historical = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        card_ratings=(
+            CardRating(
+                card_key="ARENA_ID:1",
+                gih_win_rate=replace(fallback_rate, aggregate_evidence=None),
+                average_last_seen_at=3.5,
+            ),
+            CardRating(card_key="ARENA_ID:2", gih_win_rate=zero_rate),
+            CardRating(
+                card_key="ARENA_ID:3",
+                gih_win_rate=replace(exact_rate, aggregate_evidence=None),
+            ),
+        ),
+    )
+
+    current = PickEngine(set_profile=schema_two).score_pack(
+        offered_grp_ids=(1, 2, 3),
+        card_database=database,
+    )
+    legacy = PickEngine(set_profile=historical).score_pack(
+        offered_grp_ids=(1, 2, 3),
+        card_database=database,
+    )
+    current_by_id = {card.card.grp_id: card for card in current.cards}
+    legacy_by_id = {card.card.grp_id: card for card in legacy.cards}
+
+    for grp_id in (1, 2, 3):
+        current_card = current_by_id[grp_id]
+        legacy_card = legacy_by_id[grp_id]
+        assert current_card.score == legacy_card.score
+        assert current_card.raw_score == pytest.approx(legacy_card.raw_score)
+        assert current_card.base_rating == pytest.approx(legacy_card.base_rating)
+        assert current_card.rating.gih_win_rate == pytest.approx(
+            legacy_card.rating.gih_win_rate
+        )
+        assert current_card.rating.sample_counts == legacy_card.rating.sample_counts
+        assert current_card.rating.letter_grade == legacy_card.rating.letter_grade
+
+    assert current_by_id[1].rating.metadata.requested_format == "quickdraft"
+    assert current_by_id[1].rating.metadata.source == "profile"
+    assert current_by_id[1].rating.metadata.source_format == "premierdraft"
+    assert (
+        current_by_id[1].rating.metadata.fallback_reason
+        == "missing-exact-evidence"
+    )
+    assert current_by_id[3].rating.metadata.source_format == "quickdraft"
+    assert current_by_id[3].rating.metadata.fallback_reason is None
+    assert current_by_id[2].rating.metadata.source_format is None
+    assert current_by_id[2].rating.metadata.fallback_reason is None
+
+    for card in legacy.cards:
+        assert card.rating.metadata.requested_format == "quickdraft"
+        assert card.rating.metadata.source_format == (
+            None if card.rating.sample_counts.games_in_hand == 0 else "quickdraft"
+        )
+        assert card.rating.metadata.fallback_reason is None
+
 
 
 def test_non_empirical_profiles_preserve_deterministic_fallback_and_partial_legacy() -> None:
@@ -2734,6 +2832,7 @@ def _test_profile(
     pairs: tuple[PairProfile, ...] = (),
     card_ratings: tuple[CardRating, ...] = (),
     role_profile: CompiledRoleProfile | None = None,
+    schema_version: int = 1,
 ) -> SetProfile:
     return SetProfile(
         set_code=set_code,
@@ -2751,6 +2850,7 @@ def _test_profile(
         pairs=pairs,
         role_profile=role_profile,
         card_ratings=card_ratings,
+        schema_version=schema_version,
     )
 
 

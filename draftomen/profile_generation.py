@@ -22,7 +22,7 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.config import COLOR_PAIRS, DECK_BUILDER, DeckBuilderConfig
+from draftomen.config import COLOR_PAIRS, DECK_BUILDER, PICK_ENGINE, DeckBuilderConfig
 from draftomen.public_dump import (
     PUBLIC_DUMP_MANIFEST_SCHEMA_VERSION,
     PublicDumpChecksumError,
@@ -43,6 +43,10 @@ from draftomen.profile_statistics import (
 )
 from draftomen.seventeen import (
     CURVE_BUCKETS,
+    RELIABILITY_PREMIER_FACTOR,
+    ColorPairWinRate,
+    RatingSampleCounts,
+    SeventeenCardStats,
     SeventeenLandsError,
     SeventeenLandsFormatData,
     build_17lands_structure_targets_from_draft_rows,
@@ -53,6 +57,7 @@ from draftomen.semantic_roles import (
     compile_role_profile,
 )
 from draftomen.set_profile import (
+    AggregateEvidence,
     CardRating,
     NumericTarget,
     PairProfile,
@@ -61,15 +66,17 @@ from draftomen.set_profile import (
     RemovalTarget,
     RoleTarget,
     SampleSummary,
-    SET_PROFILE_SCHEMA_VERSION,
     SetProfile,
     SourceMetadata,
     profile_card_key,
 )
 
 
-PROFILE_GENERATOR_VERSION = "1"
+PROFILE_GENERATOR_VERSION = "2"
 PROFILE_GENERATION_SCHEMA_VERSION = 1
+
+AGGREGATE_SUPPORT_MINIMUM = PICK_ENGINE.thin_sample_minimum
+AGGREGATE_FALLBACK_CONFIDENCE_FACTOR = RELIABILITY_PREMIER_FACTOR
 
 _CARD_RATE_SOURCE = "17lands:card-ratings"
 _PAIR_RATE_SOURCE = "17lands:color-ratings"
@@ -359,6 +366,21 @@ class _Deck:
     metrics: Mapping[str, float]
 
 
+@dataclass(frozen=True, slots=True)
+class _CardObservation:
+    grp_id: int
+    raw_value: float | None
+    successes: int
+    samples: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PairObservation:
+    pair: str
+    wins: int
+    games: int
+
+
 def deterministic_profile_gzip(profile_bytes: bytes) -> bytes:
     """Compress profile bytes with a stable gzip header and timestamp."""
 
@@ -378,6 +400,7 @@ def generate_set_profile(
     generated_at: datetime,
     profile_version: str = "1.0",
     ratings: SeventeenLandsFormatData | None = None,
+    fallback_ratings: Sequence[SeventeenLandsFormatData] = (),
     draft_source_name: str | None = None,
     config: ProfileGenerationConfig = DEFAULT_PROFILE_GENERATION_CONFIG,
 ) -> ProfileGenerationResult:
@@ -401,16 +424,57 @@ def generate_set_profile(
     timestamp = generated_at.astimezone(UTC).isoformat()
     if not isinstance(profile_version, str) or not profile_version.strip():
         raise ProfileGenerationError("profile_version must be non-empty.")
+    if ratings is not None and not isinstance(ratings, SeventeenLandsFormatData):
+        raise ProfileGenerationError("ratings must be a SeventeenLandsFormatData value.")
     if ratings is not None and (
-        ratings.set_code.casefold() != normalized_set or ratings.event_format.casefold() != normalized_format
+        not isinstance(ratings.set_code, str)
+        or not isinstance(ratings.event_format, str)
+        or ratings.set_code.casefold() != normalized_set
+        or ratings.event_format.casefold() != normalized_format
     ):
         raise ProfileGenerationError("ratings set_code and event_format must match generation inputs.")
+    if not isinstance(fallback_ratings, Sequence) or any(
+        not isinstance(candidate, SeventeenLandsFormatData)
+        for candidate in fallback_ratings
+    ):
+        raise ProfileGenerationError("fallback ratings must contain SeventeenLandsFormatData values.")
+    fallback_by_format: dict[str, SeventeenLandsFormatData] = {}
+    for candidate in fallback_ratings:
+        if (
+            not isinstance(candidate.set_code, str)
+            or candidate.set_code.casefold() != normalized_set
+        ):
+            raise ProfileGenerationError("fallback ratings must match the requested set.")
+        if not isinstance(candidate.event_format, str):
+            raise ProfileGenerationError("fallback ratings must be PremierDraft or TradDraft.")
+        candidate_format = candidate.event_format.strip().casefold()
+        if candidate_format not in {"premierdraft", "traddraft"}:
+            raise ProfileGenerationError("fallback ratings must be PremierDraft or TradDraft.")
+        if candidate_format in fallback_by_format or (
+            ratings is not None and candidate_format == normalized_format
+        ):
+            raise ProfileGenerationError("duplicate aggregate source format.")
+        fallback_by_format[candidate_format] = candidate
+
+    aggregate_list: list[tuple[str, SeventeenLandsFormatData]] = []
+    if ratings is not None:
+        aggregate_list.append((normalized_format, ratings))
+    aggregate_list.extend(
+        (candidate_format, fallback_by_format[candidate_format])
+        for candidate_format in ("premierdraft", "traddraft")
+        if candidate_format in fallback_by_format
+    )
+    aggregate_datasets = tuple(aggregate_list)
 
     manifest = source_manifest
     sources = () if manifest is None else tuple(ProfileGenerationSource.from_source(source) for source in manifest.sources)
     requested_card_database = _requested_card_database(card_database, normalized_set)
     input_checksums = {} if manifest is None else {source.name: source.sha256 for source in manifest.sources if source.sha256 is not None}
     input_checksums["ratings"] = _ratings_input_checksum(ratings)
+    for candidate_format in ("premierdraft", "traddraft"):
+        candidate = fallback_by_format.get(candidate_format)
+        if candidate is not None:
+            input_checksums[f"fallback_ratings:{candidate_format}"] = _ratings_input_checksum(candidate)
     input_checksums["card_database"] = _card_database_input_checksum(requested_card_database)
     skip_counts: Counter[str] = Counter()
     error_counts: Counter[str] = Counter()
@@ -499,14 +563,20 @@ def generate_set_profile(
     role_profile = None
     if normalized_stage != ProfileGenerationStage.METADATA:
         cards = _card_ratings(
-            ratings=ratings,
+            datasets=aggregate_datasets if normalized_format == "quickdraft" else (
+                ((normalized_format, ratings),) if ratings is not None else ()
+            ),
+            requested_format=normalized_format,
             card_database=card_database,
             set_code=normalized_set,
             config=config,
             skip_counts=skip_counts,
         )
         pair_profiles = _pair_profiles(
-            ratings=ratings,
+            datasets=aggregate_datasets if normalized_format == "quickdraft" else (
+                ((normalized_format, ratings),) if ratings is not None else ()
+            ),
+            requested_format=normalized_format,
             pair_decks=pair_decks,
             config=config,
             skip_counts=skip_counts,
@@ -538,6 +608,7 @@ def generate_set_profile(
         pair_profiles=pair_profiles,
         config=config,
     )
+    profile_schema_version = 1 if normalized_stage == ProfileGenerationStage.METADATA else 2
     profile = SetProfile(
         set_code=normalized_set,
         event_format=normalized_format,
@@ -554,6 +625,7 @@ def generate_set_profile(
         pairs=pair_profiles,
         role_profile=role_profile,
         card_ratings=cards,
+        schema_version=profile_schema_version,
     )
     profile_bytes = profile.to_bytes()
     compressed = deterministic_profile_gzip(profile_bytes)
@@ -561,7 +633,7 @@ def generate_set_profile(
         generator_version=config.generator_version,
         statistics_version=config.statistics_version,
         profile_generation_schema_version=PROFILE_GENERATION_SCHEMA_VERSION,
-        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+        set_profile_schema_version=profile.schema_version,
         public_dump_manifest_schema_version=(
             PUBLIC_DUMP_MANIFEST_SCHEMA_VERSION if manifest is None else manifest.schema_version
         ),
@@ -571,8 +643,8 @@ def generate_set_profile(
         generated_at=timestamp,
         sources=sources,
         samples=samples if maturity is not ProfileMaturity.METADATA_ONLY else SampleSummary(total=0),
-        card_games=_card_game_count(ratings=ratings),
-        pair_games=_pair_game_count(ratings=ratings),
+        card_games=_card_game_count(card_ratings=cards) if maturity is not ProfileMaturity.METADATA_ONLY else 0,
+        pair_games=_pair_game_count(pair_profiles=pair_profiles) if maturity is not ProfileMaturity.METADATA_ONLY else 0,
         skip_reasons=skip_counts,
         error_reasons=error_counts,
         input_checksums=input_checksums,
@@ -718,41 +790,210 @@ def _deck_metrics(
     }
 
 
+def _validated_card_observations(
+    *,
+    ratings: SeventeenLandsFormatData,
+    card_database: CardDatabase,
+    set_code: str,
+    skip_counts: Counter[str],
+) -> tuple[Mapping[int, _CardObservation], frozenset[str]]:
+    valid: dict[int, _CardObservation] = {}
+    invalid_keys: set[str] = set()
+    for map_grp_id, stats in sorted(ratings.card_ratings.items(), key=lambda item: str(item[0])):
+        card = card_database.cards.get(map_grp_id)
+        card_key = None
+        if card is not None and not card.unknown and card.set_code is not None:
+            if card.set_code.casefold() == set_code:
+                card_key = profile_card_key(card)
+        if not isinstance(stats, SeventeenCardStats):
+            skip_counts["card_rating_malformed"] += 1
+            if card_key is not None:
+                invalid_keys.add(card_key)
+            continue
+        if map_grp_id != stats.grp_id:
+            skip_counts["card_rating_identity_mismatch"] += 1
+            if card_key is not None:
+                invalid_keys.add(card_key)
+            continue
+        if card is None or card.unknown or card.set_code is None:
+            skip_counts["card_rating_unmatched_metadata"] += 1
+            continue
+        if card.set_code.casefold() != set_code:
+            skip_counts["card_rating_out_of_set"] += 1
+            continue
+        key = profile_card_key(card)
+        if not isinstance(stats.sample_counts, RatingSampleCounts):
+            skip_counts["card_rating_invalid_sample_count"] += 1
+            invalid_keys.add(key)
+            continue
+        games = stats.sample_counts.games_in_hand
+        if isinstance(games, bool) or not isinstance(games, int) or games < 0:
+            skip_counts["card_rating_invalid_sample_count"] += 1
+            invalid_keys.add(key)
+            continue
+        raw = stats.gih_win_rate
+        raw_value: float | None = None
+        if raw is not None:
+            if isinstance(raw, bool):
+                skip_counts["card_rating_out_of_range"] += 1
+                invalid_keys.add(key)
+                continue
+            try:
+                raw_number = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                skip_counts["card_rating_out_of_range"] += 1
+                invalid_keys.add(key)
+                continue
+            if not math.isfinite(raw_number) or not 0.0 <= raw_number <= 1.0:
+                skip_counts["card_rating_out_of_range"] += 1
+                invalid_keys.add(key)
+                continue
+            raw_value = raw_number if games > 0 else None
+        if games > 0 and raw_value is None:
+            skip_counts["card_rating_missing_rate"] += 1
+            invalid_keys.add(key)
+            continue
+        successes = 0 if games == 0 else int(round(raw_value * games))
+        valid[map_grp_id] = _CardObservation(
+            grp_id=map_grp_id,
+            raw_value=raw_value,
+            successes=successes,
+            samples=games,
+        )
+    return valid, frozenset(invalid_keys)
+
+
+def _validated_pair_observations(
+    *,
+    ratings: SeventeenLandsFormatData,
+    skip_counts: Counter[str],
+) -> tuple[Mapping[str, tuple[_PairObservation, ...]], frozenset[str]]:
+    valid: dict[str, list[_PairObservation]] = defaultdict(list)
+    invalid_pairs: set[str] = set()
+    for map_pair, record in sorted(ratings.pair_win_rates.items(), key=lambda item: str(item[0])):
+        normalized_map_pair = map_pair.strip().upper() if isinstance(map_pair, str) else None
+        normalized_record_pair = record.pair.strip().upper() if (
+            isinstance(record, ColorPairWinRate) and isinstance(record.pair, str)
+        ) else None
+        if (
+            normalized_map_pair is None
+            or normalized_record_pair is None
+            or normalized_map_pair != normalized_record_pair
+        ):
+            skip_counts["pair_performance_identity_mismatch"] += 1
+            if normalized_map_pair in COLOR_PAIRS:
+                invalid_pairs.add(normalized_map_pair)
+            continue
+        if normalized_map_pair not in COLOR_PAIRS:
+            skip_counts["pair_performance_malformed"] += 1
+            continue
+        if not isinstance(record, ColorPairWinRate):
+            skip_counts["pair_performance_malformed"] += 1
+            invalid_pairs.add(normalized_map_pair)
+            continue
+        games = record.games
+        wins = record.wins
+        if (
+            isinstance(games, bool)
+            or not isinstance(games, int)
+            or isinstance(wins, bool)
+            or not isinstance(wins, int)
+            or games < 0
+            or wins < 0
+            or wins > games
+        ):
+            skip_counts["pair_performance_malformed"] += 1
+            invalid_pairs.add(normalized_map_pair)
+            continue
+        valid[normalized_map_pair].append(
+            _PairObservation(pair=normalized_map_pair, wins=wins, games=games)
+        )
+    return (
+        {pair: tuple(values) for pair, values in valid.items()},
+        frozenset(invalid_pairs),
+    )
+
+
 def _pair_profiles(
     *,
-    ratings: SeventeenLandsFormatData | None,
+    datasets: Sequence[tuple[str, SeventeenLandsFormatData]],
+    requested_format: str,
     pair_decks: Mapping[str, Sequence[_Deck]],
     config: ProfileGenerationConfig,
     skip_counts: Counter[str],
     structure_targets: Mapping[str, Any],
 ) -> tuple[PairProfile, ...]:
+    prepared = tuple(
+        (
+            source_format,
+            *_validated_pair_observations(ratings=ratings, skip_counts=skip_counts),
+        )
+        for source_format, ratings in datasets
+    )
     result: list[PairProfile] = []
     for pair in COLOR_PAIRS:
-        record = None if ratings is None else ratings.pair_win_rates.get(pair)
-        games = 0
-        wins = 0
-        if record is not None:
-            candidate_games = record.games
-            candidate_wins = record.wins
-            valid = (
-                isinstance(candidate_games, int)
-                and not isinstance(candidate_games, bool)
-                and isinstance(candidate_wins, int)
-                and not isinstance(candidate_wins, bool)
-                and candidate_games >= 0
-                and 0 <= candidate_wins <= candidate_games
+        exact_values: tuple[_PairObservation, ...] = ()
+        exact_invalid = False
+        for source_format, values, invalid_pairs in prepared:
+            if source_format == requested_format:
+                exact_values = values.get(pair, ())
+                exact_invalid = pair in invalid_pairs
+                break
+        chosen: _PairObservation | None = None
+        chosen_format = requested_format
+        for source_format, values, _ in prepared:
+            if source_format != requested_format and requested_format != "quickdraft":
+                continue
+            candidate = next(
+                (
+                    observation
+                    for observation in values.get(pair, ())
+                    if observation.games >= AGGREGATE_SUPPORT_MINIMUM
+                ),
+                None,
             )
-            if not valid:
-                skip_counts["pair_performance_malformed"] += 1
-            else:
-                games = candidate_games
-                wins = candidate_wins
+            if candidate is not None:
+                chosen = candidate
+                chosen_format = source_format
+                break
+        if chosen is None and exact_values:
+            chosen = exact_values[0]
+            chosen_format = requested_format
+        if chosen is None:
+            games = 0
+            wins = 0
+            authority = None
+        else:
+            games = chosen.games
+            wins = chosen.wins
+            authority = None
+            if games > 0:
+                if chosen_format == requested_format:
+                    confidence = min(1.0, games / config.confidence_sample_scale)
+                    reason = None
+                else:
+                    if exact_values:
+                        reason = "thin-exact-evidence"
+                    elif exact_invalid:
+                        reason = "invalid-exact-evidence"
+                    else:
+                        reason = "missing-exact-evidence"
+                    confidence = (
+                        AGGREGATE_FALLBACK_CONFIDENCE_FACTOR
+                        * min(1.0, games / config.confidence_sample_scale)
+                    )
+                authority = AggregateEvidence(
+                    source_format=chosen_format,
+                    fallback_reason=reason,
+                    confidence=confidence,
+                )
         estimate = _rate_estimate(
             raw_value=None if games == 0 else wins / games,
             successes=wins,
             samples=games,
             prior=config.pair_prior,
             source=_PAIR_RATE_SOURCE,
+            aggregate_evidence=authority,
         )
         structural = ()
         if pair in structure_targets:
@@ -970,65 +1211,100 @@ def _deck_semantics(*, deck: _Deck, assignments: Mapping[str, Sequence[Any]]):
 
 def _card_ratings(
     *,
-    ratings: SeventeenLandsFormatData | None,
+    datasets: Sequence[tuple[str, SeventeenLandsFormatData]],
+    requested_format: str,
     card_database: CardDatabase,
     set_code: str,
     config: ProfileGenerationConfig,
     skip_counts: Counter[str],
 ) -> tuple[CardRating, ...]:
-    if ratings is None:
-        return ()
+    prepared = tuple(
+        (
+            source_format,
+            *_validated_card_observations(
+                ratings=ratings,
+                card_database=card_database,
+                set_code=set_code,
+                skip_counts=skip_counts,
+            ),
+        )
+        for source_format, ratings in datasets
+    )
+    canonical_groups: dict[str, list[int]] = defaultdict(list)
+    for grp_id, card in card_database.cards.items():
+        if card.unknown or card.set_code is None or card.set_code.casefold() != set_code:
+            continue
+        canonical_groups[profile_card_key(card)].append(grp_id)
+
     result: list[CardRating] = []
-    seen: set[str] = set()
-    for grp_id, stats in sorted(ratings.card_ratings.items()):
-        card = card_database.cards.get(grp_id)
-        if card is None or card.unknown or card.set_code is None:
-            skip_counts["card_rating_unmatched_metadata"] += 1
-            continue
-        if card.set_code.casefold() != set_code:
-            skip_counts["card_rating_out_of_set"] += 1
-            continue
-        key = profile_card_key(card)
-        if key in seen:
-            skip_counts["duplicate_card_rating_key"] += 1
-            continue
-        seen.add(key)
-        games = stats.sample_counts.games_in_hand
-        raw = stats.gih_win_rate
-        if isinstance(games, bool) or not isinstance(games, int) or games < 0:
-            skip_counts["card_rating_invalid_sample_count"] += 1
-            continue
-        raw_value: float | None = None
-        if raw is not None:
-            if isinstance(raw, bool):
-                skip_counts["card_rating_out_of_range"] += 1
+    for key in sorted(canonical_groups):
+        group_ids = tuple(sorted(canonical_groups[key]))
+        exact_values: tuple[_CardObservation, ...] = ()
+        exact_invalid = False
+        for source_format, values, invalid_keys in prepared:
+            if source_format == requested_format:
+                exact_values = tuple(
+                    values[grp_id] for grp_id in group_ids if grp_id in values
+                )
+                exact_invalid = key in invalid_keys
+                break
+        chosen: _CardObservation | None = None
+        chosen_format = requested_format
+        for source_format, values, _ in prepared:
+            if source_format != requested_format and requested_format != "quickdraft":
                 continue
-            try:
-                raw_number = float(raw)
-            except (TypeError, ValueError, OverflowError):
-                skip_counts["card_rating_out_of_range"] += 1
-                continue
-            if not math.isfinite(raw_number) or not 0.0 <= raw_number <= 1.0:
-                skip_counts["card_rating_out_of_range"] += 1
-                continue
-            raw_value = raw_number
-        if games > 0 and raw_value is None:
-            skip_counts["card_rating_missing_rate"] += 1
+            candidate = next(
+                (
+                    values[grp_id]
+                    for grp_id in group_ids
+                    if grp_id in values
+                    and values[grp_id].samples >= AGGREGATE_SUPPORT_MINIMUM
+                ),
+                None,
+            )
+            if candidate is not None:
+                chosen = candidate
+                chosen_format = source_format
+                break
+        if chosen is None and exact_values:
+            chosen = exact_values[0]
+            chosen_format = requested_format
+        if chosen is None:
             continue
-        successes = 0 if games == 0 else int(round(raw_value * games))
+
+        authority = None
+        if chosen.samples > 0:
+            if chosen_format == requested_format:
+                confidence = min(
+                    1.0,
+                    chosen.samples / config.confidence_sample_scale,
+                )
+                reason = None
+            else:
+                if exact_values:
+                    reason = "thin-exact-evidence"
+                elif exact_invalid:
+                    reason = "invalid-exact-evidence"
+                else:
+                    reason = "missing-exact-evidence"
+                confidence = AGGREGATE_FALLBACK_CONFIDENCE_FACTOR * min(
+                    1.0,
+                    chosen.samples / config.confidence_sample_scale,
+                )
+            authority = AggregateEvidence(
+                source_format=chosen_format,
+                fallback_reason=reason,
+                confidence=confidence,
+            )
         estimate = _rate_estimate(
-            raw_value=raw_value,
-            successes=successes,
-            samples=games,
+            raw_value=chosen.raw_value,
+            successes=chosen.successes,
+            samples=chosen.samples,
             prior=config.card_prior,
             source=_CARD_RATE_SOURCE,
+            aggregate_evidence=authority,
         )
-        result.append(
-            CardRating(
-                card_key=key,
-                gih_win_rate=estimate,
-            )
-        )
+        result.append(CardRating(card_key=key, gih_win_rate=estimate))
     return tuple(result)
 
 
@@ -1039,6 +1315,7 @@ def _rate_estimate(
     samples: int,
     prior: BetaPrior,
     source: str,
+    aggregate_evidence: AggregateEvidence | None = None,
 ) -> RateEstimate:
     if samples == 0:
         return RateEstimate(
@@ -1055,6 +1332,7 @@ def _rate_estimate(
         samples=samples,
         prior_value=prior.mean,
         source=source,
+        aggregate_evidence=aggregate_evidence,
     )
 
 
@@ -1069,16 +1347,16 @@ def _confidence(*, maturity: ProfileMaturity, samples: SampleSummary, card_ratin
     return min(1.0, evidence / config.confidence_sample_scale)
 
 
-def _card_game_count(*, ratings: SeventeenLandsFormatData | None) -> int:
-    if ratings is None:
-        return 0
-    return sum(max(0, stats.sample_counts.games_in_hand) for stats in ratings.card_ratings.values())
+def _card_game_count(*, card_ratings: Sequence[CardRating]) -> int:
+    return sum(rating.gih_win_rate.samples for rating in card_ratings)
 
 
-def _pair_game_count(*, ratings: SeventeenLandsFormatData | None) -> int:
-    if ratings is None:
-        return 0
-    return sum(max(0, rate.games) for rate in ratings.pair_win_rates.values())
+def _pair_game_count(*, pair_profiles: Sequence[PairProfile]) -> int:
+    return sum(
+        pair.performance.samples
+        for pair in pair_profiles
+        if pair.performance is not None
+    )
 
 
 def _requested_card_database(card_database: CardDatabase, set_code: str) -> CardDatabase:
@@ -1103,6 +1381,49 @@ def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _checksum_value(value: Any) -> Any:
+    if isinstance(value, float):
+        if math.isnan(value):
+            return {"invalid_float": "nan"}
+        if math.isinf(value):
+            return {"invalid_float": "+inf" if value > 0 else "-inf"}
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_checksum_value(item) for item in value]
+    if isinstance(value, Mapping):
+        return {key: _checksum_value(item) for key, item in value.items()}
+    return value
+
+
+def _checksum_pair_identity(value: Any) -> Any:
+    return value.casefold() if isinstance(value, str) else _checksum_value(value)
+
+
+def _card_rating_checksum(grp_id: Any, stats: Any) -> Mapping[str, Any]:
+    result: dict[str, Any] = {"grp_id": _checksum_value(grp_id)}
+    if not isinstance(stats, SeventeenCardStats):
+        result["record"] = _checksum_value(stats)
+        return result
+    result["record_grp_id"] = _checksum_value(stats.grp_id)
+    result["gih_win_rate"] = _checksum_value(stats.gih_win_rate)
+    if isinstance(stats.sample_counts, RatingSampleCounts):
+        result["games_in_hand"] = _checksum_value(stats.sample_counts.games_in_hand)
+    else:
+        result["invalid_sample_counts"] = _checksum_value(stats.sample_counts)
+    return result
+
+
+def _pair_rating_checksum(pair: Any, rate: Any) -> Mapping[str, Any]:
+    result: dict[str, Any] = {"pair": _checksum_pair_identity(pair)}
+    if not isinstance(rate, ColorPairWinRate):
+        result["record"] = _checksum_value(rate)
+        return result
+    result["record_pair"] = _checksum_pair_identity(rate.pair)
+    result["wins"] = _checksum_value(rate.wins)
+    result["games"] = _checksum_value(rate.games)
+    return result
+
+
 def _ratings_input_checksum(ratings: SeventeenLandsFormatData | None) -> str:
     if ratings is None:
         payload: object = {"present": False}
@@ -1112,29 +1433,21 @@ def _ratings_input_checksum(ratings: SeventeenLandsFormatData | None) -> str:
             "set_code": ratings.set_code.casefold(),
             "event_format": ratings.event_format.casefold(),
             "card_ratings": [
-                {
-                    "grp_id": grp_id,
-                    "gih_win_rate": stats.gih_win_rate,
-                    "games_in_hand": stats.sample_counts.games_in_hand,
-                }
+                _card_rating_checksum(grp_id, stats)
                 for grp_id, stats in sorted(
                     ratings.card_ratings.items(),
                     key=lambda item: str(item[0]),
                 )
             ],
             "pair_win_rates": [
-                {
-                    "pair": pair.casefold(),
-                    "wins": rate.wins,
-                    "games": rate.games,
-                }
+                _pair_rating_checksum(pair, rate)
                 for pair, rate in sorted(
                     ratings.pair_win_rates.items(),
                     key=lambda item: str(item[0]),
                 )
             ],
         }
-    return _canonical_sha256(payload)
+    return _canonical_sha256(_checksum_value(payload))
 
 
 def _card_database_input_checksum(card_database: CardDatabase) -> str:

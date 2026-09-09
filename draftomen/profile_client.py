@@ -33,7 +33,6 @@ from draftomen.profile_manifest import (
 )
 from draftomen.set_profile import (
     ProfileMaturity,
-    SET_PROFILE_SCHEMA_VERSION,
     SetProfile,
     SetProfileError,
     SetProfileLoadResult,
@@ -809,7 +808,7 @@ def _validate_profile_metadata(profile: SetProfile, artifact: ProfileManifestArt
         raise ProfileClientError("profile-maturity-mismatch")
     if profile.generated_at != artifact.generated_at and _aware_datetime(profile.generated_at, "profile generated_at") != _aware_datetime(artifact.generated_at, "artifact generated_at"):
         raise ProfileClientError("profile-generated-at-mismatch")
-    if SET_PROFILE_SCHEMA_VERSION != artifact.set_profile_schema_version:
+    if profile.schema_version != artifact.set_profile_schema_version:
         raise ProfileClientError("profile-schema-mismatch")
 
 

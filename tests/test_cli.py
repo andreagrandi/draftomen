@@ -35,7 +35,6 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.profile_refresh_execution import load_staged_profile_build_bundle
 from draftomen.refresh_plan import LifecycleMetadata, PlannedEnvironment, RefreshPlan, write_refresh_plan
 from draftomen.set_profile import (
-    SET_PROFILE_SCHEMA_VERSION,
     SetProfile,
     dump_set_profile,
     load_set_profile,
@@ -1729,7 +1728,7 @@ def test_watch_uses_profile_source_through_each_terminal_mode(
     artifact = ProfileManifestArtifact(
         set_code=profile.set_code,
         event_format=profile.event_format,
-        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+        set_profile_schema_version=profile.schema_version,
         profile_version=profile.profile_version,
         generated_at=profile.generated_at,
         url=artifact_url,

@@ -86,6 +86,7 @@ _KNOWN_GENERATION_VALIDATION_ERRORS = frozenset(
         "Generated profile bytes are not canonical.",
         "Generated profile does not match the requested set and format.",
         "Generation report does not match the requested profile.",
+        "Generation report schema does not match the profile.",
         "Generation report checksums or sizes do not reconcile.",
         "Generation report could not be serialized and parsed.",
         "Generation report bytes are not canonical.",
@@ -539,6 +540,8 @@ def validate_profile_generation(
         raise ProfilePublicationError("Generated profile bytes are not canonical.")
     if rebuilt.set_code != set_code or rebuilt.event_format != event_format:
         raise ProfilePublicationError("Generated profile does not match the requested set and format.")
+    if report.set_profile_schema_version != rebuilt.schema_version:
+        raise ProfilePublicationError("Generation report schema does not match the profile.")
     if report.set_code != set_code or report.event_format != event_format or report.stage != stage:
         raise ProfilePublicationError("Generation report does not match the requested profile.")
 

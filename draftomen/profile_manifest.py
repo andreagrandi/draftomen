@@ -12,7 +12,10 @@ import tempfile
 from typing import Any, Mapping, TypeAlias
 from urllib.parse import urlsplit
 
-from draftomen.set_profile import ProfileMaturity, SET_PROFILE_SCHEMA_VERSION
+from draftomen.set_profile import (
+    ProfileMaturity,
+    SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS,
+)
 
 
 PROFILE_MANIFEST_SCHEMA_VERSION = 1
@@ -138,9 +141,10 @@ class ProfileManifestArtifact:
             "set_profile_schema_version",
             positive=True,
         )
-        if schema_version != SET_PROFILE_SCHEMA_VERSION:
+        if schema_version not in SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS:
             raise ProfileManifestSchemaError(
-                f"Unsupported set-profile schema {schema_version}; expected {SET_PROFILE_SCHEMA_VERSION}."
+                f"Unsupported set-profile schema {schema_version}; "
+                f"supported versions are {SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS}."
             )
         object.__setattr__(self, "set_profile_schema_version", schema_version)
         object.__setattr__(self, "profile_version", _string(self.profile_version, "profile_version"))

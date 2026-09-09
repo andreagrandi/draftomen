@@ -74,7 +74,6 @@ from draftomen.session import (
 )
 from draftomen.set_profile import (
     CardRating,
-    SET_PROFILE_SCHEMA_VERSION,
     RateEstimate,
     SetProfile,
     dump_set_profile,
@@ -154,7 +153,7 @@ def _profile_transport_payload(
     artifact = ProfileManifestArtifact(
         set_code=profile.set_code,
         event_format=profile.event_format,
-        set_profile_schema_version=SET_PROFILE_SCHEMA_VERSION,
+        set_profile_schema_version=profile.schema_version,
         profile_version=profile.profile_version,
         generated_at=profile.generated_at,
         url=artifact_url,

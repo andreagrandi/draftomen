@@ -1513,11 +1513,13 @@ profile, and it does not certify that the generator will accept the selected
 stage; callers must invoke the unchanged explicit generator and its validation
 workflow separately.
 
-## Schema version 1
+## Set-profile schema versions 1 and 2
 
 A profile is a JSON object with these required fields:
 
-- `schema_version`: exactly `1`. A future value is rejected rather than guessed.
+- `schema_version`: supported values are `1` and `2`. Other values are rejected
+  rather than guessed. Historical schema-1 artifacts retain their canonical
+  bytes; newly generated empirical profiles use schema 2.
 - `profile_version`: the producer's non-empty artifact version.
 - `set_code` and `format`: the exact target set and event format.
 - `generated_at`: an ISO-8601 timestamp.
@@ -1540,6 +1542,23 @@ Empirical sections are sparse and optional:
   A context can contain optional empirical `structural_targets`, `role_targets`,
   `removal_targets`, `synergy`, and `scarcity` arrays. Empty arrays mean no
   evidence was supplied and are omitted during canonical serialization.
+
+Schema-2 positive-sample card GIH estimates and pair-performance estimates
+also contain `aggregate_evidence`. This object has exactly `source_format`,
+`fallback_reason`, and `confidence`. Exact-format evidence uses the requested
+format and a null reason. Cross-format evidence is valid only when the requested
+format is QuickDraft, the source is PremierDraft or TradDraft, and the reason is
+`missing-exact-evidence`, `thin-exact-evidence`, or
+`invalid-exact-evidence`. Zero-sample priors have no aggregate authority.
+Schema-1 profiles reject this field so older artifacts cannot silently claim
+the new provenance contract.
+
+`generate_set_profile(..., ratings=..., fallback_ratings=...)` keeps `ratings`
+as the exact requested-format dataset. `fallback_ratings` accepts only
+already-loaded same-set PremierDraft and TradDraft candidates. QuickDraft
+selects supported observations independently for each canonical card and color
+pair in exact, PremierDraft, then TradDraft order; other requested formats
+remain exact-only. This API does not acquire or stage fallback data.
 
 Pair-profile semantic annotations are separate from empirical evidence:
 
@@ -1582,7 +1601,8 @@ fields:
 Each `artifacts` item has exactly these fields:
 
 - `set_code` and `format`: non-empty, case-folded safe path components.
-- `set_profile_schema_version`: exactly the supported set-profile schema (`1`).
+- `set_profile_schema_version`: the artifact's actual supported set-profile
+  schema (`1` or `2`). It must match the downloaded profile.
 - `profile_version`: a non-empty producer version.
 - `generated_at`: a timezone-aware ISO-8601 timestamp.
 - `url`: an absolute HTTPS URL for the compressed profile artifact.
