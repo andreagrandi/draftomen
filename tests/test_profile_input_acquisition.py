@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import gzip
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from draftomen.profile_input_acquisition import (
     PUBLIC_DRAFT_ADAPTER_VERSION,
     RATINGS_ADAPTER_VERSION,
     CardMetadataAdapter,
+    ProfileInputAcquisitionError,
     ProfileInputAcquisitionOutcome,
     ProfileInputAcquisitionResult,
     SeventeenLandsPublicDraftAdapter,
@@ -34,6 +37,7 @@ from draftomen.seventeen import (
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsFormatData,
+    fetch_17lands_format_data,
 )
 
 NOW = datetime(2026, 8, 31, 12, tzinfo=UTC)
@@ -224,7 +228,6 @@ def _acquire(
         clock=clock,
     )
 
-
 def _acquire_profile(
     *,
     cache: ProfileInputCache,
@@ -233,6 +236,7 @@ def _acquire_profile(
     public_draft_adapter: SeventeenLandsPublicDraftAdapter | None = None,
     clock: FrozenClock,
     offline: bool = False,
+    include_public_drafts: bool = True,
 ) -> ProfileInputAcquisitionResult:
     return acquire_profile_build_bundle(
         environment=_environment(),
@@ -245,6 +249,7 @@ def _acquire_profile(
         ),
         offline=offline,
         clock=clock,
+        include_public_drafts=include_public_drafts,
     )
 
 
@@ -671,16 +676,52 @@ def test_stale_ratings_survive_failed_refresh_with_bounded_reason(tmp_path: Path
     clock = FrozenClock()
     cache = _cache(tmp_path, clock=clock)
     card_adapter = _adapter(StubCardDatabaseFetcher(_database()))
-    ratings_fetcher = StubRatingsFetcher(_ratings())
-    ratings_adapter = _ratings_adapter(ratings_fetcher)
+    endpoint_calls: list[str] = []
+    fixture_dir = Path(__file__).parent / "fixtures"
+    card_payload = json.loads(
+        (fixture_dir / "17lands-card-ratings-quick.json").read_text()
+    )
+    color_payload = json.loads(
+        (fixture_dir / "17lands-color-ratings.json").read_text()
+    )
+
+    def fetch_ratings(
+        *,
+        set_code: str,
+        event_format: str,
+        fetched_at: datetime,
+        timeout_seconds: int,
+    ) -> SeventeenLandsFormatData:
+        def fetch_json(url: str, timeout: int) -> object:
+            assert timeout == timeout_seconds
+            endpoint_calls.append(url)
+            if len(endpoint_calls) == 4:
+                raise RuntimeError("token=secret at /private/ratings")
+            return card_payload if len(endpoint_calls) % 2 else color_payload
+
+        return fetch_17lands_format_data(
+            set_code=set_code,
+            event_format=event_format,
+            fetched_at=fetched_at,
+            fetch_json=fetch_json,
+            timeout_seconds=timeout_seconds,
+        )
+
+    ratings_adapter = SeventeenLandsRatingsAdapter(
+        fetch_ratings=fetch_ratings,
+        timeout_seconds=19,
+    )
     acquired = _acquire_profile(
         cache=cache,
         card_adapter=card_adapter,
         ratings_adapter=ratings_adapter,
         clock=clock,
     )
+    assert acquired.ratings_source is not None
+    cached = cache.lookup(source=ratings_adapter.source_for(environment=_environment()))
+    assert cached.content_path is not None
+    cached_bytes = cached.content_path.read_bytes()
     clock.value = NOW + timedelta(hours=2)
-    ratings_fetcher.error = RuntimeError("token=secret at /private/ratings")
 
     result = _acquire_profile(
         cache=cache,
@@ -691,11 +732,19 @@ def test_stale_ratings_survive_failed_refresh_with_bounded_reason(tmp_path: Path
 
     assert result.succeeded
     assert result.bundle is not None
-    assert result.bundle.ratings == _ratings()
+    assert result.bundle.ratings == acquired.bundle.ratings
     assert result.ratings_source is not None
     assert result.ratings_source.outcome is ProfileInputAcquisitionOutcome.STALE
-    assert acquired.ratings_source is not None
     assert result.ratings_source.source_version == acquired.ratings_source.source_version
+    assert result.ratings_source.sha256 == acquired.ratings_source.sha256
+    assert result.ratings_source.content_bytes == acquired.ratings_source.content_bytes
+    assert result.ratings_source.acquired_at == acquired.ratings_source.acquired_at
+    refreshed_cache = cache.lookup(
+        source=ratings_adapter.source_for(environment=_environment())
+    )
+    assert refreshed_cache.content_path is not None
+    assert refreshed_cache.content_path.read_bytes() == cached_bytes
+    assert len(endpoint_calls) == 4
     assert result.skip_reasons == ("17lands-ratings-refresh-failed",)
     serialized = result.to_bytes().decode("utf-8")
     assert "secret" not in serialized
@@ -882,3 +931,129 @@ def test_mismatched_public_drafts_preserve_ratings_as_unavailable(tmp_path: Path
     serialized = result.to_bytes().decode("utf-8")
     assert "OTH" not in serialized
     assert "draft-one" not in serialized
+
+@pytest.mark.parametrize(
+    "cached_ratings",
+    (
+        pytest.param(replace(_ratings(), set_code="OTH"), id="set"),
+        pytest.param(replace(_ratings(), event_format="premierdraft"), id="format"),
+    ),
+)
+def test_mismatched_cached_ratings_never_become_empirical_evidence(
+    tmp_path: Path,
+    cached_ratings: SeventeenLandsFormatData,
+) -> None:
+    clock = FrozenClock()
+    cache = _cache(tmp_path, clock=clock)
+    ratings_fetcher = StubRatingsFetcher(_ratings())
+    ratings_fetcher.error = RuntimeError("deterministic live fetch failure")
+    ratings_adapter = _ratings_adapter(ratings_fetcher)
+    cache.store(
+        source=ratings_adapter.source_for(environment=_environment()),
+        source_version="mismatched-v1",
+        input_stream=BytesIO(
+            (
+                json.dumps(
+                    cached_ratings.to_json(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        ),
+        acquired_at=NOW,
+    )
+
+    result = _acquire_profile(
+        cache=cache,
+        card_adapter=_adapter(StubCardDatabaseFetcher(_database())),
+        ratings_adapter=ratings_adapter,
+        clock=clock,
+        include_public_drafts=False,
+    )
+
+    assert result.succeeded
+    assert result.bundle is not None
+    assert result.bundle.ratings is None
+    assert result.ratings_source is not None
+    assert result.ratings_source.outcome is ProfileInputAcquisitionOutcome.CORRUPT
+    assert result.ratings_source.sha256 is None
+    assert result.ratings_source.acquired_at is None
+
+
+
+def test_aggregate_only_skips_public_draft_adapter_and_report(
+    tmp_path: Path,
+) -> None:
+    clock = FrozenClock()
+    cache = _cache(tmp_path, clock=clock)
+    card_fetcher = StubCardDatabaseFetcher(_database())
+    ratings_fetcher = StubRatingsFetcher(_ratings())
+    public_draft_fetcher = StubPublicDraftFetcher(_public_drafts())
+    public_source_calls: list[str] = []
+
+    class FailOnPublicDraftSource(SeventeenLandsPublicDraftAdapter):
+        def source_for(self, **_: object):
+            public_source_calls.append("source")
+            raise AssertionError("public drafts must not be touched")
+
+    card_adapter = _adapter(card_fetcher)
+    ratings_adapter = _ratings_adapter(ratings_fetcher)
+    public_adapter = FailOnPublicDraftSource(
+        fetch_public_drafts=public_draft_fetcher,
+        timeout_seconds=23,
+    )
+    result = _acquire_profile(
+        cache=cache,
+        card_adapter=card_adapter,
+        ratings_adapter=ratings_adapter,
+        public_draft_adapter=public_adapter,
+        clock=clock,
+        include_public_drafts=False,
+    )
+    offline = _acquire_profile(
+        cache=cache,
+        card_adapter=card_adapter,
+        ratings_adapter=ratings_adapter,
+        public_draft_adapter=public_adapter,
+        clock=clock,
+        offline=True,
+        include_public_drafts=False,
+    )
+    assert result.succeeded
+    assert result.bundle is not None
+    assert result.bundle.ratings == _ratings()
+    assert result.bundle.public_drafts is None
+    assert result.bundle.public_draft_source is None
+    assert result.public_draft_source is None
+    assert tuple(report.source.name for report in result.sources) == (
+        "card-metadata",
+        "17lands-ratings",
+    )
+    assert not any("public-drafts" in reason for reason in result.skip_reasons)
+
+    assert public_draft_fetcher.calls == []
+    assert public_source_calls == []
+    assert len(card_fetcher.calls) == 1
+    assert len(ratings_fetcher.calls) == 1
+    assert offline.succeeded
+    assert offline.ratings_source is not None
+    assert offline.ratings_source.outcome is ProfileInputAcquisitionOutcome.OFFLINE_REUSED
+    assert offline.public_draft_source is None
+    assert offline.bundle is not None
+    assert offline.bundle.public_drafts is None
+    assert not any("public-drafts" in reason for reason in offline.skip_reasons)
+
+
+def test_include_public_drafts_must_be_bool_before_acquisition(tmp_path: Path) -> None:
+    card_fetcher = StubCardDatabaseFetcher(_database())
+    with pytest.raises(ProfileInputAcquisitionError, match="include_public_drafts"):
+        _acquire_profile(
+            cache=_cache(tmp_path, clock=FrozenClock()),
+            card_adapter=_adapter(card_fetcher),
+            ratings_adapter=_ratings_adapter(StubRatingsFetcher(_ratings())),
+            clock=FrozenClock(),
+            include_public_drafts=1,  # type: ignore[arg-type]
+        )
+    assert card_fetcher.calls == []

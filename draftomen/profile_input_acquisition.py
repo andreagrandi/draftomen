@@ -761,11 +761,14 @@ def acquire_profile_build_bundle(
     public_draft_adapter: SeventeenLandsPublicDraftAdapter | None = None,
     offline: bool = False,
     clock: Clock | None = None,
+    include_public_drafts: bool = True,
 ) -> ProfileInputAcquisitionResult:
     """Acquire required metadata and independent empirical sources.
     Optional failures preserve every successfully acquired input.
     """
 
+    if not isinstance(include_public_drafts, bool):
+        raise ProfileInputAcquisitionError("include_public_drafts must be a bool.")
     metadata_result = acquire_card_metadata_bundle(
         environment=environment,
         cache=cache,
@@ -783,17 +786,21 @@ def acquire_profile_build_bundle(
         offline=offline,
         clock=clock,
     )
-    public_draft_result = _acquire_public_drafts(
-        environment=environment,
-        cache=cache,
-        adapter=public_draft_adapter or SeventeenLandsPublicDraftAdapter(),
-        offline=offline,
-        clock=clock,
+    public_draft_result = (
+        _acquire_public_drafts(
+            environment=environment,
+            cache=cache,
+            adapter=public_draft_adapter or SeventeenLandsPublicDraftAdapter(),
+            offline=offline,
+            clock=clock,
+        )
+        if include_public_drafts
+        else None
     )
     skip_reasons = list(metadata_result.skip_reasons)
     if ratings_result.skip_reason is not None:
         skip_reasons.append(ratings_result.skip_reason)
-    if public_draft_result.skip_reason is not None:
+    if public_draft_result is not None and public_draft_result.skip_reason is not None:
         skip_reasons.append(public_draft_result.skip_reason)
     return ProfileInputAcquisitionResult(
         environment=environment,
@@ -804,11 +811,17 @@ def acquire_profile_build_bundle(
             card_metadata=metadata_result.source,
             ratings=ratings_result.ratings,
             ratings_source=ratings_result.report,
-            public_drafts=public_draft_result.manifest,
-            public_draft_source=public_draft_result.report,
+            public_drafts=(
+                None if public_draft_result is None else public_draft_result.manifest
+            ),
+            public_draft_source=(
+                None if public_draft_result is None else public_draft_result.report
+            ),
         ),
         ratings_source=ratings_result.report,
-        public_draft_source=public_draft_result.report,
+        public_draft_source=(
+            None if public_draft_result is None else public_draft_result.report
+        ),
         skip_reasons=tuple(skip_reasons),
     )
 
@@ -1462,7 +1475,17 @@ def _ratings_report_from_cache(
     cache_store_outcome: ProfileInputCacheOutcome | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> ProfileInputSourceReport:
-    record = result.record
+    record = (
+        result.record
+        if outcome
+        in (
+            ProfileInputAcquisitionOutcome.ACQUIRED,
+            ProfileInputAcquisitionOutcome.CACHED,
+            ProfileInputAcquisitionOutcome.OFFLINE_REUSED,
+            ProfileInputAcquisitionOutcome.STALE,
+        )
+        else None
+    )
     lookup_outcome = ProfileInputCacheOutcome(result.outcome)
     return ProfileInputSourceReport(
         source=result.source,
@@ -1490,7 +1513,17 @@ def _public_draft_report_from_cache(
     cache_store_outcome: ProfileInputCacheOutcome | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> ProfileInputSourceReport:
-    record = result.record
+    record = (
+        result.record
+        if outcome
+        in (
+            ProfileInputAcquisitionOutcome.ACQUIRED,
+            ProfileInputAcquisitionOutcome.CACHED,
+            ProfileInputAcquisitionOutcome.OFFLINE_REUSED,
+            ProfileInputAcquisitionOutcome.STALE,
+        )
+        else None
+    )
     lookup_outcome = ProfileInputCacheOutcome(result.outcome)
     return ProfileInputSourceReport(
         source=result.source,

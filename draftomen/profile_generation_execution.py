@@ -9,10 +9,11 @@ No artifact or publication filesystem is touched here.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 import hashlib
 import json
+import re
 from typing import Any, Mapping, TypeAlias
 
 from draftomen.profile_generation import (
@@ -38,6 +39,32 @@ from draftomen.profile_refresh_execution import (
 )
 from draftomen.refresh_plan import PlannedEnvironment
 from draftomen.semantic_roles import RoleClassifier
+from draftomen.profile_input_acquisition import ProfileInputAcquisitionOutcome
+
+
+_GENERATION_INPUT_SOURCE_KEYS = frozenset(
+    {
+        "role",
+        "name",
+        "sha256",
+        "source_version",
+        "requested_set",
+        "requested_format",
+        "source_format",
+        "acquired_at",
+        "outcome",
+        "fallback_state",
+    }
+)
+_GENERATION_INPUT_SOURCE_ROLES = frozenset(
+    {"card_database", "seventeen_lands_ratings", "seventeen_lands_public_drafts"}
+)
+_GENERATION_FALLBACK_STATES = frozenset(
+    {"none", "verified-stale-cache", "verified-offline-cache"}
+)
+_GENERATION_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+_MAX_INPUT_SOURCE_ROWS = 3
+_MAX_INPUT_SOURCE_FIELD_LENGTH = 256
 
 
 PROFILE_GENERATION_EXECUTION_SCHEMA_VERSION = 1
@@ -154,14 +181,22 @@ class ProfileGenerationEnvironmentResult:
         if len(diagnostics) > _MAX_DIAGNOSTICS:
             raise ProfileGenerationExecutionError("profile generation diagnostics exceed the bound")
         object.__setattr__(self, "diagnostics", diagnostics)
-
-        input_sources = tuple(self.input_sources)
+        try:
+            input_sources = tuple(self.input_sources)
+        except (TypeError, ValueError) as error:
+            raise ProfileGenerationExecutionError("profile generation input sources are invalid") from error
+        if len(input_sources) > _MAX_INPUT_SOURCE_ROWS:
+            raise ProfileGenerationExecutionError("profile generation input sources exceed the bound")
+        normalized_sources: list[dict[str, str]] = []
+        roles: set[str] = set()
         for item in input_sources:
-            if not isinstance(item, Mapping) or any(
-                not isinstance(key, str) or not isinstance(value, str) for key, value in item.items()
-            ):
-                raise ProfileGenerationExecutionError("profile generation input sources are invalid")
-        object.__setattr__(self, "input_sources", input_sources)
+            normalized = _validate_input_source(item)
+            role = normalized["role"]
+            if role in roles:
+                raise ProfileGenerationExecutionError("profile generation input source roles are duplicated")
+            roles.add(role)
+            normalized_sources.append(normalized)
+        object.__setattr__(self, "input_sources", tuple(normalized_sources))
 
         for name in ("diagnostic_total", "diagnostics_omitted"):
             value = getattr(self, name)
@@ -311,6 +346,7 @@ class ProfileGenerationEnvironmentResult:
             "diagnostics": [item.to_json() for item in self.diagnostics],
             "diagnostics_omitted": self.diagnostics_omitted,
             "environment": self.environment.to_json(),
+            "input_sources": [dict(item) for item in self.input_sources],
             "failure_phase": None,
             "failure_reason": None,
             "generator_counts": None,
@@ -371,8 +407,10 @@ def generate_staged_environment_profile(
 
     try:
         selection = select_profile_generation_stage(
-            ratings_report=bundle.ratings_source,
-            public_draft_report=bundle.public_draft_source,
+            ratings_report=bundle.ratings_source if bundle.ratings is not None else None,
+            public_draft_report=(
+                bundle.public_draft_source if bundle.public_drafts is not None else None
+            ),
             thresholds=thresholds,
         )
     except Exception:  # noqa: BLE001 - policy failures are finite and path-free
@@ -424,20 +462,18 @@ def generate_staged_environment_profile(
         )
 
     report = generation.report
-    input_sources = tuple(
-        {
-            "role": role,
-            "name": source_report.source.name,
-            "sha256": source_report.sha256 or "",
-            "source_version": source_report.source_version or "",
-        }
-        for role, source_report in (
-            ("card_database", bundle.card_metadata),
-            ("seventeen_lands_ratings", bundle.ratings_source),
-            ("seventeen_lands_public_drafts", bundle.public_draft_source),
+    try:
+        input_sources = _project_input_sources(environment=environment, bundle=bundle)
+    except Exception:  # noqa: BLE001 - malformed provenance becomes a bounded failure
+        return _failure(
+            environment=environment,
+            phase=ProfileGenerationFailurePhase.VALIDATION,
+            reason=ProfileGenerationFailureReason.VALIDATION_FAILED,
+            selection=selection,
+            diagnostics=diagnostics,
+            diagnostic_total=total,
+            diagnostics_omitted=omitted,
         )
-        if source_report is not None
-    )
     try:
         return ProfileGenerationEnvironmentResult(
             environment=environment,
@@ -464,8 +500,133 @@ def generate_staged_environment_profile(
         )
 
 
+def _project_input_sources(*, environment: PlannedEnvironment, bundle: Any) -> tuple[dict[str, str], ...]:
+    rows: list[dict[str, str]] = []
+    for role, source_report in (
+        ("card_database", bundle.card_metadata),
+        ("seventeen_lands_ratings", bundle.ratings_source),
+        ("seventeen_lands_public_drafts", bundle.public_draft_source),
+    ):
+        if source_report is None:
+            continue
+        outcome = (
+            source_report.outcome.value
+            if isinstance(source_report.outcome, ProfileInputAcquisitionOutcome)
+            else source_report.outcome
+        )
+        acquired_at = source_report.acquired_at
+        rows.append(
+            {
+                "role": role,
+                "name": source_report.source.name,
+                "sha256": source_report.sha256 or "",
+                "source_version": source_report.source_version or "",
+                "requested_set": environment.set_code,
+                "requested_format": environment.event_format or "",
+                "source_format": source_report.source.event_format or "",
+                "acquired_at": "" if acquired_at is None else _utc_timestamp(acquired_at),
+                "outcome": outcome,
+                "fallback_state": _fallback_state(outcome),
+            }
+        )
+    return tuple(rows)
+
+
+def _fallback_state(outcome: Any) -> str:
+    if outcome == ProfileInputAcquisitionOutcome.STALE.value:
+        return "verified-stale-cache"
+    if outcome == ProfileInputAcquisitionOutcome.OFFLINE_REUSED.value:
+        return "verified-offline-cache"
+    return "none"
+
+
+def _validate_input_source(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ProfileGenerationExecutionError("profile generation input source is invalid")
+    try:
+        if set(value) != _GENERATION_INPUT_SOURCE_KEYS:
+            raise ProfileGenerationExecutionError("profile generation input source keys are invalid")
+    except (TypeError, ValueError) as error:
+        raise ProfileGenerationExecutionError("profile generation input source keys are invalid") from error
+
+    fields = {
+        key: _safe_input_source_text(value[key], key, allow_empty=key in {
+            "sha256",
+            "source_version",
+            "requested_format",
+            "source_format",
+            "acquired_at",
+        })
+        for key in _GENERATION_INPUT_SOURCE_KEYS
+    }
+    if fields["role"] not in _GENERATION_INPUT_SOURCE_ROLES:
+        raise ProfileGenerationExecutionError("profile generation input source role is invalid")
+    if not fields["name"]:
+        raise ProfileGenerationExecutionError("profile generation input source name is invalid")
+    if not fields["requested_set"]:
+        raise ProfileGenerationExecutionError("profile generation input source requested set is invalid")
+
+    try:
+        outcome = ProfileInputAcquisitionOutcome(fields["outcome"])
+    except (TypeError, ValueError) as error:
+        raise ProfileGenerationExecutionError("profile generation input source outcome is invalid") from error
+    expected_fallback = _fallback_state(outcome.value)
+    if fields["fallback_state"] not in _GENERATION_FALLBACK_STATES:
+        raise ProfileGenerationExecutionError("profile generation input source fallback is invalid")
+    if fields["fallback_state"] != expected_fallback:
+        raise ProfileGenerationExecutionError("profile generation input source fallback does not match outcome")
+
+    digest = fields["sha256"]
+    if digest and _GENERATION_SHA256_PATTERN.fullmatch(digest) is None:
+        raise ProfileGenerationExecutionError("profile generation input source digest is invalid")
+    acquired_at = fields["acquired_at"]
+    if acquired_at:
+        fields["acquired_at"] = _utc_timestamp(acquired_at)
+
+    unpinned_optional = (
+        fields["role"]
+        in {"seventeen_lands_ratings", "seventeen_lands_public_drafts"}
+        and outcome
+        in {
+            ProfileInputAcquisitionOutcome.MISSING,
+            ProfileInputAcquisitionOutcome.CORRUPT,
+            ProfileInputAcquisitionOutcome.UNAVAILABLE,
+        }
+    )
+    if unpinned_optional:
+        if digest or fields["source_version"] or acquired_at:
+            raise ProfileGenerationExecutionError(
+                "unavailable optional provenance must have empty pins and timestamp"
+            )
+    elif not acquired_at:
+        raise ProfileGenerationExecutionError("profile generation input source timestamp is required")
+    return fields
+
+
+def _safe_input_source_text(value: Any, field_name: str, *, allow_empty: bool) -> str:
+    if not isinstance(value, str):
+        raise ProfileGenerationExecutionError(f"profile generation input source {field_name} is invalid")
+    if not allow_empty and not value:
+        raise ProfileGenerationExecutionError(f"profile generation input source {field_name} is invalid")
+    if len(value) > _MAX_INPUT_SOURCE_FIELD_LENGTH or any(
+        ord(character) < 32 or ord(character) == 127 for character in value
+    ) or "/" in value or "\\" in value or "://" in value:
+        raise ProfileGenerationExecutionError(f"profile generation input source {field_name} is invalid")
+    return value
+
+
+def _utc_timestamp(value: Any) -> str:
+    if not isinstance(value, datetime) and not isinstance(value, str):
+        raise ProfileGenerationExecutionError("profile generation input source timestamp is invalid")
+    try:
+        timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ProfileGenerationExecutionError("profile generation input source timestamp is invalid") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ProfileGenerationExecutionError("profile generation input source timestamp is invalid")
+    return timestamp.astimezone(UTC).isoformat()
+
 def _failure(
-    *,
     environment: PlannedEnvironment,
     phase: ProfileGenerationFailurePhase,
     reason: ProfileGenerationFailureReason,

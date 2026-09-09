@@ -8,11 +8,20 @@ from pathlib import Path
 
 import pytest
 
+from draftomen.carddb import CardDatabase
+from draftomen.profile_input_acquisition import (
+    CardMetadataAdapter,
+    SeventeenLandsPublicDraftAdapter,
+    SeventeenLandsRatingsAdapter,
+)
 import draftomen.profile_batch_generation as batch
 import draftomen.profile_refresh_execution as refresh
 from draftomen.refresh_plan import LifecycleMetadata, PlannedEnvironment, RefreshPlan
+from draftomen.semantic_roles import Role
+from draftomen.set_profile import ProfileMaturity
+from draftomen.seventeen import load_17lands_format_data
 
-from tests.test_profile_generation_execution import _bundle
+from tests.test_profile_generation_execution import NOW as INPUT_NOW, _bundle
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "profile-generation"
@@ -140,12 +149,244 @@ def test_batch_report_has_versions_sources_counts_and_artifact_hashes(tmp_path: 
     assert environment["selection"]["stage"] == "mature"
     assert environment["sources"]
     assert {"name", "sha256", "attribution", "license"} <= set(environment["sources"][0])
+    draft_source = next(
+        source
+        for source in environment["sources"]
+        if source["role"] == "seventeen_lands_public_drafts"
+    )
+    payload = (FIXTURE_DIR / "mature-data.csv").read_bytes().replace(b"TST,", b"MATURE,")
+    assert draft_source == {
+        "attribution": "fixture",
+        "license": "CC0",
+        "name": "17lands-public-drafts",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "role": "seventeen_lands_public_drafts",
+        "source_version": "fixture-v1",
+        "requested_set": "MATURE",
+        "requested_format": "quickdraft",
+        "source_format": "quickdraft",
+        "acquired_at": INPUT_NOW.isoformat(),
+        "outcome": "acquired",
+        "fallback_state": "none",
+    }
     assert environment["samples"] is not None
     assert "card_games" in environment and "pair_games" in environment
     assert "skip_count" in environment and "error_count" in environment
     for artifact in ("profile", "gzip", "report"):
         assert len(environment["artifacts"][artifact]["sha256"]) == 64
         assert environment["artifacts"][artifact]["bytes"] > 0
+
+
+def test_batch_keeps_distinct_staged_roles_with_one_shared_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment("MATURE")
+    plan, staged = _stage_batch(tmp_path, (environment,))
+    authority = json.loads((staged / "execution.json").read_text())
+    bundle_path = staged / "bundles" / authority["environments"][0]["bundle_id"]
+    generated = batch.generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW,
+    )
+    assert generated.publication_eligible
+    assert generated.generation is not None
+    assert generated.input_sources
+    descriptor_digest = generated.generation.report.sources[0].sha256
+    staged_by_role = {source["role"]: dict(source) for source in generated.input_sources}
+    ratings = staged_by_role["seventeen_lands_ratings"]
+    drafts = staged_by_role["seventeen_lands_public_drafts"]
+    ratings["sha256"] = descriptor_digest
+    drafts["sha256"] = descriptor_digest
+    generated = replace(generated, input_sources=(ratings, drafts))
+    monkeypatch.setattr(batch, "generate_staged_environment_profile", lambda **_: generated)
+
+    result = batch.generate_staged_profile_batch(
+        plan=plan,
+        staged_dir=staged,
+        generated_at=NOW,
+    )
+
+    sources = result.to_json()["environments"][0]["sources"]
+    assert {source["role"] for source in sources} == {
+        "seventeen_lands_ratings",
+        "seventeen_lands_public_drafts",
+    }
+    by_role = {source["role"]: source for source in sources}
+    assert by_role["seventeen_lands_ratings"]["name"] == "17lands-ratings"
+    assert by_role["seventeen_lands_public_drafts"]["name"] == "17lands-public-drafts"
+    assert by_role["seventeen_lands_ratings"]["sha256"] == descriptor_digest
+    assert by_role["seventeen_lands_public_drafts"]["sha256"] == descriptor_digest
+    assert by_role["seventeen_lands_ratings"]["attribution"] == ""
+    assert by_role["seventeen_lands_ratings"]["license"] == ""
+    assert by_role["seventeen_lands_public_drafts"]["attribution"] == "fixture"
+    assert by_role["seventeen_lands_public_drafts"]["license"] == "CC0"
+
+def test_aggregate_only_acquisition_generates_semantic_early_batch(
+    tmp_path: Path,
+) -> None:
+    environment = _environment("TST")
+    plan = _plan((environment,))
+    endpoints: list[str] = []
+    cards = CardDatabase.from_json(
+        json.loads((FIXTURE_DIR / "card-database.json").read_text())
+    )
+
+    def fetch_cards(*, set_code: str, timeout_seconds: int) -> CardDatabase:
+        del timeout_seconds
+        endpoints.append(f"scryfall:{set_code}")
+        return replace(
+            cards,
+            cards={
+                grp_id: replace(card, set_code=set_code)
+                for grp_id, card in cards.cards.items()
+            },
+        )
+
+    def fetch_ratings(
+        *,
+        set_code: str,
+        event_format: str,
+        fetched_at: datetime,
+        timeout_seconds: int,
+    ):
+        del timeout_seconds
+        endpoints.append(f"17lands-ratings:{set_code}:{event_format}")
+        ratings = load_17lands_format_data(
+            set_code="TST",
+            event_format="quickdraft",
+            cache_path=FIXTURE_DIR / "ratings.json",
+        )
+        return replace(
+            ratings,
+            set_code=set_code,
+            event_format=event_format,
+            fetched_at=fetched_at,
+        )
+
+    def fetch_public_drafts(**_: object) -> None:
+        endpoints.append("17lands-public-drafts:fetch")
+        raise AssertionError("aggregate-only acquisition fetched public drafts")
+
+    class FailOnPublicDraftSource(SeventeenLandsPublicDraftAdapter):
+        def source_for(self, **_: object):
+            endpoints.append("17lands-public-drafts:source")
+            raise AssertionError("aggregate-only acquisition resolved public drafts")
+
+    staged = tmp_path / "aggregate-only"
+    refreshed = refresh.execute_profile_refresh_plan(
+        plan=plan,
+        cache=refresh.ProfileInputCache(
+            tmp_path / "aggregate-cache",
+            policy=refresh.DEFAULT_PROFILE_REFRESH_CACHE_POLICY,
+        ),
+        output_dir=staged,
+        offline=False,
+        card_metadata_adapter=CardMetadataAdapter(fetch_database=fetch_cards),
+        ratings_adapter=SeventeenLandsRatingsAdapter(fetch_ratings=fetch_ratings),
+        public_draft_adapter=FailOnPublicDraftSource(
+            fetch_public_drafts=fetch_public_drafts
+        ),
+        include_public_drafts=False,
+        clock=lambda: NOW,
+    )
+    assert refreshed.succeeded
+
+    result = batch.generate_staged_profile_batch(
+        plan=plan,
+        staged_dir=staged,
+        generated_at=NOW,
+    )
+
+    assert result.succeeded
+    generated = result.environments[0]
+    assert generated.selection is not None
+    assert generated.selection.stage.value == "early"
+    assert generated.generation is not None
+    profile = generated.generation.profile
+    assert profile.maturity is ProfileMaturity.EARLY
+    assert profile.roles_are_compatible
+    draw = profile.resolve_roles(cards.cards[1])
+    assert any(assignment.role is Role.DRAW for assignment in draw.assignments)
+    assert any(item.gih_win_rate.samples > 0 for item in profile.card_ratings)
+    pair = profile.pair("WU")
+    assert pair is not None
+    assert pair.performance.samples > 0
+    sources = result.to_json()["environments"][0]["sources"]
+    assert {
+        source["role"] for source in sources
+    } == {"card_database", "seventeen_lands_ratings"}
+    ratings_source = next(
+        source
+        for source in sources
+        if source["role"] == "seventeen_lands_ratings"
+    )
+    assert ratings_source["acquired_at"] == NOW.isoformat()
+    assert ratings_source["outcome"] == "acquired"
+    assert ratings_source["fallback_state"] == "none"
+    assert endpoints == [
+        "scryfall:TST",
+        "17lands-ratings:TST:quickdraft",
+    ]
+
+
+def test_batch_preserves_unpinned_unavailable_optional_provenance(
+    tmp_path: Path,
+) -> None:
+    environment = _environment("META")
+    plan, staged = _stage_batch(tmp_path, (environment,))
+
+    result = batch.generate_staged_profile_batch(
+        plan=plan,
+        staged_dir=staged,
+        generated_at=NOW,
+    )
+
+    assert result.succeeded
+    sources = {
+        source["role"]: source
+        for source in result.to_json()["environments"][0]["sources"]
+    }
+    for role in (
+        "seventeen_lands_ratings",
+        "seventeen_lands_public_drafts",
+    ):
+        assert sources[role]["outcome"] == "unavailable"
+        assert sources[role]["sha256"] == ""
+        assert sources[role]["source_version"] == ""
+        assert sources[role]["acquired_at"] == ""
+
+
+def test_batch_rejects_unsafe_staged_provenance_independently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment("MATURE")
+    plan, staged = _stage_batch(tmp_path, (environment,))
+    authority = json.loads((staged / "execution.json").read_text())
+    bundle_path = staged / "bundles" / authority["environments"][0]["bundle_id"]
+    generated = batch.generate_staged_environment_profile(
+        bundle_path=bundle_path,
+        environment=environment,
+        generated_at=NOW,
+    )
+    assert generated.publication_eligible
+    unsafe = dict(generated.input_sources[0])
+    unsafe["name"] = "https://unsafe.example/source"
+    object.__setattr__(generated, "input_sources", (unsafe,))
+    monkeypatch.setattr(
+        batch,
+        "generate_staged_environment_profile",
+        lambda **_: generated,
+    )
+
+    with pytest.raises(batch.ProfileBatchGenerationError):
+        batch.generate_staged_profile_batch(
+            plan=plan,
+            staged_dir=staged,
+            generated_at=NOW,
+        )
 
 
 def test_one_invalid_environment_does_not_discard_valid_siblings(tmp_path: Path) -> None:

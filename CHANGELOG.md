@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Add explicit aggregate-only profile acquisition for Oracle metadata and
+  17Lands card/color evidence, with verified-cache fallback and privacy-safe
+  provenance preserved through staged generation and batch reports. (#415)
 - Compile deterministic semantic card roles into EARLY empirical profiles so
   contextual scoring can use Oracle metadata before public draft data exists.
   (#410)
