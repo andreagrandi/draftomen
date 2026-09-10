@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Benchmark pinned local Qwen3.5 4B and 9B Oracle-text extraction across a
+  frozen ELD snapshot, retaining evidence, telemetry, and a stop decision
+  without changing production scoring or publication. (#426)
 - Publish contextual-evidence availability and exact or fallback source formats
   from immutable live-session snapshots, with an accessible desktop status that
   stays coherent across profile and scoring-mode transitions. (#413)
