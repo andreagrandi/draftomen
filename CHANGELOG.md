@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Render detailed pick rationales as base rating plus material drafter-facing
+  deck-fit reasons, omitting rounded-zero and internal bookkeeping while
+  retaining structured scoring evidence. (#424)
 - Publish QuickDraft profiles from eligible same-set Premier/Traditional
   aggregate evidence when exact coverage is incomplete, preserving actual
   source provenance and replacing fallback sections on later exact refreshes.

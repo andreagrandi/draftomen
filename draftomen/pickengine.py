@@ -5,6 +5,7 @@ Keep pick-quality math isolated from CLI and TUI rendering code.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, replace
 from functools import cmp_to_key
 from types import MappingProxyType
@@ -118,6 +119,11 @@ _CONTEXTUAL_REASON_PHRASES: Mapping[str, str] = {
     "unsupported_payoff": "accounts for unsupported payoff risk",
     "fixing": "adds needed mana fixing",
 }
+
+_ROLE_EVIDENCE_PATTERN = re.compile(
+    r"fills (?P<target>[a-z0-9_]+) deficit "
+    r"\((?P<count>\d+)/(?P<minimum>\d+)\)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,9 +539,7 @@ def render_pick_rationale_detailed(
     *,
     scored_card: ScoredCard,
 ) -> str:
-    """Render every rationale reason and any explicit score remainder.
-    Context claims come only from retained scoring context on the card.
-    """
+    """Render a base score and material drafter-facing deck-fit reasons."""
 
     if scored_card.freely_available_basic:
         return (
@@ -547,41 +551,39 @@ def render_pick_rationale_detailed(
     rating_reason = next(
         reason for reason in rationale.reasons if reason.kind == "rating"
     )
-    color_reason = next(
-        reason for reason in rationale.reasons if reason.kind == "color"
-    )
+    rating_note = _profile_rating_note(card=scored_card)
+    rating_phrase = rating_reason.phrase.removesuffix(rating_note)
     parts = [
         f"{scored_card.card.name} receives {scored_card.score} DO points.",
-        f"rating: {rating_reason.phrase}.",
-        (
-            f"color {_precise_contribution(color_reason.contribution)}: "
-            f"{color_reason.phrase}."
-        ),
+        f"Base rating: {scored_card.base_score:.2f} DO points.",
+        f"Rating evidence: {rating_phrase}.",
     ]
-    has_material_context = any(
-        reason.kind in _TERM_BOUNDS for reason in rationale.reasons
-    )
-    if scored_card.contextual_pair is not None and has_material_context:
-        theme = (
-            f", theme {scored_card.contextual_theme}"
-            if scored_card.contextual_theme is not None
-            else ""
-        )
-        parts.append(f"context {scored_card.contextual_pair}{theme}.")
+    maturity = scored_card.contextual_profile_maturity
+    if maturity is not None:
+        confidence = scored_card.contextual_profile_confidence
+        if confidence is None:
+            parts.append(
+                f"Profile evidence is {maturity}; "
+                "confidence in that evidence is unavailable."
+            )
+        else:
+            parts.append(
+                f"Profile evidence is {maturity}; "
+                f"confidence in that evidence is {confidence:.0%}, "
+                "not a win probability."
+            )
 
     for reason in rationale.reasons:
-        if reason.kind in _TERM_BOUNDS or reason.kind in {"splash", "tiebreaker"}:
-            parts.append(f"{_detailed_reason(reason=reason)}.")
-
-    if abs(rationale.unattributed_contribution) > 1e-9:
-        parts.append(
-            "score accounting remainder "
-            f"{_precise_contribution(rationale.unattributed_contribution)} "
-            "covers collective-cap or score-clamp accounting."
-        )
+        if reason.kind == "color" or reason.kind in _TERM_BOUNDS:
+            if _precise_contribution(reason.contribution) in {
+                "+0.00 DO points",
+                "-0.00 DO points",
+            }:
+                continue
+            parts.append(_detailed_reason(reason=reason))
+        elif reason.kind in {"splash", "tiebreaker"}:
+            parts.append(_concise_reason(reason=reason))
     return " ".join(parts)
-
-
 
 
 def _rationale_for_render(*, scored_card: ScoredCard) -> PickRationale:
@@ -617,18 +619,40 @@ def _concise_reason(*, reason: PickReason) -> str:
 
 
 def _detailed_reason(*, reason: PickReason) -> str:
-    label = reason.kind.replace("_", " ")
-    if reason.contribution is None:
-        text = f"{label}: {reason.phrase}"
-    else:
-        text = (
-            f"{label} {_precise_contribution(reason.contribution)}: "
-            f"{reason.phrase}"
+    contribution = _precise_contribution(reason.contribution)
+    if reason.kind == "color":
+        stem = (
+            "Its colors are a weaker fit for your current deck"
+            if reason.contribution is not None and reason.contribution < 0.0
+            else "Its colors fit your current deck"
         )
-    evidence = reason.preserved_evidence
-    if evidence:
-        text += " [" + "; ".join(evidence) + "]"
-    return text
+    elif reason.kind == "role":
+        descriptions = []
+        for evidence in reason.preserved_evidence:
+            match = _ROLE_EVIDENCE_PATTERN.fullmatch(evidence)
+            if match is None:
+                continue
+            target = match.group("target").replace("_", " ")
+            descriptions.append(
+                f"Helps fill your deck's {target} gap: "
+                f"{match.group('count')} of {match.group('minimum')} preferred cards"
+            )
+        stem = (
+            "; ".join(descriptions)
+            if descriptions
+            else "Helps fill a missing role in your deck"
+        )
+    else:
+        stem = {
+            "urgency": (
+                "Filling a missing role matters more at this stage of the draft"
+            ),
+            "synergy": "Works with support already in your deck",
+            "redundancy": "Overlaps with roles your deck already covers",
+            "unsupported_payoff": "Needs support your deck does not yet have",
+            "fixing": "Helps your deck produce the colors it needs",
+        }[reason.kind]
+    return f"{stem} ({contribution})."
 
 
 def _signed_do_points(value: float | None) -> str:
@@ -643,6 +667,10 @@ def _precise_contribution(value: float | None) -> str:
     if value is None:
         return "not additive"
     return f"{value:+.2f} DO points"
+
+
+
+
 
 
 def _close_pick_label(
