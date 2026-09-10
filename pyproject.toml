@@ -82,6 +82,7 @@ files = [
     "draftomen/guide_client.py",
     "draftomen/logfollow.py",
     "draftomen/mock_session.py",
+    "draftomen/openrouter_client.py",
     "draftomen/paths.py",
     "draftomen/pickengine.py",
     "draftomen/pool.py",

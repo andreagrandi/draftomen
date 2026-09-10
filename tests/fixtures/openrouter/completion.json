@@ -1,0 +1,31 @@
+{
+  "object": "chat.completion",
+  "id": "fixture-completion",
+  "created": 0,
+  "model": "openai/fixture-model",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"answer\":\"fixture\",\"usage\":{\"cost\":999}}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 100,
+    "completion_tokens": 20,
+    "prompt_tokens_details": {"cached_tokens": 60},
+    "completion_tokens_details": {"reasoning_tokens": 8},
+    "cost": 0.0012300
+  },
+  "openrouter_metadata": {
+    "endpoints": {
+      "total": 1,
+      "available": [
+        {"model": "openai/fixture-model", "provider": "FixtureProvider", "selected": true}
+      ]
+    }
+  }
+}
