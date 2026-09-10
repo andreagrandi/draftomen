@@ -79,6 +79,7 @@ files = [
     "draftomen/corpus.py",
     "draftomen/deckbuilder.py",
     "draftomen/events.py",
+    "draftomen/guide_client.py",
     "draftomen/logfollow.py",
     "draftomen/mock_session.py",
     "draftomen/paths.py",
