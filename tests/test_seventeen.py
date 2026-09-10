@@ -18,6 +18,7 @@ from draftomen.carddb import (
 )
 from draftomen.config import COLOR_PAIRS, PICK_ENGINE
 from draftomen.seventeen import (
+    card_ratings_url,
     NEUTRAL_PRIOR_SOURCE,
     PREMIER_DRAFT_FORMAT,
     QUICK_DRAFT_FORMAT,
@@ -84,6 +85,32 @@ class RecordingFetcher:
             return self.color_ratings
 
         raise AssertionError(f"unexpected URL {url}")
+
+
+def test_card_ratings_url_canonicalizes_hosted_event_formats() -> None:
+    for event_format, expected_format in (
+        ("premierdraft", "PremierDraft"),
+        ("traddraft", "TradDraft"),
+        ("quickdraft", "QuickDraft"),
+        ("picktwodraft", "PickTwoDraft"),
+    ):
+        assert card_ratings_url(set_code="tst", event_format=event_format) == (
+            "https://api.17lands.com/api/card_data?"
+            f"expansion=TST&event_type={expected_format}&time_period=ALL_TIME"
+        )
+
+    assert card_ratings_url(
+        set_code="tst",
+        event_format="quickdraft",
+        colors="WU",
+    ) == (
+        "https://api.17lands.com/api/card_data?"
+        "expansion=TST&event_type=QuickDraft&time_period=ALL_TIME&colors=WU"
+    )
+    assert card_ratings_url(set_code="tst", event_format="customdraft") == (
+        "https://api.17lands.com/api/card_data?"
+        "expansion=TST&event_type=customdraft&time_period=ALL_TIME"
+    )
 
 
 def test_17lands_expansion_inventory_normalizes_and_keeps_valid_neighbors() -> None:
@@ -160,7 +187,7 @@ def test_17lands_format_data_is_cached_and_not_refetched_within_24h(
     )
 
     assert len(fetcher.urls) == 2
-    assert "/api/card_data" in fetcher.urls[0]
+    assert fetcher.urls[0].startswith("https://api.17lands.com/api/card_data?")
     assert "time_period=ALL_TIME" in fetcher.urls[0]
     assert "start_date" not in fetcher.urls[0]
     assert second.fetched_at == first.fetched_at

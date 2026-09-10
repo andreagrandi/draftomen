@@ -46,7 +46,7 @@ FetchJson: TypeAlias = Callable[[str, int], Any]
 SEVENTEEN_LANDS_ATTRIBUTION = "Card data from 17Lands (17lands.com)"
 SEVENTEEN_LANDS_BASE_URL = "https://www.17lands.com"
 SEVENTEEN_LANDS_EXPANSIONS_ENDPOINT = f"{SEVENTEEN_LANDS_BASE_URL}/data/expansions"
-CARD_RATINGS_ENDPOINT = f"{SEVENTEEN_LANDS_BASE_URL}/api/card_data"
+CARD_RATINGS_ENDPOINT = "https://api.17lands.com/api/card_data"
 COLOR_RATINGS_ENDPOINT = f"{SEVENTEEN_LANDS_BASE_URL}/color_ratings/data"
 PUBLIC_DRAFT_DATA_URL_TEMPLATE = (
     "https://17lands-public.s3.amazonaws.com/analysis_data/draft_data/"
@@ -58,6 +58,12 @@ SEVENTEEN_LANDS_USER_AGENT = (
 )
 QUICK_DRAFT_FORMAT = "QuickDraft"
 PREMIER_DRAFT_FORMAT = "PremierDraft"
+_HOSTED_EVENT_FORMATS = {
+    "premierdraft": "PremierDraft",
+    "traddraft": "TradDraft",
+    "quickdraft": "QuickDraft",
+    "picktwodraft": "PickTwoDraft",
+}
 FORMAT_RATING_SOURCE = "format"
 NEUTRAL_PRIOR_SOURCE = "neutral-prior"
 CACHE_SCHEMA_VERSION = 2
@@ -1218,7 +1224,10 @@ def card_ratings_url(
 
     params = {
         "expansion": set_code.upper(),
-        "event_type": event_format,
+        "event_type": _HOSTED_EVENT_FORMATS.get(
+            event_format.casefold(),
+            event_format,
+        ),
         "time_period": ALL_TIME_PERIOD,
     }
     if colors is not None:
