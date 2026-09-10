@@ -1,0 +1,600 @@
+{
+  "cases": [
+    {
+      "case_number": 1,
+      "case_id": "draw-second-package",
+      "title": "Draw-second package",
+      "cards": [
+        {
+          "card_id": 70221,
+          "name": "Witching Well",
+          "type_line": "Artifact",
+          "oracle_text": "When this artifact enters, scry 2. (Look at the top two cards of your library, then put any number of them on the bottom and the rest on top in any order.)\n{3}{U}, Sacrifice this artifact: Draw two cards.",
+          "faces": []
+        },
+        {
+          "card_id": 70340,
+          "name": "Improbable Alliance",
+          "type_line": "Enchantment",
+          "oracle_text": "Whenever you draw your second card each turn, create a 1/1 blue Faerie creature token with flying.\n{4}{U}{R}: Draw a card, then discard a card.",
+          "faces": []
+        }
+      ],
+      "expected": [
+        {
+          "id": "draw-second-alliance-trigger",
+          "kind": "enabler",
+          "subject": 70340,
+          "claim": "Improbable Alliance triggers when its controller draws their second card each turn.",
+          "evidence": [
+            {
+              "card_id": 70340,
+              "face_index": null,
+              "start": 0,
+              "end": 98,
+              "quote": "Whenever you draw your second card each turn, create a 1/1 blue Faerie creature token with flying."
+            }
+          ]
+        },
+        {
+          "id": "draw-second-faerie-token",
+          "kind": "payoff",
+          "subject": 70340,
+          "claim": "When that second-card trigger occurs, Improbable Alliance creates one 1/1 blue Faerie creature token with flying.",
+          "evidence": [
+            {
+              "card_id": 70340,
+              "face_index": null,
+              "start": 0,
+              "end": 98,
+              "quote": "Whenever you draw your second card each turn, create a 1/1 blue Faerie creature token with flying."
+            }
+          ]
+        },
+        {
+          "id": "draw-second-alliance-activated-ability",
+          "kind": "enabler",
+          "subject": 70340,
+          "claim": "Improbable Alliance has an activated ability costing {4}{U}{R} that draws a card and then discards a card.",
+          "evidence": [
+            {
+              "card_id": 70340,
+              "face_index": null,
+              "start": 99,
+              "end": 143,
+              "quote": "{4}{U}{R}: Draw a card, then discard a card."
+            }
+          ]
+        },
+        {
+          "id": "draw-second-well-scry",
+          "kind": "enabler",
+          "subject": 70221,
+          "claim": "When Witching Well enters, its controller scries 2.",
+          "evidence": [
+            {
+              "card_id": 70221,
+              "face_index": null,
+              "start": 0,
+              "end": 34,
+              "quote": "When this artifact enters, scry 2."
+            }
+          ]
+        },
+        {
+          "id": "draw-second-well-draw-two",
+          "kind": "enabler",
+          "subject": 70221,
+          "claim": "Witching Well has an activated ability costing {3}{U} and sacrificing it that draws two cards.",
+          "evidence": [
+            {
+              "card_id": 70221,
+              "face_index": null,
+              "start": 156,
+              "end": 204,
+              "quote": "{3}{U}, Sacrifice this artifact: Draw two cards."
+            }
+          ]
+        },
+        {
+          "id": "draw-second-well-enables-alliance",
+          "kind": "interaction",
+          "subject": 70340,
+          "claim": "Witching Well's draw-two ability can enable Improbable Alliance's second-card trigger when that turn's second draw has not already occurred.",
+          "evidence": [
+            {
+              "card_id": 70221,
+              "face_index": null,
+              "start": 156,
+              "end": 204,
+              "quote": "{3}{U}, Sacrifice this artifact: Draw two cards."
+            },
+            {
+              "card_id": 70340,
+              "face_index": null,
+              "start": 0,
+              "end": 98,
+              "quote": "Whenever you draw your second card each turn, create a 1/1 blue Faerie creature token with flying."
+            }
+          ]
+        }
+      ],
+      "non_facts": [
+        "Scrying the top cards of a library is drawing a card.",
+        "Every card drawn creates an Improbable Alliance Faerie token.",
+        "Witching Well itself creates Faerie tokens.",
+        "Drawing two cards guarantees two Improbable Alliance triggers."
+      ]
+    },
+    {
+      "case_number": 2,
+      "case_id": "food-package",
+      "title": "Food package",
+      "cards": [
+        {
+          "card_id": 70153,
+          "name": "Bartered Cow",
+          "type_line": "Creature — Ox",
+          "oracle_text": "When this creature dies and when you discard this card, create a Food token. (It's an artifact with \"{2}, {T}, Sacrifice this token: You gain 3 life.\")",
+          "faces": []
+        },
+        {
+          "card_id": 70326,
+          "name": "Trail of Crumbs",
+          "type_line": "Enchantment",
+          "oracle_text": "When this enchantment enters, create a Food token. (It's an artifact with \"{2}, {T}, Sacrifice this token: You gain 3 life.\")\nWhenever you sacrifice a Food, you may pay {1}. If you do, look at the top two cards of your library. You may reveal a permanent card from among them and put it into your hand. Put the rest on the bottom of your library in any order.",
+          "faces": []
+        }
+      ],
+      "expected": [
+        {
+          "id": "food-trail-entry",
+          "kind": "payoff",
+          "subject": 70326,
+          "claim": "When Trail of Crumbs enters, it creates a Food token.",
+          "evidence": [
+            {
+              "card_id": 70326,
+              "face_index": null,
+              "start": 0,
+              "end": 50,
+              "quote": "When this enchantment enters, create a Food token."
+            }
+          ]
+        },
+        {
+          "id": "food-cow-death",
+          "kind": "payoff",
+          "subject": 70153,
+          "claim": "When Bartered Cow dies, it creates a Food token.",
+          "evidence": [
+            {
+              "card_id": 70153,
+              "face_index": null,
+              "start": 0,
+              "end": 76,
+              "quote": "When this creature dies and when you discard this card, create a Food token."
+            }
+          ]
+        },
+        {
+          "id": "food-cow-discard",
+          "kind": "payoff",
+          "subject": 70153,
+          "claim": "When you discard Bartered Cow, it creates a Food token.",
+          "evidence": [
+            {
+              "card_id": 70153,
+              "face_index": null,
+              "start": 0,
+              "end": 76,
+              "quote": "When this creature dies and when you discard this card, create a Food token."
+            }
+          ]
+        },
+        {
+          "id": "food-token-ability",
+          "kind": "token_property",
+          "subject": 70153,
+          "claim": "A Food token created by Bartered Cow has the ability {2}, {T}, Sacrifice this token: You gain 3 life.",
+          "evidence": [
+            {
+              "card_id": 70153,
+              "face_index": null,
+              "start": 101,
+              "end": 149,
+              "quote": "{2}, {T}, Sacrifice this token: You gain 3 life."
+            }
+          ]
+        },
+        {
+          "id": "food-trail-sacrifice-trigger",
+          "kind": "enabler",
+          "subject": 70326,
+          "claim": "Whenever a Food is sacrificed, Trail of Crumbs triggers.",
+          "evidence": [
+            {
+              "card_id": 70326,
+              "face_index": null,
+              "start": 126,
+              "end": 359,
+              "quote": "Whenever you sacrifice a Food, you may pay {1}. If you do, look at the top two cards of your library. You may reveal a permanent card from among them and put it into your hand. Put the rest on the bottom of your library in any order."
+            }
+          ]
+        },
+        {
+          "id": "food-trail-optional-payment",
+          "kind": "enabler",
+          "subject": 70326,
+          "claim": "After a Food is sacrificed, Trail of Crumbs lets its controller optionally pay {1}; only if they do may they look at the top two cards of their library.",
+          "evidence": [
+            {
+              "card_id": 70326,
+              "face_index": null,
+              "start": 126,
+              "end": 359,
+              "quote": "Whenever you sacrifice a Food, you may pay {1}. If you do, look at the top two cards of your library. You may reveal a permanent card from among them and put it into your hand. Put the rest on the bottom of your library in any order."
+            }
+          ]
+        },
+        {
+          "id": "food-trail-permanent-selection",
+          "kind": "payoff",
+          "subject": 70326,
+          "claim": "After paying {1}, Trail of Crumbs may reveal a permanent among the top two cards and put it into its controller's hand, putting the rest on the bottom in any order.",
+          "evidence": [
+            {
+              "card_id": 70326,
+              "face_index": null,
+              "start": 126,
+              "end": 359,
+              "quote": "Whenever you sacrifice a Food, you may pay {1}. If you do, look at the top two cards of your library. You may reveal a permanent card from among them and put it into your hand. Put the rest on the bottom of your library in any order."
+            }
+          ]
+        },
+        {
+          "id": "food-cow-trail-interaction",
+          "kind": "interaction",
+          "subject": 70326,
+          "claim": "A Food token created by Bartered Cow can be sacrificed to trigger Trail of Crumbs, after which its controller may pay {1} to look at the top two cards.",
+          "evidence": [
+            {
+              "card_id": 70153,
+              "face_index": null,
+              "start": 101,
+              "end": 149,
+              "quote": "{2}, {T}, Sacrifice this token: You gain 3 life."
+            },
+            {
+              "card_id": 70326,
+              "face_index": null,
+              "start": 126,
+              "end": 359,
+              "quote": "Whenever you sacrifice a Food, you may pay {1}. If you do, look at the top two cards of your library. You may reveal a permanent card from among them and put it into your hand. Put the rest on the bottom of your library in any order."
+            }
+          ]
+        }
+      ],
+      "non_facts": [
+        "Creating a Food token itself triggers Trail of Crumbs's sacrifice ability.",
+        "Trail of Crumbs draws cards.",
+        "Trail of Crumbs's selection always finds a permanent card.",
+        "Sacrificing a Food to use its ability is free.",
+        "Bartered Cow dying directly draws a card through Trail of Crumbs without sacrificing Food or making the optional {1} payment."
+      ]
+    },
+    {
+      "case_number": 3,
+      "case_id": "quantity-and-threshold",
+      "title": "Quantity and threshold",
+      "cards": [
+        {
+          "card_id": 70197,
+          "name": "Into the Story",
+          "type_line": "Instant",
+          "oracle_text": "This spell costs {3} less to cast if an opponent has seven or more cards in their graveyard.\nDraw four cards.",
+          "faces": []
+        }
+      ],
+      "expected": [
+        {
+          "id": "story-opponent-graveyard-threshold",
+          "kind": "threshold",
+          "subject": 70197,
+          "claim": "Into the Story's cost reduction condition is that an opponent has seven or more cards in their graveyard.",
+          "evidence": [
+            {
+              "card_id": 70197,
+              "face_index": null,
+              "start": 0,
+              "end": 92,
+              "quote": "This spell costs {3} less to cast if an opponent has seven or more cards in their graveyard."
+            }
+          ]
+        },
+        {
+          "id": "story-generic-discount-three",
+          "kind": "quantity",
+          "subject": 70197,
+          "claim": "When its condition is met, Into the Story costs three generic mana less to cast.",
+          "evidence": [
+            {
+              "card_id": 70197,
+              "face_index": null,
+              "start": 0,
+              "end": 92,
+              "quote": "This spell costs {3} less to cast if an opponent has seven or more cards in their graveyard."
+            }
+          ]
+        },
+        {
+          "id": "story-draw-four",
+          "kind": "quantity",
+          "subject": 70197,
+          "claim": "Into the Story instructs its controller to draw four cards.",
+          "evidence": [
+            {
+              "card_id": 70197,
+              "face_index": null,
+              "start": 93,
+              "end": 109,
+              "quote": "Draw four cards."
+            }
+          ]
+        },
+        {
+          "id": "story-draw-not-discount-gated",
+          "kind": "timing",
+          "subject": 70197,
+          "claim": "Into the Story's draw-four instruction is not conditional on its graveyard cost reduction being active.",
+          "evidence": [
+            {
+              "card_id": 70197,
+              "face_index": null,
+              "start": 0,
+              "end": 92,
+              "quote": "This spell costs {3} less to cast if an opponent has seven or more cards in their graveyard."
+            },
+            {
+              "card_id": 70197,
+              "face_index": null,
+              "start": 93,
+              "end": 109,
+              "quote": "Draw four cards."
+            }
+          ]
+        }
+      ],
+      "non_facts": [
+        {
+          "id": "story-your-graveyard",
+          "claim": "Your graveyard, rather than an opponent's graveyard, satisfies Into the Story's threshold."
+        },
+        {
+          "id": "story-exactly-seven",
+          "claim": "Into the Story requires exactly seven cards in the opponent's graveyard."
+        },
+        {
+          "id": "story-fewer-prevents",
+          "claim": "Having fewer than seven cards in an opponent's graveyard prevents Into the Story from being cast or from drawing four cards."
+        }
+      ]
+    },
+    {
+      "case_number": 4,
+      "case_id": "timing-sensitive-condition",
+      "title": "Timing-sensitive condition",
+      "cards": [
+        {
+          "card_id": 70177,
+          "name": "Silverflame Ritual",
+          "type_line": "Sorcery",
+          "oracle_text": "Put a +1/+1 counter on each creature you control.\nAdamant — If at least three white mana was spent to cast this spell, creatures you control gain vigilance until end of turn.",
+          "faces": []
+        }
+      ],
+      "expected": [
+        {
+          "id": "ritual-counter-each-creature",
+          "kind": "payoff",
+          "subject": 70177,
+          "claim": "Silverflame Ritual puts one +1/+1 counter on each creature its controller controls, independently of its adamant condition.",
+          "evidence": [
+            {
+              "card_id": 70177,
+              "face_index": null,
+              "start": 0,
+              "end": 49,
+              "quote": "Put a +1/+1 counter on each creature you control."
+            },
+            {
+              "card_id": 70177,
+              "face_index": null,
+              "start": 50,
+              "end": 174,
+              "quote": "Adamant — If at least three white mana was spent to cast this spell, creatures you control gain vigilance until end of turn."
+            }
+          ]
+        },
+        {
+          "id": "ritual-adamant-threshold",
+          "kind": "threshold",
+          "subject": 70177,
+          "claim": "Silverflame Ritual's adamant condition requires at least three white mana to have been spent to cast it.",
+          "evidence": [
+            {
+              "card_id": 70177,
+              "face_index": null,
+              "start": 50,
+              "end": 174,
+              "quote": "Adamant — If at least three white mana was spent to cast this spell, creatures you control gain vigilance until end of turn."
+            }
+          ]
+        },
+        {
+          "id": "ritual-vigilance-payoff",
+          "kind": "payoff",
+          "subject": 70177,
+          "claim": "If at least three white mana was spent to cast Silverflame Ritual, creatures its controller controls gain vigilance.",
+          "evidence": [
+            {
+              "card_id": 70177,
+              "face_index": null,
+              "start": 50,
+              "end": 174,
+              "quote": "Adamant — If at least three white mana was spent to cast this spell, creatures you control gain vigilance until end of turn."
+            }
+          ]
+        },
+        {
+          "id": "ritual-vigilance-duration",
+          "kind": "timing",
+          "subject": 70177,
+          "claim": "The vigilance granted by Silverflame Ritual lasts until end of turn.",
+          "evidence": [
+            {
+              "card_id": 70177,
+              "face_index": null,
+              "start": 50,
+              "end": 174,
+              "quote": "Adamant — If at least three white mana was spent to cast this spell, creatures you control gain vigilance until end of turn."
+            }
+          ]
+        },
+        {
+          "id": "ritual-counters-persist",
+          "kind": "timing",
+          "subject": 70177,
+          "claim": "The +1/+1 counters put on creatures by Silverflame Ritual do not expire at end of turn.",
+          "evidence": [
+            {
+              "card_id": 70177,
+              "face_index": null,
+              "start": 0,
+              "end": 49,
+              "quote": "Put a +1/+1 counter on each creature you control."
+            },
+            {
+              "card_id": 70177,
+              "face_index": null,
+              "start": 50,
+              "end": 174,
+              "quote": "Adamant — If at least three white mana was spent to cast this spell, creatures you control gain vigilance until end of turn."
+            }
+          ]
+        }
+      ],
+      "non_facts": [
+        {
+          "id": "ritual-any-three-mana",
+          "claim": "Spending three total mana of any colors satisfies Silverflame Ritual's adamant condition."
+        },
+        {
+          "id": "ritual-three-plains",
+          "claim": "Controlling three Plains satisfies Silverflame Ritual's adamant condition."
+        },
+        {
+          "id": "ritual-counters-expire",
+          "claim": "The +1/+1 counters from Silverflame Ritual expire at end of turn."
+        },
+        {
+          "id": "ritual-adamant-gates-counters",
+          "claim": "Silverflame Ritual's adamant condition gates whether it puts +1/+1 counters on creatures."
+        }
+      ]
+    },
+    {
+      "case_number": 5,
+      "case_id": "negative-pair",
+      "title": "Negative pair",
+      "cards": [
+        {
+          "card_id": 70281,
+          "name": "Raging Redcap",
+          "type_line": "Creature — Goblin Knight",
+          "oracle_text": "Double strike (This creature deals both first-strike and regular combat damage.)",
+          "faces": []
+        },
+        {
+          "card_id": 70340,
+          "name": "Improbable Alliance",
+          "type_line": "Enchantment",
+          "oracle_text": "Whenever you draw your second card each turn, create a 1/1 blue Faerie creature token with flying.\n{4}{U}{R}: Draw a card, then discard a card.",
+          "faces": []
+        }
+      ],
+      "expected": [
+        {
+          "id": "negative-redcap-double-strike",
+          "kind": "keyword",
+          "subject": 70281,
+          "claim": "Raging Redcap has double strike, dealing both first-strike and regular combat damage.",
+          "evidence": [
+            {
+              "card_id": 70281,
+              "face_index": null,
+              "start": 0,
+              "end": 80,
+              "quote": "Double strike (This creature deals both first-strike and regular combat damage.)"
+            }
+          ]
+        },
+        {
+          "id": "negative-alliance-trigger",
+          "kind": "enabler",
+          "subject": 70340,
+          "claim": "Improbable Alliance triggers when its controller draws their second card each turn.",
+          "evidence": [
+            {
+              "card_id": 70340,
+              "face_index": null,
+              "start": 0,
+              "end": 98,
+              "quote": "Whenever you draw your second card each turn, create a 1/1 blue Faerie creature token with flying."
+            }
+          ]
+        },
+        {
+          "id": "negative-alliance-token",
+          "kind": "payoff",
+          "subject": 70340,
+          "claim": "When that second-card trigger occurs, Improbable Alliance creates one 1/1 blue Faerie creature token with flying.",
+          "evidence": [
+            {
+              "card_id": 70340,
+              "face_index": null,
+              "start": 0,
+              "end": 98,
+              "quote": "Whenever you draw your second card each turn, create a 1/1 blue Faerie creature token with flying."
+            }
+          ]
+        },
+        {
+          "id": "negative-alliance-activated-ability",
+          "kind": "enabler",
+          "subject": 70340,
+          "claim": "Improbable Alliance has an activated ability costing {4}{U}{R} that draws a card and then discards a card.",
+          "evidence": [
+            {
+              "card_id": 70340,
+              "face_index": null,
+              "start": 99,
+              "end": 143,
+              "quote": "{4}{U}{R}: Draw a card, then discard a card."
+            }
+          ]
+        }
+      ],
+      "non_facts": [
+        {
+          "id": "negative-double-strike-draws",
+          "claim": "Raging Redcap's double strike draws two cards or triggers Improbable Alliance."
+        },
+        {
+          "id": "negative-shared-red-synergy",
+          "claim": "Raging Redcap and Improbable Alliance have a semantic interaction merely because they share red."
+        }
+      ]
+    }
+  ]
+}
