@@ -3,6 +3,13 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Submit strict structured-output requests to OpenRouter through a bounded,
+  standard-library client that reads its credential only from
+  `OPENROUTER_API_KEY`, pins the model, JSON schema and reasoning effort at
+  construction, requires provider parameter support, and returns generated
+  content separately from trusted API token, cache, provider and billed-cost
+  metadata without parsing findings, writing profiles, or mutating production
+  artifacts. (#447)
 - Acquire user-provided Draftsim guides through a bounded, standard-library
   HTTPS client that enforces allowed hosts, same-origin redirects, response
   size, timeout and UTF-8 content rules while returning verbatim source,
