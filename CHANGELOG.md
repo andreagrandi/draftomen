@@ -3,6 +3,7 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Repair GitHub-hosted profile refreshes through the official 17Lands API hostname and canonical hosted event format names.
 - Render detailed pick rationales as base rating plus material drafter-facing
   deck-fit reasons, omitting rounded-zero and internal bookkeeping while
   retaining structured scoring evidence. (#424)
