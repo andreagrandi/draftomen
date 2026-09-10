@@ -1716,6 +1716,24 @@ def wait_until(predicate, description):
     application.processEvents()
 
 
+def wait_until_stable(reader, description, samples=4, quiet_seconds=0.05):
+    deadline = time.monotonic() + 8
+    started = time.monotonic()
+    observed = []
+    while True:
+        application.processEvents()
+        observed.append(reader())
+        if (
+            len(observed) >= samples
+            and len(set(observed[-samples:])) == 1
+            and time.monotonic() - started >= quiet_seconds
+        ):
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError("Timed out waiting for " + description)
+        time.sleep(0.005)
+
+
 class _Response:
     def __init__(self, payload):
         self.payload = payload
@@ -1942,6 +1960,10 @@ def check_mode(*, detailed, width, height, expected, stress):
         assert details.property("activeFocusOnTab") is False
     if not stress:
         return
+    wait_until_stable(
+        lambda: (details.property("contentHeight"), details.height()),
+        "the explanation layout to settle",
+    )
     assert details.property("contentHeight") > details.height() + 1, (
         detailed,
         width,
@@ -1951,7 +1973,14 @@ def check_mode(*, detailed, width, height, expected, stress):
     )
     details.forceActiveFocus()
     QTest.keyClick(host, Qt.Key_End)
-    application.processEvents()
+    wait_until(
+        lambda: abs(
+            details.property("contentY")
+            - max(0, details.property("contentHeight") - details.height())
+        )
+        <= 1,
+        "the detailed explanation scrolled to its end",
+    )
     maximum = max(0, details.property("contentHeight") - details.height())
     assert abs(details.property("contentY") - maximum) <= 1, (
         detailed,
@@ -1972,7 +2001,10 @@ def check_mode(*, detailed, width, height, expected, stress):
         details.height(),
     )
     QTest.keyClick(host, Qt.Key_Home)
-    application.processEvents()
+    wait_until(
+        lambda: details.property("contentY") <= 1,
+        "the detailed explanation scrolled back to its start",
+    )
     assert details.property("contentY") <= 1
 
 
