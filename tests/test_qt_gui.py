@@ -440,79 +440,381 @@ with TemporaryDirectory() as preferences_dir:
     assert "TypeError" not in completed.stderr
 
 
-def test_qml_renders_profile_maturity_and_refresh_outcome_on_compact_surfaces() -> None:
+def test_production_adapter_contextual_evidence_active_lci_offscreen(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
     probe = """
+import json
+import os
+import time
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from PySide6.QtCore import QObject, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QAccessible, QColor, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 
 from draftomen import __version__
-from draftomen.mock_session import MockLiveSession
-from draftomen.qt_adapter import GuiPreferencesAdapter, SessionAdapter
+from draftomen.carddb import CardDatabase
+from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_gui import _fixed_font_family
-from draftomen.session import DataLoadPhase, SetProfileState
+from draftomen.semantic_roles import classify_cards, compile_role_profile
+from draftomen.session import LiveSession
+from draftomen.set_profile import (
+    AggregateEvidence,
+    CardRating,
+    PairProfile,
+    ProfileMaturity,
+    RateEstimate,
+    load_set_profile,
+)
 
+
+def wait_until(predicate, description):
+    deadline = time.monotonic() + 8
+    while not predicate():
+        application.processEvents()
+        if time.monotonic() >= deadline:
+            raise AssertionError("Timed out waiting for " + description)
+        time.sleep(0.005)
+    application.processEvents()
+
+
+project_root = Path.cwd()
+base_dir = Path(os.environ["DRAFTOMEN_E2E_APP_DIR"])
+base_dir.mkdir(parents=True, exist_ok=True)
+lci_database = CardDatabase.from_json(
+    json.loads(
+        (
+            project_root / "tests" / "fixtures" / "profile-generation"
+            / "lci-card-database.json"
+        ).read_text(encoding="utf-8")
+    )
+)
+semantic_seed = load_set_profile(
+    project_root / "tests" / "fixtures" / "set-profiles" / "semantic-only.json",
+    expected_set_code="TST",
+    expected_format="QuickDraft",
+)
+lci_role_profile = compile_role_profile(
+    set_code="LCI",
+    results=classify_cards(lci_database.cards.values()),
+)
+semantic_profile = replace(
+    semantic_seed,
+    set_code="lci",
+    schema_version=2,
+    role_profile=lci_role_profile,
+    pairs=(PairProfile(pair="UB"),),
+)
+
+
+def rate(*, value, authority):
+    return RateEstimate(
+        raw_value=value,
+        value=value,
+        samples=1000,
+        prior_value=0.5,
+        source="fixture",
+        aggregate_evidence=authority,
+    )
+
+
+exact_authority = AggregateEvidence(
+    source_format="quickdraft",
+    fallback_reason=None,
+    confidence=1.0,
+)
+fallback_authority = AggregateEvidence(
+    source_format="premierdraft",
+    fallback_reason="missing-exact-evidence",
+    confidence=0.5,
+)
+card_keys = (
+    f"oracle_id:{lci_database.cards[87185].oracle_id}",
+    f"oracle_id:{lci_database.cards[87235].oracle_id}",
+)
+
+
+def empirical_profile(*, card_authority, pair_authority):
+    return replace(
+        semantic_profile,
+        maturity=ProfileMaturity.EARLY,
+        card_ratings=(
+            CardRating(
+                card_key=card_keys[0],
+                gih_win_rate=rate(value=0.70, authority=card_authority),
+            ),
+            CardRating(
+                card_key=card_keys[1],
+                gih_win_rate=rate(value=0.40, authority=card_authority),
+            ),
+        ),
+        pairs=(
+            PairProfile(
+                pair="UB",
+                performance=rate(value=0.62, authority=pair_authority),
+            ),
+        ),
+        samples=None,
+    )
+
+
+exact_profile = empirical_profile(
+    card_authority=exact_authority,
+    pair_authority=exact_authority,
+)
+fallback_profile = empirical_profile(
+    card_authority=fallback_authority,
+    pair_authority=fallback_authority,
+)
+mixed_profile = empirical_profile(
+    card_authority=exact_authority,
+    pair_authority=fallback_authority,
+)
+assert lci_role_profile.cards
+unavailable_profile = replace(
+    fallback_profile,
+    role_profile=replace(lci_role_profile, cards=()),
+)
+
+event_name = "QuickDraft_LCI_20260910"
+payload = {
+    "Result": "Success",
+    "EventName": event_name,
+    "DraftStatus": "PickNext",
+    "PackNumber": 0,
+    "PickNumber": 0,
+    "NumCardsToPick": 1,
+    "DraftPack": ["87185", "87235"],
+    "PickedCards": [],
+}
+log_records = [
+    json.dumps(
+        {
+            "authenticateResponse": {
+                "clientId": "lci-test-account",
+                "screenName": "LCI Tester",
+            }
+        }
+    ),
+    json.dumps(
+        {
+            "Course": {
+                "CourseId": "lci-test-course",
+                "InternalEventName": event_name,
+                "CurrentModule": "BotDraft",
+            }
+        }
+    ),
+    json.dumps(
+        {
+            "CurrentModule": "BotDraft",
+            "Payload": json.dumps(payload),
+        }
+    ),
+]
 
 QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
-base_snapshot = MockLiveSession().snapshot
-provider = SessionAdapter(snapshot=base_snapshot)
-with TemporaryDirectory() as preferences_dir:
-    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
-    engine = QQmlApplicationEngine()
-    qml_directory = Path.cwd() / "draftomen" / "qml"
-    engine.addImportPath(str(qml_directory))
-    context = engine.rootContext()
-    context.setContextProperty("fixedFontFamily", _fixed_font_family())
-    context.setContextProperty("sessionProvider", provider)
-    context.setContextProperty("applicationTitle", "Draft Omen")
-    context.setContextProperty("applicationVersion", __version__)
-    context.setContextProperty("guiPreferences", preferences)
-    context.setContextProperty("initialSurface", "settings")
-    context.setContextProperty("initialWindowWidth", 900)
-    context.setContextProperty("initialWindowHeight", 760)
-    engine.setInitialProperties({"provider": provider})
-    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
-    assert engine.rootObjects()
-    root = engine.rootObjects()[0]
-    profile_label = root.findChild(QObject, "statusProfileMessage")
-    cache_label = root.findChild(QObject, "settingsProfileCacheStatus")
-    assert profile_label is not None
-    assert cache_label is not None
+cases = (
+    (
+        "semantic-only",
+        semantic_profile,
+        "semantic-only",
+        [],
+        "semantic-only",
+    ),
+    (
+        "exact",
+        exact_profile,
+        "exact",
+        ["quickdraft"],
+        "QuickDraft evidence",
+    ),
+    (
+        "fallback",
+        fallback_profile,
+        "fallback",
+        ["premierdraft"],
+        "PremierDraft fallback",
+    ),
+    (
+        "mixed",
+        mixed_profile,
+        "fallback",
+        ["premierdraft", "quickdraft"],
+        "PremierDraft fallback",
+    ),
+    (
+        "unavailable",
+        unavailable_profile,
+        "unavailable",
+        [],
+        "unavailable",
+    ),
+    (
+        "disabled",
+        fallback_profile,
+        "disabled",
+        [],
+        "disabled",
+    ),
+)
 
-    for maturity, outcome, expected_status, expected_cache in (
-        ("mature", "unchanged", "Profile · mature · unchanged", "OTJ · mature · unchanged"),
-        ("semantic", "updated", "Profile · semantic · updated", "OTJ · semantic · updated"),
-        ("generic", None, "Profile · generic", "OTJ · generic"),
-    ):
-        provider._apply_snapshot(
-            replace(
-                base_snapshot,
-                set_profile=SetProfileState(
-                    set_code="OTJ",
-                    event_format="QuickDraft",
-                    maturity=maturity,
-                    profile_version="fixture",
-                    source="fixture",
-                    phase=DataLoadPhase.READY,
-                    refresh_outcome=outcome,
-                    message="Profile fixture status.",
-                ),
+for case_name, case_profile, expected_status, expected_sources, message_marker in cases:
+    with TemporaryDirectory(prefix=f"contextual-{case_name}-", dir=base_dir) as directory:
+        case_dir = Path(directory)
+        log_path = case_dir / "Player.log"
+        log_path.write_text("\\n".join(log_records) + "\\n", encoding="utf-8")
+        preferences = GuiPreferencesAdapter(app_dir=case_dir)
+        preferences.setContextualAdjustmentsEnabled(True)
+        provider = None
+        engine = None
+
+        def factory(publish, *, profile=case_profile, path=log_path, directory=case_dir):
+            return LiveSession(
+                log_path=path,
+                app_dir=directory,
+                card_database=lci_database,
+                set_profile=profile,
+                contextual_adjustments_enabled=True,
+                snapshot_publisher=publish,
+                poll_interval=0.01,
+                card_image_service=None,
             )
-        )
-        application.processEvents()
-        assert profile_label.property("text") == expected_status
-        assert cache_label.property("text") == expected_cache
 
-    preferences.shutdown()
-    del engine
+        try:
+            provider = LiveSessionAdapter(
+                session_factory=factory,
+                poll_interval_ms=10,
+                startup_scan=True,
+            )
+            preferences.contextualAdjustmentsEnabledChanged.connect(
+                provider.setContextualScoringEnabled
+            )
+            engine = QQmlApplicationEngine()
+            qml_directory = project_root / "draftomen" / "qml"
+            engine.addImportPath(str(qml_directory))
+            context = engine.rootContext()
+            context.setContextProperty("fixedFontFamily", _fixed_font_family())
+            context.setContextProperty("sessionProvider", provider)
+            context.setContextProperty("applicationTitle", "Draft Omen")
+            context.setContextProperty("applicationVersion", __version__)
+            context.setContextProperty("guiPreferences", preferences)
+            context.setContextProperty("initialSurface", "live")
+            context.setContextProperty("initialWindowWidth", 1200)
+            context.setContextProperty("initialWindowHeight", 800)
+            engine.setInitialProperties({"provider": provider})
+            engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+            assert engine.rootObjects()
+            root = engine.rootObjects()[0]
+            profile_label = root.findChild(QObject, "statusProfileMessage")
+            assert profile_label is not None
+
+            provider.start()
+            wait_until(
+                lambda: (
+                    (provider.state.get("draft") or {}).get("set_code") == "LCI"
+                    and (provider.state.get("set_profile") or {}).get("set_code")
+                    == "LCI"
+                    and (provider.state.get("set_profile") or {}).get("event_format")
+                    == "QuickDraft"
+                    and (provider.state.get("recommendations") or {}).get("cards")
+                ),
+                case_name + " active LCI recommendation pack",
+            )
+            assert provider.state["contextual_adjustments_enabled"] is True
+            if case_name == "disabled":
+                provider.setContextualScoringEnabled(False)
+                wait_until(
+                    lambda: (
+                        provider.state["contextual_adjustments_enabled"] is False
+                        and provider.state["contextual_evidence"]["status"]
+                        == "disabled"
+                    ),
+                    "disabled contextual scoring command",
+                )
+            published = provider.state["contextual_evidence"]
+            assert published["status"] == expected_status
+            assert isinstance(published["source_formats"], list)
+            assert published["source_formats"] == expected_sources
+            assert message_marker in published["message"]
+            assert profile_label.isVisible()
+            assert profile_label.property("text") == published["message"]
+            accessible_profile = QAccessible.queryAccessibleInterface(profile_label)
+            assert accessible_profile is not None
+            assert accessible_profile.text(QAccessible.Text.Name) == published["message"]
+            assert accessible_profile.text(QAccessible.Text.Description) == published["message"]
+            expected_color = (
+                "#c8c2b8"
+                if expected_status == "disabled"
+                else "#e7c993"
+                if expected_status == "unavailable"
+                else "#a78bfa"
+            )
+            assert QColor(profile_label.property("color")) == QColor(expected_color)
+
+            if case_name == "fallback":
+                provider.setContextualScoringEnabled(False)
+                wait_until(
+                    lambda: (
+                        provider.state["contextual_adjustments_enabled"] is False
+                        and provider.state["contextual_evidence"]["status"]
+                        == "disabled"
+                    ),
+                    "disabled contextual scoring command",
+                )
+                disabled = provider.state["contextual_evidence"]
+                assert disabled["source_formats"] == []
+                assert "disabled" in disabled["message"]
+                assert profile_label.property("text") == disabled["message"]
+                assert QColor(profile_label.property("color")) == QColor("#c8c2b8")
+
+                provider.setContextualScoringEnabled(True)
+                wait_until(
+                    lambda: (
+                        provider.state["contextual_adjustments_enabled"] is True
+                        and provider.state["contextual_evidence"]["status"]
+                        == "fallback"
+                    ),
+                    "restored fallback contextual scoring command",
+                )
+                restored = provider.state["contextual_evidence"]
+                assert restored["source_formats"] == ["premierdraft"]
+                assert "PremierDraft fallback" in restored["message"]
+                assert profile_label.property("text") == restored["message"]
+
+            if case_name == "unavailable":
+                assert published["message"] != ""
+                assert "disabled" not in published["message"]
+
+            if case_name == "fallback":
+                continue
+
+            if case_name == "semantic-only":
+                assert "fallback" not in published["message"]
+        finally:
+            if provider is not None:
+                provider.shutdown()
+                provider.wait_for_shutdown()
+            preferences.shutdown()
+            if engine is not None:
+                for window in engine.rootObjects():
+                    window.close()
+                del profile_label
+                del root
+                del engine
+            application.processEvents()
 """
-    completed = _run_qml_probe(probe)
+    completed = _run_qml_probe(
+        probe,
+        timeout=30,
+        environment={"DRAFTOMEN_E2E_APP_DIR": str(app_dir)},
+    )
 
     assert completed.returncode == 0, completed.stderr
     assert "Binding loop detected" not in completed.stderr

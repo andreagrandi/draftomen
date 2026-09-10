@@ -5,9 +5,11 @@ import pytest
 from draftomen.mock_session import CARDS, MOCK_SCENARIOS, MockLiveSession
 from draftomen.session import (
     ApplicationPhase,
+    ChangeContextualScoring,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseRecommendation,
+    ContextualEvidenceStatus,
     DataLoadPhase,
     DismissError,
     FocusBuildCard,
@@ -156,6 +158,38 @@ def test_mock_provider_dispatches_production_commands() -> None:
     progress = session.dispatch(command=RequestRatingsDownload(set_code="OTJ"))
     assert progress.progress is not None
     assert session.scenario == "progress"
+
+
+
+def test_mock_contextual_mode_survives_scenario_replacement_commands() -> None:
+    session = MockLiveSession()
+
+    disabled = session.dispatch(command=ChangeContextualScoring(enabled=False))
+    assert disabled.contextual_adjustments_enabled is False
+    assert (
+        disabled.contextual_evidence.status
+        is ContextualEvidenceStatus.DISABLED
+    )
+
+    progress = session.dispatch(command=RequestRatingsDownload(set_code="OTJ"))
+    assert progress.contextual_adjustments_enabled is False
+    assert (
+        progress.contextual_evidence.status
+        is ContextualEvidenceStatus.DISABLED
+    )
+
+    error = session.select_scenario(scenario="error")
+    error_id = error.errors[0].error_id
+    retried = session.dispatch(command=RetryError(error_id=error_id))
+    assert retried.contextual_adjustments_enabled is False
+    assert (
+        retried.contextual_evidence.status
+        is ContextualEvidenceStatus.DISABLED
+    )
+
+    enabled = session.dispatch(command=ChangeContextualScoring(enabled=True))
+    assert enabled.contextual_adjustments_enabled is True
+    assert enabled.contextual_evidence.status is ContextualEvidenceStatus.EXACT
 
 
 def test_mock_provider_retries_and_dismisses_errors_by_identifier() -> None:

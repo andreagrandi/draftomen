@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from enum import StrEnum
+from enum import Enum, StrEnum
 from os import PathLike
 from pathlib import Path
 from threading import RLock
@@ -306,6 +306,24 @@ class SetProfileState:
     refresh_outcome: str | None = None
     message: str = "Set profile is not configured."
 
+class ContextualEvidenceStatus(str, Enum):
+    """Classify semantic and aggregate contextual evidence availability."""
+
+    EXACT = "exact"
+    FALLBACK = "fallback"
+    SEMANTIC_ONLY = "semantic-only"
+    UNAVAILABLE = "unavailable"
+    DISABLED = "disabled"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextualEvidenceState:
+    """Describe the selected profile's contextual evidence availability."""
+
+    status: ContextualEvidenceStatus = ContextualEvidenceStatus.UNAVAILABLE
+    source_formats: tuple[str, ...] = ()
+    message: str = "Contextual · unavailable (no usable evidence)"
+
 
 @dataclass(frozen=True, slots=True)
 class ProfileRefreshRequest:
@@ -537,6 +555,9 @@ class LiveSessionSnapshot:
     card_data: CardDataState = field(default_factory=CardDataState)
     ratings: RatingsState = field(default_factory=RatingsState)
     set_profile: SetProfileState = field(default_factory=SetProfileState)
+    contextual_evidence: ContextualEvidenceState = field(
+        default_factory=ContextualEvidenceState
+    )
     recommendations: RecommendationState = field(default_factory=RecommendationState)
     pool: PoolState = field(default_factory=PoolState)
     card_image: CardImageState = field(default_factory=CardImageState)
@@ -547,6 +568,90 @@ class LiveSessionSnapshot:
     build: BuildResult | None = None
     backtest: BacktestResult | None = None
 
+def _contextual_evidence_for_profile(
+    *,
+    profile: SetProfile | None,
+    enabled: bool,
+) -> ContextualEvidenceState:
+    """Classify contextual evidence for the selected profile."""
+
+    if not enabled:
+        return ContextualEvidenceState(
+            status=ContextualEvidenceStatus.DISABLED,
+            message="Contextual · disabled",
+        )
+
+    if (
+        profile is None
+        or profile.maturity is ProfileMaturity.GENERIC
+        or profile.confidence <= 0
+        or not profile.roles_are_compatible
+        or not any(
+            assignment.confidence > 0
+            for card in profile.card_roles
+            for assignment in card.assignments
+        )
+    ):
+        return ContextualEvidenceState()
+
+    rates = [
+        rating.gih_win_rate
+        for rating in profile.card_ratings
+        if rating.gih_win_rate.samples > 0
+    ]
+    rates.extend(
+        pair.performance
+        for pair in profile.pairs
+        if pair.performance is not None and pair.performance.samples > 0
+    )
+
+    sources: set[str] = set()
+    fallback_sources: set[str] = set()
+    for rate in rates:
+        if profile.schema_version == 1:
+            source_format = profile.event_format
+            is_fallback = False
+        else:
+            evidence = rate.aggregate_evidence
+            if evidence is None:
+                continue
+            source_format = evidence.source_format
+            is_fallback = (
+                evidence.fallback_reason is not None
+                or source_format != profile.event_format
+            )
+        sources.add(source_format)
+        if is_fallback:
+            fallback_sources.add(source_format)
+
+    if not sources:
+        return ContextualEvidenceState(
+            status=ContextualEvidenceStatus.SEMANTIC_ONLY,
+            message="Contextual · semantic-only (no aggregate evidence)",
+        )
+
+    source_formats = tuple(sorted(sources))
+    display_names = {
+        "quickdraft": "QuickDraft",
+        "premierdraft": "PremierDraft",
+        "traddraft": "TradDraft",
+        "picktwodraft": "PickTwoDraft",
+    }
+    descriptions = ", ".join(
+        f"{display_names.get(source, source)} "
+        f"{'fallback' if source in fallback_sources else 'evidence'}"
+        for source in source_formats
+    )
+    status = (
+        ContextualEvidenceStatus.FALLBACK
+        if fallback_sources
+        else ContextualEvidenceStatus.EXACT
+    )
+    return ContextualEvidenceState(
+        status=status,
+        source_formats=source_formats,
+        message=f"Contextual · semantic + {descriptions}",
+    )
 
 @dataclass(frozen=True, slots=True)
 class LiveSessionEvent:
@@ -725,6 +830,9 @@ class LiveSession:
         self._configured_set_profile = set_profile
         self._set_profile = set_profile
         self._profile_client = profile_client
+        self._contextual_evidence_cached_profile: SetProfile | None = None
+        self._contextual_evidence_cached_enabled: bool | None = None
+        self._contextual_evidence_cached_state: ContextualEvidenceState | None = None
         self._set_profiles_by_set: dict[str, SetProfile | None] = {}
         self._set_profile_states_by_set: dict[str, SetProfileState] = {}
         self._profile_refresh_lifecycle_identity: _ProfileLifecycleIdentity | None = None
@@ -782,6 +890,7 @@ class LiveSession:
         ratings_state = self._initial_ratings_state()
         self._snapshot = LiveSessionSnapshot(
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+            contextual_evidence=self._current_contextual_evidence_locked(),
             status=_waiting_for_draft_status(setup_guidance=not initial_log_readable),
             accounts=self._known_accounts(),
             card_data=card_data,
@@ -4193,11 +4302,33 @@ class LiveSession:
 
         return state.account_screen_name
 
+    def _current_contextual_evidence_locked(self) -> ContextualEvidenceState:
+        profile = self._set_profile
+        enabled = self._contextual_adjustments_enabled
+        cached_state = self._contextual_evidence_cached_state
+        if (
+            cached_state is not None
+            and profile is self._contextual_evidence_cached_profile
+            and enabled == self._contextual_evidence_cached_enabled
+        ):
+            return cached_state
+
+        state = _contextual_evidence_for_profile(
+            profile=profile,
+            enabled=enabled,
+        )
+        self._contextual_evidence_cached_profile = profile
+        self._contextual_evidence_cached_enabled = enabled
+        self._contextual_evidence_cached_state = state
+        return state
+
+
     def _publish(self, snapshot: LiveSessionSnapshot) -> None:
         with self._state_lock:
             snapshot = replace(
                 snapshot,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+                contextual_evidence=self._current_contextual_evidence_locked(),
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,
                 errors=self._project_ratings_errors_locked(errors=snapshot.errors),
