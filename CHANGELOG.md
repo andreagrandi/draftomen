@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Define a versioned, strictly validated semantic-enrichment artifact that
+  preserves Oracle-derived facts and advisory guide claims separately, records
+  card and package relationships with explicit prerequisites, keeps uncertain
+  and rejected findings out of the confirmed collection, and pins card, guide,
+  prompt, schema, reasoning, usage, and cost provenance in canonical JSON.
+  (#433)
 - Benchmark pinned local Qwen3.5 4B and 9B Oracle-text extraction across a
   frozen ELD snapshot, retaining evidence, telemetry, and a stop decision
   without changing production scoring or publication. (#426)
