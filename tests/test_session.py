@@ -75,6 +75,8 @@ from draftomen.session import (
     BuildPairOption,
     BuildResult,
     CardDataState,
+    ContextualEvidenceState,
+    ContextualEvidenceStatus,
     CardImageState,
     CardView,
     ChangeRanking,
@@ -106,6 +108,7 @@ from draftomen.session import (
 )
 from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import (
+    AggregateEvidence,
     CardRating,
     ProfileMaturity,
     RateEstimate,
@@ -143,6 +146,8 @@ def test_default_live_session_snapshot_has_neutral_initial_state() -> None:
     assert snapshot.card_data == CardDataState()
     assert snapshot.ratings == RatingsState()
     assert snapshot.set_profile == SetProfileState()
+    assert snapshot.contextual_evidence == ContextualEvidenceState()
+    assert snapshot.contextual_evidence.status is ContextualEvidenceStatus.UNAVAILABLE
     assert snapshot.recommendations == RecommendationState()
     assert snapshot.contextual_adjustments_enabled is True
     assert snapshot.pool == PoolState()
@@ -150,6 +155,169 @@ def test_default_live_session_snapshot_has_neutral_initial_state() -> None:
     assert snapshot.errors == ()
     assert snapshot.build is None
     assert snapshot.backtest is None
+
+def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
+    semantic_profile = _fixture_set_profile()
+    empirical_profile = _fixture_empirical_profile()
+
+    quickdraft = AggregateEvidence("quickdraft", None, 1.0)
+    premierdraft = AggregateEvidence(
+        "premierdraft",
+        "missing-exact-evidence",
+        0.5,
+    )
+
+    def with_authority(
+        authorities: tuple[AggregateEvidence, ...],
+    ) -> SetProfile:
+        return replace(
+            empirical_profile,
+            schema_version=2,
+            card_ratings=tuple(
+                replace(
+                    rating,
+                    gih_win_rate=replace(
+                        rating.gih_win_rate,
+                        aggregate_evidence=authority,
+                    ),
+                )
+                for rating, authority in zip(
+                    empirical_profile.card_ratings,
+                    authorities,
+                    strict=True,
+                )
+            ),
+        )
+
+    exact_profile = with_authority((quickdraft, quickdraft))
+    fallback_profile = with_authority((premierdraft, premierdraft))
+    mixed_profile = with_authority((quickdraft, premierdraft))
+    pair_rate = RateEstimate(
+        raw_value=0.62,
+        value=0.62,
+        samples=1_000,
+        prior_value=0.5,
+        source="fixture",
+        aggregate_evidence=quickdraft,
+    )
+    pair_only_profile = replace(
+        semantic_profile,
+        schema_version=2,
+        pairs=(
+            replace(semantic_profile.pairs[0], performance=pair_rate),
+            *semantic_profile.pairs[1:],
+        ),
+    )
+    zero_sample_profile = replace(
+        empirical_profile,
+        card_ratings=tuple(
+            replace(
+                rating,
+                gih_win_rate=replace(
+                    rating.gih_win_rate,
+                    raw_value=None,
+                    samples=0,
+                    aggregate_evidence=None,
+                ),
+            )
+            for rating in empirical_profile.card_ratings
+        ),
+    )
+    role_profile = empirical_profile.role_profile
+    assert role_profile is not None
+    zero_assignment_profile = replace(
+        empirical_profile,
+        role_profile=replace(
+            role_profile,
+            cards=(
+                replace(
+                    role_profile.cards[0],
+                    assignments=(
+                        replace(
+                            role_profile.cards[0].assignments[0],
+                            confidence=0.0,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    empty_roles_profile = replace(
+        empirical_profile,
+        role_profile=replace(role_profile, cards=()),
+    )
+    incompatible_roles_profile = replace(
+        empirical_profile,
+        role_profile=replace(role_profile, classifier_version="old"),
+    )
+    zero_profile_confidence = replace(empirical_profile, confidence=0.0)
+
+    legacy = session_module._contextual_evidence_for_profile(
+        profile=empirical_profile,
+        enabled=True,
+    )
+    assert legacy.status is ContextualEvidenceStatus.EXACT
+    assert legacy.source_formats == ("quickdraft",)
+
+    assert session_module._contextual_evidence_for_profile(
+        profile=exact_profile,
+        enabled=True,
+    ) == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.EXACT,
+        source_formats=("quickdraft",),
+        message="Contextual · semantic + QuickDraft evidence",
+    )
+    assert session_module._contextual_evidence_for_profile(
+        profile=fallback_profile,
+        enabled=True,
+    ) == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.FALLBACK,
+        source_formats=("premierdraft",),
+        message="Contextual · semantic + PremierDraft fallback",
+    )
+    assert session_module._contextual_evidence_for_profile(
+        profile=mixed_profile,
+        enabled=True,
+    ) == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.FALLBACK,
+        source_formats=("premierdraft", "quickdraft"),
+        message="Contextual · semantic + PremierDraft fallback, QuickDraft evidence",
+    )
+    assert session_module._contextual_evidence_for_profile(
+        profile=pair_only_profile,
+        enabled=True,
+    ).status is ContextualEvidenceStatus.EXACT
+    assert session_module._contextual_evidence_for_profile(
+        profile=semantic_profile,
+        enabled=True,
+    ) == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.SEMANTIC_ONLY,
+        message="Contextual · semantic-only (no aggregate evidence)",
+    )
+    assert session_module._contextual_evidence_for_profile(
+        profile=zero_sample_profile,
+        enabled=True,
+    ).status is ContextualEvidenceStatus.SEMANTIC_ONLY
+    for profile in (
+        None,
+        SetProfile.generic(set_code="TST", event_format=QUICK_DRAFT_FORMAT),
+        incompatible_roles_profile,
+        empty_roles_profile,
+        zero_assignment_profile,
+        zero_profile_confidence,
+    ):
+        assert session_module._contextual_evidence_for_profile(
+            profile=profile,
+            enabled=True,
+        ) == ContextualEvidenceState()
+    assert session_module._contextual_evidence_for_profile(
+        profile=fallback_profile,
+        enabled=False,
+    ) == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.DISABLED,
+        message="Contextual · disabled",
+    )
+
 
 
 def test_card_view_forwards_authoritative_unknown_flag() -> None:
@@ -837,7 +1005,10 @@ def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
 def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     tmp_path: Path,
 ) -> None:
-    profile = _fixture_set_profile()
+    profile = _fixture_empirical_profile_with_authority(
+        source_format="premierdraft",
+        fallback_reason="missing-exact-evidence",
+    )
     pool_before_pick = _fixture_pool_before_pick(
         pack_number=CONTEXT_PACK_NUMBER,
         pick_number=CONTEXT_PICK_NUMBER,
@@ -864,6 +1035,7 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
         app_dir=tmp_path / "app",
     )
     assert initial.contextual_adjustments_enabled is False
+    assert initial.contextual_evidence.status is ContextualEvidenceStatus.DISABLED
     assert initial.current_pack_event is not None
     assert initial.current_scored_pack is not None
     assert all(
@@ -896,6 +1068,11 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     enabled = session.dispatch(command=ChangeContextualScoring(enabled=True))
 
     assert enabled.contextual_adjustments_enabled is True
+    assert enabled.contextual_evidence == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.FALLBACK,
+        source_formats=("premierdraft",),
+        message="Contextual · semantic + PremierDraft fallback",
+    )
     assert enabled.draft == initial.draft
     assert enabled.current_pack_event == initial.current_pack_event
     assert enabled.current_scored_pack is not None
@@ -929,6 +1106,8 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     disabled = session.dispatch(command=ChangeContextualScoring(enabled=False))
 
     assert disabled.contextual_adjustments_enabled is False
+    assert disabled.contextual_evidence.status is ContextualEvidenceStatus.DISABLED
+    assert initial.contextual_evidence.status is ContextualEvidenceStatus.DISABLED
     assert disabled.draft == initial.draft
     assert disabled.current_pack_event == initial.current_pack_event
     assert disabled.current_scored_pack is not None
@@ -963,16 +1142,50 @@ def test_live_session_contextual_mode_toggle_without_pack_publishes_only_mode(
         snapshot_publisher=published.append,
     )
 
-
-
     initial = session.snapshot
     changed = session.dispatch(command=ChangeContextualScoring(enabled=False))
 
     assert initial.contextual_adjustments_enabled is True
+    assert initial.contextual_evidence == ContextualEvidenceState()
     assert changed.contextual_adjustments_enabled is False
+    assert changed.contextual_evidence == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.DISABLED,
+        message="Contextual · disabled",
+    )
+    assert initial.contextual_evidence == ContextualEvidenceState()
     assert changed.current_pack_event is None
     assert changed.current_scored_pack is None
     assert published[-1] is changed
+
+
+def test_live_session_semantic_status_does_not_require_current_card_adjustment(
+    tmp_path: Path,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        set_profile=_fixture_set_profile(),
+    )
+
+    snapshot = session.process_lines(
+        lines=_profiled_history_lines(
+            pool_before_pick=_fixture_pool_before_pick(
+                pack_number=CONTEXT_PACK_NUMBER,
+                pick_number=CONTEXT_PICK_NUMBER,
+            )
+        )
+    )
+
+    assert snapshot.contextual_evidence == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.SEMANTIC_ONLY,
+        message="Contextual · semantic-only (no aggregate evidence)",
+    )
+    assert snapshot.current_scored_pack is not None
+    assert all(
+        card.contextual_evidence == ()
+        for card in snapshot.current_scored_pack.cards
+    )
 
 
 def test_live_session_contextual_mode_survives_profile_and_pack_lifecycle(
@@ -2208,7 +2421,10 @@ def test_live_session_stale_profile_failures_cannot_replace_current_request(
 def test_live_session_profile_refresh_completion_after_clear_and_stop_is_noop(
     tmp_path: Path,
 ) -> None:
-    profile = _fixture_set_profile()
+    profile = _fixture_empirical_profile_with_authority(
+        source_format="premierdraft",
+        fallback_reason="missing-exact-evidence",
+    )
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
@@ -2216,9 +2432,13 @@ def test_live_session_profile_refresh_completion_after_clear_and_stop_is_noop(
     )
     session._set_active_set_code(set_code="TST")
     first_request = session.profile_refresh_request()
+    active = session.snapshot
+    assert active.contextual_evidence.status is ContextualEvidenceStatus.FALLBACK
     assert first_request is not None
     session._set_active_set_code(set_code=None)
     cleared = session.snapshot
+    assert cleared.contextual_evidence == ContextualEvidenceState()
+    assert active.contextual_evidence.status is ContextualEvidenceStatus.FALLBACK
 
     session.fail_profile_refresh(request=first_request, error_message="stale")
     session.complete_profile_refresh(
@@ -2321,11 +2541,15 @@ def test_live_session_newer_profile_result_updates_state_and_scores_current_pack
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    older = _fixture_empirical_profile(
+    older = _fixture_empirical_profile_with_authority(
+        source_format="premierdraft",
+        fallback_reason="missing-exact-evidence",
         profile_version="empirical-1.0",
         generated_at="2026-08-29T00:00:00+00:00",
     )
-    newer = _fixture_empirical_profile(
+    newer = _fixture_empirical_profile_with_authority(
+        source_format="quickdraft",
+        fallback_reason=None,
         profile_version="empirical-2.0",
         generated_at="2026-08-30T00:00:00+00:00",
         first_gih=0.10,
@@ -2351,6 +2575,7 @@ def test_live_session_newer_profile_result_updates_state_and_scores_current_pack
     request = session.profile_refresh_request()
     assert request is not None
     assert snapshot.current_scored_pack is not None
+    assert snapshot.contextual_evidence.status is ContextualEvidenceStatus.FALLBACK
     assert [
         recommendation.card.grp_id for recommendation in snapshot.recommendations.cards
     ] == [104894, 104976]
@@ -2433,6 +2658,8 @@ def test_live_session_newer_profile_result_updates_state_and_scores_current_pack
     assert session._set_profile.fingerprint == newer.fingerprint
     assert authority_snapshot.set_profile.source == "remote"
     assert authority_snapshot.set_profile.refresh_outcome == "updated"
+    assert authority_snapshot.contextual_evidence.status is ContextualEvidenceStatus.EXACT
+    assert snapshot.contextual_evidence.status is ContextualEvidenceStatus.FALLBACK
     assert authority_snapshot.ratings.phase is DataLoadPhase.READY
     assert authority_snapshot.ratings.rated_cards == 2
     assert authority_snapshot.ratings.total_cards == 2
@@ -2590,7 +2817,10 @@ def test_live_session_profile_unchanged_and_failed_refreshes_retain_last_good_st
     tmp_path: Path,
     refresh_path: str,
 ) -> None:
-    profile = _fixture_empirical_profile()
+    profile = _fixture_empirical_profile_with_authority(
+        source_format="premierdraft",
+        fallback_reason="missing-exact-evidence",
+    )
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
@@ -2610,6 +2840,8 @@ def test_live_session_profile_unchanged_and_failed_refreshes_retain_last_good_st
     scored_pack = baseline.current_scored_pack
     assert scored_pack is not None
     recommendations = baseline.recommendations.cards
+    contextual_evidence = baseline.contextual_evidence
+    assert contextual_evidence.status is ContextualEvidenceStatus.FALLBACK
 
 
     records_before = load_draft_audit_records(
@@ -2640,6 +2872,8 @@ def test_live_session_profile_unchanged_and_failed_refreshes_retain_last_good_st
     assert final.set_profile.source == baseline.set_profile.source
     assert final.set_profile.phase is expected_phase
     assert final.set_profile.refresh_outcome == expected_outcome
+    assert final.contextual_evidence == contextual_evidence
+    assert baseline.contextual_evidence == contextual_evidence
     assert final.ratings == baseline.ratings
     assert final.current_scored_pack is scored_pack
     assert final.current_scored_pack.cards == scored_pack.cards
@@ -6869,6 +7103,42 @@ def _fixture_empirical_profile(
                 ),
                 average_last_seen_at=1.0,
             ),
+        ),
+    )
+
+
+def _fixture_empirical_profile_with_authority(
+    *,
+    source_format: str,
+    fallback_reason: str | None,
+    first_gih: float = 0.90,
+    second_gih: float = 0.10,
+    profile_version: str = "empirical-1.0",
+    generated_at: str = "2026-08-29T00:00:00+00:00",
+) -> SetProfile:
+    profile = _fixture_empirical_profile(
+        profile_version=profile_version,
+        generated_at=generated_at,
+        first_gih=first_gih,
+        second_gih=second_gih,
+    )
+    authority = AggregateEvidence(
+        source_format=source_format,
+        fallback_reason=fallback_reason,
+        confidence=1.0,
+    )
+    return replace(
+        profile,
+        schema_version=2,
+        card_ratings=tuple(
+            replace(
+                rating,
+                gih_win_rate=replace(
+                    rating.gih_win_rate,
+                    aggregate_evidence=authority,
+                ),
+            )
+            for rating in profile.card_ratings
         ),
     )
 

@@ -20,10 +20,13 @@ from draftomen.session import (
     CardDataState,
     CardImageState,
     CardView,
+    ChangeContextualScoring,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
     ChooseRecommendation,
+    ContextualEvidenceState,
+    ContextualEvidenceStatus,
     DataLoadPhase,
     DismissError,
     DraftIdentity,
@@ -423,6 +426,11 @@ def _ready_snapshot() -> LiveSessionSnapshot:
             refresh_outcome="unchanged",
             message="Mock Quick Draft set profile is current.",
         ),
+        contextual_evidence=ContextualEvidenceState(
+            status=ContextualEvidenceStatus.EXACT,
+            source_formats=("quickdraft",),
+            message="Contextual · semantic + QuickDraft evidence",
+        ),
         recommendations=RecommendationState(
             ranking_mode="score",
             splash_enabled=True,
@@ -581,6 +589,9 @@ class MockLiveSession:
     def __init__(self, *, scenario: MockScenario = "ready") -> None:
         self._scenario = scenario
         self._snapshot = _snapshot_for_scenario(scenario=scenario)
+        self._contextual_adjustments_enabled = (
+            self._snapshot.contextual_adjustments_enabled
+        )
 
     @property
     def scenario(self) -> MockScenario:
@@ -590,11 +601,38 @@ class MockLiveSession:
     def snapshot(self) -> LiveSessionSnapshot:
         return self._snapshot
 
+    def _with_contextual_mode(
+        self,
+        *,
+        snapshot: LiveSessionSnapshot,
+    ) -> LiveSessionSnapshot:
+        evidence = (
+            _snapshot_for_scenario(scenario=self._scenario).contextual_evidence
+            if self._contextual_adjustments_enabled
+            else ContextualEvidenceState(
+                status=ContextualEvidenceStatus.DISABLED,
+                message="Contextual · disabled",
+            )
+        )
+        if (
+            snapshot.contextual_adjustments_enabled
+            is self._contextual_adjustments_enabled
+            and snapshot.contextual_evidence == evidence
+        ):
+            return snapshot
+        return replace(
+            snapshot,
+            contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+            contextual_evidence=evidence,
+        )
+
     def select_scenario(self, *, scenario: MockScenario) -> LiveSessionSnapshot:
         if scenario not in MOCK_SCENARIOS:
             raise ValueError(f"Unsupported mock scenario: {scenario}")
         self._scenario = scenario
-        self._snapshot = _snapshot_for_scenario(scenario=scenario)
+        self._snapshot = self._with_contextual_mode(
+            snapshot=_snapshot_for_scenario(scenario=scenario)
+        )
         return self._snapshot
 
     def dispatch(self, *, command: LiveSessionCommand) -> LiveSessionSnapshot:
@@ -651,6 +689,8 @@ class MockLiveSession:
                     splash_enabled=command.enabled,
                 ),
             )
+        elif isinstance(command, ChangeContextualScoring):
+            self._contextual_adjustments_enabled = command.enabled
         elif isinstance(command, ChooseAccount):
             matching = next(
                 (
@@ -716,8 +756,8 @@ class MockLiveSession:
             if any(error.error_id == command.error_id for error in snapshot.errors):
                 snapshot = _ready_snapshot()
                 self._scenario = "ready"
-        self._snapshot = snapshot
-        return snapshot
+        self._snapshot = self._with_contextual_mode(snapshot=snapshot)
+        return self._snapshot
 
     @staticmethod
     def _change_ranking(
