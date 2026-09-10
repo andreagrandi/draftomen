@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Acquire user-provided Draftsim guides through a bounded, standard-library
+  HTTPS client that enforces allowed hosts, same-origin redirects, response
+  size, timeout and UTF-8 content rules while returning verbatim source,
+  SHA-256, final URL and retrieval time without writing profiles or
+  production artifacts. (#446)
 - Define a versioned, strictly validated semantic-enrichment artifact that
   preserves Oracle-derived facts and advisory guide claims separately, records
   card and package relationships with explicit prerequisites, keeps uncertain
