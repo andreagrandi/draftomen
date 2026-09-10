@@ -25,7 +25,7 @@ Offered cards:
   13     50  Fixture Card 104979 (grpId 104979)  Colorless  Any         —      —     2  Prior*
   14     50  Fixture Card 105164 (grpId 105164)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Split Card receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: open color fit applies a commitment adjustment.
+Recommendation: Fixture Split Card receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Spider [G] (grpId 105097)
 
 Pack 1 Pick 2
@@ -47,7 +47,7 @@ Offered cards:
   12     50  Fixture Card 105007 (grpId 105007)  Colorless  Any         —      —     2  Prior*
   13     50  Fixture Card 105166 (grpId 105166)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104933 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104933 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Blue Card [U] (grpId 105134)
 
 Pack 1 Pick 3
@@ -68,7 +68,7 @@ Offered cards:
   11     50  Fixture Card 105011 (grpId 105011)  Colorless  Any         —      —     2  Prior*
   12     50  Fixture Final Pick (grpId 105182)   R          Open        —      —     1  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104905 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104905 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105003 [Colorless] (grpId 105003)
 
 Pack 1 Pick 4
@@ -88,7 +88,7 @@ Offered cards:
   10     50  Fixture Card 104971 (grpId 104971)  Colorless  Any         —      —     2  Prior*
   11     50  Fixture Card 105174 (grpId 105174)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104911 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104911 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105037 [Colorless] (grpId 105037)
 
 Pack 1 Pick 5
@@ -107,7 +107,7 @@ Offered cards:
   09     50  Fixture Card 105117 (grpId 105117)  Colorless  Any         —      —     2  Prior*
   10     50  Fixture Card 105180 (grpId 105180)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105021 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105021 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105117 [Colorless] (grpId 105117)
 
 Pack 1 Pick 6
@@ -125,7 +125,7 @@ Offered cards:
   08     50  Fixture Card 105023 (grpId 105023)  Colorless  Any         —      —     2  Prior*
   09     50  Fixture Card 104947 (grpId 104947)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105009 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105009 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105014 [Colorless] (grpId 105014)
 
 Pack 1 Pick 7
@@ -142,7 +142,7 @@ Offered cards:
   07     50  Fixture Card 105034 (grpId 105034)  Colorless  Any         —      —     2  Prior*
   08     50  Fixture Card 105178 (grpId 105178)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105029 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105029 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105034 [Colorless] (grpId 105034)
 
 Pack 1 Pick 8
@@ -158,7 +158,7 @@ Offered cards:
   06     50  Fixture Card 105042 (grpId 105042)  Colorless  Any         —      —     2  Prior*
   07     50  Fixture Card 105173 (grpId 105173)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105064 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105064 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104997 [Colorless] (grpId 104997)
 
 Pack 1 Pick 9
@@ -173,7 +173,7 @@ Offered cards:
   05     50  Fixture Card 104932 (grpId 104932)  Colorless  Any         —      —     2  Prior*
   06     50  Fixture Card 104969 (grpId 104969)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104995 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104995 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105030 [Colorless] (grpId 105030)
 
 Pack 1 Pick 10
@@ -187,7 +187,7 @@ Offered cards:
   04     50  Fixture Card 105086 (grpId 105086)  Colorless  Any         —      —     2  Prior*
   05     50  Fixture Card 105166 (grpId 105166)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105003 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105003 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104989 [Colorless] (grpId 104989)
 
 Pack 1 Pick 11
@@ -200,7 +200,7 @@ Offered cards:
   03     50  Fixture Card 105076 (grpId 105076)  Colorless  Any         —      —     2  Prior*
   04     43  Fixture Final Pick (grpId 105182)   R          Off!        —      —     1  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105032 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105032 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105054 [Colorless] (grpId 105054)
 
 Pack 1 Pick 12
@@ -212,7 +212,7 @@ Offered cards:
   02     50  Fixture Card 105070 (grpId 105070)  Colorless  Any         —      —     2  Prior*
   03     50  Fixture Card 105174 (grpId 105174)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104972 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104972 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105070 [Colorless] (grpId 105070)
 
 Pack 1 Pick 13
@@ -223,7 +223,7 @@ Offered cards:
   01     50  Fixture Card 105054 (grpId 105054)  Colorless  Any         —      —     2  Prior*
   02     50  Fixture Card 105180 (grpId 105180)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105054 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105054 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105054 [Colorless] (grpId 105054)
 
 Pack 1 Pick 14
@@ -233,7 +233,7 @@ Offered cards:
   #   Score  Card                                Colors     Fit    GIH WR   ALSA    MV  Source
   01     50  Fixture Card 105084 (grpId 105084)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105084 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105084 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105084 [Colorless] (grpId 105084)
 
 Pack 2 Pick 1
@@ -256,7 +256,7 @@ Offered cards:
   13     50  Fixture Card 105137 (grpId 105137)  Colorless  Any         —      —     2  Prior*
   14     50  Fixture Card 105161 (grpId 105161)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104929 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104929 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105037 [Colorless] (grpId 105037)
 
 Pack 2 Pick 2
@@ -278,7 +278,7 @@ Offered cards:
   12     50  Fixture Card 105124 (grpId 105124)  Colorless  Any         —      —     2  Prior*
   13     50  Fixture Card 105155 (grpId 105155)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105027 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105027 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104998 [Colorless] (grpId 104998)
 
 Pack 2 Pick 3
@@ -299,7 +299,7 @@ Offered cards:
   11     50  Fixture Card 105065 (grpId 105065)  Colorless  Any         —      —     2  Prior*
   12     50  Fixture Card 105175 (grpId 105175)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105027 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105027 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105005 [Colorless] (grpId 105005)
 
 Pack 2 Pick 4
@@ -319,7 +319,7 @@ Offered cards:
   10     50  Fixture Card 105096 (grpId 105096)  Colorless  Any         —      —     2  Prior*
   11     50  Fixture Card 105158 (grpId 105158)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105062 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105062 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104983 [Colorless] (grpId 104983)
 
 Pack 2 Pick 5
@@ -338,7 +338,7 @@ Offered cards:
   09     50  Fixture Card 105102 (grpId 105102)  Colorless  Any         —      —     2  Prior*
   10     50  Fixture Card 105161 (grpId 105161)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105074 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105074 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105017 [Colorless] (grpId 105017)
 
 Pack 2 Pick 6
@@ -356,7 +356,7 @@ Offered cards:
   08     50  Fixture Card 105065 (grpId 105065)  Colorless  Any         —      —     2  Prior*
   09     50  Fixture Card 105154 (grpId 105154)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105032 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105032 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105003 [Colorless] (grpId 105003)
 
 Pack 2 Pick 7
@@ -373,7 +373,7 @@ Offered cards:
   07     50  Fixture Card 104964 (grpId 104964)  Colorless  Any         —      —     2  Prior*
   08     50  Fixture Card 105167 (grpId 105167)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104995 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104995 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105047 [Colorless] (grpId 105047)
 
 Pack 2 Pick 8
@@ -389,7 +389,7 @@ Offered cards:
   06     50  Fixture Card 105022 (grpId 105022)  Colorless  Any         —      —     2  Prior*
   07     50  Fixture Card 105177 (grpId 105177)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105138 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105138 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104996 [Colorless] (grpId 104996)
 
 Pack 2 Pick 9
@@ -404,7 +404,7 @@ Offered cards:
   05     50  Fixture Card 105006 (grpId 105006)  Colorless  Any         —      —     2  Prior*
   06     50  Fixture Card 105028 (grpId 105028)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104929 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104929 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105006 [Colorless] (grpId 105006)
 
 Pack 2 Pick 10
@@ -418,7 +418,7 @@ Offered cards:
   04     50  Fixture Card 105142 (grpId 105142)  Colorless  Any         —      —     2  Prior*
   05     50  Fixture Card 105033 (grpId 105033)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105027 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105027 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105033 [Colorless] (grpId 105033)
 
 Pack 2 Pick 11
@@ -431,7 +431,7 @@ Offered cards:
   03     50  Fixture Card 105013 (grpId 105013)  Colorless  Any         —      —     2  Prior*
   04     50  Fixture Card 105175 (grpId 105175)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104951 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104951 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105013 [Colorless] (grpId 105013)
 
 Pack 2 Pick 12
@@ -443,7 +443,7 @@ Offered cards:
   02     50  Fixture Card 105049 (grpId 105049)  Colorless  Any         —      —     2  Prior*
   03     50  Fixture Card 105003 (grpId 105003)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105062 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105062 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105003 [Colorless] (grpId 105003)
 
 Pack 2 Pick 13
@@ -454,7 +454,7 @@ Offered cards:
   01     50  Fixture Card 105074 (grpId 105074)  Colorless  Any         —      —     2  Prior*
   02     50  Fixture Card 105049 (grpId 105049)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105074 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105074 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105049 [Colorless] (grpId 105049)
 
 Pack 2 Pick 14
@@ -464,7 +464,7 @@ Offered cards:
   #   Score  Card                                Colors     Fit    GIH WR   ALSA    MV  Source
   01     50  Fixture Card 105032 (grpId 105032)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105032 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105032 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105032 [Colorless] (grpId 105032)
 
 Pack 3 Pick 1
@@ -487,7 +487,7 @@ Offered cards:
   13     50  Fixture Card 104979 (grpId 104979)  Colorless  Any         —      —     2  Prior*
   14     50  Fixture Card 105166 (grpId 105166)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104907 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104907 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105000 [Colorless] (grpId 105000)
 
 Pack 3 Pick 2
@@ -509,7 +509,7 @@ Offered cards:
   12     50  Fixture Card 105121 (grpId 105121)  Colorless  Any         —      —     2  Prior*
   13     50  Fixture Card 105179 (grpId 105179)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104938 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104938 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104986 [Colorless] (grpId 104986)
 
 Pack 3 Pick 3
@@ -530,7 +530,7 @@ Offered cards:
   11     50  Fixture Card 105071 (grpId 105071)  Colorless  Any         —      —     2  Prior*
   12     50  Fixture Card 105164 (grpId 105164)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105142 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105142 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105164 [Colorless] (grpId 105164)
 
 Pack 3 Pick 4
@@ -550,7 +550,7 @@ Offered cards:
   10     50  Fixture Card 105006 (grpId 105006)  Colorless  Any         —      —     2  Prior*
   11     50  Fixture Card 105169 (grpId 105169)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105005 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105005 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105005 [Colorless] (grpId 105005)
 
 Pack 3 Pick 5
@@ -569,7 +569,7 @@ Offered cards:
   09     50  Fixture Card 105117 (grpId 105117)  Colorless  Any         —      —     2  Prior*
   10     50  Fixture Card 105168 (grpId 105168)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104939 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104939 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105117 [Colorless] (grpId 105117)
 
 Pack 3 Pick 6
@@ -587,7 +587,7 @@ Offered cards:
   08     50  Fixture Card 104965 (grpId 104965)  Colorless  Any         —      —     2  Prior*
   09     38  Fixture Final Pick (grpId 105182)   R          Off!        —      —     1  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105056 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105056 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105053 [Colorless] (grpId 105053)
 
 Pack 3 Pick 7
@@ -604,7 +604,7 @@ Offered cards:
   07     50  Fixture Card 105022 (grpId 105022)  Colorless  Any         —      —     2  Prior*
   08     50  Fixture Card 105167 (grpId 105167)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105039 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105039 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104989 [Colorless] (grpId 104989)
 
 Pack 3 Pick 8
@@ -620,7 +620,7 @@ Offered cards:
   06     50  Fixture Card 105002 (grpId 105002)  Colorless  Any         —      —     2  Prior*
   07     50  Fixture Card 105153 (grpId 105153)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105035 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105035 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105002 [Colorless] (grpId 105002)
 
 Pack 3 Pick 9
@@ -635,7 +635,7 @@ Offered cards:
   05     50  Fixture Card 105031 (grpId 105031)  Colorless  Any         —      —     2  Prior*
   06     50  Fixture Card 104908 (grpId 104908)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105074 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105074 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105031 [Colorless] (grpId 105031)
 
 Pack 3 Pick 10
@@ -649,7 +649,7 @@ Offered cards:
   04     50  Fixture Card 105022 (grpId 105022)  Colorless  Any         —      —     2  Prior*
   05     50  Fixture Card 105179 (grpId 105179)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104938 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104938 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104995 [Colorless] (grpId 104995)
 
 Pack 3 Pick 11
@@ -662,7 +662,7 @@ Offered cards:
   03     50  Fixture Card 104950 (grpId 104950)  Colorless  Any         —      —     2  Prior*
   04     50  Fixture Card 104965 (grpId 104965)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 105142 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 105142 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 105004 [Colorless] (grpId 105004)
 
 Pack 3 Pick 12
@@ -674,7 +674,7 @@ Offered cards:
   02     50  Fixture Card 105150 (grpId 105150)  Colorless  Any         —      —     2  Prior*
   03     50  Fixture Card 105145 (grpId 105145)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104995 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104995 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104995 [Colorless] (grpId 104995)
 
 Pack 3 Pick 13
@@ -685,7 +685,7 @@ Offered cards:
   01     50  Fixture Card 104911 (grpId 104911)  Colorless  Any         —      —     2  Prior*
   02     50  Fixture Card 104960 (grpId 104960)  Colorless  Any         —      —     2  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Card 104911 receives 50 DO points. rating: neutral-prior estimate with no GIH data. color +0.00 DO points: colorless color fit applies a commitment adjustment.
+Recommendation: Fixture Card 104911 receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
 Chosen card: Fixture Card 104911 [Colorless] (grpId 104911)
 
 Pack 3 Pick 14
@@ -695,7 +695,7 @@ Offered cards:
   #   Score  Card                               Colors     Fit    GIH WR   ALSA    MV  Source
   01     38  Fixture Final Pick (grpId 105182)  R          Off!        —      —     1  Prior*
   * Prior uses neutral prior adjusted by ALSA when available.
-Recommendation: Fixture Final Pick receives 38 DO points. rating: neutral-prior estimate with no GIH data. color -12.50 DO points: off color color fit applies a commitment adjustment. splash: off color splash assessment [grade is below A; needs 2 more deterministic sources; speculative splashes are disabled after color lock; aggressive pools require supported exceptional splashes].
+Recommendation: Fixture Final Pick receives 38 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors are a weaker fit for your current deck (-12.50 DO points). Splash fit is being evaluated.
 Chosen card: Fixture Final Pick [R] (grpId 105182)
 
 Draft complete: 42 cards (explicit completion)

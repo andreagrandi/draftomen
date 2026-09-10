@@ -293,6 +293,154 @@ def test_contextual_rationale_keeps_material_term_order_and_evidence() -> None:
             card.contextual_breakdown.fixing,
         )
     )
+    detailed = render_pick_rationale_detailed(scored_card=card)
+    assert "Helps fill your deck's fixing gap: 0 of 2 preferred cards" in detailed
+    expected_stems = {
+        "role": "Helps fill your deck's fixing gap",
+        "urgency": "Filling a missing role matters more at this stage of the draft",
+        "synergy": "Works with support already in your deck",
+        "redundancy": "Overlaps with roles your deck already covers",
+        "unsupported_payoff": "Needs support your deck does not yet have",
+        "fixing": "Helps your deck produce the colors it needs",
+    }
+    for reason in contextual_reasons:
+        assert expected_stems[reason.kind] in detailed
+        assert f"({reason.contribution:+.2f} DO points)." in detailed
+    assert all(
+        (
+            reason.contribution > 0
+            if reason.kind in {"role", "urgency", "synergy", "fixing"}
+            else reason.contribution < 0
+        )
+        for reason in contextual_reasons
+    )
+
+
+def test_detailed_rationale_omits_rounded_zero_additive_terms() -> None:
+    source_card = PickEngine(ratings_data=_ratings_data()).score_pack(
+        offered_grp_ids=(6,),
+        card_database=_card_database(),
+    ).cards[0]
+    rating_reason = next(
+        reason for reason in source_card.rationale.reasons if reason.kind == "rating"
+    )
+    rationale = PickRationale(
+        reasons=(
+            rating_reason,
+            PickReason(
+                kind="color",
+                contribution=0.0,
+                phrase="rounded-zero color reason",
+                evidence="color evidence",
+            ),
+            PickReason(
+                kind="role",
+                contribution=-0.0,
+                phrase="signed-zero role reason",
+                evidence="role evidence",
+            ),
+            PickReason(
+                kind="urgency",
+                contribution=0.004,
+                phrase="sub-rounding urgency reason",
+                evidence="urgency evidence",
+            ),
+            PickReason(
+                kind="synergy",
+                contribution=-0.004,
+                phrase="sub-rounding synergy reason",
+                evidence=("synergy evidence",),
+            ),
+            PickReason(
+                kind="fixing",
+                contribution=0.01,
+                phrase="material fixing reason",
+                evidence=("fixing evidence",),
+            ),
+        ),
+        unattributed_contribution=1.25,
+    )
+    scored_card = replace(source_card, rationale=rationale)
+    rationale_json = rationale.to_json()
+    rationale_json_bytes = json.dumps(
+        rationale_json,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    preserved_evidence = tuple(
+        reason.preserved_evidence for reason in rationale.reasons
+    )
+
+    explanation = render_pick_rationale_detailed(scored_card=scored_card)
+
+    assert "rounded-zero color reason" not in explanation
+    assert "signed-zero role reason" not in explanation
+    assert "sub-rounding urgency reason" not in explanation
+    assert "sub-rounding synergy reason" not in explanation
+    assert "+0.00 DO points" not in explanation
+    assert "-0.00 DO points" not in explanation
+    assert "+0.004" not in explanation
+    assert "-0.004" not in explanation
+    assert "(+0.01 DO points)." in explanation
+    assert "Helps your deck produce the colors it needs" in explanation
+    assert "score accounting remainder" not in explanation
+    assert "collective-cap" not in explanation
+    assert "score-clamp" not in explanation
+    assert scored_card.rationale.to_json() == rationale_json
+    assert json.dumps(
+        scored_card.rationale.to_json(),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode() == rationale_json_bytes
+    assert tuple(
+        reason.preserved_evidence for reason in scored_card.rationale.reasons
+    ) == preserved_evidence
+
+
+def test_detailed_rationale_describes_material_color_fit_by_sign() -> None:
+    source_card = PickEngine(ratings_data=_ratings_data()).score_pack(
+        offered_grp_ids=(6,),
+        card_database=_card_database(),
+    ).cards[0]
+    rating_reason = next(
+        reason for reason in source_card.rationale.reasons if reason.kind == "rating"
+    )
+    positive_card = replace(
+        source_card,
+        rationale=PickRationale(
+            reasons=(
+                rating_reason,
+                PickReason(
+                    kind="color",
+                    contribution=1.25,
+                    phrase="material positive color fit",
+                ),
+            ),
+        ),
+    )
+    negative_card = replace(
+        source_card,
+        rationale=PickRationale(
+            reasons=(
+                rating_reason,
+                PickReason(
+                    kind="color",
+                    contribution=-12.5,
+                    phrase="material negative color fit",
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        "Its colors fit your current deck (+1.25 DO points)."
+        in render_pick_rationale_detailed(scored_card=positive_card)
+    )
+    assert (
+        "Its colors are a weaker fit for your current deck (-12.50 DO points)."
+        in render_pick_rationale_detailed(scored_card=negative_card)
+    )
+
 
 @pytest.mark.parametrize(
     ("confidence", "material"),
@@ -496,6 +644,93 @@ def test_rating_copy_retains_profile_confidence_for_neutral_and_fallback_ratings
         scored_card=fallback_card
     ).startswith("Rating: Quick GIH win rate 55.0% (mature profile, 42% confidence).")
 
+def test_detailed_rating_reasons_retain_source_facts_and_evidence_scope() -> None:
+    no_gih_card = _score_with_context(
+        database=_contextual_database(),
+        profile=_contextual_profile(cards=(), confidence=0.42),
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1,),
+    ).cards[0]
+    alsa_card = PickEngine(ratings_data=_ratings_data()).score_pack(
+        offered_grp_ids=(4,),
+        card_database=_card_database(),
+    ).cards[0]
+    profile = replace(
+        _contextual_profile(cards=(), confidence=0.42),
+        card_ratings=(_profile_card("ARENA_ID:7", 0.72),),
+    )
+    profile_card = _score_with_context(
+        database=_contextual_database(),
+        profile=profile,
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1,),
+    ).cards[0]
+    profile_rating_reason = next(
+        reason
+        for reason in profile_card.rationale.reasons
+        if reason.kind == "rating"
+    )
+    missing_confidence_rating_reason = replace(
+        profile_rating_reason,
+        phrase=profile_rating_reason.phrase.replace(
+            "42% confidence",
+            "unknown confidence",
+        ),
+    )
+    missing_confidence_rationale = replace(
+        profile_card.rationale,
+        reasons=tuple(
+            (
+                missing_confidence_rating_reason
+                if reason.kind == "rating"
+                else reason
+            )
+            for reason in profile_card.rationale.reasons
+        ),
+    )
+    missing_confidence_card = replace(
+        profile_card,
+        contextual_profile_confidence=None,
+        rationale=missing_confidence_rationale,
+    )
+    no_profile_card = PickEngine(ratings_data=_ratings_data()).score_pack(
+        offered_grp_ids=(7,),
+        card_database=_card_database(),
+    ).cards[0]
+
+    no_gih_explanation = render_pick_rationale_detailed(
+        scored_card=no_gih_card
+    )
+    alsa_explanation = render_pick_rationale_detailed(scored_card=alsa_card)
+    profile_explanation = render_pick_rationale_detailed(scored_card=profile_card)
+    missing_confidence_explanation = render_pick_rationale_detailed(
+        scored_card=missing_confidence_card
+    )
+    assert "42% confidence" not in missing_confidence_explanation
+    no_profile_explanation = render_pick_rationale_detailed(
+        scored_card=no_profile_card
+    )
+
+    assert "neutral-prior estimate with no GIH data" in no_gih_explanation
+    assert "Profile evidence is mature" in no_gih_explanation
+    assert "confidence in that evidence is 42%, not a win probability" in (
+        no_gih_explanation
+    )
+    assert "neutral-prior estimate with no GIH data, adjusted by ALSA 1.00" in (
+        alsa_explanation
+    )
+    assert "profile estimate GIH win rate 72.0%" in profile_explanation
+    assert "confidence in that evidence is 42%, not a win probability" in (
+        profile_explanation
+    )
+    assert "Profile evidence is mature; confidence in that evidence is unavailable." in (
+        missing_confidence_explanation
+    )
+    assert "Quick GIH win rate 55.0%" in no_profile_explanation
+    assert "Profile evidence" not in no_profile_explanation
+    assert "profile estimate" not in no_profile_explanation
+
+
 
 def test_detailed_rationale_omits_context_without_scoring_context() -> None:
     card = PickEngine(ratings_data=_ratings_data()).score_pack(
@@ -537,11 +772,15 @@ def test_concise_splash_reasons_are_short_and_detailed_reasons_are_not_duplicate
     assert "Splash fixing is available." in render_pick_rationale_concise(
         scored_card=fixer
     )
-    detailed = render_pick_rationale_detailed(
+    speculative_detailed = render_pick_rationale_detailed(
         scored_card=speculative,
     )
-    assert detailed.count("splash: ") == 1
-    assert "splash: splash:" not in detailed
+    fixer_detailed = render_pick_rationale_detailed(scored_card=fixer)
+    assert "Speculative splash is a consideration." in speculative_detailed
+    assert "Splash fixing is available." not in speculative_detailed
+    assert "Splash fixing is available." in fixer_detailed
+    assert "Speculative splash is a consideration." not in fixer_detailed
+
 
 
 def test_populated_equal_pair_rates_do_not_create_a_tiebreak_reason() -> None:
@@ -3616,7 +3855,7 @@ def test_low_confidence_target_scales_targeted_fixing() -> None:
     )
 
 
-def test_explanation_exposes_context_metadata_and_material_late_terms() -> None:
+def test_detailed_rationale_explains_base_rating_and_material_role_gap() -> None:
     database = _contextual_database()
     profile = _contextual_profile(
         cards=(
@@ -3637,13 +3876,23 @@ def test_explanation_exposes_context_metadata_and_material_late_terms() -> None:
     explanation = render_pick_rationale_detailed(
         scored_card=card,
     )
+    role_reason = next(
+        reason for reason in card.rationale.reasons if reason.kind == "role"
+    )
 
-    assert "context WU, theme patient card advantage" in explanation
-    assert "mature profile, 100% confidence" in explanation
-    assert "material terms:" not in explanation
-    assert "role +" in explanation
-    assert "urgency +" in explanation
-    assert "late missing-role urgency" in explanation
+    assert f"Base rating: {card.base_score:.2f} DO points." in explanation
+    assert f"({role_reason.contribution:+.2f} DO points)." in explanation
+    assert "Helps fill your deck's draw gap: 0 of 1 preferred cards" in explanation
+    assert (
+        "Profile evidence is mature; confidence in that evidence is 100%, "
+        "not a win probability."
+    ) in explanation
+    assert "context WU" not in explanation
+    assert "role +" not in explanation
+    assert "urgency +" not in explanation
+    assert "collective-cap" not in explanation
+    assert "score-clamp" not in explanation
+
 
 
 def test_generated_early_semantic_profile_contributes_without_live_ratings() -> None:
@@ -3770,9 +4019,12 @@ def test_contextual_adjustments_can_be_disabled_without_bypassing_profile_scorin
         scored_card=disabled_card,
     )
     assert "material terms:" not in explanation
-    assert "fills " not in explanation
     assert "context " not in explanation
-    assert "mature profile, 100% confidence" in explanation
+    assert "Helps fill" not in explanation
+    assert (
+        "Profile evidence is mature; confidence in that evidence is 100%, "
+        "not a win probability."
+    ) in explanation
 
     wrapped = score_pack(
         offered_grp_ids=(7, 8),

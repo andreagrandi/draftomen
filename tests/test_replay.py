@@ -215,7 +215,7 @@ def test_replay_without_ratings_cache_uses_neutral_prior_scores(
     assert "Score" in captured.out
     assert "Prior*" in captured.out
     assert "Recommendation: Fixture Split Card receives 50 DO points." in captured.out
-    assert "rating: neutral-prior estimate with no GIH data." in captured.out
+    assert "Rating evidence: neutral-prior estimate with no GIH data." in captured.out
     assert captured.err == ""
 
 
@@ -341,7 +341,7 @@ def test_replay_uses_pre_pick_context_for_recommendation_evidence(
         in output
     )
     assert "splash disabled" in output
-    assert "fills draw deficit" in output
+    assert "Helps fill your deck's draw gap" in output
 
 
 def test_replay_cli_loads_local_profile_once(
@@ -442,12 +442,12 @@ def test_replay_explains_profile_context_without_material_terms(
     )
     assert "context UG" not in output
     assert "theme replay tempo" not in output
-    assert "fills a role deficit" not in output
-    assert "addresses role timing" not in output
-    assert "supports a semantic package" not in output
-    assert "accounts for role redundancy" not in output
-    assert "accounts for unsupported payoff risk" not in output
-    assert "adds needed mana fixing" not in output
+    assert "Helps fill" not in output
+    assert "Filling a missing role matters more" not in output
+    assert "Works with support already" not in output
+    assert "Overlaps with roles" not in output
+    assert "Needs support" not in output
+    assert "produce the colors" not in output
 
 
 def test_replay_profile_loader_is_skipped_for_explicit_profile() -> None:
