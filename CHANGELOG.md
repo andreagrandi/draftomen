@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Validate constructed relationship candidates through a pinned prompt and
+  response schema that bind each verdict to the candidate identity and its
+  exact Oracle evidence, persist validated relationships under a durable
+  relationship work kind, and never turn fabricated, foreign or incomplete
+  evidence into an accepted relationship. (#480)
 - Persist resumable set-enrichment work through a caller-owned
   content-addressed store that matches input, model configuration, prompt and
   schema hashes before reusing work, keeps raw responses with trusted

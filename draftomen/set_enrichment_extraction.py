@@ -1,4 +1,4 @@
-"""Pure source-bound extraction contracts for frozen set guides and canonical cards."""
+"""Pure source-bound extraction contracts for frozen set guides, canonical cards and constructed relationship candidates."""
 
 from __future__ import annotations
 
@@ -44,6 +44,9 @@ GUIDE_EXTRACTION_SCHEMA_NAME = "draftomen_guide_extraction_v1"
 CARD_CAPABILITY_EXTRACTION_PROMPT_ID = "draftomen-card-capability-extraction-v1"
 CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID = "draftomen-card-capability-extraction-response-v1"
 CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME = "draftomen_card_capability_extraction_v1"
+RELATIONSHIP_VALIDATION_PROMPT_ID = "draftomen-relationship-validation-v1"
+RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID = "draftomen-relationship-validation-response-v1"
+RELATIONSHIP_VALIDATION_SCHEMA_NAME = "draftomen_relationship_validation_v1"
 
 _GUIDE_SYSTEM_PROMPT = (
     "Extract only claims stated in the supplied frozen guide. Return an exact guide quotation "
@@ -67,6 +70,15 @@ _CARD_CAPABILITY_SYSTEM_PROMPT = (
     "or emit cross-card relationships."
 )
 
+_RELATIONSHIP_SYSTEM_PROMPT = (
+    "Validate only the declared mechanism between the two listed cards. Accept the declared "
+    "interaction only when both supplied Oracle texts support it, and quote substrings copied "
+    "exactly from the listed Oracle text of each participant. Never rename, re-identify, or "
+    "introduce another card, and never restate a mechanism other than the declared one. Return "
+    "only the pinned JSON object: an accepted verdict carries a null reason, while uncertain "
+    "and rejected verdicts require a nonblank reason."
+)
+
 _MALFORMED_RESPONSE_REASON = "response does not match guide extraction schema version 1."
 _SEMANTIC_REVIEW_REASON = "guide claim requires semantic review beyond exact-source validation."
 
@@ -88,6 +100,20 @@ _CAPABILITY_FACE_REASON = "capability face identity does not match the selected 
 _CAPABILITY_EVIDENCE_OWNER_REASON = "Oracle evidence does not belong to the selected card face."
 _CAPABILITY_EVIDENCE_QUOTE_REASON = "Oracle evidence quote is not an exact source substring."
 _CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card."
+
+_RELATIONSHIP_MALFORMED_RESPONSE_REASON = (
+    "response does not match relationship validation schema version 1."
+)
+_RELATIONSHIP_EVIDENCE_OWNER_REASON = (
+    "relationship Oracle evidence does not belong to a candidate participant."
+)
+_RELATIONSHIP_EVIDENCE_QUOTE_REASON = (
+    "relationship Oracle evidence quote is not an exact source substring."
+)
+_RELATIONSHIP_EVIDENCE_COVERAGE_REASON = (
+    "accepted relationships require Oracle evidence for both participants."
+)
+_RELATIONSHIP_REASON_FIELD_REASON = "relationship verdict and reason do not agree."
 
 _GUIDE_CATEGORIES = frozenset({"format_finding", "mechanic", "archetype", "strategy"})
 _RESPONSE_STATUSES = frozenset({status.value for status in FindingStatus})
@@ -155,7 +181,17 @@ _CARD_RESULT_KEYS = frozenset(
         "malformed_reason",
     }
 )
+_RELATIONSHIP_RESPONSE_KEYS = frozenset(
+    {"schema_version", "verdict", "claim", "reason", "evidence"}
+)
+_RELATIONSHIP_KEYS = frozenset(
+    {"mechanism", "source", "target", "claim", "evidence", "review", "run_id"}
+)
+_RELATIONSHIP_RESULT_KEYS = frozenset(
+    {"outcome", "relationship", "rejected", "malformed_reason"}
+)
 
+_STATUS_VALUES = sorted(status.value for status in FindingStatus)
 _ROLE_VALUES = sorted(member.value for member in Role)
 _ZONE_VALUES = sorted(member.value for member in CapabilityZone)
 _QUANTITY_RELATION_VALUES = sorted(member.value for member in QuantityRelation)
@@ -423,6 +459,22 @@ def _card_capability_response_schema() -> dict[str, Any]:
     )
 
 
+def _relationship_response_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one relationship validation response."""
+    return _object_schema(
+        {
+            "schema_version": {
+                "type": "integer",
+                "enum": [SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION],
+            },
+            "verdict": {"type": "string", "enum": list(_STATUS_VALUES)},
+            "claim": {"type": "string", "minLength": 1},
+            "reason": {"type": ["string", "null"]},
+            "evidence": {"type": "array", "items": _oracle_evidence_schema()},
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExtractionRequest:
     """Pinned immutable request built only from frozen inputs."""
@@ -481,6 +533,54 @@ def _finding_tuple(
     if len(set(identities)) != len(identities):
         raise SetEnrichmentExtractionError(f"{field_name} contains duplicate entries.")
     return tuple(sorted(value, key=lambda item: item.finding_id))
+
+
+def _capability_prompt_projection(capability: CardCapability) -> dict[str, Any]:
+    """Return the semantic capability fields one relationship request carries."""
+    projection: dict[str, Any] = capability.to_json()
+    del projection["review"]
+    del projection["run_id"]
+    return projection
+
+
+def _validated_participants(source: Any, target: Any) -> tuple[CardCapability, CardCapability]:
+    """Require two distinct concrete capabilities as relationship participants."""
+    if type(source) is not CardCapability or type(target) is not CardCapability:
+        raise SetEnrichmentExtractionError("participants must be CardCapability records.")
+    if source.card_id == target.card_id:
+        raise SetEnrichmentExtractionError("participants must be different cards.")
+    return source, target
+
+
+def _evidence_order(item: OracleEvidence) -> tuple[int, int, str]:
+    """Return the canonical order key of one Oracle evidence record."""
+    return (item.card_id, -1 if item.face_index is None else item.face_index, item.quote)
+
+
+def _canonical_evidence(value: tuple[OracleEvidence, ...]) -> tuple[OracleEvidence, ...]:
+    """Deduplicate and canonically order decoded Oracle evidence records."""
+    return tuple(sorted(set(value), key=_evidence_order))
+
+
+def _participant_evidence(
+    value: Any,
+    *,
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[OracleEvidence, ...]:
+    """Require exact evidence bound to one of the two relationship participants."""
+    if not isinstance(value, tuple):
+        raise SetEnrichmentExtractionError("evidence must be a tuple.")
+    if not value:
+        raise SetEnrichmentExtractionError("evidence must not be empty.")
+    if any(type(item) is not OracleEvidence for item in value):
+        raise SetEnrichmentExtractionError("evidence must contain OracleEvidence records.")
+    if len(set(value)) != len(value):
+        raise SetEnrichmentExtractionError("evidence must not repeat an entry.")
+    owned = {(source.card_id, source.face_index), (target.card_id, target.face_index)}
+    if any((item.card_id, item.face_index) not in owned for item in value):
+        raise SetEnrichmentExtractionError("evidence must belong to a candidate participant.")
+    return tuple(sorted(value, key=_evidence_order))
 
 
 @dataclass(frozen=True, slots=True)
@@ -700,6 +800,162 @@ class CardCapabilityExtractionResult:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ValidatedRelationship:
+    """One model verdict bound to a constructed candidate's exact participants."""
+
+    mechanism: str
+    source: CardCapability
+    target: CardCapability
+    claim: str
+    evidence: tuple[OracleEvidence, ...]
+    review: FindingReview
+    run_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mechanism", _identifier(self.mechanism, "mechanism").casefold())
+        source, target = _validated_participants(self.source, self.target)
+        object.__setattr__(self, "claim", _exact_text(self.claim, "claim"))
+        object.__setattr__(
+            self,
+            "evidence",
+            _participant_evidence(self.evidence, source=source, target=target),
+        )
+        if not isinstance(self.review, FindingReview):
+            raise SetEnrichmentExtractionError("review must be a FindingReview.")
+        if self.review.status is FindingStatus.REJECTED:
+            raise SetEnrichmentExtractionError("rejected relationships must be diagnostics.")
+        object.__setattr__(self, "run_id", _identifier(self.run_id, "run_id"))
+
+    @property
+    def finding_id(self) -> str:
+        """Return the durable identity shared with the constructed candidate package."""
+        return relationship_subject_id(
+            mechanism=self.mechanism,
+            source=self.source,
+            target=self.target,
+        )
+
+    @property
+    def identity(self) -> tuple[str, int, str, int, str]:
+        """Return the candidate identity this relationship is bound to."""
+        return (
+            self.mechanism,
+            self.source.card_id,
+            self.source.finding_id,
+            self.target.card_id,
+            self.target.finding_id,
+        )
+
+    def to_json(self) -> dict[str, object]:
+        """Return a fresh JSON-compatible relationship object."""
+        return {
+            "mechanism": self.mechanism,
+            "source": self.source.to_json(),
+            "target": self.target.to_json(),
+            "claim": self.claim,
+            "evidence": [item.to_json() for item in self.evidence],
+            "review": self.review.to_json(),
+            "run_id": self.run_id,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> ValidatedRelationship:
+        """Decode validated stored bytes into one exact validated relationship."""
+        _result_keys(value, _RELATIONSHIP_KEYS, "validated relationship")
+        return cls(
+            mechanism=value["mechanism"],
+            source=_stored_record(value["source"], "source", CardCapability.from_json),
+            target=_stored_record(value["target"], "target", CardCapability.from_json),
+            claim=value["claim"],
+            evidence=_nested_records(value["evidence"], "evidence", OracleEvidence.from_json),
+            review=_stored_record(value["review"], "review", FindingReview.from_json),
+            run_id=value["run_id"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipValidationResult:
+    """Terminal result of parsing one untrusted relationship validation response."""
+
+    outcome: ExtractionOutcome
+    relationship: ValidatedRelationship | None
+    rejected: RejectedFinding | None
+    malformed_reason: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, ExtractionOutcome):
+            raise SetEnrichmentExtractionError("outcome must be an ExtractionOutcome.")
+        if self.relationship is not None and type(self.relationship) is not ValidatedRelationship:
+            raise SetEnrichmentExtractionError("relationship must be a ValidatedRelationship.")
+        if self.rejected is not None and type(self.rejected) is not RejectedFinding:
+            raise SetEnrichmentExtractionError("rejected must be a RejectedFinding.")
+        if self.malformed_reason is not None:
+            object.__setattr__(
+                self,
+                "malformed_reason",
+                _exact_text(self.malformed_reason, "malformed_reason"),
+            )
+        if self.outcome is ExtractionOutcome.SUCCESS:
+            if self.malformed_reason is not None:
+                raise SetEnrichmentExtractionError(
+                    "successful validation must not retain a malformed reason."
+                )
+            if (self.relationship is None) == (self.rejected is None):
+                raise SetEnrichmentExtractionError(
+                    "successful validation must retain exactly one verdict."
+                )
+        else:
+            if self.malformed_reason != _RELATIONSHIP_MALFORMED_RESPONSE_REASON:
+                raise SetEnrichmentExtractionError(
+                    "malformed validation must state the fixed malformed reason."
+                )
+            if self.relationship is not None or self.rejected is not None:
+                raise SetEnrichmentExtractionError(
+                    "malformed validation must not retain a verdict."
+                )
+        if self.rejected is not None and self.rejected.source_kind != "relationship":
+            raise SetEnrichmentExtractionError(
+                "rejected validation must be a relationship diagnostic."
+            )
+
+    def to_json(self) -> dict[str, object]:
+        """Return fresh JSON-compatible stored bytes for this result."""
+        return {
+            "outcome": self.outcome.value,
+            "relationship": (
+                self.relationship.to_json() if self.relationship is not None else None
+            ),
+            "rejected": self.rejected.to_json() if self.rejected is not None else None,
+            "malformed_reason": self.malformed_reason,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> RelationshipValidationResult:
+        """Decode validated stored bytes into one exact relationship validation result."""
+        _result_keys(value, _RELATIONSHIP_RESULT_KEYS, "relationship validation result")
+        relationship = value["relationship"]
+        rejected = value["rejected"]
+        return cls(
+            outcome=_extraction_outcome(value["outcome"]),
+            relationship=(
+                None
+                if relationship is None
+                else _stored_record(
+                    relationship,
+                    "relationship",
+                    ValidatedRelationship.from_json,
+                )
+            ),
+            rejected=(
+                None
+                if rejected is None
+                else _stored_record(rejected, "rejected", RejectedFinding.from_json)
+            ),
+            malformed_reason=value["malformed_reason"],
+        )
+
+
 def _selected_guide(sources: Any, guide_id: Any) -> GuideSource:
     """Select exactly one frozen guide source by identifier."""
     if not isinstance(sources, EnrichmentSources):
@@ -784,6 +1040,72 @@ def build_card_capability_extraction_request(
         response_schema_id=CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID,
         response_schema_name=CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME,
         schema=_card_capability_response_schema(),
+    )
+
+
+def relationship_subject_id(
+    *,
+    mechanism: str,
+    source: CardCapability,
+    target: CardCapability,
+) -> str:
+    """Return the stable identity of one declared enabler-to-payoff relationship."""
+    normalized_mechanism = _identifier(mechanism, "mechanism")
+    source, target = _validated_participants(source, target)
+    return (
+        f"relationship:{normalized_mechanism}:{source.card_id}:{source.finding_id}"
+        f":{target.card_id}:{target.finding_id}"
+    )
+
+
+def relationship_source_sha256(
+    *,
+    mechanism: str,
+    source: CardCapability,
+    target: CardCapability,
+) -> str:
+    """Hash the exact participant content sent for one declared mechanism."""
+    normalized_mechanism = _identifier(mechanism, "mechanism")
+    source, target = _validated_participants(source, target)
+    payload = {
+        "mechanism": normalized_mechanism,
+        "source": _capability_prompt_projection(source),
+        "target": _capability_prompt_projection(target),
+    }
+    return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+
+
+def build_relationship_validation_request(
+    *,
+    sources: EnrichmentSources,
+    mechanism: str,
+    source: CardCapability,
+    target: CardCapability,
+) -> ExtractionRequest:
+    """Build the pinned relationship validation request from frozen inputs."""
+    if not isinstance(sources, EnrichmentSources):
+        raise SetEnrichmentExtractionError("sources must be an EnrichmentSources record.")
+    normalized_mechanism = _identifier(mechanism, "mechanism")
+    source, target = _validated_participants(source, target)
+    _selected_card(sources, source.card_id)
+    _selected_card(sources, target.card_id)
+    user_prompt = _canonical_bytes(
+        {
+            "contract_version": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+            "set_code": sources.set_code,
+            "mechanism": normalized_mechanism,
+            "source": _capability_prompt_projection(source),
+            "target": _capability_prompt_projection(target),
+        }
+    ).decode("utf-8")
+    return ExtractionRequest(
+        contract_version=SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+        prompt_id=RELATIONSHIP_VALIDATION_PROMPT_ID,
+        system_prompt=_RELATIONSHIP_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        response_schema_id=RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID,
+        response_schema_name=RELATIONSHIP_VALIDATION_SCHEMA_NAME,
+        schema=_relationship_response_schema(),
     )
 
 
@@ -878,6 +1200,20 @@ def _nested_records(
         except SemanticEnrichmentError as error:
             raise SetEnrichmentExtractionError(f"{field_name} must contain valid records.") from error
     return tuple(records)
+
+
+def _stored_record(
+    value: Any,
+    field_name: str,
+    loader: Callable[[Mapping[str, Any]], Any],
+) -> Any:
+    """Decode one stored nested record in its canonical storage form."""
+    if not isinstance(value, Mapping):
+        raise SetEnrichmentExtractionError(f"{field_name} must be an object.")
+    try:
+        return loader(value)
+    except SemanticEnrichmentError as error:
+        raise SetEnrichmentExtractionError(f"{field_name} must be a valid record.") from error
 
 
 def _validated_candidate(item: Any) -> Mapping[str, Any]:
@@ -1081,6 +1417,47 @@ def _card_capability_candidates(document: Any) -> list[Mapping[str, Any]]:
         identities.add(finding_id)
         candidates.append(candidate)
     return candidates
+
+
+def _validated_relationship_evidence(entry: Any) -> Mapping[str, Any]:
+    """Validate one relationship Oracle evidence object structurally."""
+    if not isinstance(entry, Mapping):
+        raise _MalformedResponse
+    _require_keys(entry, _ORACLE_EVIDENCE_KEYS)
+    card_id = entry["card_id"]
+    if isinstance(card_id, bool) or not isinstance(card_id, int) or card_id < 1:
+        raise _MalformedResponse
+    face_index = entry["face_index"]
+    if face_index is not None:
+        if isinstance(face_index, bool) or not isinstance(face_index, int) or face_index < 0:
+            raise _MalformedResponse
+    _response_text(entry["quote"])
+    return entry
+
+
+def _relationship_document(document: Any) -> tuple[str, str, str | None, list[Mapping[str, Any]]]:
+    """Validate one relationship response document before any verdict is retained."""
+    if not isinstance(document, Mapping):
+        raise _MalformedResponse
+    _require_keys(document, _RELATIONSHIP_RESPONSE_KEYS)
+    version = document["schema_version"]
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise _MalformedResponse
+    if version != SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION:
+        raise _MalformedResponse
+    verdict = document["verdict"]
+    if not isinstance(verdict, str):
+        raise _MalformedResponse
+    if verdict not in _STATUS_VALUES:
+        raise _MalformedResponse
+    claim = _response_text(document["claim"])
+    reason = document["reason"]
+    _optional_response_text(reason)
+    evidence = document["evidence"]
+    if not isinstance(evidence, list):
+        raise _MalformedResponse
+    entries = [_validated_relationship_evidence(entry) for entry in evidence]
+    return verdict, claim, reason, entries
 
 
 def _source_reference_reason(
@@ -1338,6 +1715,49 @@ def _classify_capabilities(
     return uncertain, rejected
 
 
+def _participant_oracle_text(capability: CardCapability, card: CardInfo) -> str:
+    """Return the exact frozen Oracle text one participant capability binds to."""
+    faces = card.faces
+    face_index = capability.face_index
+    if (
+        isinstance(face_index, int)
+        and not isinstance(face_index, bool)
+        and 0 <= face_index < len(faces)
+    ):
+        return faces[face_index].oracle_text or ""
+    return card.oracle_text or ""
+
+
+def _relationship_verdict_reason(
+    *,
+    status: FindingStatus,
+    reason: str | None,
+    evidence: tuple[OracleEvidence, ...],
+    source: CardCapability,
+    target: CardCapability,
+    source_card: CardInfo,
+    target_card: CardInfo,
+) -> str | None:
+    """Return the first fixed reason for one verdict that breaks the relationship contract."""
+    oracle_text = {
+        (source.card_id, source.face_index): _participant_oracle_text(source, source_card),
+        (target.card_id, target.face_index): _participant_oracle_text(target, target_card),
+    }
+    if any((item.card_id, item.face_index) not in oracle_text for item in evidence):
+        return _RELATIONSHIP_EVIDENCE_OWNER_REASON
+    if any(item.quote not in oracle_text[(item.card_id, item.face_index)] for item in evidence):
+        return _RELATIONSHIP_EVIDENCE_QUOTE_REASON
+    if status is FindingStatus.ACCEPTED:
+        covered = {(item.card_id, item.face_index) for item in evidence}
+        if any(participant not in covered for participant in oracle_text):
+            return _RELATIONSHIP_EVIDENCE_COVERAGE_REASON
+        if reason is not None:
+            return _RELATIONSHIP_REASON_FIELD_REASON
+    elif reason is None:
+        return _RELATIONSHIP_REASON_FIELD_REASON
+    return None
+
+
 def _malformed_result() -> GuideExtractionResult:
     """Return the fixed all-or-nothing malformed outcome."""
     return GuideExtractionResult(
@@ -1424,6 +1844,98 @@ def parse_card_capability_extraction_response(
     )
 
 
+def _malformed_relationship_result() -> RelationshipValidationResult:
+    """Return the fixed all-or-nothing malformed relationship outcome."""
+    return RelationshipValidationResult(
+        outcome=ExtractionOutcome.MALFORMED,
+        relationship=None,
+        rejected=None,
+        malformed_reason=_RELATIONSHIP_MALFORMED_RESPONSE_REASON,
+    )
+
+
+def parse_relationship_validation_response(
+    *,
+    content: str,
+    sources: EnrichmentSources,
+    mechanism: str,
+    source: CardCapability,
+    target: CardCapability,
+    run_id: str,
+) -> RelationshipValidationResult:
+    """Parse one untrusted relationship validation response against frozen sources."""
+    if not isinstance(sources, EnrichmentSources):
+        raise SetEnrichmentExtractionError("sources must be an EnrichmentSources record.")
+    normalized_mechanism = _identifier(mechanism, "mechanism")
+    source, target = _validated_participants(source, target)
+    source_card = _selected_card(sources, source.card_id)
+    target_card = _selected_card(sources, target.card_id)
+    normalized_run_id = _identifier(run_id, "run_id")
+    finding_id = relationship_subject_id(
+        mechanism=normalized_mechanism,
+        source=source,
+        target=target,
+    )
+    try:
+        verdict, claim, reason, entries = _relationship_document(_decode_response_document(content))
+    except (_MalformedResponse, SemanticEnrichmentError):
+        return _malformed_relationship_result()
+    try:
+        evidence = _canonical_evidence(tuple(_decoded_evidence(entry) for entry in entries))
+        status = FindingStatus(verdict)
+        rejection_reason = _relationship_verdict_reason(
+            status=status,
+            reason=reason,
+            evidence=evidence,
+            source=source,
+            target=target,
+            source_card=source_card,
+            target_card=target_card,
+        )
+        if rejection_reason is not None:
+            return RelationshipValidationResult(
+                outcome=ExtractionOutcome.SUCCESS,
+                relationship=None,
+                rejected=RejectedFinding(
+                    finding_id=finding_id,
+                    source_kind="relationship",
+                    summary=claim,
+                    reason=rejection_reason,
+                    run_id=normalized_run_id,
+                ),
+                malformed_reason=None,
+            )
+        if status is FindingStatus.REJECTED:
+            return RelationshipValidationResult(
+                outcome=ExtractionOutcome.SUCCESS,
+                relationship=None,
+                rejected=RejectedFinding(
+                    finding_id=finding_id,
+                    source_kind="relationship",
+                    summary=claim,
+                    reason=reason,
+                    run_id=normalized_run_id,
+                ),
+                malformed_reason=None,
+            )
+        return RelationshipValidationResult(
+            outcome=ExtractionOutcome.SUCCESS,
+            relationship=ValidatedRelationship(
+                mechanism=normalized_mechanism,
+                source=source,
+                target=target,
+                claim=claim,
+                evidence=evidence,
+                review=FindingReview(status=status, reason=reason),
+                run_id=normalized_run_id,
+            ),
+            rejected=None,
+            malformed_reason=None,
+        )
+    except SemanticEnrichmentError:
+        return _malformed_relationship_result()
+
+
 __all__ = [
     "CARD_CAPABILITY_EXTRACTION_PROMPT_ID",
     "CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID",
@@ -1435,10 +1947,19 @@ __all__ = [
     "GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID",
     "GUIDE_EXTRACTION_SCHEMA_NAME",
     "GuideExtractionResult",
+    "RELATIONSHIP_VALIDATION_PROMPT_ID",
+    "RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID",
+    "RELATIONSHIP_VALIDATION_SCHEMA_NAME",
+    "RelationshipValidationResult",
     "SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION",
     "SetEnrichmentExtractionError",
+    "ValidatedRelationship",
     "build_card_capability_extraction_request",
     "build_guide_extraction_request",
+    "build_relationship_validation_request",
     "parse_card_capability_extraction_response",
     "parse_guide_extraction_response",
+    "parse_relationship_validation_response",
+    "relationship_source_sha256",
+    "relationship_subject_id",
 ]

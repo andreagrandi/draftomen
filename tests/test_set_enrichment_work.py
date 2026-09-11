@@ -13,23 +13,31 @@ import pytest
 
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.openrouter_client import OpenRouterResponse
+from draftomen.semantic_capability_records import CardCapability
 from draftomen.semantic_enrichment import EnrichmentSources, GuideSource, card_source_sha256
 from draftomen.semantic_enrichment_records import (
     FindingReview,
     FindingStatus,
     GuideClaim,
     GuideEvidence,
+    OracleEvidence,
     RejectedFinding,
 )
+from draftomen.semantic_roles import Role
 from draftomen.set_enrichment_extraction import (
     CardCapabilityExtractionResult,
     ExtractionOutcome,
     ExtractionRequest,
     GuideExtractionResult,
+    RelationshipValidationResult,
+    ValidatedRelationship,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
+    build_relationship_validation_request,
     parse_card_capability_extraction_response,
     parse_guide_extraction_response,
+    relationship_source_sha256,
+    relationship_subject_id,
 )
 from draftomen.set_enrichment_work import (
     WORK_ATTEMPT_DIRECTORY,
@@ -73,6 +81,12 @@ BACK_FACE_TYPE_LINE = "Enchantment — Aura"
 BACK_FACE_TEXT = "At the beginning of your upkeep, each opponent mills two cards."
 TWO_FACE_CARD_TEXT = f"{FRONT_FACE_TEXT} // {BACK_FACE_TEXT}"
 BACK_MILL_QUOTE = "each opponent mills two cards"
+
+DRAW_FINDING_ID = "capability-draw"
+MILL_FINDING_ID = "capability-mill"
+DRAW_QUOTE = "When this creature enters, draw a card."
+RELATIONSHIP_MECHANISM = "draw-mill"
+RELATIONSHIP_CLAIM = "The entering draw feeds the mill payoff."
 
 CARD_ORACLE_TEXT = "Flying. When this creature enters, draw a card."
 
@@ -251,6 +265,59 @@ def _capability_content() -> str:
     )
 
 
+def _relationship_source() -> CardCapability:
+    return CardCapability(
+        finding_id=DRAW_FINDING_ID,
+        card_id=PLAIN_CARD_ID,
+        card_name=PLAIN_CARD_NAME,
+        face_index=None,
+        face_name=None,
+        role=Role.DRAW,
+        quantity=None,
+        timing=None,
+        source_zone=None,
+        destination_zone=None,
+        prerequisites=(),
+        evidence=(OracleEvidence(card_id=PLAIN_CARD_ID, face_index=None, quote=DRAW_QUOTE),),
+        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+        run_id=RUN_ID,
+    )
+
+
+def _relationship_target() -> CardCapability:
+    return CardCapability(
+        finding_id=MILL_FINDING_ID,
+        card_id=TWO_FACE_CARD_ID,
+        card_name=TWO_FACE_CARD_NAME,
+        face_index=1,
+        face_name=BACK_FACE_NAME,
+        role=Role.SELF_MILL,
+        quantity=None,
+        timing=None,
+        source_zone=None,
+        destination_zone=None,
+        prerequisites=(),
+        evidence=(OracleEvidence(card_id=TWO_FACE_CARD_ID, face_index=1, quote=BACK_MILL_QUOTE),),
+        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+        run_id=RUN_ID,
+    )
+
+
+def _relationship_content() -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "verdict": "accepted",
+            "claim": RELATIONSHIP_CLAIM,
+            "reason": None,
+            "evidence": [
+                {"card_id": PLAIN_CARD_ID, "face_index": None, "quote": DRAW_QUOTE},
+                {"card_id": TWO_FACE_CARD_ID, "face_index": 1, "quote": BACK_MILL_QUOTE},
+            ],
+        }
+    )
+
+
 def _guide_request() -> ExtractionRequest:
     return build_guide_extraction_request(sources=_sources(), guide_id=GUIDE_ID)
 
@@ -259,6 +326,15 @@ def _card_request() -> ExtractionRequest:
     return build_card_capability_extraction_request(
         sources=_capability_sources(),
         card_id=TWO_FACE_CARD_ID,
+    )
+
+
+def _relationship_request() -> ExtractionRequest:
+    return build_relationship_validation_request(
+        sources=_capability_sources(),
+        mechanism=RELATIONSHIP_MECHANISM,
+        source=_relationship_source(),
+        target=_relationship_target(),
     )
 
 
@@ -277,6 +353,26 @@ def _card_result() -> CardCapabilityExtractionResult:
         sources=_capability_sources(),
         card_id=TWO_FACE_CARD_ID,
         run_id=RUN_ID,
+    )
+
+
+def _relationship_result() -> RelationshipValidationResult:
+    return RelationshipValidationResult(
+        outcome=ExtractionOutcome.SUCCESS,
+        relationship=ValidatedRelationship(
+            mechanism=RELATIONSHIP_MECHANISM,
+            source=_relationship_source(),
+            target=_relationship_target(),
+            claim=RELATIONSHIP_CLAIM,
+            evidence=(
+                OracleEvidence(card_id=PLAIN_CARD_ID, face_index=None, quote=DRAW_QUOTE),
+                OracleEvidence(card_id=TWO_FACE_CARD_ID, face_index=1, quote=BACK_MILL_QUOTE),
+            ),
+            review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+            run_id=RUN_ID,
+        ),
+        rejected=None,
+        malformed_reason=None,
     )
 
 
@@ -351,6 +447,19 @@ def _card_response(*, content: str | None = None) -> OpenRouterResponse:
     )
 
 
+def _relationship_response(*, content: str | None = None) -> OpenRouterResponse:
+    return OpenRouterResponse(
+        content=_relationship_content() if content is None else content,
+        model=MODEL,
+        provider="vendor-andrea",
+        input_tokens=1100,
+        cached_input_tokens=600,
+        output_tokens=190,
+        reasoning_tokens=48,
+        cost_usd="0.006789",
+    )
+
+
 def _model_config() -> WorkModelConfig:
     return WorkModelConfig(model=MODEL, reasoning_effort=REASONING_EFFORT, max_tokens=MAX_TOKENS)
 
@@ -371,6 +480,24 @@ def _card_identity() -> WorkIdentity:
         subject_id=str(TWO_FACE_CARD_ID),
         input_sha256=card_source_sha256(_two_face_card()),
         request=_card_request(),
+        model_config=_model_config(),
+    )
+
+
+def _relationship_identity() -> WorkIdentity:
+    return build_work_identity(
+        work_kind=WorkKind.RELATIONSHIP,
+        subject_id=relationship_subject_id(
+            mechanism=RELATIONSHIP_MECHANISM,
+            source=_relationship_source(),
+            target=_relationship_target(),
+        ),
+        input_sha256=relationship_source_sha256(
+            mechanism=RELATIONSHIP_MECHANISM,
+            source=_relationship_source(),
+            target=_relationship_target(),
+        ),
+        request=_relationship_request(),
         model_config=_model_config(),
     )
 
@@ -588,6 +715,58 @@ def test_stored_successful_response_and_result_are_recovered_without_a_new_reque
     assert other.attempted_at is None
     assert other.responded_at is None
     assert other.completed_at is None
+
+
+def test_stored_relationship_result_is_recovered_without_a_new_request(tmp_path: Path) -> None:
+    store = make_store(tmp_path / "work")
+    identity = _relationship_identity()
+    response = _relationship_response()
+    result = _relationship_result()
+    assert identity.work_kind is WorkKind.RELATIONSHIP
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.relationship is not None
+
+    assert store.lookup(identity=identity).state is WorkState.MISSING
+    assert store.record_attempt(identity=identity).state is WorkState.INCOMPLETE
+    stored_response = store.record_response(identity=identity, response=response)
+    assert stored_response.state is WorkState.UNVALIDATED
+    assert store.record_result(identity=identity, result=result).state is WorkState.COMPLETED
+
+    recovered = make_store(tmp_path / "work").lookup(identity=identity)
+    assert recovered.state is WorkState.COMPLETED
+    assert recovered.identity == identity
+    assert isinstance(recovered.result, RelationshipValidationResult)
+    assert recovered.result == result
+    assert recovered.result.outcome is ExtractionOutcome.SUCCESS
+    assert recovered.result.rejected is None
+    assert recovered.result.malformed_reason is None
+    relationship = recovered.result.relationship
+    assert relationship is not None
+    assert relationship.identity == (
+        RELATIONSHIP_MECHANISM,
+        PLAIN_CARD_ID,
+        DRAW_FINDING_ID,
+        TWO_FACE_CARD_ID,
+        MILL_FINDING_ID,
+    )
+    assert relationship.source == _relationship_source()
+    assert relationship.target == _relationship_target()
+    assert relationship.claim == RELATIONSHIP_CLAIM
+    assert relationship.evidence == (
+        OracleEvidence(card_id=PLAIN_CARD_ID, face_index=None, quote=DRAW_QUOTE),
+        OracleEvidence(card_id=TWO_FACE_CARD_ID, face_index=1, quote=BACK_MILL_QUOTE),
+    )
+    assert relationship.review == FindingReview(status=FindingStatus.ACCEPTED, reason=None)
+    assert recovered.response == response
+    assert recovered.response.content == _relationship_content()
+    assert recovered.diagnostics == ()
+    assert recovered.attempted_at == NOW
+    assert recovered.responded_at == NOW
+    assert recovered.completed_at == NOW
+
+    other = make_store(tmp_path / "work").lookup(identity=_card_identity())
+    assert other.state is WorkState.MISSING
+    assert other.result is None
 
 
 def test_changed_input_model_prompt_or_schema_prevents_stale_reuse(tmp_path: Path) -> None:
@@ -993,6 +1172,43 @@ def test_work_kind_binds_stored_results(tmp_path: Path) -> None:
     assert record.result is None
     assert record.response is not None
     assert record.response == _card_response()
+
+
+def test_relationship_result_is_rejected_under_another_work_kind(tmp_path: Path) -> None:
+    store = make_store(tmp_path / "work")
+    relationship_identity = _relationship_identity()
+    guide_identity = _guide_identity()
+    card_identity = _card_identity()
+    for identity, response in (
+        (relationship_identity, _relationship_response()),
+        (guide_identity, _guide_response()),
+        (card_identity, _card_response()),
+    ):
+        store.record_attempt(identity=identity)
+        store.record_response(identity=identity, response=response)
+
+    for identity, result in (
+        (relationship_identity, _guide_result()),
+        (relationship_identity, _card_result()),
+        (guide_identity, _relationship_result()),
+        (card_identity, _relationship_result()),
+    ):
+        with pytest.raises(SetEnrichmentWorkError):
+            store.record_result(identity=identity, result=result)
+        assert not (store.results / f"{identity.content_sha256}.json").exists()
+
+    assert (
+        store.record_result(identity=relationship_identity, result=_relationship_result()).state
+        is WorkState.COMPLETED
+    )
+    assert (
+        store.record_result(identity=guide_identity, result=_guide_result()).state
+        is WorkState.COMPLETED
+    )
+    assert (
+        store.record_result(identity=card_identity, result=_card_result()).state
+        is WorkState.COMPLETED
+    )
 
 
 def test_symlinked_stage_directory_rejects_before_creating_siblings(tmp_path: Path) -> None:
