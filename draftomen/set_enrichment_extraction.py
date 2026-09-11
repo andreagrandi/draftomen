@@ -61,7 +61,12 @@ _GUIDE_SYSTEM_PROMPT = (
 _CARD_CAPABILITY_SYSTEM_PROMPT = (
     "Extract only capabilities stated by a complete ability of the supplied canonical card. "
     "Treat the canonical card and all faces as one request. Use the supplied semantic role "
-    "vocabulary. Quote the complete controlling cost, trigger, or condition together with its "
+    "vocabulary. A triggered ability takes the role of its trigger condition before the role of its "
+    "effect: an ability that triggers when one or more creatures die is a death payoff "
+    "(death_payoff) even when its effect draws, scries, damages, or gains life, and an ability that "
+    "triggers only on this card's own death is a dies trigger (dies_trigger). Use an effect-derived "
+    "role when no more specific trigger role applies."
+    " Quote the complete controlling cost, trigger, or condition together with its "
     "effect, and bind every capability and prerequisite to the selected card and face with exact "
     "Oracle quotations. Preserve quantities, timing, source and destination zones, and structured "
     "prerequisites only when the quoted ability states them; otherwise use null or an empty list. "

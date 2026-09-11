@@ -137,6 +137,10 @@ NULL_FACE_NAME_BACK_TYPE_LINE = "Sorcery"
 NULL_FACE_NAME_BACK_FACE_TEXT = "Add one mana of any color."
 NULL_FACE_NAME_CARD_TEXT = f"{NULL_FACE_NAME_FACE_TEXT} // {NULL_FACE_NAME_BACK_FACE_TEXT}"
 
+DEATH_TRIGGER_CARD_ID = 204
+DEATH_TRIGGER_CARD_NAME = "Great Fierce Bee"
+DEATH_TRIGGER_CARD_TEXT = "Whenever one or more other creatures die, scry 1."
+
 FRONT_EFFECT_QUOTE = "draw a card"
 BACK_TRIGGER_QUOTE = "At the beginning of your upkeep"
 BACK_MILL_QUOTE = "each opponent mills two cards"
@@ -413,6 +417,19 @@ def _plain_card() -> CardInfo:
         types=("Creature",),
         oracle_text=PLAIN_CARD_TEXT,
         type_line=PLAIN_CARD_TYPE_LINE,
+        set_code=SET_CODE,
+    )
+
+
+def _death_trigger_card() -> CardInfo:
+    return CardInfo(
+        grp_id=DEATH_TRIGGER_CARD_ID,
+        name=DEATH_TRIGGER_CARD_NAME,
+        colors=("G",),
+        mana_value=3.0,
+        rarity="common",
+        types=("Creature",),
+        oracle_text=DEATH_TRIGGER_CARD_TEXT,
         set_code=SET_CODE,
     )
 
@@ -1698,6 +1715,19 @@ def test_card_request_carries_one_canonical_card_with_every_indexed_face(
     assert plain_request.response_schema_name == CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME
 
 
+def test_card_capability_prompt_assigns_death_payoff_by_trigger_event() -> None:
+    request = build_card_capability_extraction_request(sources=_sources(), card_id=ALPHA_ID)
+
+    prompt = request.system_prompt
+
+    assert "takes the role of its trigger condition before the role of its effect" in prompt
+    assert (
+        "triggers when one or more creatures die is a death payoff (death_payoff) even when its "
+        "effect draws, scries, damages, or gains life"
+    ) in prompt
+    assert "triggers only on this card's own death is a dies trigger (dies_trigger)" in prompt
+
+
 def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_records(
     capability_sources: EnrichmentSources,
 ) -> None:
@@ -1795,6 +1825,45 @@ def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_record
     assert prerequisite_quantity is not None
     assert CapabilityPrerequisite.from_json(prerequisite.to_json()) == prerequisite
     assert CapabilityQuantity.from_json(prerequisite_quantity.to_json()) == prerequisite_quantity
+
+
+def test_death_trigger_capability_parses_with_the_death_payoff_role() -> None:
+    sources = _card_sources(_death_trigger_card())
+    candidate = _capability_candidate(
+        finding_id="capability-death-payoff",
+        card_id=DEATH_TRIGGER_CARD_ID,
+        card_name=DEATH_TRIGGER_CARD_NAME,
+        face_index=None,
+        face_name=None,
+        role="death_payoff",
+        evidence=[
+            _evidence_entry(
+                card_id=DEATH_TRIGGER_CARD_ID,
+                face_index=None,
+                quote=DEATH_TRIGGER_CARD_TEXT,
+            )
+        ],
+        review={"status": "accepted", "reason": None},
+    )
+
+    result = _parse_card(
+        _content(_capability_response([candidate])),
+        sources,
+        card_id=DEATH_TRIGGER_CARD_ID,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.rejected_capabilities == ()
+    assert len(result.capabilities) == 1
+    capability = result.capabilities[0]
+    assert capability.role is Role.DEATH_PAYOFF
+    assert capability.evidence == (
+        OracleEvidence(
+            card_id=DEATH_TRIGGER_CARD_ID,
+            face_index=None,
+            quote=DEATH_TRIGGER_CARD_TEXT,
+        ),
+    )
 
 
 @pytest.mark.parametrize(
