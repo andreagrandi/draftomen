@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Extract typed source-bound capabilities from one complete canonical card and
+  all of its faces, binding exact Oracle evidence, semantic role, quantity,
+  timing, zones and structured prerequisites to the selected card and face
+  while retaining unsupported, foreign or fabricated candidates as diagnostics
+  and keeping every source-valid interpretation uncertain for semantic review.
+  (#474)
 - Build deterministic guide extraction requests from frozen guide and card
   inputs, and parse untrusted responses into source-bound format findings,
   mechanics, archetypes and named interaction claims with exact evidence,

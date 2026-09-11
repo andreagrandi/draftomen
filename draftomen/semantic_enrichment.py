@@ -203,7 +203,7 @@ class EnrichmentSources:
                 arena_id = _integer(card.arena_id, "card.arena_id", positive=True)
                 if arena_id != grp_id:
                     raise SemanticEnrichmentError("card.arena_id must equal card.grp_id.")
-            _card_projection(card)
+            card_source_projection(card)
         object.__setattr__(self, "cards", _canonical(cards, field_name="cards", key=lambda card: card.grp_id))
 
         guides = _tuple(self.guides, "guides")
@@ -212,7 +212,10 @@ class EnrichmentSources:
         object.__setattr__(self, "guides", _canonical(guides, field_name="guides", key=lambda guide: guide.guide_id))
 
 
-def _card_projection(card: CardInfo) -> dict[str, object]:
+def card_source_projection(card: CardInfo) -> dict[str, object]:
+    """Return the normalized semantic projection of one canonical card.
+    Face index stays request metadata rather than source-hash data.
+    """
     if not isinstance(card, CardInfo):
         raise SemanticEnrichmentError("card must be a CardInfo.")
     card_id = _integer(card.grp_id, "card.grp_id", positive=True)
@@ -248,7 +251,7 @@ def _card_projection(card: CardInfo) -> dict[str, object]:
 
 def card_source_sha256(card: CardInfo) -> str:
     """Hash normalized semantic card inputs, not a raw card-data blob."""
-    projection = _card_projection(card)
+    projection = card_source_projection(card)
     return hashlib.sha256(_json_bytes(projection)).hexdigest()
 
 
@@ -258,7 +261,7 @@ def set_source_sha256(sources: EnrichmentSources) -> str:
         raise SemanticEnrichmentError("sources must be an EnrichmentSources record.")
     projection = {
         "set_code": sources.set_code,
-        "cards": [_card_projection(card) for card in sources.cards],
+        "cards": [card_source_projection(card) for card in sources.cards],
     }
     return hashlib.sha256(_json_bytes(projection)).hexdigest()
 
@@ -610,6 +613,7 @@ __all__ = [
     "GuideSource",
     "EnrichmentSources",
     "SemanticEnrichmentArtifact",
+    "card_source_projection",
     "card_source_sha256",
     "set_source_sha256",
 ]

@@ -107,6 +107,7 @@ files = [
     "draftomen/ranking.py",
     "draftomen/refresh_plan.py",
     "draftomen/replay.py",
+    "draftomen/semantic_capability_records.py",
     "draftomen/semantic_enrichment.py",
     "draftomen/semantic_enrichment_records.py",
     "draftomen/semantic_roles.py",

@@ -1560,10 +1560,11 @@ def test_semantic_enrichment_public_surface_has_no_record_reexports() -> None:
         "GuideSource",
         "EnrichmentSources",
         "SemanticEnrichmentArtifact",
+        "card_source_projection",
         "card_source_sha256",
         "set_source_sha256",
     }
-    assert len(semantic_enrichment_module.__all__) == 6
+    assert len(semantic_enrichment_module.__all__) == 7
     assert "OracleFact" not in semantic_enrichment_module.__all__
 
 
