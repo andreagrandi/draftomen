@@ -40,6 +40,7 @@ from draftomen.set_enrichment_extraction import (
     GUIDE_EXTRACTION_PROMPT_ID,
     GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID,
     GUIDE_EXTRACTION_SCHEMA_NAME,
+    RELATIONSHIP_VALIDATION_SCHEMA_NAME,
     SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
     CardCapabilityExtractionResult,
     ExtractionOutcome,
@@ -103,7 +104,9 @@ SEMANTIC_REVIEW_REASON = "guide claim requires semantic review beyond exact-sour
 EVIDENCE_GUIDE_REASON = "guide evidence does not reference the selected guide."
 EVIDENCE_QUOTE_REASON = "guide evidence quote is not an exact source substring."
 UNKNOWN_CARD_REASON = "guide claim references a card outside the frozen source set."
-CARD_NAME_REASON = "referenced card IDs do not match card names stated in the claim."
+CARD_NAME_REVIEW_REASON = (
+    "guide claim referenced card IDs that are not named in the claim, so those references were dropped."
+)
 
 MODEL_REJECTION_REASON = "The guide does not support this interaction."
 MODEL_UNCERTAINTY_REASON = "The quote is exact but the interpretation needs review."
@@ -148,6 +151,10 @@ CAPABILITY_FACE_REASON = "capability face identity does not match the selected c
 CAPABILITY_EVIDENCE_OWNER_REASON = "Oracle evidence does not belong to the selected card face."
 CAPABILITY_EVIDENCE_QUOTE_REASON = "Oracle evidence quote is not an exact source substring."
 CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card."
+
+# Keywords OpenAI strict structured outputs reject; see
+# `test_generated_schemas_avoid_provider_rejected_keywords`.
+_REJECTED_SCHEMA_KEYWORDS = ("uniqueItems",)
 
 
 def _card(grp_id: int, name: str) -> CardInfo:
@@ -368,6 +375,22 @@ def _object_nodes(value: Any) -> list[dict[str, Any]]:
         return nodes
     if isinstance(value, list):
         return [node for item in value for node in _object_nodes(item)]
+    return []
+
+
+def _schema_nodes(value: Any, path: str = "") -> list[tuple[str, dict[str, Any]]]:
+    """Collect every object node in one JSON schema with its location."""
+    if isinstance(value, dict):
+        nodes = [(path, value)]
+        for key, item in value.items():
+            nodes.extend(_schema_nodes(item, f"{path}.{key}"))
+        return nodes
+    if isinstance(value, list):
+        return [
+            node
+            for index, item in enumerate(value)
+            for node in _schema_nodes(item, f"{path}[{index}]")
+        ]
     return []
 
 
@@ -881,18 +904,6 @@ def test_model_accepted_with_a_reason_is_malformed(sources: EnrichmentSources) -
             id="model-rejection-keeps-its-reason",
         ),
         pytest.param(
-            {"card_ids": [ALPHA_ID]},
-            "rejected",
-            CARD_NAME_REASON,
-            id="omitted-in-set-card",
-        ),
-        pytest.param(
-            {"card_ids": [ALPHA_ID, GAMMA_ID]},
-            "rejected",
-            CARD_NAME_REASON,
-            id="unrelated-in-set-card",
-        ),
-        pytest.param(
             {"evidence": [_evidence(quote=ARCHETYPE_SENTENCE)]},
             "uncertain",
             SEMANTIC_REVIEW_REASON,
@@ -961,6 +972,96 @@ def test_source_and_review_matrix(
         assert claim.run_id == RUN_ID
 
 
+def test_unverifiable_card_references_are_dropped_instead_of_rejecting_the_claim(
+    sources: EnrichmentSources,
+) -> None:
+    finding = _variant(card_ids=[ALPHA_ID, GAMMA_ID])
+
+    result = _parse(_content(_response([finding])), sources)
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.malformed_reason is None
+    assert result.accepted_findings == ()
+    assert result.rejected_findings == ()
+    assert len(result.uncertain_findings) == 1
+    claim = result.uncertain_findings[0]
+    assert claim.finding_id == finding["finding_id"]
+    assert claim.claim == INTERACTION_SENTENCE
+    assert claim.card_ids == (ALPHA_ID,)
+    assert claim.evidence == (GuideEvidence(guide_id=GUIDE_ID, quote=INTERACTION_SENTENCE),)
+    assert claim.review == FindingReview(
+        status=FindingStatus.UNCERTAIN,
+        reason=CARD_NAME_REVIEW_REASON,
+    )
+    assert claim.run_id == RUN_ID
+
+
+def test_dropped_card_reference_outranks_the_model_uncertainty_reason(
+    sources: EnrichmentSources,
+) -> None:
+    finding = _variant(
+        card_ids=[ALPHA_ID, GAMMA_ID],
+        review={"status": "uncertain", "reason": MODEL_UNCERTAINTY_REASON},
+    )
+
+    result = _parse(_content(_response([finding])), sources)
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.rejected_findings == ()
+    assert len(result.uncertain_findings) == 1
+    claim = result.uncertain_findings[0]
+    assert claim.card_ids == (ALPHA_ID,)
+    assert claim.review == FindingReview(
+        status=FindingStatus.UNCERTAIN,
+        reason=CARD_NAME_REVIEW_REASON,
+    )
+
+
+def test_claim_naming_a_card_whose_id_was_not_attached_keeps_its_declared_ids(
+    sources: EnrichmentSources,
+) -> None:
+    finding = _variant(card_ids=[ALPHA_ID])
+
+    result = _parse(_content(_response([finding])), sources)
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.rejected_findings == ()
+    assert len(result.uncertain_findings) == 1
+    claim = result.uncertain_findings[0]
+    assert claim.finding_id == finding["finding_id"]
+    assert claim.claim == INTERACTION_SENTENCE
+    assert claim.card_ids == (ALPHA_ID,)
+    assert claim.review == FindingReview(
+        status=FindingStatus.UNCERTAIN,
+        reason=SEMANTIC_REVIEW_REASON,
+    )
+
+
+def test_claim_naming_none_of_its_attached_cards_is_retained_without_card_ids(
+    sources: EnrichmentSources,
+) -> None:
+    finding = _variant(
+        claim=FORMAT_CLAIM,
+        card_ids=[ALPHA_ID],
+        evidence=[_evidence(quote=FORMAT_SENTENCE)],
+    )
+
+    result = _parse(_content(_response([finding])), sources)
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.rejected_findings == ()
+    assert len(result.uncertain_findings) == 1
+    claim = result.uncertain_findings[0]
+    assert claim.finding_id == finding["finding_id"]
+    assert claim.claim == FORMAT_CLAIM
+    assert claim.card_ids == ()
+    assert claim.evidence == (GuideEvidence(guide_id=GUIDE_ID, quote=FORMAT_SENTENCE),)
+    assert claim.review == FindingReview(
+        status=FindingStatus.UNCERTAIN,
+        reason=CARD_NAME_REVIEW_REASON,
+    )
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected_reason"),
     (
@@ -997,14 +1098,6 @@ def test_source_and_review_matrix(
             },
             EVIDENCE_QUOTE_REASON,
             id="invalid-evidence-outranks-the-model-reason",
-        ),
-        pytest.param(
-            {
-                "card_ids": [ALPHA_ID],
-                "review": {"status": "uncertain", "reason": MODEL_UNCERTAINTY_REASON},
-            },
-            CARD_NAME_REASON,
-            id="uncertain-still-requires-the-exact-named-card-set",
         ),
     ),
 )
@@ -1403,7 +1496,6 @@ def test_generated_schema_is_a_strict_closed_object() -> None:
 
     findings_schema = schema["properties"]["findings"]
     assert findings_schema["type"] == "array"
-    assert findings_schema["uniqueItems"] is True
     finding_schema = findings_schema["items"]
     assert finding_schema["additionalProperties"] is False
     assert set(finding_schema["properties"]) == {
@@ -1424,7 +1516,6 @@ def test_generated_schema_is_a_strict_closed_object() -> None:
     ]
     assert finding_schema["properties"]["card_ids"] == {
         "type": "array",
-        "uniqueItems": True,
         "items": {"type": "integer", "minimum": 1},
     }
 
@@ -1444,6 +1535,35 @@ def test_generated_schema_is_a_strict_closed_object() -> None:
     for node in _object_nodes(schema):
         assert node["additionalProperties"] is False
         assert set(node["required"]) == set(node["properties"])
+
+
+def test_generated_schemas_avoid_provider_rejected_keywords() -> None:
+    """OpenAI strict structured outputs reject `uniqueItems` outright.
+
+    Live probes of the real builders returned, with `strict: true`:
+
+    `http=400 Invalid schema for response_format 'draftomen_guide_extraction_v1': In context=
+    ('properties', 'findings'), 'uniqueItems' is not permitted.` and the equivalent failure for
+    `draftomen_card_capability_extraction_v1` on `('properties', 'capabilities')`, while the
+    relationship schema was accepted. The keyword therefore cannot carry uniqueness, and the response
+    validators enforce it instead; this offline test fails without any network call when a schema
+    builder reintroduces a keyword the provider rejects.
+    """
+    schemas = {
+        GUIDE_EXTRACTION_SCHEMA_NAME: extraction_module._guide_response_schema(),
+        CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME: extraction_module._card_capability_response_schema(),
+        RELATIONSHIP_VALIDATION_SCHEMA_NAME: extraction_module._relationship_response_schema(),
+    }
+
+    offenders = [
+        f"{name}{path} uses {keyword}"
+        for name, schema in schemas.items()
+        for path, node in _schema_nodes(schema)
+        for keyword in _REJECTED_SCHEMA_KEYWORDS
+        if keyword in node
+    ]
+
+    assert offenders == [], f"provider-rejected keywords: {offenders}"
 
 
 def test_user_prompt_carries_only_frozen_guide_and_card_inputs(
@@ -2638,7 +2758,6 @@ def test_generated_card_schema_is_a_strict_closed_object(
 
     capabilities_schema = schema["properties"]["capabilities"]
     assert capabilities_schema["type"] == "array"
-    assert capabilities_schema["uniqueItems"] is True
     capability_schema = capabilities_schema["items"]
     assert capability_schema["additionalProperties"] is False
     assert set(capability_schema["properties"]) == {
@@ -2702,7 +2821,6 @@ def test_generated_card_schema_is_a_strict_closed_object(
 
     prerequisites_schema = capability_schema["properties"]["prerequisites"]
     assert prerequisites_schema["type"] == "array"
-    assert prerequisites_schema["uniqueItems"] is True
     prerequisite_schema = prerequisites_schema["items"]
     assert prerequisite_schema["additionalProperties"] is False
     assert set(prerequisite_schema["properties"]) == {
@@ -2740,7 +2858,6 @@ def test_generated_card_schema_is_a_strict_closed_object(
 
     evidence_schema = capability_schema["properties"]["evidence"]
     assert evidence_schema["type"] == "array"
-    assert evidence_schema["uniqueItems"] is True
     assert evidence_schema["minItems"] == 1
     assert evidence_schema["items"] == oracle_evidence_schema
 

@@ -3,6 +3,19 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Retain guide findings whose referenced card IDs are not all named in the claim
+  for review with the unverifiable references dropped, instead of discarding the
+  whole finding and its exact guide evidence. (#472)
+- Verify a complete set analysis against reviewed expectations: a committed
+  HOB benchmark pairs a frozen Draftsim guide with required mechanics and
+  relationship expectations bound to exact Oracle evidence, and a run harness
+  enforces a hard USD ceiling, reuses durable work across interruption,
+  reports per-card outcomes, token and cost accounting, omission reasons and
+  benchmark matches, and proves set profiles stay untouched. (#472)
+- Accept the guide and card extraction response schemas against strict
+  structured-output validation, which rejects `uniqueItems`, while the
+  response validators keep enforcing array uniqueness and non-empty evidence,
+  so live set enrichment can run against the provider. (#472)
 - Run a complete set analysis through a UI-neutral resumable service that
   coordinates guide, card, candidate and relationship phases over frozen
   sources and a caller-owned work store, reuses matching durable work, exposes
