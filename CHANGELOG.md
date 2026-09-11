@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Decide a triggered ability's card-capability role from its trigger event before
+  its effect, so an ability that triggers when one or more creatures die is a
+  death payoff and can pair with sacrifice fodder. (#485)
 - Retain guide findings whose referenced card IDs are not all named in the claim
   for review with the unverifiable references dropped, instead of discarding the
   whole finding and its exact guide evidence. (#472)
