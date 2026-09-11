@@ -85,7 +85,9 @@ _SEMANTIC_REVIEW_REASON = "guide claim requires semantic review beyond exact-sou
 _EVIDENCE_GUIDE_REASON = "guide evidence does not reference the selected guide."
 _EVIDENCE_QUOTE_REASON = "guide evidence quote is not an exact source substring."
 _UNKNOWN_CARD_REASON = "guide claim references a card outside the frozen source set."
-_CARD_NAME_REASON = "referenced card IDs do not match card names stated in the claim."
+_CARD_NAME_REVIEW_REASON = (
+    "guide claim referenced card IDs that are not named in the claim, so those references were dropped."
+)
 
 _CARD_MALFORMED_RESPONSE_REASON = (
     "response does not match card capability extraction schema version 1."
@@ -318,6 +320,9 @@ def _object_schema(properties: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# OpenAI strict structured outputs reject `uniqueItems`, so response array uniqueness is enforced by
+# the response validators (`_response_candidates`, `_validated_candidate`,
+# `_validated_capability_candidate`, `_card_capability_candidates`) instead of by these schemas.
 def _guide_response_schema() -> dict[str, Any]:
     """Return a fresh strict schema for one guide extraction response."""
     return _object_schema(
@@ -328,7 +333,6 @@ def _guide_response_schema() -> dict[str, Any]:
             },
             "findings": {
                 "type": "array",
-                "uniqueItems": True,
                 "items": _object_schema(
                     {
                         "finding_id": {"type": "string", "minLength": 1},
@@ -337,7 +341,6 @@ def _guide_response_schema() -> dict[str, Any]:
                         "claim": {"type": "string", "minLength": 1},
                         "card_ids": {
                             "type": "array",
-                            "uniqueItems": True,
                             "items": {"type": "integer", "minimum": 1},
                         },
                         "evidence": {
@@ -424,12 +427,10 @@ def _capability_schema() -> dict[str, Any]:
             "destination_zone": _nullable_zone_schema(),
             "prerequisites": {
                 "type": "array",
-                "uniqueItems": True,
                 "items": _prerequisite_schema(),
             },
             "evidence": {
                 "type": "array",
-                "uniqueItems": True,
                 "minItems": 1,
                 "items": _oracle_evidence_schema(),
             },
@@ -453,7 +454,6 @@ def _card_capability_response_schema() -> dict[str, Any]:
             },
             "capabilities": {
                 "type": "array",
-                "uniqueItems": True,
                 "items": _capability_schema(),
             },
         }
@@ -1516,7 +1516,9 @@ def _classify_candidates(
     cards: tuple[CardInfo, ...],
     run_id: str,
 ) -> tuple[list[GuideClaim], list[RejectedFinding]]:
-    """Validate source references and demote every guide claim to uncertain."""
+    """Validate source references and drop card references the claim does not name.
+    Every retained guide claim is demoted to uncertain for human review.
+    """
     known_card_ids = frozenset(card.grp_id for card in cards)
     uncertain: list[GuideClaim] = []
     rejected: list[RejectedFinding] = []
@@ -1541,10 +1543,10 @@ def _classify_candidates(
             rejected.append(_rejected(candidate, reason=reason, run_id=run_id))
             continue
         named_card_ids = {card.grp_id for card in cards if card.name in candidate["claim"]}
-        if named_card_ids != set(card_ids):
-            rejected.append(_rejected(candidate, reason=_CARD_NAME_REASON, run_id=run_id))
-            continue
-        if status is FindingStatus.ACCEPTED:
+        bound_card_ids = tuple(card_id for card_id in card_ids if card_id in named_card_ids)
+        if bound_card_ids != card_ids:
+            claim_review = FindingReview(status=FindingStatus.UNCERTAIN, reason=_CARD_NAME_REVIEW_REASON)
+        elif status is FindingStatus.ACCEPTED:
             claim_review = FindingReview(status=FindingStatus.UNCERTAIN, reason=_SEMANTIC_REVIEW_REASON)
         else:
             claim_review = FindingReview(status=FindingStatus.UNCERTAIN, reason=reason)
@@ -1554,7 +1556,7 @@ def _classify_candidates(
                 category=candidate["category"],
                 name=candidate["name"],
                 claim=candidate["claim"],
-                card_ids=card_ids,
+                card_ids=bound_card_ids,
                 evidence=evidence,
                 review=claim_review,
                 run_id=run_id,

@@ -228,3 +228,10 @@ __marimo__/
 # Draft Omen development corpus inputs and generated artifacts
 .draftomen/corpus-cache/
 .draftomen/corpus-artifacts/
+# Enrichment runs keep fetched guide text, raw pages, reports and durable work local; only the
+# reviewed benchmark expectations are versioned.
+.draftomen/enrichment-runs/*
+!.draftomen/enrichment-runs/hob/
+.draftomen/enrichment-runs/hob/*
+!.draftomen/enrichment-runs/hob/benchmark.json
+!.draftomen/enrichment-runs/hob/benchmark.md
