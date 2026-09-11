@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Make CI signals deterministic by pinning the uv version in every GitHub
+  Actions workflow and waiting for the desktop card-preview explanation to
+  settle its scroll position before asserting it.
 - Submit strict structured-output requests to OpenRouter through a bounded,
   standard-library client that reads its credential only from
   `OPENROUTER_API_KEY`, pins the model, JSON schema and reasoning effort at

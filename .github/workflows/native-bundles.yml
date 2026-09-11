@@ -48,6 +48,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
+          version: "0.12.12"
           enable-cache: true
 
       - name: Sync dependencies
@@ -175,6 +176,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.12.12"
 
       - name: Download macOS unsigned development bundle
         uses: actions/download-artifact@v8
