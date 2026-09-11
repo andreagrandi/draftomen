@@ -141,6 +141,50 @@ DEATH_TRIGGER_CARD_ID = 204
 DEATH_TRIGGER_CARD_NAME = "Great Fierce Bee"
 DEATH_TRIGGER_CARD_TEXT = "Whenever one or more other creatures die, scry 1."
 
+BARDS_COMPANY_CARD_ID = 103526
+BARDS_COMPANY_CARD_NAME = "Bard's Company"
+BARDS_COMPANY_CARD_TEXT = (
+    "You may cast this spell as though it had flash if you control a Human.\n"
+    "Other creatures you control get +1/+1.\n"
+    "Whenever this creature enters or attacks, recruit. (Draw a card, then discard a card. "
+    "If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+)
+BARDS_COMPANY_KEYWORD_QUOTE = (
+    "Whenever this creature enters or attacks, recruit. (Draw a card, then discard a card. "
+    "If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+)
+BARDS_COMPANY_PAYOFF_QUOTE = "Other creatures you control get +1/+1."
+
+ESGAROTH_GARRISON_CARD_ID = 103381
+ESGAROTH_GARRISON_CARD_NAME = "Esgaroth Garrison"
+ESGAROTH_GARRISON_CARD_TEXT = (
+    "Esgaroth Garrison's power is equal to the number of creatures you control.\n"
+    "When this creature enters, recruit. (Draw a card, then discard a card. "
+    "If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+)
+ESGAROTH_GARRISON_KEYWORD_QUOTE = (
+    "When this creature enters, recruit. (Draw a card, then discard a card. "
+    "If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+)
+ESGAROTH_GARRISON_PAYOFF_QUOTE = (
+    "Esgaroth Garrison's power is equal to the number of creatures you control."
+)
+
+FILI_CARD_ID = 103382
+FILI_CARD_NAME = "Fíli the Pathfinder"
+FILI_CARD_TEXT = (
+    "Storied (If you control three or more artifacts, legendaries, and/or Sagas, you have an "
+    "enduring story for the rest of the game.)\n"
+    "As long as you have an enduring story, creatures you control get +1/+1.\n"
+    "Whenever Fíli or another nontoken Dwarf you control enters, create a 2/2 red Dwarf creature "
+    "token."
+)
+FILI_KEYWORD_QUOTE = (
+    "Whenever Fíli or another nontoken Dwarf you control enters, create a 2/2 red Dwarf creature "
+    "token."
+)
+FILI_PAYOFF_QUOTE = "As long as you have an enduring story, creatures you control get +1/+1."
+
 FRONT_EFFECT_QUOTE = "draw a card"
 BACK_TRIGGER_QUOTE = "At the beginning of your upkeep"
 BACK_MILL_QUOTE = "each opponent mills two cards"
@@ -432,6 +476,62 @@ def _death_trigger_card() -> CardInfo:
         oracle_text=DEATH_TRIGGER_CARD_TEXT,
         set_code=SET_CODE,
     )
+
+
+def _bards_company_card() -> CardInfo:
+    return CardInfo(
+        grp_id=BARDS_COMPANY_CARD_ID,
+        name=BARDS_COMPANY_CARD_NAME,
+        colors=("W", "U"),
+        mana_value=4.0,
+        rarity="rare",
+        types=("Creature",),
+        oracle_text=BARDS_COMPANY_CARD_TEXT,
+        keywords=("Recruit",),
+        type_line="Creature — Human Citizen",
+        set_code=SET_CODE,
+        power="2",
+        toughness="3",
+    )
+
+
+def _esgaroth_garrison_card() -> CardInfo:
+    return CardInfo(
+        grp_id=ESGAROTH_GARRISON_CARD_ID,
+        name=ESGAROTH_GARRISON_CARD_NAME,
+        colors=("W",),
+        mana_value=5.0,
+        rarity="common",
+        types=("Creature",),
+        oracle_text=ESGAROTH_GARRISON_CARD_TEXT,
+        keywords=("Recruit",),
+        type_line="Creature — Human Soldier",
+        set_code=SET_CODE,
+        power="*",
+        toughness="5",
+    )
+
+
+def _fili_the_pathfinder_card() -> CardInfo:
+    return CardInfo(
+        grp_id=FILI_CARD_ID,
+        name=FILI_CARD_NAME,
+        colors=("W",),
+        mana_value=4.0,
+        rarity="rare",
+        types=("Creature",),
+        oracle_text=FILI_CARD_TEXT,
+        keywords=("Storied",),
+        type_line="Legendary Creature — Dwarf Scout",
+        set_code=SET_CODE,
+        power="2",
+        toughness="2",
+    )
+
+
+BARDS_COMPANY_CARD = _bards_company_card()
+ESGAROTH_GARRISON_CARD = _esgaroth_garrison_card()
+FILI_CARD = _fili_the_pathfinder_card()
 
 
 def _two_face_card_faces() -> tuple[CardFace, ...]:
@@ -1742,6 +1842,39 @@ def test_card_capability_prompt_assigns_death_payoff_by_trigger_event() -> None:
     assert "triggers only on this card's own death is a dies trigger (dies_trigger)" in prompt
 
 
+def test_card_capability_prompt_keeps_static_payoffs_beside_keyword_abilities() -> None:
+    request = build_card_capability_extraction_request(sources=_sources(), card_id=ALPHA_ID)
+
+    prompt = request.system_prompt
+
+    assert (
+        "A static ability is a capability of its own and is never replaced by a keyword ability in "
+        "the same Oracle text:"
+    ) in prompt
+    assert (
+        "an anthem that gives your creatures +1/+1, or a static creature-count value such as a "
+        "power equal to the number of creatures you control, is a go-wide payoff (go_wide_payoff)"
+    ) in prompt
+    assert (
+        "it is extracted in addition to every keyword-ability capability the same Oracle text states"
+    ) in prompt
+    assert (
+        "Whenever the Oracle text contains a static sentence that makes all creatures you control, "
+        "or other creatures you control, larger, or states a power or toughness equal to the number "
+        "of creatures you control, emit a go-wide payoff (go_wide_payoff) capability for it"
+    ) in prompt
+    assert (
+        "A keyword ability is extracted as its own capability even when a static sentence is present "
+        "in the same Oracle text, so a keyword that creates a creature token is a token maker "
+        "(token_maker)"
+    ) in prompt
+    assert (
+        "One quoted ability may satisfy several roles: emit a separate capability for each role it "
+        "satisfies instead of choosing one, so a trigger that creates a creature token is a token "
+        "maker (token_maker) as well as a typal payoff (typal_payoff)"
+    ) in prompt
+
+
 def test_card_request_carries_the_full_role_glossary() -> None:
     request = build_card_capability_extraction_request(sources=_sources(), card_id=ALPHA_ID)
 
@@ -1954,6 +2087,87 @@ def test_death_trigger_capability_parses_with_the_death_payoff_role() -> None:
             quote=DEATH_TRIGGER_CARD_TEXT,
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("card", "keyword_quote", "payoff_quote"),
+    (
+        pytest.param(
+            BARDS_COMPANY_CARD,
+            BARDS_COMPANY_KEYWORD_QUOTE,
+            BARDS_COMPANY_PAYOFF_QUOTE,
+            id="bards-company",
+        ),
+        pytest.param(
+            ESGAROTH_GARRISON_CARD,
+            ESGAROTH_GARRISON_KEYWORD_QUOTE,
+            ESGAROTH_GARRISON_PAYOFF_QUOTE,
+            id="esgaroth-garrison",
+        ),
+        pytest.param(
+            FILI_CARD,
+            FILI_KEYWORD_QUOTE,
+            FILI_PAYOFF_QUOTE,
+            id="fili-the-pathfinder",
+        ),
+    ),
+)
+def test_static_payoff_parses_beside_the_keyword_role(
+    card: CardInfo,
+    keyword_quote: str,
+    payoff_quote: str,
+) -> None:
+    sources = _card_sources(card)
+
+    request = build_card_capability_extraction_request(sources=sources, card_id=card.grp_id)
+    prompt = json.loads(request.user_prompt)
+
+    assert prompt["card"]["name"] == card.name
+    assert prompt["card"]["oracle_text"] == card.oracle_text
+
+    response = _capability_response(
+        [
+            _capability_candidate(
+                finding_id=f"{card.grp_id}-keyword-role",
+                card_id=card.grp_id,
+                card_name=card.name,
+                face_index=None,
+                face_name=None,
+                role="token_maker",
+                evidence=[
+                    _evidence_entry(card_id=card.grp_id, face_index=None, quote=keyword_quote)
+                ],
+            ),
+            _capability_candidate(
+                finding_id=f"{card.grp_id}-static-payoff",
+                card_id=card.grp_id,
+                card_name=card.name,
+                face_index=None,
+                face_name=None,
+                role="go_wide_payoff",
+                evidence=[
+                    _evidence_entry(card_id=card.grp_id, face_index=None, quote=payoff_quote)
+                ],
+            ),
+        ]
+    )
+
+    result = _parse_card(_content(response), sources, card_id=card.grp_id)
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.rejected_capabilities == ()
+    assert {
+        (capability.role, capability.evidence) for capability in result.capabilities
+    } == {
+        (
+            Role.TOKEN_MAKER,
+            (OracleEvidence(card_id=card.grp_id, face_index=None, quote=keyword_quote),),
+        ),
+        (
+            Role.GO_WIDE_PAYOFF,
+            (OracleEvidence(card_id=card.grp_id, face_index=None, quote=payoff_quote),),
+        ),
+    }
 
 
 @pytest.mark.parametrize(
