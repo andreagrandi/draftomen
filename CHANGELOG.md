@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Keep a static ability's card-capability role when the same Oracle text also
+  states a keyword ability, so an anthem or a creature-count payoff is a
+  `go_wide_payoff` on a card that also recruits and can pair with a token
+  maker instead of being replaced by the keyword's role. (#489)
 - Define every card-capability role in the set-independent vocabulary and carry
   that glossary, together with the card's declared mana value, power, colors and
   produced mana, inside the pinned card request, so the model assigns a role only
