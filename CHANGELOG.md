@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Define every card-capability role in the set-independent vocabulary and carry
+  that glossary, together with the card's declared mana value, power, colors and
+  produced mana, inside the pinned card request, so the model assigns a role only
+  when a quoted ability satisfies its definition, `sacrifice_fodder` explicitly
+  excludes token producers, and the new `token-death-payoff` mechanism pairs
+  creature tokens with death payoffs. (#488)
 - Re-author two reviewed benchmark relationships that named a mechanism the role
   vocabulary cannot reach: `103492` → `103491` and `103531` → `103458` now expect
   `token-sacrifice-outlet`, the interaction their card texts actually produce and

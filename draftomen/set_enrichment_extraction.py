@@ -34,7 +34,7 @@ from draftomen.semantic_enrichment_records import (
     RejectedFinding,
     SemanticEnrichmentError,
 )
-from draftomen.semantic_roles import Role
+from draftomen.semantic_roles import Role, role_definition
 
 
 SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION = 1
@@ -61,7 +61,9 @@ _GUIDE_SYSTEM_PROMPT = (
 _CARD_CAPABILITY_SYSTEM_PROMPT = (
     "Extract only capabilities stated by a complete ability of the supplied canonical card. "
     "Treat the canonical card and all faces as one request. Use the supplied semantic role "
-    "vocabulary. A triggered ability takes the role of its trigger condition before the role of its "
+    "vocabulary and the role definitions supplied with the request: assign a role only when the "
+    "quoted ability satisfies that role's definition. A triggered ability takes the role of its "
+    "trigger condition before the role of its "
     "effect: an ability that triggers when one or more creatures die is a death payoff "
     "(death_payoff) even when its effect draws, scries, damages, or gains life, and an ability that "
     "triggers only on this card's own death is a dies trigger (dies_trigger). Use an effect-derived "
@@ -201,6 +203,9 @@ _RELATIONSHIP_RESULT_KEYS = frozenset(
 
 _STATUS_VALUES = sorted(status.value for status in FindingStatus)
 _ROLE_VALUES = sorted(member.value for member in Role)
+_ROLE_DEFINITION_PAIRS: tuple[tuple[str, str], ...] = tuple(
+    (member.value, role_definition(member)) for member in sorted(Role, key=lambda member: member.value)
+)
 _ZONE_VALUES = sorted(member.value for member in CapabilityZone)
 _QUANTITY_RELATION_VALUES = sorted(member.value for member in QuantityRelation)
 _PREREQUISITE_KIND_VALUES = sorted(member.value for member in PrerequisiteKind)
@@ -1031,6 +1036,17 @@ def _selected_card(sources: Any, card_id: Any) -> CardInfo:
     return matches[0]
 
 
+def _card_characteristics(card: CardInfo) -> dict[str, Any]:
+    """Return the declared structural values the role definitions depend on."""
+
+    return {
+        "mana_value": card.mana_value,
+        "power": card.power,
+        "colors": list(card.colors),
+        "produced_mana": list(card.produced_mana),
+    }
+
+
 def build_card_capability_extraction_request(
     *,
     sources: EnrichmentSources,
@@ -1050,6 +1066,10 @@ def build_card_capability_extraction_request(
             "set_code": sources.set_code,
             "card_source_sha256": card_source_sha256(selected),
             "card": card,
+            "card_characteristics": _card_characteristics(selected),
+            "role_definitions": [
+                {"role": role, "definition": definition} for role, definition in _ROLE_DEFINITION_PAIRS
+            ],
         }
     ).decode("utf-8")
     return ExtractionRequest(

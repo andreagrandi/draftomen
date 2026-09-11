@@ -107,6 +107,7 @@ ROLE_COMPATIBILITY_RULES: tuple[RoleLink, ...] = (
     RoleLink(mechanism="loot-recursion-payoff", enabler=Role.LOOT, payoff=Role.RECURSION_PAYOFF),
     RoleLink(mechanism="mill-graveyard-payoff", enabler=Role.SELF_MILL, payoff=Role.GRAVEYARD_PAYOFF),
     RoleLink(mechanism="recursion-graveyard-payoff", enabler=Role.RECURSION, payoff=Role.GRAVEYARD_PAYOFF),
+    RoleLink(mechanism="token-death-payoff", enabler=Role.TOKEN_MAKER, payoff=Role.DEATH_PAYOFF),
     RoleLink(mechanism="token-go-wide-payoff", enabler=Role.TOKEN_MAKER, payoff=Role.GO_WIDE_PAYOFF),
     RoleLink(mechanism="token-sacrifice-outlet", enabler=Role.TOKEN_MAKER, payoff=Role.SACRIFICE_OUTLET),
 )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json
 import re
@@ -31,7 +31,7 @@ from draftomen.semantic_enrichment_records import (
     RejectedFinding,
     SemanticEnrichmentError,
 )
-from draftomen.semantic_roles import Role
+from draftomen.semantic_roles import Role, role_definition
 import draftomen.set_enrichment_extraction as extraction_module
 from draftomen.set_enrichment_extraction import (
     CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
@@ -497,12 +497,12 @@ def _null_face_name_card() -> CardInfo:
 
 
 def _equivalent_two_face_card() -> CardInfo:
-    """Build the same canonical projection from different raw card metadata."""
+    """Build the same canonical projection and declared characteristics without display noise."""
     return CardInfo(
         grp_id=TWO_FACE_CARD_ID,
         name=f"  {TWO_FACE_CARD_NAME}  ",
-        colors=(),
-        mana_value=None,
+        colors=("U", "B"),
+        mana_value=4.0,
         rarity="mythic",
         types=("Enchantment",),
         image_uri="https://cards.example.test/alpha-beta.png",
@@ -530,12 +530,12 @@ def _equivalent_two_face_card() -> CardInfo:
 
 
 def _equivalent_null_face_name_card() -> CardInfo:
-    """Build the same canonical projection from different raw card metadata."""
+    """Build the same canonical projection and declared characteristics without display noise."""
     return CardInfo(
         grp_id=NULL_FACE_NAME_CARD_ID,
         name=NULL_FACE_NAME_CARD_NAME,
-        colors=(),
-        mana_value=None,
+        colors=("R",),
+        mana_value=3.0,
         rarity="rare",
         types=("Sorcery",),
         keywords=("Flashback",),
@@ -1650,7 +1650,14 @@ def test_card_request_carries_one_canonical_card_with_every_indexed_face(
 
     prompt = json.loads(request.user_prompt)
 
-    assert set(prompt) == {"contract_version", "set_code", "card_source_sha256", "card"}
+    assert set(prompt) == {
+        "contract_version",
+        "set_code",
+        "card_source_sha256",
+        "card",
+        "card_characteristics",
+        "role_definitions",
+    }
     assert prompt["contract_version"] == SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION
     assert prompt["set_code"] == SET_CODE
     assert prompt["card_source_sha256"] == card_source_sha256(_two_face_card())
@@ -1705,7 +1712,14 @@ def test_card_request_carries_one_canonical_card_with_every_indexed_face(
     )
     plain_prompt = json.loads(plain_request.user_prompt)
 
-    assert set(plain_prompt) == {"contract_version", "set_code", "card_source_sha256", "card"}
+    assert set(plain_prompt) == {
+        "contract_version",
+        "set_code",
+        "card_source_sha256",
+        "card",
+        "card_characteristics",
+        "role_definitions",
+    }
     assert plain_prompt["card"]["card_id"] == PLAIN_CARD_ID
     assert plain_prompt["card"]["name"] == PLAIN_CARD_NAME
     assert plain_prompt["card"]["faces"] == []
@@ -1726,6 +1740,82 @@ def test_card_capability_prompt_assigns_death_payoff_by_trigger_event() -> None:
         "effect draws, scries, damages, or gains life"
     ) in prompt
     assert "triggers only on this card's own death is a dies trigger (dies_trigger)" in prompt
+
+
+def test_card_request_carries_the_full_role_glossary() -> None:
+    request = build_card_capability_extraction_request(sources=_sources(), card_id=ALPHA_ID)
+
+    glossary = json.loads(request.user_prompt)["role_definitions"]
+
+    assert glossary == [
+        {"role": member.value, "definition": role_definition(member)}
+        for member in sorted(Role, key=lambda member: member.value)
+    ]
+    assert len(glossary) == len(set(Role))
+
+
+def test_card_request_carries_the_declared_structural_characteristics() -> None:
+    declared = replace(_card(ALPHA_ID, "Alpha"), power="2", produced_mana=("U", "B"))
+    sources = _card_sources(declared)
+
+    request = build_card_capability_extraction_request(sources=sources, card_id=ALPHA_ID)
+
+    assert json.loads(request.user_prompt)["card_characteristics"] == {
+        "mana_value": 3.0,
+        "power": "2",
+        "colors": ["U", "B"],
+        "produced_mana": ["U", "B"],
+    }
+
+    undeclared = build_card_capability_extraction_request(sources=_sources(), card_id=ALPHA_ID)
+
+    assert json.loads(undeclared.user_prompt)["card_characteristics"] == {
+        "mana_value": 3.0,
+        "power": None,
+        "colors": ["U", "B"],
+        "produced_mana": [],
+    }
+
+
+def test_role_glossary_changes_the_card_capability_prompt_identity() -> None:
+    request = build_card_capability_extraction_request(sources=_sources(), card_id=ALPHA_ID)
+
+    without_glossary = {
+        key: value
+        for key, value in json.loads(request.user_prompt).items()
+        if key != "role_definitions"
+    }
+    variant = _request(
+        prompt_id=CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
+        system_prompt=request.system_prompt,
+        user_prompt=json.dumps(
+            without_glossary,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        response_schema_id=CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID,
+        response_schema_name=CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME,
+        schema=request.response_schema(),
+    )
+
+    assert variant.prompt_sha256 != request.prompt_sha256
+    assert (
+        "assign a role only when the quoted ability satisfies that role's definition"
+        in request.system_prompt
+    )
+    assert (
+        "takes the role of its trigger condition before the role of its effect"
+        in request.system_prompt
+    )
+    assert (
+        "triggers when one or more creatures die is a death payoff (death_payoff) even when its "
+        "effect draws, scries, damages, or gains life"
+    ) in request.system_prompt
+    assert (
+        "triggers only on this card's own death is a dies trigger (dies_trigger)"
+        in request.system_prompt
+    )
 
 
 def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_records(
