@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Persist resumable set-enrichment work through a caller-owned
+  content-addressed store that matches input, model configuration, prompt and
+  schema hashes before reusing work, keeps raw responses with trusted
+  accounting and validated results across interruption, and never reports
+  incomplete, corrupt or conflicting artifacts as completed successful work.
+  (#470)
 - Construct bounded compatible relationship candidates from validated card
   capabilities by indexing typed roles, emitting stable enabler-to-payoff candidate
   packages that retain exact participant identities, evidence, prerequisites,

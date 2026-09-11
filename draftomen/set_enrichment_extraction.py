@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import InitVar, dataclass, field
 from enum import Enum, StrEnum
 import hashlib
@@ -105,6 +105,15 @@ _FINDING_KEYS = frozenset(
 )
 _EVIDENCE_KEYS = frozenset({"guide_id", "quote"})
 _REVIEW_KEYS = frozenset({"status", "reason"})
+_GUIDE_RESULT_KEYS = frozenset(
+    {
+        "outcome",
+        "accepted_findings",
+        "uncertain_findings",
+        "rejected_findings",
+        "malformed_reason",
+    }
+)
 _MAX_SCHEMA_DEPTH = 64
 
 _CARD_RESPONSE_KEYS = frozenset({"schema_version", "capabilities"})
@@ -137,6 +146,15 @@ _PREREQUISITE_KEYS = frozenset(
     }
 )
 _ORACLE_EVIDENCE_KEYS = frozenset({"card_id", "face_index", "quote"})
+_CARD_RESULT_KEYS = frozenset(
+    {
+        "outcome",
+        "accepted_capabilities",
+        "uncertain_capabilities",
+        "rejected_capabilities",
+        "malformed_reason",
+    }
+)
 
 _ROLE_VALUES = sorted(member.value for member in Role)
 _ZONE_VALUES = sorted(member.value for member in CapabilityZone)
@@ -530,6 +548,40 @@ class GuideExtractionResult:
         claims = (*self.accepted_findings, *self.uncertain_findings)
         return tuple(sorted(claims, key=lambda claim: claim.finding_id))
 
+    def to_json(self) -> dict[str, object]:
+        """Return fresh JSON-compatible stored bytes for this result."""
+        return {
+            "outcome": self.outcome.value,
+            "accepted_findings": [claim.to_json() for claim in self.accepted_findings],
+            "uncertain_findings": [claim.to_json() for claim in self.uncertain_findings],
+            "rejected_findings": [finding.to_json() for finding in self.rejected_findings],
+            "malformed_reason": self.malformed_reason,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> GuideExtractionResult:
+        """Decode validated stored bytes into one exact guide extraction result."""
+        _result_keys(value, _GUIDE_RESULT_KEYS, "guide extraction result")
+        return cls(
+            outcome=_extraction_outcome(value["outcome"]),
+            accepted_findings=_nested_records(
+                value["accepted_findings"],
+                "accepted_findings",
+                GuideClaim.from_json,
+            ),
+            uncertain_findings=_nested_records(
+                value["uncertain_findings"],
+                "uncertain_findings",
+                GuideClaim.from_json,
+            ),
+            rejected_findings=_nested_records(
+                value["rejected_findings"],
+                "rejected_findings",
+                RejectedFinding.from_json,
+            ),
+            malformed_reason=value["malformed_reason"],
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CardCapabilityExtractionResult:
@@ -606,6 +658,46 @@ class CardCapabilityExtractionResult:
         """Return accepted and uncertain capabilities in global finding order."""
         capabilities = (*self.accepted_capabilities, *self.uncertain_capabilities)
         return tuple(sorted(capabilities, key=lambda capability: capability.finding_id))
+
+    def to_json(self) -> dict[str, object]:
+        """Return fresh JSON-compatible stored bytes for this result."""
+        return {
+            "outcome": self.outcome.value,
+            "accepted_capabilities": [
+                capability.to_json() for capability in self.accepted_capabilities
+            ],
+            "uncertain_capabilities": [
+                capability.to_json() for capability in self.uncertain_capabilities
+            ],
+            "rejected_capabilities": [
+                finding.to_json() for finding in self.rejected_capabilities
+            ],
+            "malformed_reason": self.malformed_reason,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> CardCapabilityExtractionResult:
+        """Decode validated stored bytes into one exact card capability result."""
+        _result_keys(value, _CARD_RESULT_KEYS, "card capability extraction result")
+        return cls(
+            outcome=_extraction_outcome(value["outcome"]),
+            accepted_capabilities=_nested_records(
+                value["accepted_capabilities"],
+                "accepted_capabilities",
+                CardCapability.from_json,
+            ),
+            uncertain_capabilities=_nested_records(
+                value["uncertain_capabilities"],
+                "uncertain_capabilities",
+                CardCapability.from_json,
+            ),
+            rejected_capabilities=_nested_records(
+                value["rejected_capabilities"],
+                "rejected_capabilities",
+                RejectedFinding.from_json,
+            ),
+            malformed_reason=value["malformed_reason"],
+        )
 
 
 def _selected_guide(sources: Any, guide_id: Any) -> GuideSource:
@@ -749,6 +841,43 @@ def _optional_response_text(value: Any) -> None:
     """Require null or nonblank UTF-8 response text."""
     if value is not None:
         _response_text(value)
+
+
+def _result_keys(value: Mapping[str, Any], expected: frozenset[str], field_name: str) -> None:
+    """Require exactly the expected keys on one trusted stored result."""
+    if not isinstance(value, Mapping):
+        raise SetEnrichmentExtractionError(f"{field_name} must be an object.")
+    if set(value) != expected:
+        raise SetEnrichmentExtractionError(f"{field_name} has invalid keys.")
+
+
+def _extraction_outcome(value: Any) -> ExtractionOutcome:
+    """Decode one stored outcome string into an exact terminal outcome."""
+    if not isinstance(value, str):
+        raise SetEnrichmentExtractionError("outcome must be 'success' or 'malformed'.")
+    try:
+        return ExtractionOutcome(value)
+    except ValueError as error:
+        raise SetEnrichmentExtractionError("outcome must be 'success' or 'malformed'.") from error
+
+
+def _nested_records(
+    value: Any,
+    field_name: str,
+    loader: Callable[[Mapping[str, Any]], Any],
+) -> tuple[Any, ...]:
+    """Decode one stored JSON array of nested records in document order."""
+    if not isinstance(value, list):
+        raise SetEnrichmentExtractionError(f"{field_name} must be a JSON array.")
+    records: list[Any] = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            raise SetEnrichmentExtractionError(f"{field_name} must contain objects.")
+        try:
+            records.append(loader(entry))
+        except SemanticEnrichmentError as error:
+            raise SetEnrichmentExtractionError(f"{field_name} must contain valid records.") from error
+    return tuple(records)
 
 
 def _validated_candidate(item: Any) -> Mapping[str, Any]:

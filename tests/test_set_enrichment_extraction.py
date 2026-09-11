@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -3025,3 +3025,337 @@ def test_null_face_prerequisite_evidence_is_compared_exactly() -> None:
     )
 
     assert CardCapability.from_json(no_face_record.to_json()) == no_face_record
+
+
+def _without_key(document: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return a copy of one JSON-native document without the named key."""
+    return {name: value for name, value in document.items() if name != key}
+
+
+def _guide_result_document() -> dict[str, Any]:
+    """Return one JSON-native guide result document with every bucket populated."""
+    result = _result(
+        accepted_findings=(_claim("claim-accepted", status=FindingStatus.ACCEPTED, reason=None),),
+        uncertain_findings=(_claim("claim-uncertain"),),
+        rejected_findings=(_rejected_finding("claim-rejected"),),
+    )
+    return json.loads(json.dumps(result.to_json()))
+
+
+def _card_result_document() -> dict[str, Any]:
+    """Return one JSON-native card result document with every bucket populated."""
+    result = _card_result(
+        accepted_capabilities=(
+            _reviewed_capability(
+                "capability-accepted",
+                status=FindingStatus.ACCEPTED,
+                reason=None,
+            ),
+        ),
+        uncertain_capabilities=(_reviewed_capability("capability-uncertain"),),
+        rejected_capabilities=(_rejected_capability("capability-rejected"),),
+    )
+    return json.loads(json.dumps(result.to_json()))
+
+
+def test_guide_result_round_trips_populated_buckets_through_stored_bytes() -> None:
+    accepted = _claim("claim-accepted", status=FindingStatus.ACCEPTED, reason=None)
+    uncertain = _claim("claim-uncertain")
+    rejected = _rejected_finding("claim-rejected")
+    result = _result(
+        accepted_findings=(accepted,),
+        uncertain_findings=(uncertain,),
+        rejected_findings=(rejected,),
+    )
+
+    document = result.to_json()
+
+    assert set(document) == {
+        "outcome",
+        "accepted_findings",
+        "uncertain_findings",
+        "rejected_findings",
+        "malformed_reason",
+    }
+    assert document["outcome"] == "success"
+    assert document["accepted_findings"] == [accepted.to_json()]
+    assert document["uncertain_findings"] == [uncertain.to_json()]
+    assert document["rejected_findings"] == [rejected.to_json()]
+    assert document["malformed_reason"] is None
+    assert GuideExtractionResult.from_json(json.loads(json.dumps(document))) == result
+
+
+def test_guide_result_round_trips_the_malformed_outcome_verbatim() -> None:
+    result = _result(outcome=ExtractionOutcome.MALFORMED, malformed_reason=MALFORMED_REASON)
+
+    document = result.to_json()
+
+    assert set(document) == {
+        "outcome",
+        "accepted_findings",
+        "uncertain_findings",
+        "rejected_findings",
+        "malformed_reason",
+    }
+    assert document["outcome"] == "malformed"
+    assert document["accepted_findings"] == []
+    assert document["uncertain_findings"] == []
+    assert document["rejected_findings"] == []
+    assert document["malformed_reason"] == MALFORMED_REASON
+    assert GuideExtractionResult.from_json(json.loads(json.dumps(document))) == result
+
+
+def test_card_result_round_trips_populated_buckets_through_stored_bytes() -> None:
+    accepted = _reviewed_capability(
+        "capability-accepted",
+        status=FindingStatus.ACCEPTED,
+        reason=None,
+    )
+    uncertain = _reviewed_capability("capability-uncertain")
+    rejected = _rejected_capability("capability-rejected")
+    result = _card_result(
+        accepted_capabilities=(accepted,),
+        uncertain_capabilities=(uncertain,),
+        rejected_capabilities=(rejected,),
+    )
+
+    document = result.to_json()
+
+    assert set(document) == {
+        "outcome",
+        "accepted_capabilities",
+        "uncertain_capabilities",
+        "rejected_capabilities",
+        "malformed_reason",
+    }
+    assert document["outcome"] == "success"
+    assert document["accepted_capabilities"] == [accepted.to_json()]
+    assert document["uncertain_capabilities"] == [uncertain.to_json()]
+    assert document["rejected_capabilities"] == [rejected.to_json()]
+    assert document["malformed_reason"] is None
+    assert CardCapabilityExtractionResult.from_json(json.loads(json.dumps(document))) == result
+
+
+def test_card_result_round_trips_the_malformed_outcome_verbatim() -> None:
+    result = _card_result(
+        outcome=ExtractionOutcome.MALFORMED,
+        malformed_reason=CARD_MALFORMED_REASON,
+    )
+
+    document = result.to_json()
+
+    assert set(document) == {
+        "outcome",
+        "accepted_capabilities",
+        "uncertain_capabilities",
+        "rejected_capabilities",
+        "malformed_reason",
+    }
+    assert document["outcome"] == "malformed"
+    assert document["accepted_capabilities"] == []
+    assert document["uncertain_capabilities"] == []
+    assert document["rejected_capabilities"] == []
+    assert document["malformed_reason"] == CARD_MALFORMED_REASON
+    assert CardCapabilityExtractionResult.from_json(json.loads(json.dumps(document))) == result
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        pytest.param(lambda document: [document], id="non-mapping-value"),
+        pytest.param(
+            lambda document: _without_key(document, "outcome"),
+            id="missing-outcome",
+        ),
+        pytest.param(lambda document: {**document, "unexpected": None}, id="extra-key"),
+        pytest.param(lambda document: {**document, "outcome": "pending"}, id="unknown-outcome"),
+        pytest.param(lambda document: {**document, "outcome": 1}, id="non-string-outcome"),
+        pytest.param(
+            lambda document: {**document, "accepted_findings": {}},
+            id="bucket-is-a-json-object",
+        ),
+        pytest.param(
+            lambda document: {**document, "uncertain_findings": ()},
+            id="bucket-is-a-tuple",
+        ),
+        pytest.param(
+            lambda document: {**document, "rejected_findings": ["claim-rejected"]},
+            id="bucket-entry-is-not-an-object",
+        ),
+        pytest.param(
+            lambda document: {
+                **document,
+                "accepted_findings": [document["rejected_findings"][0]],
+            },
+            id="bucket-entry-has-the-wrong-record-keys",
+        ),
+    ),
+)
+def test_guide_result_from_json_rejects_invalid_documents(
+    tamper: Callable[[dict[str, Any]], Any],
+) -> None:
+    document = _guide_result_document()
+
+    with pytest.raises(SetEnrichmentExtractionError):
+        GuideExtractionResult.from_json(tamper(document))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        pytest.param(lambda document: [document], id="non-mapping-value"),
+        pytest.param(
+            lambda document: _without_key(document, "outcome"),
+            id="missing-outcome",
+        ),
+        pytest.param(lambda document: {**document, "unexpected": None}, id="extra-key"),
+        pytest.param(lambda document: {**document, "outcome": "pending"}, id="unknown-outcome"),
+        pytest.param(lambda document: {**document, "outcome": 1}, id="non-string-outcome"),
+        pytest.param(
+            lambda document: {**document, "accepted_capabilities": {}},
+            id="bucket-is-a-json-object",
+        ),
+        pytest.param(
+            lambda document: {**document, "uncertain_capabilities": ()},
+            id="bucket-is-a-tuple",
+        ),
+        pytest.param(
+            lambda document: {**document, "rejected_capabilities": ["capability-rejected"]},
+            id="bucket-entry-is-not-an-object",
+        ),
+        pytest.param(
+            lambda document: {
+                **document,
+                "accepted_capabilities": [document["rejected_capabilities"][0]],
+            },
+            id="bucket-entry-has-the-wrong-record-keys",
+        ),
+    ),
+)
+def test_card_result_from_json_rejects_invalid_documents(
+    tamper: Callable[[dict[str, Any]], Any],
+) -> None:
+    document = _card_result_document()
+
+    with pytest.raises(SetEnrichmentExtractionError):
+        CardCapabilityExtractionResult.from_json(tamper(document))
+
+
+def test_guide_result_from_json_reports_nested_record_failures_as_extraction_errors() -> None:
+    document = _guide_result_document()
+    document["uncertain_findings"][0]["review"]["status"] = "pending"
+
+    with pytest.raises(SetEnrichmentExtractionError) as error:
+        GuideExtractionResult.from_json(document)
+
+    assert str(error.value) == "uncertain_findings must contain valid records."
+
+
+def test_card_result_from_json_reports_nested_record_failures_as_extraction_errors() -> None:
+    document = _card_result_document()
+    document["uncertain_capabilities"][0]["role"] = "unsupported-role"
+
+    with pytest.raises(SetEnrichmentExtractionError) as error:
+        CardCapabilityExtractionResult.from_json(document)
+
+    assert str(error.value) == "uncertain_capabilities must contain valid records."
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        pytest.param(
+            lambda document: {
+                **document,
+                "accepted_findings": [
+                    {
+                        **document["accepted_findings"][0],
+                        "review": {"status": "accepted", "reason": "Looks correct."},
+                    }
+                ],
+            },
+            id="accepted-claim-with-a-review-reason",
+        ),
+        pytest.param(
+            lambda document: {**document, "malformed_reason": MALFORMED_REASON},
+            id="success-with-a-malformed-reason",
+        ),
+        pytest.param(
+            lambda document: {
+                **document,
+                "outcome": "malformed",
+                "malformed_reason": MALFORMED_REASON,
+            },
+            id="malformed-outcome-retaining-findings",
+        ),
+        pytest.param(
+            lambda document: {
+                **document,
+                "uncertain_findings": [
+                    {
+                        **document["uncertain_findings"][0],
+                        "finding_id": document["accepted_findings"][0]["finding_id"],
+                    }
+                ],
+            },
+            id="duplicate-finding-id-across-buckets",
+        ),
+    ),
+)
+def test_guide_result_from_json_still_enforces_result_invariants(
+    tamper: Callable[[dict[str, Any]], Any],
+) -> None:
+    document = _guide_result_document()
+
+    with pytest.raises(SetEnrichmentExtractionError):
+        GuideExtractionResult.from_json(tamper(document))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        pytest.param(
+            lambda document: {
+                **document,
+                "accepted_capabilities": [
+                    {
+                        **document["accepted_capabilities"][0],
+                        "review": {"status": "accepted", "reason": "Looks correct."},
+                    }
+                ],
+            },
+            id="accepted-capability-with-a-review-reason",
+        ),
+        pytest.param(
+            lambda document: {**document, "malformed_reason": CARD_MALFORMED_REASON},
+            id="success-with-a-malformed-reason",
+        ),
+        pytest.param(
+            lambda document: {
+                **document,
+                "outcome": "malformed",
+                "malformed_reason": CARD_MALFORMED_REASON,
+            },
+            id="malformed-outcome-retaining-capabilities",
+        ),
+        pytest.param(
+            lambda document: {
+                **document,
+                "uncertain_capabilities": [
+                    {
+                        **document["uncertain_capabilities"][0],
+                        "finding_id": document["accepted_capabilities"][0]["finding_id"],
+                    }
+                ],
+            },
+            id="duplicate-finding-id-across-buckets",
+        ),
+    ),
+)
+def test_card_result_from_json_still_enforces_result_invariants(
+    tamper: Callable[[dict[str, Any]], Any],
+) -> None:
+    document = _card_result_document()
+
+    with pytest.raises(SetEnrichmentExtractionError):
+        CardCapabilityExtractionResult.from_json(tamper(document))
