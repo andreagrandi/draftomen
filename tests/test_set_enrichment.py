@@ -16,6 +16,7 @@ from draftomen.semantic_capability_records import (
     CapabilityPrerequisite,
     CapabilityQuantity,
     CapabilityZone,
+    CardCapability,
     PrerequisiteKind,
     QuantityRelation,
 )
@@ -42,7 +43,10 @@ from draftomen.set_enrichment_extraction import (
     ExtractionRequest,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
+    build_relationship_validation_request,
+    parse_card_capability_extraction_response,
     parse_guide_extraction_response,
+    relationship_source_sha256,
     relationship_subject_id,
 )
 from draftomen.set_enrichment_work import (
@@ -114,6 +118,10 @@ MIDRUN_PROJECTED_COST_USD = "0.01"
 WORKED_CALLS = 8
 RELATIONSHIP_EVIDENCE_QUOTE_REASON = (
     "relationship Oracle evidence quote is not an exact source substring."
+)
+RELATIONSHIP_MALFORMED_REASON = "response does not match relationship validation schema version 1."
+RELATIONSHIP_UNCERTAIN_REASON = (
+    "Both Oracle texts support the interaction but the timing is ambiguous."
 )
 
 RESPOND = "respond"
@@ -214,6 +222,45 @@ def _card_identity(card_id: int) -> WorkIdentity:
         request=build_card_capability_extraction_request(
             sources=_sources(),
             card_id=card_id,
+        ),
+        model_config=_model_config(),
+    )
+
+
+def _parsed_capability(card_id: int, finding_id: str) -> CardCapability:
+    """Return one fixture capability exactly as the service parses it."""
+    result = parse_card_capability_extraction_response(
+        content=_capability_content(card_id),
+        sources=_sources(),
+        card_id=card_id,
+        run_id=RUN_ID,
+    )
+    return next(
+        capability for capability in result.capabilities if capability.finding_id == finding_id
+    )
+
+
+def _relationship_identity() -> WorkIdentity:
+    """Return the durable identity of the token-to-go-wide candidate the fixture constructs."""
+    source = _parsed_capability(TOKEN_CARD_ID, TOKEN_FINDING_ID)
+    target = _parsed_capability(WIDE_CARD_ID, WIDE_FINDING_ID)
+    return build_work_identity(
+        work_kind=WorkKind.RELATIONSHIP,
+        subject_id=relationship_subject_id(
+            mechanism=RELATIONSHIP_MECHANISM,
+            source=source,
+            target=target,
+        ),
+        input_sha256=relationship_source_sha256(
+            mechanism=RELATIONSHIP_MECHANISM,
+            source=source,
+            target=target,
+        ),
+        request=build_relationship_validation_request(
+            sources=_sources(),
+            mechanism=RELATIONSHIP_MECHANISM,
+            source=source,
+            target=target,
         ),
         model_config=_model_config(),
     )
@@ -379,6 +426,19 @@ def _relationship_content(prompt: dict[str, Any], *, foreign_quote: str | None) 
     )
 
 
+def _uncertain_relationship_content() -> str:
+    """Build one schema-valid uncertain verdict that carries no evidence at all."""
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "verdict": "uncertain",
+            "claim": RELATIONSHIP_CLAIM,
+            "reason": RELATIONSHIP_UNCERTAIN_REASON,
+            "evidence": [],
+        }
+    )
+
+
 def _prompt_payload(request: ExtractionRequest) -> dict[str, Any]:
     return json.loads(request.user_prompt)
 
@@ -417,17 +477,26 @@ class _FakeCompletion:
         behaviours: Sequence[str] = (),
         fail_after: int | None = None,
         foreign_relationship_quote: str | None = None,
+        forbidden_relationship_subject: str | None = None,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.requests: list[ExtractionRequest] = []
         self.behaviours = behaviours
         self.fail_after = fail_after
         self.foreign_relationship_quote = foreign_relationship_quote
+        self.forbidden_relationship_subject = forbidden_relationship_subject
 
     def __call__(self, request: ExtractionRequest) -> OpenRouterResponse:
         """Answer one pinned request, raising once the scripted failure count is reached."""
-        self.calls.append((request.prompt_id, _prompt_subject(request)))
+        subject = _prompt_subject(request)
+        self.calls.append((request.prompt_id, subject))
         self.requests.append(request)
+        if (
+            self.forbidden_relationship_subject is not None
+            and request.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID
+            and subject == self.forbidden_relationship_subject
+        ):
+            raise AssertionError(f"replacement relationship request for {subject}.")
         index = len(self.calls) - 1
         if self.fail_after is not None and index >= self.fail_after:
             raise _CompletionFailure("scripted acquisition failure.")
@@ -620,6 +689,48 @@ def test_unvalidated_durable_response_is_reparsed_without_a_request(tmp_path: Pa
     )
     assert store.lookup(identity=identity).state is WorkState.COMPLETED
     assert result.progress.accounting.reused_work == 1
+
+
+def test_unvalidated_relationship_response_resumes_to_a_malformed_outcome(
+    tmp_path: Path,
+) -> None:
+    work_root = tmp_path / "work"
+    store = _store(work_root)
+    identity = _relationship_identity()
+    store.record_attempt(identity=identity)
+    store.record_response(
+        identity=identity,
+        response=OpenRouterResponse(
+            content=_uncertain_relationship_content(),
+            model=MODEL,
+            provider=PROVIDER,
+            input_tokens=INPUT_TOKENS,
+            cached_input_tokens=CACHED_INPUT_TOKENS,
+            output_tokens=OUTPUT_TOKENS,
+            reasoning_tokens=REASONING_TOKENS,
+            cost_usd=CALL_COST_USD,
+        ),
+    )
+    assert store.lookup(identity=identity).state is WorkState.UNVALIDATED
+
+    completion = _FakeCompletion(forbidden_relationship_subject=identity.subject_id)
+    result = _run(work_root=work_root, completion=completion)
+
+    assert result.outcome is EnrichmentOutcome.COMPLETE
+    assert store.lookup(identity=identity).state is WorkState.COMPLETED
+    assert result.candidate_packages is not None
+    index = next(
+        index
+        for index, package in enumerate(result.candidate_packages.packages)
+        if package.mechanism == RELATIONSHIP_MECHANISM
+        and package.source.card_id == TOKEN_CARD_ID
+        and package.target.card_id == WIDE_CARD_ID
+    )
+    item = result.relationship_results[index]
+    assert item.outcome is ExtractionOutcome.MALFORMED
+    assert item.malformed_reason == RELATIONSHIP_MALFORMED_REASON
+    assert item.relationship is None
+    assert item.rejected is None
 
 
 def test_relationship_calls_cover_every_constructed_candidate(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ from typing import Any
 from draftomen.carddb import CardInfo
 from draftomen.openrouter_client import OpenRouterResponse
 from draftomen.semantic_enrichment import EnrichmentSources, GuideSource, card_source_sha256
+from draftomen.semantic_enrichment_records import FindingStatus
 from draftomen.set_enrichment import (
     EnrichmentOutcome,
     EnrichmentProgress,
@@ -351,6 +352,7 @@ def _summary_line(result: EnrichmentRunResult) -> str:
             item.relationship
             for item in result.relationship_results
             if item.relationship is not None
+            and item.relationship.review.status is FindingStatus.ACCEPTED
         ),
         None,
     )
@@ -375,6 +377,7 @@ def _mismatches(result: EnrichmentRunResult) -> list[str]:
         item.relationship
         for item in result.relationship_results
         if item.relationship is not None
+        and item.relationship.review.status is FindingStatus.ACCEPTED
     ]
     packages = () if result.candidate_packages is None else result.candidate_packages.packages
     if len(accepted) != 1:
