@@ -1,31 +1,49 @@
-"""Pure source-bound extraction contracts for frozen set guides."""
+"""Pure source-bound extraction contracts for frozen set guides and canonical cards."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
-from enum import StrEnum
+from enum import Enum, StrEnum
 import hashlib
 import json
 import math
 from typing import Any
 
 from draftomen.carddb import CardInfo
-from draftomen.semantic_enrichment import EnrichmentSources, GuideSource
+from draftomen.semantic_capability_records import (
+    CapabilityPrerequisite,
+    CapabilityQuantity,
+    CapabilityZone,
+    CardCapability,
+    PrerequisiteKind,
+    QuantityRelation,
+)
+from draftomen.semantic_enrichment import (
+    EnrichmentSources,
+    GuideSource,
+    card_source_projection,
+    card_source_sha256,
+)
 from draftomen.semantic_enrichment_records import (
     FindingReview,
     FindingStatus,
     GuideClaim,
     GuideEvidence,
+    OracleEvidence,
     RejectedFinding,
     SemanticEnrichmentError,
 )
+from draftomen.semantic_roles import Role
 
 
 SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION = 1
 GUIDE_EXTRACTION_PROMPT_ID = "draftomen-guide-extraction-v1"
 GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID = "draftomen-guide-extraction-response-v1"
 GUIDE_EXTRACTION_SCHEMA_NAME = "draftomen_guide_extraction_v1"
+CARD_CAPABILITY_EXTRACTION_PROMPT_ID = "draftomen-card-capability-extraction-v1"
+CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID = "draftomen-card-capability-extraction-response-v1"
+CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME = "draftomen_card_capability_extraction_v1"
 
 _GUIDE_SYSTEM_PROMPT = (
     "Extract only claims stated in the supplied frozen guide. Return an exact guide quotation "
@@ -37,6 +55,18 @@ _GUIDE_SYSTEM_PROMPT = (
     "strategy guide claims, never Oracle-validated relationships."
 )
 
+_CARD_CAPABILITY_SYSTEM_PROMPT = (
+    "Extract only capabilities stated by a complete ability of the supplied canonical card. "
+    "Treat the canonical card and all faces as one request. Use the supplied semantic role "
+    "vocabulary. Quote the complete controlling cost, trigger, or condition together with its "
+    "effect, and bind every capability and prerequisite to the selected card and face with exact "
+    "Oracle quotations. Preserve quantities, timing, source and destination zones, and structured "
+    "prerequisites only when the quoted ability states them; otherwise use null or an empty list. "
+    "Mark an interpretation uncertain with a nonblank reason whenever any semantic field is "
+    "ambiguous, and reject unsupported candidates with a nonblank reason. Never infer another card "
+    "or emit cross-card relationships."
+)
+
 _MALFORMED_RESPONSE_REASON = "response does not match guide extraction schema version 1."
 _SEMANTIC_REVIEW_REASON = "guide claim requires semantic review beyond exact-source validation."
 
@@ -44,6 +74,20 @@ _EVIDENCE_GUIDE_REASON = "guide evidence does not reference the selected guide."
 _EVIDENCE_QUOTE_REASON = "guide evidence quote is not an exact source substring."
 _UNKNOWN_CARD_REASON = "guide claim references a card outside the frozen source set."
 _CARD_NAME_REASON = "referenced card IDs do not match card names stated in the claim."
+
+_CARD_MALFORMED_RESPONSE_REASON = (
+    "response does not match card capability extraction schema version 1."
+)
+_CAPABILITY_SEMANTIC_REVIEW_REASON = (
+    "capability requires semantic review beyond exact-source validation."
+)
+_CAPABILITY_VOCABULARY_REASON = "capability or condition uses unsupported vocabulary."
+_CAPABILITY_CARD_ID_REASON = "capability references a card other than the selected canonical card."
+_CAPABILITY_CARD_NAME_REASON = "capability card name does not match the selected canonical card."
+_CAPABILITY_FACE_REASON = "capability face identity does not match the selected canonical card."
+_CAPABILITY_EVIDENCE_OWNER_REASON = "Oracle evidence does not belong to the selected card face."
+_CAPABILITY_EVIDENCE_QUOTE_REASON = "Oracle evidence quote is not an exact source substring."
+_CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card."
 
 _GUIDE_CATEGORIES = frozenset({"format_finding", "mechanic", "archetype", "strategy"})
 _RESPONSE_STATUSES = frozenset({status.value for status in FindingStatus})
@@ -63,6 +107,42 @@ _EVIDENCE_KEYS = frozenset({"guide_id", "quote"})
 _REVIEW_KEYS = frozenset({"status", "reason"})
 _MAX_SCHEMA_DEPTH = 64
 
+_CARD_RESPONSE_KEYS = frozenset({"schema_version", "capabilities"})
+_CAPABILITY_KEYS = frozenset(
+    {
+        "finding_id",
+        "card_id",
+        "card_name",
+        "face_index",
+        "face_name",
+        "role",
+        "quantity",
+        "timing",
+        "source_zone",
+        "destination_zone",
+        "prerequisites",
+        "evidence",
+        "review",
+    }
+)
+_QUANTITY_KEYS = frozenset({"value", "relation"})
+_PREREQUISITE_KEYS = frozenset(
+    {
+        "kind",
+        "quantity",
+        "timing",
+        "source_zone",
+        "destination_zone",
+        "evidence",
+    }
+)
+_ORACLE_EVIDENCE_KEYS = frozenset({"card_id", "face_index", "quote"})
+
+_ROLE_VALUES = sorted(member.value for member in Role)
+_ZONE_VALUES = sorted(member.value for member in CapabilityZone)
+_QUANTITY_RELATION_VALUES = sorted(member.value for member in QuantityRelation)
+_PREREQUISITE_KIND_VALUES = sorted(member.value for member in PrerequisiteKind)
+
 
 class ExtractionOutcome(StrEnum):
     """Terminal outcome of one extraction response."""
@@ -75,8 +155,8 @@ class SetEnrichmentExtractionError(ValueError):
     """Raised when trusted extraction inputs violate their contract."""
 
 
-class _MalformedGuideResponse(Exception):
-    """Signal one response that violates the pinned guide extraction schema."""
+class _MalformedResponse(Exception):
+    """Signal one response that violates a pinned extraction schema."""
 
 
 def _utf8_encodable(value: str) -> bool:
@@ -228,6 +308,103 @@ def _guide_response_schema() -> dict[str, Any]:
     )
 
 
+def _quantity_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one capability quantity object."""
+    return _object_schema(
+        {
+            "value": {"type": ["integer", "null"], "minimum": 1},
+            "relation": {"type": "string", "enum": list(_QUANTITY_RELATION_VALUES)},
+        }
+    )
+
+
+def _nullable_quantity_schema() -> dict[str, Any]:
+    """Return a fresh schema accepting null or one quantity object."""
+    return {"anyOf": [{"type": "null"}, _quantity_schema()]}
+
+
+def _nullable_zone_schema() -> dict[str, Any]:
+    """Return a fresh schema accepting null or one zone value."""
+    return {"type": ["string", "null"], "enum": [*_ZONE_VALUES, None]}
+
+
+def _oracle_evidence_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one Oracle evidence object."""
+    return _object_schema(
+        {
+            "card_id": {"type": "integer", "minimum": 1},
+            "face_index": {"type": ["integer", "null"], "minimum": 0},
+            "quote": {"type": "string", "minLength": 1},
+        }
+    )
+
+
+def _prerequisite_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one capability prerequisite object."""
+    return _object_schema(
+        {
+            "kind": {"type": "string", "enum": list(_PREREQUISITE_KIND_VALUES)},
+            "quantity": _nullable_quantity_schema(),
+            "timing": {"type": ["string", "null"], "minLength": 1},
+            "source_zone": _nullable_zone_schema(),
+            "destination_zone": _nullable_zone_schema(),
+            "evidence": _oracle_evidence_schema(),
+        }
+    )
+
+
+def _capability_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one card capability object."""
+    return _object_schema(
+        {
+            "finding_id": {"type": "string", "minLength": 1},
+            "card_id": {"type": "integer", "minimum": 1},
+            "card_name": {"type": "string", "minLength": 1},
+            "face_index": {"type": ["integer", "null"], "minimum": 0},
+            "face_name": {"type": ["string", "null"], "minLength": 1},
+            "role": {"type": "string", "enum": list(_ROLE_VALUES)},
+            "quantity": _nullable_quantity_schema(),
+            "timing": {"type": ["string", "null"], "minLength": 1},
+            "source_zone": _nullable_zone_schema(),
+            "destination_zone": _nullable_zone_schema(),
+            "prerequisites": {
+                "type": "array",
+                "uniqueItems": True,
+                "items": _prerequisite_schema(),
+            },
+            "evidence": {
+                "type": "array",
+                "uniqueItems": True,
+                "minItems": 1,
+                "items": _oracle_evidence_schema(),
+            },
+            "review": _object_schema(
+                {
+                    "status": {"type": "string", "enum": sorted(_RESPONSE_STATUSES)},
+                    "reason": {"type": ["string", "null"], "minLength": 1},
+                }
+            ),
+        }
+    )
+
+
+def _card_capability_response_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one card capability extraction response."""
+    return _object_schema(
+        {
+            "schema_version": {
+                "type": "integer",
+                "const": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+            },
+            "capabilities": {
+                "type": "array",
+                "uniqueItems": True,
+                "items": _capability_schema(),
+            },
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExtractionRequest:
     """Pinned immutable request built only from frozen inputs."""
@@ -354,6 +531,83 @@ class GuideExtractionResult:
         return tuple(sorted(claims, key=lambda claim: claim.finding_id))
 
 
+@dataclass(frozen=True, slots=True)
+class CardCapabilityExtractionResult:
+    """Terminal result of parsing one untrusted card capability response."""
+
+    outcome: ExtractionOutcome
+    accepted_capabilities: tuple[CardCapability, ...]
+    uncertain_capabilities: tuple[CardCapability, ...]
+    rejected_capabilities: tuple[RejectedFinding, ...]
+    malformed_reason: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, ExtractionOutcome):
+            raise SetEnrichmentExtractionError("outcome must be an ExtractionOutcome.")
+        accepted = _finding_tuple(
+            self.accepted_capabilities,
+            field_name="accepted_capabilities",
+            expected_type=CardCapability,
+        )
+        uncertain = _finding_tuple(
+            self.uncertain_capabilities,
+            field_name="uncertain_capabilities",
+            expected_type=CardCapability,
+        )
+        rejected = _finding_tuple(
+            self.rejected_capabilities,
+            field_name="rejected_capabilities",
+            expected_type=RejectedFinding,
+        )
+        for capability in accepted:
+            if (
+                capability.review.status is not FindingStatus.ACCEPTED
+                or capability.review.reason is not None
+            ):
+                raise SetEnrichmentExtractionError(
+                    "accepted capabilities must be accepted without a reason."
+                )
+        for capability in uncertain:
+            if capability.review.status is not FindingStatus.UNCERTAIN:
+                raise SetEnrichmentExtractionError("uncertain capabilities must be uncertain.")
+        for finding in rejected:
+            if finding.source_kind != "oracle":
+                raise SetEnrichmentExtractionError("rejected capabilities must be oracle findings.")
+        identities = [capability.finding_id for capability in (*accepted, *uncertain)]
+        identities.extend(finding.finding_id for finding in rejected)
+        if len(set(identities)) != len(identities):
+            raise SetEnrichmentExtractionError("capabilities must not repeat a finding_id.")
+        if self.malformed_reason is not None:
+            object.__setattr__(
+                self,
+                "malformed_reason",
+                _exact_text(self.malformed_reason, "malformed_reason"),
+            )
+        if self.outcome is ExtractionOutcome.SUCCESS:
+            if self.malformed_reason is not None:
+                raise SetEnrichmentExtractionError(
+                    "successful extraction must not retain a malformed reason."
+                )
+        else:
+            if self.malformed_reason != _CARD_MALFORMED_RESPONSE_REASON:
+                raise SetEnrichmentExtractionError(
+                    "malformed extraction must state the fixed malformed reason."
+                )
+            if accepted or uncertain or rejected:
+                raise SetEnrichmentExtractionError(
+                    "malformed extraction must not retain capabilities."
+                )
+        object.__setattr__(self, "accepted_capabilities", accepted)
+        object.__setattr__(self, "uncertain_capabilities", uncertain)
+        object.__setattr__(self, "rejected_capabilities", rejected)
+
+    @property
+    def capabilities(self) -> tuple[CardCapability, ...]:
+        """Return accepted and uncertain capabilities in global finding order."""
+        capabilities = (*self.accepted_capabilities, *self.uncertain_capabilities)
+        return tuple(sorted(capabilities, key=lambda capability: capability.finding_id))
+
+
 def _selected_guide(sources: Any, guide_id: Any) -> GuideSource:
     """Select exactly one frozen guide source by identifier."""
     if not isinstance(sources, EnrichmentSources):
@@ -397,29 +651,73 @@ def build_guide_extraction_request(
     )
 
 
+def _selected_card(sources: Any, card_id: Any) -> CardInfo:
+    """Select exactly one frozen canonical card by identifier."""
+    if not isinstance(sources, EnrichmentSources):
+        raise SetEnrichmentExtractionError("sources must be an EnrichmentSources record.")
+    matches: list[CardInfo] = []
+    if isinstance(card_id, int) and not isinstance(card_id, bool) and card_id > 0:
+        matches = [card for card in sources.cards if card.grp_id == card_id]
+    if len(matches) != 1:
+        raise SetEnrichmentExtractionError(_CARD_SELECTION_ERROR)
+    return matches[0]
+
+
+def build_card_capability_extraction_request(
+    *,
+    sources: EnrichmentSources,
+    card_id: int,
+) -> ExtractionRequest:
+    """Build the pinned card capability extraction request from frozen inputs."""
+    selected = _selected_card(sources, card_id)
+    projection: dict[str, Any] = card_source_projection(selected)
+    faces: list[dict[str, Any]] = projection["faces"]
+    card = {
+        **projection,
+        "faces": [{**face, "face_index": index} for index, face in enumerate(faces)],
+    }
+    user_prompt = _canonical_bytes(
+        {
+            "contract_version": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+            "set_code": sources.set_code,
+            "card_source_sha256": card_source_sha256(selected),
+            "card": card,
+        }
+    ).decode("utf-8")
+    return ExtractionRequest(
+        contract_version=SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+        prompt_id=CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
+        system_prompt=_CARD_CAPABILITY_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        response_schema_id=CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID,
+        response_schema_name=CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME,
+        schema=_card_capability_response_schema(),
+    )
+
+
 def _response_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """Rebuild one response object while rejecting duplicate keys."""
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise _MalformedGuideResponse
+            raise _MalformedResponse
         result[key] = value
     return result
 
 
 def _response_constant(value: str) -> Any:
     """Reject the NaN and Infinity JSON constants."""
-    raise _MalformedGuideResponse
+    raise _MalformedResponse
 
 
 def _decode_response_document(content: Any) -> Any:
     """Decode strict JSON without duplicate keys or non-finite numbers."""
     if not isinstance(content, str):
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     try:
         content.encode("utf-8")
     except UnicodeEncodeError as error:
-        raise _MalformedGuideResponse from error
+        raise _MalformedResponse from error
     try:
         return json.loads(
             content,
@@ -427,70 +725,76 @@ def _decode_response_document(content: Any) -> Any:
             parse_constant=_response_constant,
         )
     except (ValueError, RecursionError) as error:
-        raise _MalformedGuideResponse from error
+        raise _MalformedResponse from error
 
 
 def _require_keys(value: Mapping[str, Any], expected: frozenset[str]) -> None:
     """Require exactly the expected keys on one response object."""
     if set(value) != expected:
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
 
 
 def _response_text(value: Any) -> str:
     """Require nonblank UTF-8 response text without rewriting it."""
     if not isinstance(value, str) or not value.strip():
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     try:
         value.encode("utf-8")
     except UnicodeEncodeError as error:
-        raise _MalformedGuideResponse from error
+        raise _MalformedResponse from error
     return value
+
+
+def _optional_response_text(value: Any) -> None:
+    """Require null or nonblank UTF-8 response text."""
+    if value is not None:
+        _response_text(value)
 
 
 def _validated_candidate(item: Any) -> Mapping[str, Any]:
     """Validate one response finding structurally before any record is built."""
     if not isinstance(item, Mapping):
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     _require_keys(item, _FINDING_KEYS)
     _response_text(item["finding_id"])
     category = item["category"]
     if not isinstance(category, str) or category not in _GUIDE_CATEGORIES:
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     _response_text(item["name"])
     _response_text(item["claim"])
     card_ids = item["card_ids"]
     if not isinstance(card_ids, list):
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     seen_ids: set[int] = set()
     for card_id in card_ids:
         if isinstance(card_id, bool) or not isinstance(card_id, int) or card_id <= 0:
-            raise _MalformedGuideResponse
+            raise _MalformedResponse
         if card_id in seen_ids:
-            raise _MalformedGuideResponse
+            raise _MalformedResponse
         seen_ids.add(card_id)
     evidence = item["evidence"]
     if not isinstance(evidence, list) or not evidence:
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     seen_evidence: set[tuple[str, str]] = set()
     for entry in evidence:
         if not isinstance(entry, Mapping):
-            raise _MalformedGuideResponse
+            raise _MalformedResponse
         _require_keys(entry, _EVIDENCE_KEYS)
         reference = (_response_text(entry["guide_id"]), _response_text(entry["quote"]))
         if reference in seen_evidence:
-            raise _MalformedGuideResponse
+            raise _MalformedResponse
         seen_evidence.add(reference)
     review = item["review"]
     if not isinstance(review, Mapping):
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     _require_keys(review, _REVIEW_KEYS)
     status = review["status"]
     if not isinstance(status, str) or status not in _RESPONSE_STATUSES:
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     reason = review["reason"]
     if status == FindingStatus.ACCEPTED.value:
         if reason is not None:
-            raise _MalformedGuideResponse
+            raise _MalformedResponse
     else:
         _response_text(reason)
     return item
@@ -499,23 +803,152 @@ def _validated_candidate(item: Any) -> Mapping[str, Any]:
 def _response_candidates(document: Any) -> list[Mapping[str, Any]]:
     """Validate the whole response document before retaining any finding."""
     if not isinstance(document, Mapping):
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     _require_keys(document, _RESPONSE_KEYS)
     version = document["schema_version"]
     if isinstance(version, bool) or not isinstance(version, int):
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     if version != SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION:
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     findings = document["findings"]
     if not isinstance(findings, list):
-        raise _MalformedGuideResponse
+        raise _MalformedResponse
     candidates: list[Mapping[str, Any]] = []
     identities: set[str] = set()
     for item in findings:
         candidate = _validated_candidate(item)
         finding_id = candidate["finding_id"].strip()
         if finding_id in identities:
-            raise _MalformedGuideResponse
+            raise _MalformedResponse
+        identities.add(finding_id)
+        candidates.append(candidate)
+    return candidates
+
+
+def _validated_quantity(value: Any) -> Any:
+    """Validate one nullable quantity object structurally before record construction."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise _MalformedResponse
+    _require_keys(value, _QUANTITY_KEYS)
+    amount = value["value"]
+    if amount is not None and (
+        isinstance(amount, bool) or not isinstance(amount, int) or amount < 1
+    ):
+        raise _MalformedResponse
+    relation = _response_text(value["relation"])
+    if relation in _QUANTITY_RELATION_VALUES:
+        if relation == QuantityRelation.VARIABLE.value:
+            if amount is not None:
+                raise _MalformedResponse
+        elif amount is None:
+            raise _MalformedResponse
+    return value
+
+
+def _validated_oracle_evidence(entry: Any) -> Mapping[str, Any]:
+    """Validate one Oracle evidence object structurally before record construction."""
+    if not isinstance(entry, Mapping):
+        raise _MalformedResponse
+    _require_keys(entry, _ORACLE_EVIDENCE_KEYS)
+    card_id = entry["card_id"]
+    if isinstance(card_id, bool) or not isinstance(card_id, int):
+        raise _MalformedResponse
+    face_index = entry["face_index"]
+    if face_index is not None and (isinstance(face_index, bool) or not isinstance(face_index, int)):
+        raise _MalformedResponse
+    _response_text(entry["quote"])
+    return entry
+
+
+def _validated_prerequisite(entry: Any) -> Mapping[str, Any]:
+    """Validate one capability prerequisite structurally before record construction."""
+    if not isinstance(entry, Mapping):
+        raise _MalformedResponse
+    _require_keys(entry, _PREREQUISITE_KEYS)
+    _response_text(entry["kind"])
+    _validated_quantity(entry["quantity"])
+    _optional_response_text(entry["timing"])
+    _optional_response_text(entry["source_zone"])
+    _optional_response_text(entry["destination_zone"])
+    _validated_oracle_evidence(entry["evidence"])
+    return entry
+
+
+def _validated_capability_candidate(item: Any) -> Mapping[str, Any]:
+    """Validate one response capability structurally before any record is built."""
+    if not isinstance(item, Mapping):
+        raise _MalformedResponse
+    _require_keys(item, _CAPABILITY_KEYS)
+    _response_text(item["finding_id"])
+    card_id = item["card_id"]
+    if isinstance(card_id, bool) or not isinstance(card_id, int):
+        raise _MalformedResponse
+    _response_text(item["card_name"])
+    face_index = item["face_index"]
+    if face_index is not None and (isinstance(face_index, bool) or not isinstance(face_index, int)):
+        raise _MalformedResponse
+    _optional_response_text(item["face_name"])
+    _response_text(item["role"])
+    _validated_quantity(item["quantity"])
+    _optional_response_text(item["timing"])
+    _optional_response_text(item["source_zone"])
+    _optional_response_text(item["destination_zone"])
+    prerequisites = item["prerequisites"]
+    if not isinstance(prerequisites, list):
+        raise _MalformedResponse
+    seen_prerequisites: set[bytes] = set()
+    for entry in prerequisites:
+        reference = _canonical_bytes(_validated_prerequisite(entry))
+        if reference in seen_prerequisites:
+            raise _MalformedResponse
+        seen_prerequisites.add(reference)
+    evidence = item["evidence"]
+    if not isinstance(evidence, list) or not evidence:
+        raise _MalformedResponse
+    seen_evidence: set[bytes] = set()
+    for entry in evidence:
+        reference = _canonical_bytes(_validated_oracle_evidence(entry))
+        if reference in seen_evidence:
+            raise _MalformedResponse
+        seen_evidence.add(reference)
+    review = item["review"]
+    if not isinstance(review, Mapping):
+        raise _MalformedResponse
+    _require_keys(review, _REVIEW_KEYS)
+    status = review["status"]
+    if not isinstance(status, str) or status not in _RESPONSE_STATUSES:
+        raise _MalformedResponse
+    reason = review["reason"]
+    if status == FindingStatus.ACCEPTED.value:
+        if reason is not None:
+            raise _MalformedResponse
+    else:
+        _response_text(reason)
+    return item
+
+
+def _card_capability_candidates(document: Any) -> list[Mapping[str, Any]]:
+    """Validate the whole response document before retaining any capability."""
+    if not isinstance(document, Mapping):
+        raise _MalformedResponse
+    _require_keys(document, _CARD_RESPONSE_KEYS)
+    version = document["schema_version"]
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise _MalformedResponse
+    if version != SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION:
+        raise _MalformedResponse
+    capabilities = document["capabilities"]
+    if not isinstance(capabilities, list):
+        raise _MalformedResponse
+    candidates: list[Mapping[str, Any]] = []
+    identities: set[str] = set()
+    for item in capabilities:
+        candidate = _validated_capability_candidate(item)
+        finding_id = candidate["finding_id"].strip()
+        if finding_id in identities:
+            raise _MalformedResponse
         identities.add(finding_id)
         candidates.append(candidate)
     return candidates
@@ -608,6 +1041,174 @@ def _classify_candidates(
     return uncertain, rejected
 
 
+def _decoded_enum(value: str, field_name: str, enum_type: type[Enum]) -> Any:
+    """Decode one structurally valid string into an exact enum member."""
+    try:
+        return enum_type(value)
+    except ValueError as error:
+        raise SemanticEnrichmentError(f"{field_name} uses unsupported vocabulary.") from error
+
+
+def _decoded_optional_enum(value: str | None, field_name: str, enum_type: type[Enum]) -> Any:
+    """Decode nullable structurally valid text into an exact enum member."""
+    if value is None:
+        return None
+    return _decoded_enum(value, field_name, enum_type)
+
+
+def _decoded_quantity(value: Mapping[str, Any] | None) -> CapabilityQuantity | None:
+    """Decode one nullable quantity object into an exact record."""
+    if value is None:
+        return None
+    return CapabilityQuantity(
+        value=value["value"],
+        relation=_decoded_enum(value["relation"], "relation", QuantityRelation),
+    )
+
+
+def _decoded_evidence(entry: Mapping[str, Any]) -> OracleEvidence:
+    """Build one exact Oracle evidence record from a validated entry."""
+    return OracleEvidence(
+        card_id=entry["card_id"],
+        face_index=entry["face_index"],
+        quote=entry["quote"],
+    )
+
+
+def _decoded_prerequisite(entry: Mapping[str, Any]) -> CapabilityPrerequisite:
+    """Build one typed prerequisite from a source-valid response entry."""
+    return CapabilityPrerequisite(
+        kind=_decoded_enum(entry["kind"], "kind", PrerequisiteKind),
+        quantity=_decoded_quantity(entry["quantity"]),
+        timing=entry["timing"],
+        source_zone=_decoded_optional_enum(entry["source_zone"], "source_zone", CapabilityZone),
+        destination_zone=_decoded_optional_enum(
+            entry["destination_zone"], "destination_zone", CapabilityZone
+        ),
+        evidence=_decoded_evidence(entry["evidence"]),
+    )
+
+
+def _capability_rejected(
+    candidate: Mapping[str, Any],
+    *,
+    reason: str,
+    run_id: str,
+) -> RejectedFinding:
+    """Build one card capability diagnostic that preserves the candidate identity."""
+    return RejectedFinding(
+        finding_id=candidate["finding_id"],
+        source_kind="oracle",
+        summary=candidate["role"],
+        reason=reason,
+        run_id=run_id,
+    )
+
+
+def _capability_record(
+    candidate: Mapping[str, Any],
+    *,
+    face_index: int | None,
+    run_id: str,
+) -> CardCapability:
+    """Build one typed capability from a source-valid response candidate."""
+    reason = candidate["review"]["reason"]
+    if candidate["review"]["status"] == FindingStatus.ACCEPTED.value:
+        reason = _CAPABILITY_SEMANTIC_REVIEW_REASON
+    return CardCapability(
+        finding_id=candidate["finding_id"],
+        card_id=candidate["card_id"],
+        card_name=candidate["card_name"],
+        face_index=face_index,
+        face_name=candidate["face_name"],
+        role=_decoded_enum(candidate["role"], "role", Role),
+        quantity=_decoded_quantity(candidate["quantity"]),
+        timing=candidate["timing"],
+        source_zone=_decoded_optional_enum(candidate["source_zone"], "source_zone", CapabilityZone),
+        destination_zone=_decoded_optional_enum(
+            candidate["destination_zone"], "destination_zone", CapabilityZone
+        ),
+        prerequisites=tuple(_decoded_prerequisite(entry) for entry in candidate["prerequisites"]),
+        evidence=tuple(_decoded_evidence(entry) for entry in candidate["evidence"]),
+        review=FindingReview(status=FindingStatus.UNCERTAIN, reason=reason),
+        run_id=run_id,
+    )
+
+
+def _capability_evidence(candidate: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Collect capability and prerequisite evidence entries in document order."""
+    entries: list[Mapping[str, Any]] = list(candidate["evidence"])
+    entries.extend(prerequisite["evidence"] for prerequisite in candidate["prerequisites"])
+    return entries
+
+
+def _capability_source_reason(
+    candidate: Mapping[str, Any],
+    projection: Mapping[str, Any],
+) -> tuple[str | None, int | None]:
+    """Return the first fixed source reason and the bound canonical face index."""
+    if candidate["card_id"] != projection["card_id"]:
+        return _CAPABILITY_CARD_ID_REASON, None
+    if candidate["card_name"] != projection["name"]:
+        return _CAPABILITY_CARD_NAME_REASON, None
+    faces = projection["faces"]
+    face_index = candidate["face_index"]
+    face_name = candidate["face_name"]
+    if faces:
+        if (
+            isinstance(face_index, bool)
+            or not isinstance(face_index, int)
+            or not 0 <= face_index < len(faces)
+        ):
+            return _CAPABILITY_FACE_REASON, None
+        face = faces[face_index]
+        if face_name != face["name"]:
+            return _CAPABILITY_FACE_REASON, None
+        source_text = face["oracle_text"] or ""
+    else:
+        if face_index is not None or face_name is not None:
+            return _CAPABILITY_FACE_REASON, None
+        source_text = projection["oracle_text"] or ""
+    evidence = _capability_evidence(candidate)
+    if any(
+        entry["card_id"] != projection["card_id"] or entry["face_index"] != face_index
+        for entry in evidence
+    ):
+        return _CAPABILITY_EVIDENCE_OWNER_REASON, None
+    if any(entry["quote"] not in source_text for entry in evidence):
+        return _CAPABILITY_EVIDENCE_QUOTE_REASON, None
+    return None, face_index
+
+
+def _classify_capabilities(
+    candidates: list[Mapping[str, Any]],
+    *,
+    projection: Mapping[str, Any],
+    run_id: str,
+) -> tuple[list[CardCapability], list[RejectedFinding]]:
+    """Bind every capability candidate to the selected canonical card and demote it."""
+    uncertain: list[CardCapability] = []
+    rejected: list[RejectedFinding] = []
+    for candidate in candidates:
+        source_reason, face_index = _capability_source_reason(candidate, projection)
+        if source_reason is not None:
+            rejected.append(_capability_rejected(candidate, reason=source_reason, run_id=run_id))
+            continue
+        model_reason = candidate["review"]["reason"]
+        if candidate["review"]["status"] == FindingStatus.REJECTED.value:
+            rejected.append(_capability_rejected(candidate, reason=model_reason, run_id=run_id))
+            continue
+        try:
+            capability = _capability_record(candidate, face_index=face_index, run_id=run_id)
+        except SemanticEnrichmentError:
+            rejected.append(
+                _capability_rejected(candidate, reason=_CAPABILITY_VOCABULARY_REASON, run_id=run_id)
+            )
+            continue
+        uncertain.append(capability)
+    return uncertain, rejected
+
+
 def _malformed_result() -> GuideExtractionResult:
     """Return the fixed all-or-nothing malformed outcome."""
     return GuideExtractionResult(
@@ -631,7 +1232,7 @@ def parse_guide_extraction_response(
     normalized_run_id = _identifier(run_id, "run_id")
     try:
         candidates = _response_candidates(_decode_response_document(content))
-    except (_MalformedGuideResponse, SemanticEnrichmentError):
+    except (_MalformedResponse, SemanticEnrichmentError):
         return _malformed_result()
     try:
         uncertain, rejected = _classify_candidates(
@@ -651,7 +1252,54 @@ def parse_guide_extraction_response(
     )
 
 
+def _malformed_card_result() -> CardCapabilityExtractionResult:
+    """Return the fixed all-or-nothing malformed card outcome."""
+    return CardCapabilityExtractionResult(
+        outcome=ExtractionOutcome.MALFORMED,
+        accepted_capabilities=(),
+        uncertain_capabilities=(),
+        rejected_capabilities=(),
+        malformed_reason=_CARD_MALFORMED_RESPONSE_REASON,
+    )
+
+
+def parse_card_capability_extraction_response(
+    *,
+    content: str,
+    sources: EnrichmentSources,
+    card_id: int,
+    run_id: str,
+) -> CardCapabilityExtractionResult:
+    """Parse one untrusted card capability response against frozen sources."""
+    selected = _selected_card(sources, card_id)
+    normalized_run_id = _identifier(run_id, "run_id")
+    projection: Mapping[str, Any] = card_source_projection(selected)
+    try:
+        candidates = _card_capability_candidates(_decode_response_document(content))
+    except (_MalformedResponse, SemanticEnrichmentError):
+        return _malformed_card_result()
+    try:
+        uncertain, rejected = _classify_capabilities(
+            candidates,
+            projection=projection,
+            run_id=normalized_run_id,
+        )
+    except SemanticEnrichmentError:
+        return _malformed_card_result()
+    return CardCapabilityExtractionResult(
+        outcome=ExtractionOutcome.SUCCESS,
+        accepted_capabilities=(),
+        uncertain_capabilities=tuple(uncertain),
+        rejected_capabilities=tuple(rejected),
+        malformed_reason=None,
+    )
+
+
 __all__ = [
+    "CARD_CAPABILITY_EXTRACTION_PROMPT_ID",
+    "CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID",
+    "CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME",
+    "CardCapabilityExtractionResult",
     "ExtractionOutcome",
     "ExtractionRequest",
     "GUIDE_EXTRACTION_PROMPT_ID",
@@ -660,6 +1308,8 @@ __all__ = [
     "GuideExtractionResult",
     "SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION",
     "SetEnrichmentExtractionError",
+    "build_card_capability_extraction_request",
     "build_guide_extraction_request",
+    "parse_card_capability_extraction_response",
     "parse_guide_extraction_response",
 ]
