@@ -84,6 +84,7 @@ EVIDENCE_COVERAGE_REASON = (
 )
 REASON_FIELD_REASON = "relationship verdict and reason do not agree."
 CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card."
+PARTICIPANT_FACE_ERROR = "participant face_index must identify a face of its card."
 
 TOKEN_QUANTITY = CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY)
 SCALED_QUANTITY = CapabilityQuantity(value=3, relation=QuantityRelation.AT_LEAST)
@@ -257,6 +258,25 @@ def _front_face_enabler() -> CardCapability:
     )
 
 
+def _multiface_participant(face_index: int) -> CardCapability:
+    """Build one participant declaring an index into the multiface card's faces."""
+    return _capability(
+        finding_id=f"capability-face-{face_index}",
+        card_id=MULTIFACE_ID,
+        card_name=MULTIFACE_CARD_NAME,
+        role=Role.TOKEN_MAKER,
+        quote=FRONT_FACE_TEXT,
+        face_index=face_index,
+    )
+
+
+def _negative_face_participant() -> CardCapability:
+    """Build one participant carrying a face index the record constructor rejects."""
+    participant = _multiface_participant(0)
+    object.__setattr__(participant, "face_index", -1)
+    return participant
+
+
 def _evidence(
     *,
     card_id: int = TOKEN_ID,
@@ -268,6 +288,14 @@ def _evidence(
 
 def _coverage_evidence() -> list[dict[str, Any]]:
     return [_evidence(), _evidence(card_id=WIDE_ID, quote=WIDE_QUOTE)]
+
+
+def _participant_coverage(source: CardCapability, target: CardCapability) -> list[dict[str, Any]]:
+    """Quote the exact frozen Oracle text each participant capability binds to."""
+    return [
+        _evidence(card_id=item.card_id, face_index=item.face_index, quote=item.evidence[0].quote)
+        for item in (source, target)
+    ]
 
 
 def _response(
@@ -579,6 +607,41 @@ def test_build_relationship_request_requires_both_participant_cards(
     assert str(error.value) == CARD_SELECTION_ERROR
 
 
+@pytest.mark.parametrize(
+    "participant",
+    (
+        pytest.param(_multiface_participant(99), id="face-index-beyond-card-faces"),
+        pytest.param(_negative_face_participant(), id="negative-face-index"),
+    ),
+)
+@pytest.mark.parametrize("participant_role", ("source", "target"))
+def test_participants_must_bind_to_a_real_face_of_their_frozen_card(
+    participant: CardCapability,
+    participant_role: str,
+    sources: EnrichmentSources,
+) -> None:
+    pair: dict[str, CardCapability] = {"source": _token_enabler(), "target": _wide_payoff()}
+    pair[participant_role] = participant
+
+    with pytest.raises(SetEnrichmentExtractionError) as request_error:
+        build_relationship_validation_request(
+            sources=sources,
+            mechanism=MECHANISM,
+            source=pair["source"],
+            target=pair["target"],
+        )
+    assert str(request_error.value) == PARTICIPANT_FACE_ERROR
+
+    with pytest.raises(SetEnrichmentExtractionError) as parse_error:
+        _parse(
+            _content(_response(evidence=_participant_coverage(pair["source"], pair["target"]))),
+            sources,
+            source=pair["source"],
+            target=pair["target"],
+        )
+    assert str(parse_error.value) == PARTICIPANT_FACE_ERROR
+
+
 def test_accepted_verdict_preserves_the_constructed_candidate(
     sources: EnrichmentSources,
 ) -> None:
@@ -635,6 +698,50 @@ def test_accepted_verdict_preserves_the_constructed_candidate(
     )
 
 
+def test_mixed_case_mechanism_keeps_its_case_in_identity_and_finding_id(
+    sources: EnrichmentSources,
+) -> None:
+    mechanism = "Token-Go-Wide-Payoff"
+    source = _token_enabler()
+    target = _wide_payoff()
+
+    result = _parse(
+        _content(_response()),
+        sources,
+        mechanism=mechanism,
+        source=source,
+        target=target,
+    )
+
+    relationship = result.relationship
+    assert relationship is not None
+    assert relationship.mechanism == mechanism
+    assert relationship.identity == (
+        mechanism,
+        TOKEN_ID,
+        source.finding_id,
+        WIDE_ID,
+        target.finding_id,
+    )
+    assert relationship.identity == CandidatePackage(
+        mechanism=mechanism,
+        source=source,
+        target=target,
+        reason=CANDIDATE_REASON,
+    ).identity
+    assert relationship.finding_id == relationship_subject_id(
+        mechanism=mechanism,
+        source=source,
+        target=target,
+    )
+    assert relationship.finding_id == (
+        f"relationship:{mechanism}:{TOKEN_ID}:{source.finding_id}:{WIDE_ID}:{target.finding_id}"
+    )
+    assert relationship.to_json()["mechanism"] == mechanism
+    assert ValidatedRelationship.from_json(relationship.to_json()) == relationship
+    assert RelationshipValidationResult.from_json(result.to_json()) == result
+
+
 def test_uncertain_verdict_keeps_the_model_reason_and_evidence(
     sources: EnrichmentSources,
 ) -> None:
@@ -686,6 +793,47 @@ def test_model_rejected_verdict_keeps_its_reason_as_a_diagnostic(
     assert result.rejected.summary == RELATIONSHIP_CLAIM
     assert result.rejected.reason == MODEL_REJECTION_REASON
     assert result.rejected.run_id == RUN_ID
+
+
+def test_uncertain_verdict_without_evidence_is_malformed(
+    sources: EnrichmentSources,
+) -> None:
+    result = _parse(
+        _content(
+            _response(
+                verdict="uncertain",
+                reason=MODEL_UNCERTAINTY_REASON,
+                evidence=[],
+            )
+        ),
+        sources,
+    )
+
+    assert result.outcome is ExtractionOutcome.MALFORMED
+    assert result.malformed_reason == MALFORMED_REASON
+    assert result.relationship is None
+    assert result.rejected is None
+
+
+def test_rejected_verdict_without_evidence_keeps_the_model_reason(
+    sources: EnrichmentSources,
+) -> None:
+    result = _parse(
+        _content(
+            _response(
+                verdict="rejected",
+                reason=MODEL_REJECTION_REASON,
+                evidence=[],
+            )
+        ),
+        sources,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.malformed_reason is None
+    assert result.relationship is None
+    assert result.rejected is not None
+    assert result.rejected.reason == MODEL_REJECTION_REASON
 
 
 def test_relationship_evidence_is_canonical_and_records_are_frozen(

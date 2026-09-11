@@ -114,6 +114,7 @@ _RELATIONSHIP_EVIDENCE_COVERAGE_REASON = (
     "accepted relationships require Oracle evidence for both participants."
 )
 _RELATIONSHIP_REASON_FIELD_REASON = "relationship verdict and reason do not agree."
+_RELATIONSHIP_PARTICIPANT_FACE_ERROR = "participant face_index must identify a face of its card."
 
 _GUIDE_CATEGORIES = frozenset({"format_finding", "mechanic", "archetype", "strategy"})
 _RESPONSE_STATUSES = frozenset({status.value for status in FindingStatus})
@@ -552,6 +553,20 @@ def _validated_participants(source: Any, target: Any) -> tuple[CardCapability, C
     return source, target
 
 
+def _validated_participant_faces(
+    source: CardCapability,
+    target: CardCapability,
+    *,
+    source_card: CardInfo,
+    target_card: CardInfo,
+) -> None:
+    """Require every participant to bind to a real face of its frozen card."""
+    for capability, card in ((source, source_card), (target, target_card)):
+        face_index = capability.face_index
+        if face_index is not None and not 0 <= face_index < len(card.faces):
+            raise SetEnrichmentExtractionError(_RELATIONSHIP_PARTICIPANT_FACE_ERROR)
+
+
 def _evidence_order(item: OracleEvidence) -> tuple[int, int, str]:
     """Return the canonical order key of one Oracle evidence record."""
     return (item.card_id, -1 if item.face_index is None else item.face_index, item.quote)
@@ -813,7 +828,7 @@ class ValidatedRelationship:
     run_id: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "mechanism", _identifier(self.mechanism, "mechanism").casefold())
+        object.__setattr__(self, "mechanism", _identifier(self.mechanism, "mechanism"))
         source, target = _validated_participants(self.source, self.target)
         object.__setattr__(self, "claim", _exact_text(self.claim, "claim"))
         object.__setattr__(
@@ -1087,8 +1102,9 @@ def build_relationship_validation_request(
         raise SetEnrichmentExtractionError("sources must be an EnrichmentSources record.")
     normalized_mechanism = _identifier(mechanism, "mechanism")
     source, target = _validated_participants(source, target)
-    _selected_card(sources, source.card_id)
-    _selected_card(sources, target.card_id)
+    source_card = _selected_card(sources, source.card_id)
+    target_card = _selected_card(sources, target.card_id)
+    _validated_participant_faces(source, target, source_card=source_card, target_card=target_card)
     user_prompt = _canonical_bytes(
         {
             "contract_version": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
@@ -1717,15 +1733,13 @@ def _classify_capabilities(
 
 def _participant_oracle_text(capability: CardCapability, card: CardInfo) -> str:
     """Return the exact frozen Oracle text one participant capability binds to."""
-    faces = card.faces
     face_index = capability.face_index
-    if (
-        isinstance(face_index, int)
-        and not isinstance(face_index, bool)
-        and 0 <= face_index < len(faces)
-    ):
+    if face_index is None:
+        return card.oracle_text or ""
+    faces = card.faces
+    if 0 <= face_index < len(faces):
         return faces[face_index].oracle_text or ""
-    return card.oracle_text or ""
+    return ""
 
 
 def _relationship_verdict_reason(
@@ -1870,6 +1884,7 @@ def parse_relationship_validation_response(
     source, target = _validated_participants(source, target)
     source_card = _selected_card(sources, source.card_id)
     target_card = _selected_card(sources, target.card_id)
+    _validated_participant_faces(source, target, source_card=source_card, target_card=target_card)
     normalized_run_id = _identifier(run_id, "run_id")
     finding_id = relationship_subject_id(
         mechanism=normalized_mechanism,
@@ -1932,7 +1947,7 @@ def parse_relationship_validation_response(
             rejected=None,
             malformed_reason=None,
         )
-    except SemanticEnrichmentError:
+    except (SemanticEnrichmentError, SetEnrichmentExtractionError):
         return _malformed_relationship_result()
 
 
