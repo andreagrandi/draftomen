@@ -728,12 +728,21 @@ def test_public_surface_pins_contract_values_and_outcomes() -> None:
         "GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID",
         "GUIDE_EXTRACTION_SCHEMA_NAME",
         "GuideExtractionResult",
+        "RELATIONSHIP_VALIDATION_PROMPT_ID",
+        "RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID",
+        "RELATIONSHIP_VALIDATION_SCHEMA_NAME",
+        "RelationshipValidationResult",
         "SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION",
         "SetEnrichmentExtractionError",
+        "ValidatedRelationship",
         "build_card_capability_extraction_request",
         "build_guide_extraction_request",
+        "build_relationship_validation_request",
         "parse_card_capability_extraction_response",
         "parse_guide_extraction_response",
+        "parse_relationship_validation_response",
+        "relationship_source_sha256",
+        "relationship_subject_id",
     }
     assert isinstance(SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION, int)
     assert SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION == 1
