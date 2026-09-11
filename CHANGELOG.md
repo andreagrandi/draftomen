@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Run a complete set analysis through a UI-neutral resumable service that
+  coordinates guide, card, candidate and relationship phases over frozen
+  sources and a caller-owned work store, reuses matching durable work, exposes
+  immutable progress and cost accounting, supports cooperative cancellation
+  and interruption-safe resumption, and returns a pending-review result
+  without writing set profiles. (#481)
 - Validate constructed relationship candidates through a pinned prompt and
   response schema that bind each verdict to the candidate identity and its
   exact Oracle evidence, persist validated relationships under a durable
