@@ -301,7 +301,7 @@
       "required": true
     },
     {
-      "mechanism": "fodder-sacrifice-outlet",
+      "mechanism": "token-sacrifice-outlet",
       "source_card_id": 103492,
       "source_face_index": null,
       "source_quote": "Whenever this creature enters or attacks, create a 3/1 colorless Wall artifact creature token with defender named Stone Boulder.",
@@ -323,7 +323,7 @@
       "required": true
     },
     {
-      "mechanism": "fodder-sacrifice-outlet",
+      "mechanism": "token-sacrifice-outlet",
       "source_card_id": 103531,
       "source_face_index": null,
       "source_quote": "At the beginning of your upkeep, create a 2/2 green Wolf creature token.",
