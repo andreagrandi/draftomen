@@ -87,7 +87,7 @@ Each expectation names a `ROLE_COMPATIBILITY_RULES` mechanism, the two participa
 - Guide sentence that motivates it:
   - `One underrated aspect of this mechanic is using 1/1 Goblin Army tokens as sacrifice fodder, which will come up often with Tidings of War.`
 
-### R4 — `fodder-sacrifice-outlet` (required)
+### R4 — `token-sacrifice-outlet` (required)
 
 - Source enabler: `103492` **Stone-Giant of High Pass** (face index None)
   - `Whenever this creature enters or attacks, create a 3/1 colorless Wall artifact creature token with defender named Stone Boulder.`
@@ -105,7 +105,7 @@ Each expectation names a `ROLE_COMPATIBILITY_RULES` mechanism, the two participa
 - Guide sentence that motivates it:
   - `You can sometimes ambush “dies” stuff like Rhovanion Rampager with this and make your opponent cry.`
 
-### R6 — `fodder-sacrifice-outlet` (required)
+### R6 — `token-sacrifice-outlet` (required)
 
 - Source enabler: `103531` **Chief Warg's Company** (face index None)
   - `At the beginning of your upkeep, create a 2/2 green Wolf creature token.`
@@ -122,6 +122,22 @@ Each expectation names a `ROLE_COMPATIBILITY_RULES` mechanism, the two participa
   - `When Tom, Bert, and William die, if they were a creature, return them to the battlefield. They're an artifact. (They're no longer a creature.)`
 - Guide sentence that motivates it:
   - `Best in decks with really good rare creatures to get back, or recruit to set it up consistently.`
+
+## Re-authoring record (2026-09-11)
+
+Two expectations named a mechanism the role vocabulary cannot reach, and the paid run's retained evidence showed how to correct them. R4 (`103492` → `103491`) and R6 (`103531` → `103458`) were written as `fodder-sacrifice-outlet`, which requires the enabler to carry `sacrifice_fodder`. In the paid `medium` run that role is assigned to **zero of 444** capabilities, so no such pair is ever constructed and neither expectation could be met by any run; both enablers in fact carry `token_maker`, and both interactions are real (`103492` creates a sacrificeable 3/1 Wall artifact token, `103531` creates a 2/2 Wolf each upkeep, and `103458` and `103491` both consume creatures). The vocabulary expresses that interaction as `token-sacrifice-outlet` (`TOKEN_MAKER` → `SACRIFICE_OUTLET`), and the paid run already retained accepted relationships for exactly these participants:
+
+- `relationship:token-sacrifice-outlet:103492:103492-token-maker-1:103491:103491-sacrifice-outlet-1` — accepted.
+- `relationship:token-sacrifice-outlet:103531:103531-upkeep-wolf-token:103458:103458-sacrifice-outlet` — accepted.
+
+Of the run's 285 `token-sacrifice-outlet` relationships, 211 were accepted. R3 keeps the same mechanism with different participants, so the required set now covers this interaction three times and covers two mechanisms in total.
+
+The remaining required expectations stay required. They are unmet for two recorded reasons that are extraction or vocabulary limitations rather than expectation defects:
+
+- R5 `fodder-dies-payoff` (`103531` → `103448`) needs `sacrifice_fodder` on the enabler, which nothing in the run carries (0 of 444), so no pair is constructed. Its target additionally needs the trigger-before-effect fix verified in #485: a bounded paid probe over `103448` assigned `death_payoff` after that prompt guidance, where the paid run assigned only `card_selection`. The decision that unblocks the enabler side — whether a token producer is `sacrifice_fodder`, `token_maker`, or both — is filed as #488.
+- R1 and R2 `token-go-wide-payoff` are unmet because the extraction does not read static anthem and scaling text as a go-wide payoff. Measured: `103526` **Bard's Company** (`Other creatures you control get +1/+1. Whenever this creature enters or attacks, recruit.`) was tagged `loot` and `token_maker` at `medium`, and `103381` **Esgaroth Garrison** (`Esgaroth Garrison's power is equal to the number of creatures you control. When this creature enters, recruit.`) was tagged `loot` and `token_maker` at `medium` and `rummage` and `token_maker` at `high`, while `103382` **Fíli the Pathfinder** carries the equivalent anthem sentence and *is* tagged `go_wide_payoff` at both `medium` and `high`. The miss is therefore inconsistent role assignment around keyword lines such as `recruit`, not a reasoning-effort shortfall: no stored record for `103526` above `medium` exists, and `103381` misses the role at `high` too.
+
+Every count above is derived from the run's own retained artifacts under `.draftomen/enrichment-runs/hob/work/`, so the record can be re-derived without a new paid request.
 
 ## Reproducing the frozen guide
 
@@ -149,5 +165,6 @@ The harness refuses a run whose guide text does not match that pin (`guide.sha25
 - `mill-graveyard-payoff`: the set mills only through `103502 Cantankerous Keepers`, `103546 Silvan Rally` (face 1), `103422 Speak Secrets` (face 1) and `103556 Gleam of Death` (face 1), and no guide sentence states a mill payoff, so any threshold pairing would be speculative rather than supported.
 - `fodder-dies-payoff` with `103514 Part in Friendship`: its trigger requires a *nontoken* creature, so token fodder pairs would be wrong even though the role pairing looks compatible.
 - `token-go-wide-payoff` with `103524 Bard, King of Dale`: its text doubles tokens that would be created instead of rewarding a wide board, so that card is not a go-wide payoff here.
-- `discard-recursion-payoff`, `recursion-graveyard-payoff` and `token-sacrifice-outlet` beyond `103550 Tom, Bert, and William` / `103458 Rhovanion Rampager`: the set's recursion cards return themselves or a target creature card, and no guide sentence states a graveyard payoff, so requiring those pairs would test the model's imagination rather than the format.
+- `discard-recursion-payoff` and `recursion-graveyard-payoff`: the set's recursion cards return themselves or a target creature card, and no guide sentence states a graveyard payoff, so requiring those pairs would test the model's imagination rather than the format.
+- Additional `token-sacrifice-outlet` pairs beyond R3, R4 and R6: the run constructs 285 of them and accepted 211, so they are real interactions, but no further guide sentence singles out a specific token maker and sacrifice outlet for review.
 - Any `Hone Counters` relationship: the guide names the mechanic but states no enabler to payoff pair for it, so it stays a required mechanic with no required relationship.

@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Re-author two reviewed benchmark relationships that named a mechanism the role
+  vocabulary cannot reach: `103492` → `103491` and `103531` → `103458` now expect
+  `token-sacrifice-outlet`, the interaction their card texts actually produce and
+  the mechanism the paid run already accepted for both pairs, and the benchmark
+  records the unassigned `sacrifice_fodder` role, the remaining unreachable
+  expectations and the extraction misses behind them. (#472)
 - Decide a triggered ability's card-capability role from its trigger event before
   its effect, so an ability that triggers when one or more creatures die is a
   death payoff and can pair with sacrifice fodder. (#485)
