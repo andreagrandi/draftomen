@@ -17,6 +17,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, TypeAlias
 
 from draftomen.carddb import CardFace, CardInfo, UNKNOWN_SOURCE_PROVENANCE
@@ -116,6 +117,91 @@ class Role(str, Enum):
 
 LimitedRole = Role
 SemanticRole = Role
+
+# Every canonical member carries one pinned, set-independent definition.  These
+# sentences document the existing classifier conditions in player-visible terms;
+# they never widen a classifier branch, and downstream prompts quote them verbatim.
+_ROLE_DEFINITIONS: dict[Role, str] = {
+    # Interaction
+    Role.HARD_REMOVAL: "Destroys or exiles a targeted battlefield creature or other permanent you do not control.",
+    Role.DAMAGE_REMOVAL: "Deals damage to a targeted creature, planeswalker, battle, permanent or any target.",
+    Role.DISABLING_REMOVAL: "Taps an opposing permanent, keeps it from untapping, attacking or blocking, or strips its abilities.",
+    Role.CONDITIONAL_REMOVAL: "Removal that the card text makes dependent on a stated condition.",
+    Role.BOUNCE: "Returns a targeted battlefield creature or other permanent you do not control to its owner's hand.",
+    Role.TEMPORARY_TAP: "Taps an opposing target until end of turn or until your next turn.",
+    Role.COUNTERSPELL: "Counters a spell on the stack.",
+    Role.COMBAT_TRICK: "Temporarily changes a targeted creature's power, toughness or combat keywords.",
+    # Card advantage and selection
+    Role.DRAW: "Draws one or more cards.",
+    Role.EXTRA_DRAW_ENABLER: "Enables drawing an additional card, or an extra card each turn.",
+    Role.DRAW_SECOND_PAYOFF: "Rewards drawing a second card in a turn.",
+    Role.LOOT: "Draws cards and then discards cards for selection.",
+    Role.RUMMAGE: "Discards cards and then draws cards for selection.",
+    Role.CANTRIP: "Draws a card as it enters or as you cast it, replacing itself.",
+    Role.RECURSION: "Returns a card from the graveyard so it can be used again.",
+    Role.CARD_SELECTION: "Filters or orders the top cards of your library.",
+    Role.TUTOR: "Searches your library for a chosen card.",
+    # Creatures, tokens, and typal themes
+    Role.LOW_COST_CREATURE: "Is a creature with mana value two or less.",
+    Role.EVASIVE_THREAT: "Carries an evasion ability such as flying, menace, unblockable or shadow.",
+    Role.LARGE_CREATURE: "Is a creature with power four or more, or mana value five or more.",
+    Role.TOKEN_MAKER: "Creates one or more creature tokens; treasure, food and other artifact tokens alone do not qualify.",
+    Role.GO_WIDE_ENABLER: "Creates two or more creature tokens with one instruction.",
+    Role.GO_WIDE_PAYOFF: "Rewards controlling many creatures, such as through a per-creature count or an attack trigger.",
+    Role.TYPAL_MEMBER: "Is a creature carrying a subtype that a typal package can build around.",
+    Role.TYPAL_PAYOFF: "Rewards a group of creatures sharing a subtype.",
+    # Sacrifice and death
+    Role.SACRIFICE_FODDER: "The card is a creature that sacrifices itself for value or returns from the graveyard to be sacrificed again; a card that only creates creature tokens is a token maker instead.",
+    Role.SACRIFICE_OUTLET: "Provides an ability whose cost or effect sacrifices a creature or artifact you control other than itself.",
+    Role.DEATH_PAYOFF: "Rewards creatures dying, whether through a trigger when one or more creatures die or a static ability that pays off a creature dying.",
+    Role.DIES_TRIGGER: "Triggers only when this card itself dies.",
+    Role.RECURSION_PAYOFF: "Turns a death or a graveyard return into recursion value.",
+    # Graveyard
+    Role.SELF_MILL: "Puts cards from your library into your graveyard.",
+    Role.DISCARD_ENABLER: "Makes you discard cards, putting them into a graveyard.",
+    Role.GRAVEYARD_FILLER: "Fills a graveyard with cards through milling or discarding.",
+    Role.GRAVEYARD_PAYOFF: "Scales with the number or contents of cards in a graveyard.",
+    # Permanent types and counters
+    Role.ARTIFACT_ENABLER: "Is an artifact whose text refers to artifacts, clues or treasures.",
+    Role.ARTIFACT_PAYOFF: "Rewards artifacts you control or artifact entry triggers.",
+    Role.ENCHANTMENT_ENABLER: "Is an enchantment whose text supports an enchantment permanent package.",
+    Role.ENCHANTMENT_PAYOFF: "Rewards enchantments you control or enchantment entry triggers.",
+    Role.EQUIPMENT: "Is equipment or provides an equip ability.",
+    Role.EQUIPMENT_PAYOFF: "Rewards equipped creatures or the equipment you control.",
+    Role.MODIFIED: "References the modified state of a permanent.",
+    Role.COUNTERS: "Places or references counters on a permanent.",
+    # Lands and mana
+    Role.MANA_PRODUCER: "Produces mana according to the declared produced-mana metadata in the request.",
+    Role.FIXING: "Produces more than one color or resource, or is itself more than one color.",
+    Role.RAMP: "Puts an extra land onto the battlefield, or produces net-positive mana as a nonland permanent.",
+    Role.EXTRA_LAND_ENABLER: "Lets you play an additional land each turn.",
+    Role.LANDFALL_PAYOFF: "Triggers whenever a land enters the battlefield.",
+    Role.DOMAIN_SUPPORT: "References domain or the basic land types among your lands.",
+    Role.MANA_SINK: "Converts excess mana into variable value or an optional payment.",
+    # Threshold and state themes
+    Role.POWER_THRESHOLD_ENABLER: "Supplies a creature with power four or more, or one that satisfies a stated power threshold.",
+    Role.POWER_THRESHOLD_PAYOFF: "Rewards a creature that meets a stated power threshold.",
+    Role.PERMANENT_TYPE_THRESHOLD: "References a required number of permanents of one type.",
+    Role.SPELL_COUNT_THRESHOLD: "References a required count of spells.",
+    Role.COUNTERS_THEME: "Records counters-theme membership whenever the counters role applies.",
+    Role.CAST_FROM_EXILE: "Rewards casting or playing cards from exile.",
+    Role.LIFE_GAIN: "Gains life or references lifelink.",
+    Role.LIFE_LOSS: "Causes or references life loss.",
+    Role.ATTACK_MATTERS: "Rewards attacking or attacking creatures.",
+}
+
+ROLE_DEFINITIONS: Mapping[Role, str] = MappingProxyType(_ROLE_DEFINITIONS)
+
+
+def role_definition(role: Role) -> str:
+    """Return the pinned, set-independent definition of one role."""
+
+    if not isinstance(role, Role):
+        raise RoleSchemaError("role must be a Role member.")
+    definition = _ROLE_DEFINITIONS.get(role)
+    if definition is None:
+        raise RoleSchemaError(f"role {role.value} has no definition.")
+    return definition
 
 
 @dataclass(frozen=True, slots=True)

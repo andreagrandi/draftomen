@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import string
 
 import pytest
 
@@ -9,6 +10,7 @@ import draftomen.semantic_roles as semantic_roles
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.semantic_roles import (
     CLASSIFIER_VERSION,
+    ROLE_DEFINITIONS,
     ROLE_SCHEMA_VERSION,
     CompiledRoleProfile,
     OverrideSet,
@@ -25,9 +27,45 @@ from draftomen.semantic_roles import (
     compile_role_profile,
     dump_role_profile,
     rebuild_role_profile,
+    role_definition,
 )
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "semantic-roles.json"
+# The reviewed generic rules vocabulary: a definition may use only these words, so no set,
+# card, archetype or guide name can enter the shared vocabulary by rewording.  Every entry
+# is a rules term, and adding one is a deliberate decision that an entity name never
+# qualifies for; a failure here means the new word needs that decision.
+_GENERIC_DEFINITION_WORDS = frozenset(
+    {
+        "a", "abilities", "ability", "according", "additional", "again", "alone", "among", "an",
+        "and", "any", "applies", "around", "artifact", "artifacts", "as", "attack", "attacking",
+        "basic", "battle", "battlefield", "be", "blocking", "build", "can", "card", "cards",
+        "carries", "carrying", "cast", "casting", "causes", "changes", "chosen", "clues", "color",
+        "combat", "condition", "contents", "control", "controlling", "converts", "cost", "count",
+        "counters", "counters-theme", "creates", "creature", "creature's", "creatures", "damage",
+        "deals", "death", "declared", "dependent", "destroys", "die", "dies", "discard",
+        "discarding", "discards", "do", "domain", "drawing", "draws", "dying", "each", "effect",
+        "enables", "enchantment", "enchantments", "end", "enters", "entry", "equip", "equipment",
+        "equipped", "evasion", "excess", "exile", "exiles", "extra", "fills", "filters", "five",
+        "flying", "food", "for", "four", "from", "gains", "graveyard", "group", "hand", "in",
+        "instead", "instruction", "into", "is", "it", "its", "itself", "keeps", "keywords", "land",
+        "lands", "less", "lets", "library", "life", "lifelink", "loss", "maker", "makes", "mana",
+        "many", "meets", "membership", "menace", "metadata", "milling", "modified", "more",
+        "net-positive", "next", "nonland", "not", "number", "of", "off", "on", "one", "only",
+        "onto", "opposing", "optional", "or", "orders", "other", "owner's", "package", "payment",
+        "pays", "per-creature", "permanent", "permanents", "places", "planeswalker", "play",
+        "playing", "power", "produced-mana", "produces", "provides", "puts", "putting", "qualify",
+        "records", "recursion", "references", "refers", "removal", "replacing", "request",
+        "required", "resource", "return", "returns", "rewards", "role", "sacrificed",
+        "sacrifices", "satisfies", "scales", "searches", "second", "selection", "shadow",
+        "sharing", "so", "spell", "spells", "stack", "state", "stated", "static", "strips",
+        "subtype", "such", "supplies", "supports", "taps", "target", "targeted", "temporarily",
+        "text", "than", "that", "the", "them", "then", "this", "threshold", "through", "to",
+        "token", "tokens", "top", "toughness", "treasure", "treasures", "trigger", "triggers",
+        "turn", "turns", "two", "typal", "type", "types", "unblockable", "untapping", "until",
+        "used", "value", "variable", "when", "whenever", "whether", "whose", "with", "you", "your",
+    }
+)
 
 
 def _fixtures() -> dict[str, dict[str, object]]:
@@ -37,6 +75,47 @@ def _fixtures() -> dict[str, dict[str, object]]:
 
 def _roles(result) -> set[Role]:
     return {assignment.role for assignment in result.assignments}
+
+
+def test_role_definitions_cover_every_vocabulary_member() -> None:
+    assert set(ROLE_DEFINITIONS) == set(Role)
+
+    for role, definition in ROLE_DEFINITIONS.items():
+        assert type(definition) is str
+        assert definition == definition.strip()
+        assert definition.strip()
+        assert len(definition) <= 200
+        assert definition.endswith(".")
+        assert definition.isascii()
+        assert ". " not in definition
+        assert not any(word[:1].isupper() for word in definition.split()[1:]), role
+
+    assert len(set(ROLE_DEFINITIONS.values())) == len(ROLE_DEFINITIONS)
+
+
+def test_role_definitions_stay_set_independent() -> None:
+    words = {
+        word.strip(string.punctuation)
+        for definition in ROLE_DEFINITIONS.values()
+        for word in definition.casefold().split()
+    }
+
+    assert words <= _GENERIC_DEFINITION_WORDS, sorted(words - _GENERIC_DEFINITION_WORDS)
+
+
+def test_role_definition_lookup_returns_the_pinned_text_and_rejects_bad_input() -> None:
+    assert role_definition(Role.SACRIFICE_FODDER) == ROLE_DEFINITIONS[Role.SACRIFICE_FODDER]
+    assert role_definition(Role.POWER_N_ENABLER) == role_definition(Role.POWER_THRESHOLD_ENABLER)
+
+    with pytest.raises(RoleSchemaError):
+        role_definition("draw")  # type: ignore[arg-type]
+
+
+def test_missing_role_definition_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(semantic_roles._ROLE_DEFINITIONS, Role.DRAW)
+
+    with pytest.raises(RoleSchemaError):
+        role_definition(Role.DRAW)
 
 
 def test_representative_role_families_and_typed_parameters() -> None:

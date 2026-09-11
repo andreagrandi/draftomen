@@ -42,6 +42,7 @@ OTHER_RUN_ID = "run-2"
 
 TOKEN_ID = 301
 SACRIFICE_ID = 302
+DEATH_ID = 303
 WIDE_ID = 311
 DRAW_ID = 312
 COUNTER_ID = 313
@@ -57,6 +58,7 @@ SAME_CARD_REASON = "source and target must be different cards."
 
 TOKEN_QUOTE = "Create two 1/1 colorless Soldier artifact creature tokens."
 WIDE_QUOTE = "Creatures you control get +1/+0 for each other creature you control."
+DEATH_QUOTE = "Whenever one or more creatures die, scry 1."
 OUTLET_QUOTE = "Sacrifice a creature: Add {C}{C}."
 FODDER_QUOTE = "When this creature dies, you gain 1 life."
 DRAW_QUOTE = "Draw two cards."
@@ -320,7 +322,7 @@ def test_public_surface_pins_contract_values_and_rules() -> None:
     assert {member.value for member in CandidateOutcome} == {"complete", "partial"}
     assert CandidateBounds().max_evaluated_pairs == MAX_EVALUATED_CANDIDATE_PAIRS
 
-    assert len(ROLE_COMPATIBILITY_RULES) == 8
+    assert len(ROLE_COMPATIBILITY_RULES) == 9
     rules = [
         (rule.mechanism, rule.enabler, rule.payoff) for rule in ROLE_COMPATIBILITY_RULES
     ]
@@ -331,6 +333,7 @@ def test_public_surface_pins_contract_values_and_rules() -> None:
         ("loot-recursion-payoff", Role.LOOT, Role.RECURSION_PAYOFF),
         ("mill-graveyard-payoff", Role.SELF_MILL, Role.GRAVEYARD_PAYOFF),
         ("recursion-graveyard-payoff", Role.RECURSION, Role.GRAVEYARD_PAYOFF),
+        ("token-death-payoff", Role.TOKEN_MAKER, Role.DEATH_PAYOFF),
         ("token-go-wide-payoff", Role.TOKEN_MAKER, Role.GO_WIDE_PAYOFF),
         ("token-sacrifice-outlet", Role.TOKEN_MAKER, Role.SACRIFICE_OUTLET),
     ]
@@ -440,6 +443,28 @@ def test_same_card_capabilities_are_not_participants() -> None:
     assert package_set.candidate_pairs == 1
     assert package_set.evaluated_pairs == 1
     assert package_set.omissions == ()
+
+
+def test_token_maker_feeds_a_death_payoff() -> None:
+    death_payoff = _capability(
+        finding_id="capability-death",
+        card_id=DEATH_ID,
+        card_name="Death Payoff",
+        role=Role.DEATH_PAYOFF,
+        quote=DEATH_QUOTE,
+    )
+
+    package_set = construct_candidate_packages((_result(_token_enabler(), death_payoff),))
+
+    assert len(package_set.packages) == 1
+    package = package_set.packages[0]
+    assert package.mechanism == "token-death-payoff"
+    assert package.source.role is Role.TOKEN_MAKER
+    assert package.target.role is Role.DEATH_PAYOFF
+
+    lone_enabler = construct_candidate_packages((_result(_token_enabler()),))
+
+    assert [item.mechanism for item in lone_enabler.packages] == []
 
 
 def test_distinct_cards_sharing_one_finding_id_stay_distinct() -> None:
