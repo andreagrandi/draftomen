@@ -113,6 +113,7 @@ files = [
     "draftomen/session.py",
     "draftomen/set_profile.py",
     "draftomen/set_card_data.py",
+    "draftomen/set_enrichment_extraction.py",
     "draftomen/setinfo.py",
     "draftomen/seventeen.py",
     "draftomen/splash.py",

@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Build deterministic guide extraction requests from frozen guide and card
+  inputs, and parse untrusted responses into source-bound format findings,
+  mechanics, archetypes and named interaction claims with exact evidence,
+  explicit malformed, successful-empty, uncertain and rejected outcomes, and
+  conservative acceptance that keeps an exact quotation as an uncertain guide
+  claim rather than an Oracle-validated relationship. (#473)
 - Make CI signals deterministic by pinning the uv version in every GitHub
   Actions workflow and waiting for the desktop card-preview explanation to
   settle its scroll position before asserting it.
