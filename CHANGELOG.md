@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Construct bounded compatible relationship candidates from validated card
+  capabilities by indexing typed roles, emitting stable enabler-to-payoff candidate
+  packages that retain exact participant identities, evidence, prerequisites,
+  timing, zones and quantities, and enforcing an explicit evaluated-pair budget with
+  deterministic per-mechanism omission diagnostics instead of enumerating all
+  possible card pairs. (#469)
 - Extract typed source-bound capabilities from one complete canonical card and
   all of its faces, binding exact Oracle evidence, semantic role, quantity,
   timing, zones and structured prerequisites to the selected card and face
