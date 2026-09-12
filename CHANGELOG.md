@@ -3,6 +3,25 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Compile a confirmed semantic-enrichment artifact into local profile
+  generation instead of leaving schema 3 unreachable: `generate_set_profile(...)`
+  and `generate_local_profile_artifacts(...)` accept one optional keyword-only
+  `enrichment` artifact, `compile_profile_enhancement` is the only schema-3
+  writer, and the generation report records the compiled block's privacy-safe
+  provenance in an `enhancement` object rather than any guide text, oracle text,
+  reviewer identity, or local path. Compilation fails closed before any profile
+  bytes exist — an unconfirmed or cancelled review, an artifact `set_code` that
+  does not match the requested set, card data whose semantic set-source digest
+  differs from the generation card database (a limited-card artifact is rejected
+  by design), a card-data identity that cannot be a profile identity, a
+  published identity (guide, run, provider, or model) that looks like a local
+  filesystem path (absolute, home-relative, or `./`/`../`-relative), or no
+  accepted mechanic claim and no confirmed relationship — and each rejection is
+  a bounded, path-free message that publication re-raises unchanged. Validation
+  also reconciles the report's provenance against the published block. An
+  unenhanced generation keeps schema 1 or 2 with byte-identical report bytes and
+  no `enhancement` key, a rejected artifact leaves no output directory, and an
+  identical replay writes no new object. (#437)
 - Carry reviewed model-assisted set enhancement in an explicit schema-3 profile
   block instead of leaving it indistinguishable from empirical evidence: an
   `enhancement_status` of `enhanced` or `not-enhanced` plus a self-contained

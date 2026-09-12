@@ -23,6 +23,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DECK_BUILDER, PICK_ENGINE, DeckBuilderConfig
+from draftomen.profile_enhancement import compile_profile_enhancement, published_identity_is_safe
 from draftomen.public_dump import (
     PUBLIC_DUMP_MANIFEST_SCHEMA_VERSION,
     PublicDumpChecksumError,
@@ -41,6 +42,7 @@ from draftomen.profile_statistics import (
     beta_binomial_estimate,
     shrink_mean,
 )
+from draftomen.semantic_enrichment import SemanticEnrichmentArtifact
 from draftomen.seventeen import (
     CURVE_BUCKETS,
     RELIABILITY_PREMIER_FACTOR,
@@ -59,6 +61,7 @@ from draftomen.semantic_roles import (
 from draftomen.set_profile import (
     AggregateEvidence,
     CardRating,
+    EnhancementCardData,
     NumericTarget,
     PairProfile,
     ProfileMaturity,
@@ -67,6 +70,7 @@ from draftomen.set_profile import (
     RoleTarget,
     SampleSummary,
     SetProfile,
+    SetProfileEnhancement,
     SourceMetadata,
     profile_card_key,
 )
@@ -223,6 +227,127 @@ class ProfileGenerationSource:
 
 
 @dataclass(frozen=True, slots=True)
+class ProfileEnhancementProvenance:
+    """Privacy-safe identity of the enrichment compiled into one profile."""
+
+    artifact_schema_version: int
+    artifact_sha256: str
+    set_source_id: str
+    set_source_sha256: str
+    created_at: str
+    card_data: EnhancementCardData
+    guide_ids: tuple[str, ...]
+    run_ids: tuple[str, ...]
+    providers: tuple[str, ...]
+    models: tuple[str, ...]
+    mechanic_count: int
+    relationship_count: int
+    confidence: float
+    review_state: str
+    reviewed_at: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.card_data, EnhancementCardData):
+            raise ProfileGenerationError(
+                "report.enhancement.card_data must be an EnhancementCardData."
+            )
+        if (
+            isinstance(self.artifact_schema_version, bool)
+            or not isinstance(self.artifact_schema_version, int)
+            or self.artifact_schema_version <= 0
+        ):
+            raise ProfileGenerationError(
+                "report.enhancement.artifact_schema_version must be a positive integer."
+            )
+        for field_name in ("mechanic_count", "relationship_count"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ProfileGenerationError(
+                    f"report.enhancement.{field_name} must be a non-negative integer."
+                )
+        if (
+            isinstance(self.confidence, bool)
+            or not isinstance(self.confidence, (int, float))
+            or not math.isfinite(float(self.confidence))
+            or not 0.0 <= float(self.confidence) <= 1.0
+        ):
+            raise ProfileGenerationError(
+                "report.enhancement.confidence must be a finite number from 0 through 1."
+            )
+        for field_name in (
+            "artifact_sha256",
+            "set_source_id",
+            "set_source_sha256",
+            "created_at",
+            "review_state",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ProfileGenerationError(
+                    f"report.enhancement.{field_name} must be a non-empty string."
+                )
+        if self.reviewed_at is not None and (
+            not isinstance(self.reviewed_at, str) or not self.reviewed_at.strip()
+        ):
+            raise ProfileGenerationError(
+                "report.enhancement.reviewed_at must be a non-empty string or None."
+            )
+        for field_name in ("guide_ids", "run_ids", "providers", "models"):
+            values = getattr(self, field_name)
+            if not isinstance(values, tuple) or any(
+                not isinstance(item, str) or not item.strip() for item in values
+            ):
+                raise ProfileGenerationError(
+                    f"report.enhancement.{field_name} must contain non-empty strings."
+                )
+            if any(not published_identity_is_safe(item) for item in values):
+                raise ProfileGenerationError(
+                    f"report.enhancement.{field_name} must not look like a local filesystem path."
+                )
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "artifact_schema_version": self.artifact_schema_version,
+            "artifact_sha256": self.artifact_sha256,
+            "set_source_id": self.set_source_id,
+            "set_source_sha256": self.set_source_sha256,
+            "created_at": self.created_at,
+            "card_data": self.card_data.to_json(),
+            "guide_ids": list(self.guide_ids),
+            "run_ids": list(self.run_ids),
+            "providers": list(self.providers),
+            "models": list(self.models),
+            "mechanic_count": self.mechanic_count,
+            "relationship_count": self.relationship_count,
+            "confidence": self.confidence,
+            "review_state": self.review_state,
+            "reviewed_at": self.reviewed_at,
+        }
+
+    @classmethod
+    def from_enhancement(cls, enhancement: SetProfileEnhancement) -> ProfileEnhancementProvenance:
+        """Derive the privacy-safe provenance of one compiled enhancement block."""
+
+        return cls(
+            artifact_schema_version=enhancement.artifact_schema_version,
+            artifact_sha256=enhancement.artifact_sha256,
+            set_source_id=enhancement.set_source_id,
+            set_source_sha256=enhancement.set_source_sha256,
+            created_at=enhancement.created_at,
+            card_data=enhancement.card_data,
+            guide_ids=tuple(sorted({pin.guide_id for pin in enhancement.guides})),
+            run_ids=tuple(run.run_id for run in enhancement.runs),
+            providers=tuple(sorted({run.provider for run in enhancement.runs})),
+            models=tuple(sorted({run.model for run in enhancement.runs})),
+            mechanic_count=len(enhancement.mechanics),
+            relationship_count=len(enhancement.relationships),
+            confidence=enhancement.confidence,
+            review_state=enhancement.review.state,
+            reviewed_at=enhancement.review.reviewed_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileGenerationReport:
     """Canonical, sanitized report accompanying one generated profile."""
 
@@ -236,6 +361,7 @@ class ProfileGenerationReport:
     stage: str
     generated_at: str
     sources: tuple[ProfileGenerationSource, ...] = ()
+    enhancement: ProfileEnhancementProvenance | None = None
     samples: SampleSummary = field(default_factory=lambda: SampleSummary(total=0))
     card_games: int = 0
     pair_games: int = 0
@@ -248,6 +374,12 @@ class ProfileGenerationReport:
     gzip_bytes: int = 0
 
     def __post_init__(self) -> None:
+        if self.enhancement is not None and not isinstance(
+            self.enhancement, ProfileEnhancementProvenance
+        ):
+            raise ProfileGenerationError(
+                "report.enhancement must be a ProfileEnhancementProvenance or None."
+            )
         if not isinstance(self.samples, SampleSummary):
             raise ProfileGenerationError("report.samples must be a SampleSummary.")
         for name in ("card_games", "pair_games", "profile_bytes", "gzip_bytes"):
@@ -296,7 +428,7 @@ class ProfileGenerationReport:
     def to_json(self) -> dict[str, object]:
         inputs = dict(self.input_checksums)
         sources = [source.to_json() for source in self.sources]
-        return {
+        result: dict[str, object] = {
             "checksums": {
                 "gzip": self.gzip_sha256,
                 "inputs": inputs,
@@ -325,6 +457,10 @@ class ProfileGenerationReport:
             "schema_version": self.profile_generation_schema_version,
             "source_manifest": sources,
         }
+        if self.enhancement is not None:
+            result["enhancement"] = self.enhancement.to_json()
+        return result
+
     def to_bytes(self) -> bytes:
         return (json.dumps(self.to_json(), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
@@ -542,6 +678,7 @@ def generate_set_profile(
     ratings: SeventeenLandsFormatData | None = None,
     fallback_ratings: Sequence[SeventeenLandsFormatData] = (),
     draft_source_name: str | None = None,
+    enrichment: SemanticEnrichmentArtifact | None = None,
     config: ProfileGenerationConfig = DEFAULT_PROFILE_GENERATION_CONFIG,
 ) -> ProfileGenerationResult:
     """Generate one explicitly requested metadata, early, or mature profile.
@@ -579,6 +716,15 @@ def generate_set_profile(
     manifest = source_manifest
     sources = () if manifest is None else tuple(ProfileGenerationSource.from_source(source) for source in manifest.sources)
     requested_card_database = _requested_card_database(card_database, normalized_set)
+    enhancement = (
+        None
+        if enrichment is None
+        else compile_profile_enhancement(
+            artifact=enrichment,
+            set_code=normalized_set,
+            card_database=requested_card_database,
+        )
+    )
     input_checksums = {} if manifest is None else {source.name: source.sha256 for source in manifest.sources if source.sha256 is not None}
     input_checksums["ratings"] = _ratings_input_checksum(ratings)
     for candidate_format in ("premierdraft", "traddraft"):
@@ -718,7 +864,11 @@ def generate_set_profile(
         pair_profiles=pair_profiles,
         config=config,
     )
-    profile_schema_version = 1 if normalized_stage == ProfileGenerationStage.METADATA else 2
+    profile_schema_version = (
+        3
+        if enhancement is not None
+        else (1 if normalized_stage == ProfileGenerationStage.METADATA else 2)
+    )
     profile = SetProfile(
         set_code=normalized_set,
         event_format=normalized_format,
@@ -736,6 +886,7 @@ def generate_set_profile(
         role_profile=role_profile,
         card_ratings=cards,
         schema_version=profile_schema_version,
+        enhancement=enhancement,
     )
     profile_bytes = profile.to_bytes()
     compressed = deterministic_profile_gzip(profile_bytes)
@@ -752,6 +903,7 @@ def generate_set_profile(
         stage=normalized_stage,
         generated_at=timestamp,
         sources=sources,
+        enhancement=None if enhancement is None else ProfileEnhancementProvenance.from_enhancement(enhancement),
         samples=samples if maturity is not ProfileMaturity.METADATA_ONLY else SampleSummary(total=0),
         card_games=_card_game_count(card_ratings=cards) if maturity is not ProfileMaturity.METADATA_ONLY else 0,
         pair_games=_pair_game_count(pair_profiles=pair_profiles) if maturity is not ProfileMaturity.METADATA_ONLY else 0,
@@ -1648,6 +1800,7 @@ __all__ = [
     "DEFAULT_PROFILE_GENERATION_CONFIG",
     "PROFILE_GENERATION_SCHEMA_VERSION",
     "PROFILE_GENERATOR_VERSION",
+    "ProfileEnhancementProvenance",
     "ProfileGenerationConfig",
     "ProfileGenerationError",
     "ProfileGenerationReport",

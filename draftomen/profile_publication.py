@@ -16,7 +16,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import Iterable, Mapping, TypeAlias
+from typing import TYPE_CHECKING, Iterable, Mapping, TypeAlias
 import zlib
 
 from draftomen.carddb import CardDatabaseError, load_card_database
@@ -27,8 +27,10 @@ from draftomen.profile_generation import (
     ProfileGenerationReport,
     ProfileGenerationResult,
     ProfileGenerationStage,
+    ProfileEnhancementProvenance,
     generate_set_profile,
 )
+from draftomen.profile_enhancement import ProfileEnhancementError
 from draftomen.profile_manifest import (
     ProfileManifest,
     ProfileManifestArtifact,
@@ -43,6 +45,9 @@ from draftomen.public_dump import (
 )
 from draftomen.seventeen import SeventeenLandsError, load_17lands_format_data
 from draftomen.set_profile import ProfileMaturity, SetProfile, SetProfileError
+
+if TYPE_CHECKING:
+    from draftomen.semantic_enrichment import SemanticEnrichmentArtifact
 
 
 PathInput: TypeAlias = str | os.PathLike[str]
@@ -86,6 +91,7 @@ _KNOWN_GENERATION_VALIDATION_ERRORS = frozenset(
         "Generated profile bytes are not canonical.",
         "Generated profile does not match the requested set and format.",
         "Generation report does not match the requested profile.",
+        "Generation report enhancement provenance does not match the profile.",
         "Generation report schema does not match the profile.",
         "Generation report checksums or sizes do not reconcile.",
         "Generation report could not be serialized and parsed.",
@@ -253,6 +259,7 @@ def generate_local_profile_artifacts(
     ratings_path: PathInput | None = None,
     source_manifest_path: PathInput | None = None,
     draft_source_name: str | None = None,
+    enrichment: SemanticEnrichmentArtifact | None = None,
     profile_version: str = "1.0",
     config: ProfileGenerationConfig = DEFAULT_PROFILE_GENERATION_CONFIG,
 ) -> ProfilePublicationResult:
@@ -360,6 +367,7 @@ def generate_local_profile_artifacts(
             profile_version=profile_version,
             ratings=ratings,
             draft_source_name=None if selected_source is None else selected_source.name,
+            enrichment=enrichment,
             config=config,
         )
         validated = validate_profile_generation(
@@ -372,6 +380,8 @@ def generate_local_profile_artifacts(
         report_bytes = validated.report_bytes
     except PublicDumpChecksumError as error:
         raise ProfilePublicationError(_SOURCE_CHECKSUM_ERROR) from error
+    except ProfileEnhancementError as error:
+        raise ProfilePublicationError(str(error)) from error
     except (ProfileGenerationError, SetProfileError) as error:
         evidence_error = _stage_evidence_error(stage=normalized_stage, error=error)
         raise ProfilePublicationError(
@@ -544,6 +554,15 @@ def validate_profile_generation(
         raise ProfilePublicationError("Generation report schema does not match the profile.")
     if report.set_code != set_code or report.event_format != event_format or report.stage != stage:
         raise ProfilePublicationError("Generation report does not match the requested profile.")
+    expected_provenance = (
+        None
+        if rebuilt.enhancement is None
+        else ProfileEnhancementProvenance.from_enhancement(rebuilt.enhancement)
+    )
+    if report.enhancement != expected_provenance:
+        raise ProfilePublicationError(
+            "Generation report enhancement provenance does not match the profile."
+        )
 
     profile_sha256 = hashlib.sha256(decompressed).hexdigest()
     gzip_sha256 = hashlib.sha256(gzip_bytes).hexdigest()

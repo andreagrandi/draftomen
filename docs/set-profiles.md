@@ -358,6 +358,13 @@ remote publication:
    atomically. `load_profile_manifest(path)` and `dump_profile_manifest(...)`
    provide strict local manifest I/O.
 
+Both `generate_local_profile_artifacts(...)` and `generate_set_profile(...)`
+accept one optional keyword-only `enrichment`: a confirmed
+`SemanticEnrichmentArtifact` that is compiled into the profile's `enhancement`
+block. It is an in-process value, not a path input, so it never changes
+`input_count`; the caller must derive it from the same card data the generation
+reads, because a different card data projection is rejected.
+
 ### Hosted publication boundary (current)
 
 Profile hosting is a static-asset operation owned by repository maintainers,
@@ -1615,11 +1622,40 @@ independent axes, maturity and enhancement status. The block carries
 model-assisted semantic claims only, and `PairProfile.synergy` remains the
 empirical 17Lands-derived field, never a place for enhancement content.
 
-Only enhanced profiles are schema 3 today: `generate-profile` still emits
-schema 1 for the metadata stage and schema 2 for early and mature stages, and
-the enhancement compiler is the only schema-3 writer. The generic fallback
-never carries enhancement data; the profile fingerprint, the SHA-256 of the
-canonical bytes, covers the block's content and provenance.
+Only enhanced profiles are schema 3. Empirical generation still emits schema 1
+for the metadata stage and schema 2 for early and mature stages, and a profile
+becomes schema 3 exactly when `compile_profile_enhancement` compiles one
+confirmed artifact into it: the compiler is the only schema-3 writer. It takes
+the already-decoded artifact in process and gates on a `confirmed` review, the
+artifact `set_code` matching the requested set, and the semantic set-source
+digest of the generation card data equalling the artifact's
+`set_source_sha256`. It then includes accepted `mechanic`-category guide claims
+and the artifact's confirmed relationships, drops runs no included finding
+references, keeps every pinned card and guide, and records `artifact_sha256` as
+the SHA-256 of the artifact's canonical bytes. Every rejection is a bounded,
+path-free message: an unconfirmed or cancelled review, a set mismatch, card
+data that does not match the generation card database, a card-data identity
+that cannot be a profile identity, a published identity (guide, run, provider,
+or model) that looks like a local filesystem path, or no included finding. A
+rejected artifact fails before any profile bytes exist.
+
+The generation report records the same identity under a privacy-safe
+`enhancement` object with `artifact_schema_version`, `artifact_sha256`,
+`set_source_id`, `set_source_sha256`, `created_at`, `card_data`, `guide_ids`,
+`run_ids`, `providers`, `models`, `mechanic_count`, `relationship_count`,
+`confidence`, `review_state`, and `reviewed_at`. Guide text, oracle text, and
+reviewer identity never enter it, and an identity that looks like a local
+filesystem path is rejected before compilation: an absolute POSIX, Windows
+drive, or UNC form; a `~`-relative form; or a `./`/`../`-relative form.
+Provider-qualified identifiers such as `openai/gpt-5.6-luna` stay valid. The
+key is absent — with byte-identical report output — when no artifact is
+compiled. Publication reconciles that provenance against the published block
+during validation.
+`generate-profile` has no artifact input flag yet, so the CLI keeps publishing
+schema 1 or schema 2 until the interactive enrichment review workflow supplies
+the artifact in process. The generic fallback never carries enhancement data;
+the profile fingerprint, the SHA-256 of the canonical bytes, covers the block's
+content and provenance.
 
 The block reuses the semantic-enrichment record types (`CardSourcePin`,
 `GuideSourcePin`, `ModelRun`, `GuideClaim`, `CardRelationship`,
