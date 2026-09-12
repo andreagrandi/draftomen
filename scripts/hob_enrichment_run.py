@@ -97,7 +97,14 @@ EXIT_SPEND_CEILING = 3
 
 _BENCHMARK_SCHEMA_VERSION = 1
 _BENCHMARK_GUIDE_KEYS = ("guide_id", "url", "retrieved_at", "sha256", "chars")
-_MECHANIC_KEYS = ("name", "guide_quote", "required")
+_MECHANIC_KEYS = (
+    "name",
+    "guide_quote",
+    "oracle_card_id",
+    "oracle_face_index",
+    "oracle_quote",
+    "required",
+)
 _RELATIONSHIP_EXPECTATION_KEYS = (
     "mechanism",
     "source_card_id",
@@ -972,6 +979,30 @@ def _validate_benchmark(
             _benchmark_bool(entry.get("required"), f"mechanics[{index}].required", failures=failures)
             if quote is not None and guide_text is not None and quote not in guide_text:
                 fail(f"mechanics[{index}].guide_quote is not an exact guide substring.")
+            oracle_card_id = _benchmark_card_id(
+                entry.get("oracle_card_id"),
+                f"mechanics[{index}].oracle_card_id",
+                failures=failures,
+            )
+            if oracle_card_id is not None and oracle_card_id not in eligible_ids:
+                fail(f"mechanics[{index}].oracle_card_id is not an eligible frozen card.")
+            oracle_card = cards.get(oracle_card_id) if oracle_card_id is not None else None
+            oracle_face = _benchmark_face_index(
+                entry.get("oracle_face_index"),
+                f"mechanics[{index}].oracle_face_index",
+                card=oracle_card,
+                failures=failures,
+            )
+            oracle_quote = _benchmark_text(
+                entry.get("oracle_quote"),
+                f"mechanics[{index}].oracle_quote",
+                failures=failures,
+            )
+            if oracle_quote is not None and oracle_card is not None:
+                if oracle_quote not in _card_text(oracle_card, oracle_face):
+                    fail(
+                        f"mechanics[{index}].oracle_quote is not an exact Oracle substring."
+                    )
 
     value = benchmark.get("relationships")
     if not isinstance(value, list):
@@ -1075,6 +1106,38 @@ def _validate_benchmark(
     }
 
 
+def _oracle_evidence_matches(
+    *,
+    entry: Mapping[str, Any],
+    capabilities: Sequence[Any],
+) -> list[dict[str, Any]]:
+    """Report which retained capabilities quote one mechanic's reviewed Oracle evidence."""
+    card_id = int(entry["oracle_card_id"])
+    face_index = entry["oracle_face_index"]
+    quote = str(entry["oracle_quote"])
+    matches: list[dict[str, Any]] = []
+    for capability in capabilities:
+        if capability.card_id != card_id:
+            continue
+        if face_index is not None and capability.face_index != face_index:
+            continue
+        if not any(
+            _passage_match(quote, evidence.quote) for evidence in capability.evidence
+        ):
+            continue
+        matches.append(
+            {
+                "rule": "card-capability-quote",
+                "card_id": capability.card_id,
+                "face_index": capability.face_index,
+                "finding_id": capability.finding_id,
+                "role": capability.role.value,
+                "status": capability.review.status.value,
+            }
+        )
+    return matches
+
+
 def _mechanic_expectation(
     *,
     entry: Mapping[str, Any],
@@ -1138,6 +1201,13 @@ def _mechanic_expectation(
                     "status": row["verdict"],
                 }
             )
+    capabilities = [
+        capability
+        for card_result in result.card_results
+        for capability in card_result.capabilities
+    ]
+    card_matches = _oracle_evidence_matches(entry=entry, capabilities=capabilities)
+    matches.extend(card_matches)
     rejections = [
         {
             "kind": "guide-rejection",
@@ -1162,7 +1232,7 @@ def _mechanic_expectation(
         classification = "matched"
         detail = (
             f"matched through {matches[0]['rule']} ({matches[0]['status']})"
-            + ("" if accepted else " as an uncertain claim")
+            + ("" if accepted else " without an accepted match")
         )
     elif rejections:
         classification = "rejected"
@@ -1184,6 +1254,7 @@ def _mechanic_expectation(
         "classification": classification,
         "detail": detail,
         "matches": matches,
+        "card_evidence": card_matches,
         "related": related,
         "rejections": rejections,
         "omission": omission,
@@ -1359,9 +1430,11 @@ def _benchmark_comparison(
         "limited_run": bool(limit_facts["applied"]),
         "matching_rules": (
             "casefolded mechanic-name equality, overlapping exact quotation "
-            f"(>= {MINIMUM_OVERLAP_CHARS} characters), or an accepted/uncertain relationship "
-            "with the reviewed mechanism; relationships match on mechanism, both card ids and "
-            "any pinned participant face index, and their exact Oracle quotations are re-checked"
+            f"(>= {MINIMUM_OVERLAP_CHARS} characters) in a retained guide claim or in a retained "
+            "card capability for the expected Oracle card and face, or an accepted/uncertain "
+            "relationship with the reviewed mechanism; relationships match on mechanism, both "
+            "card ids and any pinned participant face index, and their exact Oracle quotations "
+            "are re-checked"
         ),
         "mechanics": mechanics,
         "relationships": relationships,

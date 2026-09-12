@@ -3,6 +3,19 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Match a reviewed HOB mechanic against exact card Oracle evidence as well as
+  the guide quotation, so a complete run can evidence `Adventures`, `Hone
+  Counters` and `Amass` from the canonical card artifact instead of the one
+  guide sentence the extraction happens to quote, and re-author the
+  `103531` → `103448` expectation onto `token-death-payoff`, the declared rule
+  a token maker and a death payoff can reach. The first complete run under the
+  new expectations matched all seven reviewed mechanics — `Adventures`, `Hone
+  Counters` and `Amass` only through card Oracle evidence — and three of seven
+  relationships, and it failed acceptance on `token-go-wide-payoff`
+  (`103503` → `103381`) and `token-sacrifice-outlet` (`103492` → `103491`),
+  absent because neither enabler is assigned `token_maker`, and on
+  `token-death-payoff` (`103531` → `103448`), whose constructed pair the
+  validator rejected. (#472)
 - Keep a static ability's card-capability role when the same Oracle text also
   states a keyword ability, so an anthem or a creature-count payoff is a
   `go_wide_payoff` on a card that also recruits and can pair with a token

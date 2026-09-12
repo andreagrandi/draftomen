@@ -233,36 +233,57 @@
     {
       "name": "Storied",
       "guide_quote": "get you storied since so many of them are legendary.",
+      "oracle_card_id": 103382,
+      "oracle_face_index": null,
+      "oracle_quote": "Storied (If you control three or more artifacts, legendaries, and/or Sagas, you have an enduring story for the rest of the game.)",
       "required": true
     },
     {
       "name": "Recruit",
       "guide_quote": "Recruit fills this role in white decks",
+      "oracle_card_id": 103386,
+      "oracle_face_index": null,
+      "oracle_quote": "When this creature dies, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
       "required": true
     },
     {
       "name": "Adventures",
       "guide_quote": "The common adventure cycle is woefully unbalanced.",
+      "oracle_card_id": 103397,
+      "oracle_face_index": 1,
+      "oracle_quote": "Create X 2/2 red Dwarf creature tokens. (Then exile this card. You may cast the enchantment later from exile.)",
       "required": true
     },
     {
       "name": "Amass",
       "guide_quote": "get ready for a lot of amass wars",
+      "oracle_card_id": 103494,
+      "oracle_face_index": null,
+      "oracle_quote": "Amass Goblins 1. If this spell was cast from a graveyard, amass Goblins 3 instead. (To amass Goblins X, put X +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
       "required": true
     },
     {
       "name": "Ferocious",
       "guide_quote": "ferocious is running, which makes cards like Duskwatch Hunter more useful than you’d expect.",
+      "oracle_card_id": 103510,
+      "oracle_face_index": null,
+      "oracle_quote": "Ferocious — At the beginning of combat on your turn, if you control a creature with power 4 or greater, put a +1/+1 counter on this creature.",
       "required": true
     },
     {
       "name": "Landfall",
       "guide_quote": "Landfall has kind of been a bust.",
+      "oracle_card_id": 103500,
+      "oracle_face_index": null,
+      "oracle_quote": "Landfall — Whenever a land you control enters, put a +1/+1 counter on target creature you control.",
       "required": true
     },
     {
       "name": "Hone Counters",
       "guide_quote": "and repeatedly buff several equipment.",
+      "oracle_card_id": 103534,
+      "oracle_face_index": null,
+      "oracle_quote": "Whenever Dwalin enters or attacks, put a hone counter on each Equipment you control. (Each hone counter on an Equipment grants +1/+0 to equipped creature.)",
       "required": true
     }
   ],
@@ -312,7 +333,7 @@
       "required": true
     },
     {
-      "mechanism": "fodder-dies-payoff",
+      "mechanism": "token-death-payoff",
       "source_card_id": 103531,
       "source_face_index": null,
       "source_quote": "At the beginning of your upkeep, create a 2/2 green Wolf creature token.",
