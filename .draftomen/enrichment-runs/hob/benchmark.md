@@ -246,6 +246,48 @@ R2 and R4 are now constructed and accepted, so the derived role resolves the two
 
 `acceptance.passed` stays `false` on one remaining required expectation: **R5** `token-death-payoff:103531 → 103448`, which the validator still rejects — *"The supplied text does not establish that the created token dies, so it does not support the declared token-death-payoff interaction."* The expectation is left exactly as reviewed, the rejection is unchanged from the run above, and the verdict rule it depends on is tracked as #496.
 
+### Verdict rule for `token-death-payoff` (#496)
+
+A `token-death-payoff` pair **is valid** when the enabler creates a creature token and the payoff rewards creatures dying. The enabler's own text need not show the token dying, because a creature token that dies triggers a reward for creatures dying; a payoff whose quoted reward is restricted to **nontoken** creatures is not declared. This is the recorded decision for R5, and R5 is not relaxed to reach it: `benchmark.json` is unchanged and the enabler's Oracle text is not required to name the token's death.
+
+Prompt wording cannot make identical evidence receive one verdict. Fresh draws of the same constructed pair in this issue's probe arrived as different verdicts, every rejection citing the same enabler-side gap: `103390` → `103448` was **2 accepted / 2 rejected** and `103531` → `103448` **0 accepted / 4 rejected**. The verdict for the declared shape is therefore computed from the two frozen participants instead of one sampling draw.
+
+`parse_relationship_validation_response` reads the rule before the model's verdict, keyed on the declared mechanism (`token-death-payoff`), the two participants' roles (`token_maker` → `death_payoff`) and the payoff's quoted evidence (no `nontoken`). A covered pair answers accepted with one fixed claim and publishes the two participants' own Oracle quotes; the response still has to decode into the pinned relationship schema first, which keeps a refusal or a malformed completion out of the accepted set. The relationship prompt, its schema and every public signature are byte-identical, so no stored relationship work identity moved.
+
+Bounded paid probe over the two recorded coin-flip pairs — model `openai/gpt-5.6-luna`, `reasoning_effort` `medium`, `max_tokens` 128000, three draws per pair, total cost **$0.0029622**:
+
+| Pair | Raw verdicts (3 draws) | Parsed verdicts | Claim |
+|---|---|---|---|
+| `103390` → `103448` | accepted, rejected, rejected | accepted, accepted, accepted | the fixed rule claim |
+| `103531` → `103448` | rejected, accepted, rejected | accepted, accepted, accepted | the fixed rule claim |
+
+Re-run of the complete analysis over the same frozen sources:
+
+```
+uv run python scripts/hob_enrichment_run.py --max-usd 2.00
+```
+
+Exit code **0** — the first complete run whose every required expectation matched. Every number below is read from `.draftomen/enrichment-runs/hob/report.json`, which this run rewrote.
+
+- Run id `enrichment-45a4d607ffc94debb86e746228e9365d`, `mode=live`, `dry_run=false`, ceiling `2` USD, 201/201 eligible cards attempted (`limit_applied` false), **0 executed** and 1183 reused work identities, `run.requests` 0, `run.spent_usd` `0`, `unknown_cost_responses` 0.
+- Before the run, 1392 stored relationship **result** artifacts were invalidated so the retained responses re-parse under the new code; `responses/` and `attempts/` were untouched, which is why no request was paid for.
+- Relationship verdicts: **697 accepted, 8 uncertain, 276 rejected** over 981 packages. Re-parsing the same 981 retained responses with the rule disabled reproduces the previous record exactly (673 accepted / 9 uncertain / 299 rejected) and moves exactly **24 verdicts** — 23 rejected and 1 uncertain to accepted — all of them `token-death-payoff`; no verdict of any other mechanism changes.
+- `token-death-payoff` carries 76 constructed pairs. The 38 the rule covers are all accepted (14 already accepted, 23 rejected and 1 uncertain re-decided), and the other 38 stay rejected because their payoff is `103514`, whose quoted evidence rewards only nontoken creatures (*"Whenever a nontoken creature you control dies…"*).
+- `acceptance.passed` is `true` with no failure, `required_unmatched` empty, `source_identity_match` `true`. All seven reviewed mechanics matched, R1–R6 matched and R7 stayed rejected, `profiles.unchanged` `true` (profile sha256 `35584d51fdd72b5a406382222efde6725422a84b279ec10a9c155139b2e0f0e8` unchanged) and `review.state` `pending`.
+- A second identical run produced the same `acceptance`, `benchmark`, `relationships` and `candidates` reports, so the re-parse of retained responses is deterministic and no result depends on a sampling draw.
+
+| Expectation | Matched | Classification |
+|---|---|---|
+| R1 `token-go-wide-payoff:103382 → 103526` | yes | accepted relationship, both Oracle quotes re-checked |
+| R2 `token-go-wide-payoff:103503 → 103381` | yes | accepted relationship, both Oracle quotes re-checked |
+| R3 `token-sacrifice-outlet:103478 → 103550` | yes | accepted relationship, both Oracle quotes re-checked |
+| R4 `token-sacrifice-outlet:103492 → 103491` | yes | accepted relationship, both Oracle quotes re-checked |
+| R5 `token-death-payoff:103531 → 103448` | yes | accepted relationship, both Oracle quotes re-checked |
+| R6 `token-sacrifice-outlet:103531 → 103458` | yes | accepted relationship, both Oracle quotes re-checked |
+| R7 `loot-recursion-payoff:103563 → 103550` (optional) | no | rejected verdict |
+
+R5 matches as the accepted relationship `relationship:token-death-payoff:103531:103531-3:103448:103448-death-payoff`, the same identity its rejected verdict carried in the run above.
+
 ## Reproducing the frozen guide
 
 `guide.txt` is deliberately not versioned, so a reviewer regenerates it from the pinned page:

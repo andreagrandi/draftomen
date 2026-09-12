@@ -107,6 +107,10 @@ ROLE_COMPATIBILITY_RULES: tuple[RoleLink, ...] = (
     RoleLink(mechanism="loot-recursion-payoff", enabler=Role.LOOT, payoff=Role.RECURSION_PAYOFF),
     RoleLink(mechanism="mill-graveyard-payoff", enabler=Role.SELF_MILL, payoff=Role.GRAVEYARD_PAYOFF),
     RoleLink(mechanism="recursion-graveyard-payoff", enabler=Role.RECURSION, payoff=Role.GRAVEYARD_PAYOFF),
+    # `token-death-payoff` declares that a creature token dying satisfies a payoff that rewards
+    # creatures dying: the enabler's own text need not show the token dying, and a payoff that
+    # restricts its reward to nontoken creatures is not declared. The verdict for a constructed
+    # pair of this mechanism is decided in `parse_relationship_validation_response` (#496).
     RoleLink(mechanism="token-death-payoff", enabler=Role.TOKEN_MAKER, payoff=Role.DEATH_PAYOFF),
     RoleLink(mechanism="token-go-wide-payoff", enabler=Role.TOKEN_MAKER, payoff=Role.GO_WIDE_PAYOFF),
     RoleLink(mechanism="token-sacrifice-outlet", enabler=Role.TOKEN_MAKER, payoff=Role.SACRIFICE_OUTLET),
