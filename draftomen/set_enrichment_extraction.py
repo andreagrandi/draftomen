@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import InitVar, dataclass, field
 from enum import Enum, StrEnum
 import hashlib
 import json
 import math
+import re
 from typing import Any
 
 from draftomen.carddb import CardInfo
@@ -119,6 +120,21 @@ _CAPABILITY_CARD_NAME_REASON = "capability card name does not match the selected
 _CAPABILITY_FACE_REASON = "capability face identity does not match the selected canonical card."
 _CAPABILITY_EVIDENCE_OWNER_REASON = "Oracle evidence does not belong to the selected card face."
 _CAPABILITY_EVIDENCE_QUOTE_REASON = "Oracle evidence quote is not an exact source substring."
+_CAPABILITY_TOKEN_MAKER_REASON = (
+    "token_maker is derived from the quoted ability, which creates a creature token."
+)
+
+# A creature token creation clause: `create`, `creates` or `created` in the same sentence as a
+# creature token. The gap never crosses a `.` or `;`, so a Treasure, Food or Clue token alone
+# matches nothing, and neither does a quotation that only mentions a creature token. Requiring the
+# gap to hold no other token word instead would drop real creatures tokens, such as
+# `create a Treasure token and a 2/2 colorless Pilot creature token`; the sentence bound is the
+# guard, and across 49 frozen sets it separates these cases.
+_CREATURE_TOKEN_CLAUSE = re.compile(
+    r"\bcreate[sd]?\b[^.;]*\bcreature tokens?\b",
+    re.IGNORECASE,
+)
+
 _CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card."
 
 _RELATIONSHIP_MALFORMED_RESPONSE_REASON = (
@@ -1769,6 +1785,70 @@ def _classify_capabilities(
     return uncertain, rejected
 
 
+def _creates_creature_token(quote: str) -> bool:
+    """Report whether one quoted ability creates a creature token."""
+    return _CREATURE_TOKEN_CLAUSE.search(quote) is not None
+
+
+def _overlapping_quotes(left: str, right: str) -> bool:
+    """Report whether two evidence quotes cover the same passage."""
+    first = " ".join(left.split())
+    second = " ".join(right.split())
+    return first in second or second in first
+
+
+def _derived_token_maker_capabilities(
+    capabilities: Sequence[CardCapability],
+) -> list[CardCapability]:
+    """Derive one token maker capability for every quoted creature token clause."""
+    makers = [capability for capability in capabilities if capability.role is Role.TOKEN_MAKER]
+    # A model-supplied finding id may already occupy the derived id, and the result rejects
+    # duplicate ids, so a taken id skips that donor instead of failing the whole response.
+    taken = {capability.finding_id for capability in capabilities}
+    derived: list[CardCapability] = []
+    for donor in capabilities:
+        if donor.role is Role.TOKEN_MAKER:
+            continue
+        finding_id = f"{donor.finding_id}-token-maker"
+        if finding_id in taken:
+            continue
+        if not any(_creates_creature_token(item.quote) for item in donor.evidence):
+            continue
+        if any(
+            maker.card_id == donor.card_id
+            and maker.face_index == donor.face_index
+            and any(
+                _overlapping_quotes(maker_item.quote, donor_item.quote)
+                for maker_item in maker.evidence
+                for donor_item in donor.evidence
+            )
+            for maker in makers
+        ):
+            continue
+        derived.append(
+            CardCapability(
+                finding_id=finding_id,
+                card_id=donor.card_id,
+                card_name=donor.card_name,
+                face_index=donor.face_index,
+                face_name=donor.face_name,
+                role=Role.TOKEN_MAKER,
+                quantity=donor.quantity,
+                timing=donor.timing,
+                source_zone=donor.source_zone,
+                destination_zone=donor.destination_zone,
+                prerequisites=donor.prerequisites,
+                evidence=donor.evidence,
+                review=FindingReview(
+                    status=FindingStatus.UNCERTAIN,
+                    reason=_CAPABILITY_TOKEN_MAKER_REASON,
+                ),
+                run_id=donor.run_id,
+            )
+        )
+    return derived
+
+
 def _participant_oracle_text(capability: CardCapability, card: CardInfo) -> str:
     """Return the exact frozen Oracle text one participant capability binds to."""
     face_index = capability.face_index
@@ -1871,7 +1951,9 @@ def parse_card_capability_extraction_response(
     card_id: int,
     run_id: str,
 ) -> CardCapabilityExtractionResult:
-    """Parse one untrusted card capability response against frozen sources."""
+    """Parse one untrusted card capability response against frozen sources.
+    A quoted ability that creates a creature token also yields a derived token maker capability.
+    """
     selected = _selected_card(sources, card_id)
     normalized_run_id = _identifier(run_id, "run_id")
     projection: Mapping[str, Any] = card_source_projection(selected)
@@ -1887,6 +1969,7 @@ def parse_card_capability_extraction_response(
         )
     except SemanticEnrichmentError:
         return _malformed_card_result()
+    uncertain.extend(_derived_token_maker_capabilities(uncertain))
     return CardCapabilityExtractionResult(
         outcome=ExtractionOutcome.SUCCESS,
         accepted_capabilities=(),

@@ -3,6 +3,17 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Record `token_maker` for a quoted ability that creates a creature token, even
+  when the same ability already carries the role of its trigger condition, so a
+  landfall payoff or an attack trigger that makes a creature token still pairs
+  with a token payoff instead of depending on one sampling draw. An artifact
+  creature token qualifies, while a Treasure, Food or Clue token, or a
+  quotation that only mentions a creature token, adds nothing. The recorded
+  re-run over the frozen HOB sources constructs and accepts
+  `token-go-wide-payoff` (`103503` → `103381`) and `token-sacrifice-outlet`
+  (`103492` → `103491`), the two expectations the run before it could not
+  construct; `acceptance.passed` stays `false` on `token-death-payoff`
+  (`103531` → `103448`) alone. (#494) (#495) (#472)
 - Match a reviewed HOB mechanic against exact card Oracle evidence as well as
   the guide quotation, so a complete run can evidence `Adventures`, `Hone
   Counters` and `Amass` from the canonical card artifact instead of the one

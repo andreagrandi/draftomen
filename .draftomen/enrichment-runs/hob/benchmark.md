@@ -213,7 +213,38 @@ The reviewed expectations were therefore **not** all matched: three required rel
 - **R4** — `103492` **Stone-Giant of High Pass** carries `attack_matters`, `damage_removal` and `sacrifice_outlet` and **no** `token_maker`, while `103491` **Snowslope Hunter** carries `sacrifice_outlet`. The card's Oracle text creates a 3/1 Wall artifact creature token, so this is the same missing-role miss as R2 on a token the prompt's artifact-token exclusion may have discouraged.
 - **R5** — the pair was constructed (`103531` `token_maker` → `103448` `death_payoff`) and the relationship validator rejected it: *"The supplied text does not establish that the created token dies, so it does not support the declared token-death-payoff interaction."* The rejection is a verdict limitation, and the expectation is left exactly as reviewed rather than relaxed to force a pass.
 
+These three failures describe the run above. The re-run recorded below resolves R2 and R4 through the token-maker rule and leaves R5 rejected.
+
 `profiles.unchanged` is `true` (profile sha256 `35584d51fdd72b5a406382222efde6725422a84b279ec10a9c155139b2e0f0e8` before and after) and `review.state` is `pending`, so the run wrote no set profile and changed no reviewed artifact.
+
+### Re-run after the token-maker rule (#494, #495)
+
+A second complete live run over the same frozen sources, with the card-capability parse deriving `token_maker` for a quoted ability that creates a creature token even when that ability already carries its trigger-derived role:
+
+```
+uv run python scripts/hob_enrichment_run.py --max-usd 2.00
+```
+
+Exit code **1**: the run completes, and its only acceptance failure is R5. The run reused the stored responses of the run above for every identity the change does not alter — 119 paid completions and 1064 reused work identities, `run.spent_usd` `0.0534924` — so the numbers below are read from `.draftomen/enrichment-runs/hob/report.json`, which this run rewrote.
+
+- Run id `enrichment-f643d9bbbf264af2971be0efc8180567`, `mode=live`, `dry_run=false`, ceiling `2` USD, 201/201 eligible cards attempted (`limit_applied` false), `unknown_cost_responses` 0.
+- Retention: 21 guide claims; 555 retained card capabilities with 125 rejected diagnostics and 0 accepted, up from 550; `token_maker` is retained on 37 cards, up from 32; 993 candidate pairs evaluated into 981 packages with no malformed extraction and no omission, up from 873 into 862.
+- Relationship verdicts: 673 accepted, 9 uncertain, 299 rejected.
+- `profiles.unchanged` is `true` (profile sha256 `35584d51fdd72b5a406382222efde6725422a84b279ec10a9c155139b2e0f0e8` before and after) and `review.state` is `pending`.
+
+| Expectation | Matched | Classification |
+|---|---|---|
+| R1 `token-go-wide-payoff:103382 → 103526` | yes | accepted relationship, both Oracle quotes re-checked |
+| R2 `token-go-wide-payoff:103503 → 103381` | yes | accepted relationship, both Oracle quotes re-checked |
+| R3 `token-sacrifice-outlet:103478 → 103550` | yes | accepted relationship, both Oracle quotes re-checked |
+| R4 `token-sacrifice-outlet:103492 → 103491` | yes | accepted relationship, both Oracle quotes re-checked |
+| R5 `token-death-payoff:103531 → 103448` | no | rejected verdict |
+| R6 `token-sacrifice-outlet:103531 → 103458` | yes | accepted relationship, both Oracle quotes re-checked |
+| R7 `loot-recursion-payoff:103563 → 103550` (optional) | no | rejected verdict |
+
+R2 and R4 are now constructed and accepted, so the derived role resolves the two missing-role failures recorded above with the same reviewed expectations: R2's accepted evidence quotes `Landfall — Whenever a land you control enters, create a 2/2 green Bear creature token.` beside `Esgaroth Garrison's power is equal to the number of creatures you control.`, and R4's quotes `Whenever this creature enters or attacks, create a 3/1 colorless Wall artifact creature token with defender named Stone Boulder.` beside `Sacrifice another creature or artifact: Exile the top card of your library. You may play it until the end of your next turn. Activate only during your turn and only once each turn.`
+
+`acceptance.passed` stays `false` on one remaining required expectation: **R5** `token-death-payoff:103531 → 103448`, which the validator still rejects — *"The supplied text does not establish that the created token dies, so it does not support the declared token-death-payoff interaction."* The expectation is left exactly as reviewed, the rejection is unchanged from the run above, and the verdict rule it depends on is tracked as #496.
 
 ## Reproducing the frozen guide
 
