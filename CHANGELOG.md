@@ -3,6 +3,21 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Carry reviewed model-assisted set enhancement in an explicit schema-3 profile
+  block instead of leaving it indistinguishable from empirical evidence: an
+  `enhancement_status` of `enhanced` or `not-enhanced` plus a self-contained
+  `enhancement` object built from the merged semantic-enrichment vocabulary —
+  the artifact and set-source digests, the pinned card data, the pinned cards,
+  guides and model runs, the accepted mechanic and relationship findings, and
+  the artifact review with its own confidence. The block must cover exactly the
+  declared card data, carry at least one accepted finding, hold globally unique
+  finding IDs, resolve every finding's run, guide and card reference, and carry
+  a confirmed review; an unconfirmed, mismatched or incompatible block is
+  rejected rather than partially read, and a schema-1 or schema-2 payload that
+  declares enhancement data is rejected rather than silently dropped. Schema-1
+  and schema-2 artifacts keep their canonical bytes and report themselves as not
+  enhanced, model-assisted claims never enter the empirical `synergy` field, and
+  the enhancement compiler is the only schema-3 writer. (#436)
 - Decide a `token-death-payoff` relationship from its two frozen participants
   instead of the model's sampling draw: an enabler that creates a creature token
   and a payoff that rewards creatures dying is valid without the enabler's text

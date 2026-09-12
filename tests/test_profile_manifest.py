@@ -68,7 +68,7 @@ def test_manifest_round_trip_is_canonical_and_sorted(tmp_path: Path) -> None:
 
 
 def test_manifest_accepts_each_supported_set_profile_schema_version() -> None:
-    for schema_version in (1, 2):
+    for schema_version in (1, 2, 3):
         artifact = _artifact("TST", "QuickDraft", schema_version=schema_version)
         restored = ProfileManifestArtifact.from_json(artifact.to_json())
         assert restored.set_profile_schema_version == schema_version

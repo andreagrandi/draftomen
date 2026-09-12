@@ -1513,13 +1513,14 @@ profile, and it does not certify that the generator will accept the selected
 stage; callers must invoke the unchanged explicit generator and its validation
 workflow separately.
 
-## Set-profile schema versions 1 and 2
+## Set-profile schema versions 1, 2, and 3
 
 A profile is a JSON object with these required fields:
 
-- `schema_version`: supported values are `1` and `2`. Other values are rejected
-  rather than guessed. Historical schema-1 artifacts retain their canonical
-  bytes; newly generated empirical profiles use schema 2.
+- `schema_version`: supported values are `1`, `2`, and `3`. Other values are
+  rejected rather than guessed. Historical schema-1 and schema-2 artifacts
+  retain their canonical bytes; newly generated empirical profiles remain
+  schema 1 or schema 2, and schema 3 currently means an enhanced profile.
 - `profile_version`: the producer's non-empty artifact version.
 - `set_code` and `format`: the exact target set and event format.
 - `generated_at`: an ISO-8601 timestamp.
@@ -1577,6 +1578,53 @@ semantic-only artifacts omit empirical sections but retain `role_profile` and
 may retain theme annotations. The generic fallback contains neither empirical
 section.
 
+### Enhancement block (schema 3)
+
+`enhancement_status` is present exactly when `schema_version` is `3`: `enhanced`
+when the `enhancement` object is present, otherwise `not-enhanced`. Schema-1 and
+schema-2 payloads must not declare either key; declaring one is rejected rather
+than ignored, so an artifact can never silently drop a model-assisted claim.
+
+The `enhancement` object has `artifact_schema_version`, `artifact_sha256`,
+`set_code`, `set_source_id`, `set_source_sha256`, `created_at`, `card_data`,
+`cards`, `guides`, `runs`, `mechanics`, `relationships`, `review`, and
+`confidence`. `artifact_schema_version` must equal
+`SEMANTIC_ENRICHMENT_SCHEMA_VERSION`; an artifact written against a newer
+semantic-enrichment schema is rejected as incompatible instead of being
+partially read.
+
+A block must satisfy all of the following; failing any condition rejects it:
+
+- `card_data` pins the reviewed card source (`source`, `sha256`, `card_count`)
+  and `cards` pins the reviewed cards, which must cover `card_count` exactly.
+  `guides` pins guide sources and may be empty.
+- `runs` records the model runs that produced the findings and must not be
+  empty. `mechanics` and `relationships` hold the included findings: every
+  mechanics entry must be a `mechanic`-category claim, every entry in either
+  list must be accepted, and at least one of the two lists must be non-empty.
+- Finding IDs must be globally unique, `set_code` must match the profile,
+  every run, guide, and card a finding references must resolve against the
+  block's own `runs`, `guides`, and `cards`, and every recorded run must be
+  referenced by an included finding. A relationship's `oracle_evidence` must
+  cover its `participants` exactly.
+- `review` must have `state` `confirmed`. `confidence` is a bounded number
+  separate from the profile's own `confidence`.
+
+Enhancement is orthogonal to empirical maturity: a schema-3 profile has two
+independent axes, maturity and enhancement status. The block carries
+model-assisted semantic claims only, and `PairProfile.synergy` remains the
+empirical 17Lands-derived field, never a place for enhancement content.
+
+Only enhanced profiles are schema 3 today: `generate-profile` still emits
+schema 1 for the metadata stage and schema 2 for early and mature stages, and
+the enhancement compiler is the only schema-3 writer. The generic fallback
+never carries enhancement data; the profile fingerprint, the SHA-256 of the
+canonical bytes, covers the block's content and provenance.
+
+The block reuses the semantic-enrichment record types (`CardSourcePin`,
+`GuideSourcePin`, `ModelRun`, `GuideClaim`, `CardRelationship`,
+`ArtifactReview`) verbatim instead of defining parallel profile-side records.
+
 The optional `role_profile` object carries compiled per-card semantic roles. It
 uses the existing semantic-role vocabulary and assignment types, and declares
 `schema_version`, `role_schema_version`, `classifier_version`, and `cards`.
@@ -1602,7 +1650,7 @@ Each `artifacts` item has exactly these fields:
 
 - `set_code` and `format`: non-empty, case-folded safe path components.
 - `set_profile_schema_version`: the artifact's actual supported set-profile
-  schema (`1` or `2`). It must match the downloaded profile.
+  schema (`1`, `2`, or `3`). It must match the downloaded profile.
 - `profile_version`: a non-empty producer version.
 - `generated_at`: a timezone-aware ISO-8601 timestamp.
 - `url`: an absolute HTTPS URL for the compressed profile artifact.
