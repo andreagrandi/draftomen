@@ -119,6 +119,7 @@ files = [
     "draftomen/set_enrichment_candidates.py",
     "draftomen/set_enrichment_extraction.py",
     "draftomen/set_enrichment_work.py",
+    "draftomen/set_enrichment_workflow.py",
     "draftomen/setinfo.py",
     "draftomen/seventeen.py",
     "draftomen/splash.py",
