@@ -102,7 +102,8 @@ coalesce, and `watch --plain` has no command UI.
 
 For a terminal workflow, use the stable `draftomen-tui` command. It preserves
 the watch, replay, build, backtest, benchmark, data-refresh,
-`export-set-data`, local `generate-profile`, and `refresh-profile` subcommands:
+`export-set-data`, local `generate-profile`, `refresh-profile`, and interactive
+`enrich-set` subcommands:
 
 ```bash
 draftomen-tui
@@ -122,6 +123,21 @@ To generate a deterministic set profile from pinned input files, use
 card-database, and output paths. The producer and cache workflow, including
 remote manifest fields, validation, refresh, recovery, and explicit provider
 ingestion, is documented in [set profiles](docs/set-profiles.md).
+
+To enrich one set from a published draft guide, use the interactive
+`enrich-set` command. It freezes the given guide URL and the pinned card data
+under the selected output directory, streams per-phase progress with running
+token and cost accounting, prints a review of accepted, uncertain, rejected,
+and failed findings with source, model, prompt, and path provenance, and
+publishes the metadata-only QuickDraft profile only for an explicit `Confirm`
+at the prompt. Every other input, including an empty line, cancels, publishes
+nothing, and keeps the resumable work for a later run:
+
+```bash
+draftomen-tui enrich-set LCI \
+  --guide-url https://draftsim.com/mtg-lci-draft-guide/ \
+  --output-dir "$HOME/.draftomen/set-enrichment"
+```
 
 ### Static set card data
 

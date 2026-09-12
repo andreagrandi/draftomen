@@ -3,6 +3,26 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Add the interactive terminal `enrich-set` command that turns the UI-neutral
+  set-enrichment workflow into one operator journey on the packaged `draftomen-tui`
+  executable: `draftomen-tui enrich-set SET --guide-url URL --output-dir PATH` streams one
+  flushed stderr line per guide, capability, candidate and relationship progress event with
+  completed/total counts, percentages, tokens, live and projected cost, and executed/reused
+  work; prints a plain-text review whose sections separate guide mechanics, Oracle-validated
+  card mechanic support grouped by capability role, format/archetype/uncategorised strategy
+  claims, named strategy claims with their resolved card names, projected inferred synergies,
+  aggregated uncertain reasons, rejected and malformed diagnostics with deterministic subject
+  labels, source, guide, model and prompt provenance, the full run, work, card-data and
+  pending artifact paths, and the reconciled final accounting; defaults every ambiguous
+  decision point — blank input, `Cancel`, end of input, an interrupt — to Cancel, accepts only
+  an exact `Confirm`, and reports one-shot invalid input as a cancellation; delegates every
+  reviewed-artifact and profile transition to `finalize_set_enrichment` and never generates a
+  profile itself, so Cancel prints `profile=not-published` while a Confirm reports the profile
+  path, the generation report, and the matching profile and gzip checksums; returns 130 with
+  the resumable-work location when analysis is cancelled or interrupted while keeping the
+  durable prefix, and reduces every workflow failure to one bounded, path-free
+  `enrich-set failed:` line with exit code 1 — retaining the reviewed artifact path when
+  confirmation failed after publication of the review. (#504)
 - Run one set-enrichment analysis as a resumable, UI-neutral workflow through
   `analyze_set_enrichment`, and publish its reviewed outcome through
   `finalize_set_enrichment`, instead of leaving the extraction engine, the

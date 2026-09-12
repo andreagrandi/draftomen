@@ -34,6 +34,14 @@ from draftomen.profile_input_cache import ProfileInputCache
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.profile_refresh_execution import load_staged_profile_build_bundle
 from draftomen.refresh_plan import LifecycleMetadata, PlannedEnvironment, RefreshPlan, write_refresh_plan
+from draftomen.semantic_enrichment_records import FindingStatus
+from draftomen.set_enrichment import (
+    EnrichmentAccounting,
+    EnrichmentOutcome,
+    EnrichmentPhase,
+    EnrichmentProgress,
+)
+from draftomen.set_enrichment_workflow import ANALYSIS_ERROR, NO_PUBLISHABLE_ERROR
 from draftomen.set_profile import (
     SetProfile,
     dump_set_profile,
@@ -116,6 +124,7 @@ def test_tui_parser_uses_tui_command_name(
         ("execute-profile-refresh", "Acquire and stage"),
         ("generate-profile-refresh-batch", "Generate profiles"),
         ("export-set-data", "Export"),
+        ("enrich-set", "Freeze"),
     ],
 )
 def test_subcommands_are_registered_with_help_text(
@@ -2957,3 +2966,658 @@ def test_generate_profile_refresh_batch_cli_is_deterministic_and_preserves_parti
         assert b"Support Creature" not in payload
         assert b"fixture-secret" not in payload
         assert b"https://" not in payload
+
+
+def _enrichment_accounting(**overrides: object) -> EnrichmentAccounting:
+    defaults: dict[str, object] = {
+        "executed_work": 3,
+        "reused_work": 0,
+        "work_without_cost": 0,
+        "input_tokens": 1200,
+        "cached_input_tokens": 300,
+        "output_tokens": 200,
+        "reasoning_tokens": 40,
+        "running_cost_usd": "0.006",
+        "projected_final_cost_usd": "0.012",
+    }
+    defaults.update(overrides)
+    return EnrichmentAccounting(**defaults)
+
+
+def _enrichment_progress(
+    phase: EnrichmentPhase,
+    *,
+    accounting: EnrichmentAccounting | None = None,
+    **counters: int,
+) -> EnrichmentProgress:
+    defaults = {
+        "guides_completed": 0,
+        "guides_total": 1,
+        "cards_completed": 0,
+        "cards_total": 296,
+        "relationships_completed": 0,
+        "relationships_total": 4,
+        "valid_count": 0,
+        "uncertain_count": 0,
+        "rejected_count": 0,
+    }
+    defaults.update(counters)
+    return EnrichmentProgress(
+        phase=phase,
+        accounting=_enrichment_accounting() if accounting is None else accounting,
+        **defaults,
+    )
+
+
+def _enrichment_review_analysis(tmp_path: Path) -> SimpleNamespace:
+    """Build one complete pending analysis covering every review report category.
+    Claim text stays name-neutral so resolved card names appear exactly once.
+    """
+
+    same_reason = "Needs more context."
+    cards = tuple(
+        SimpleNamespace(grp_id=card_id, name=name)
+        for card_id, name in (
+            (1, "Alpha"),
+            (2, "Beta"),
+            (3, "Gamma"),
+            (4, "Delta"),
+            (5, "Epsilon"),
+            (6, "Zeta"),
+        )
+    )
+
+    def review(status: FindingStatus, reason: str | None = None) -> SimpleNamespace:
+        return SimpleNamespace(status=status, reason=reason)
+
+    guide_claims = (
+        SimpleNamespace(
+            category="mechanic",
+            name="Token creation",
+            claim="Creates creature tokens from a spell.",
+            card_ids=(),
+            review=review(FindingStatus.ACCEPTED),
+        ),
+        SimpleNamespace(
+            category="format_finding",
+            name="Limited",
+            claim="The format rewards efficient early plays.",
+            card_ids=(),
+            review=review(FindingStatus.ACCEPTED),
+        ),
+        SimpleNamespace(
+            category="archetype",
+            name="Tokens",
+            claim="Token decks can go wide.",
+            card_ids=(),
+            review=review(FindingStatus.UNCERTAIN, same_reason),
+        ),
+        SimpleNamespace(
+            category="strategy",
+            name="Go wide",
+            claim="Build a broad battlefield.",
+            card_ids=(),
+            review=review(FindingStatus.ACCEPTED),
+        ),
+        SimpleNamespace(
+            category="strategy",
+            name="single-card plan",
+            claim="Use the first payoff.",
+            card_ids=(4,),
+            review=review(FindingStatus.UNCERTAIN, same_reason),
+        ),
+        SimpleNamespace(
+            category="strategy",
+            name="paired plan",
+            claim="Pair these cards for a closing line.",
+            card_ids=(5, 6),
+            review=review(FindingStatus.UNCERTAIN, same_reason),
+        ),
+    )
+    oracle_facts = (
+        SimpleNamespace(
+            kind="token_maker",
+            claim='{"card_name":"Token Maker","role":"token_maker"}',
+            review=review(FindingStatus.ACCEPTED),
+        ),
+        SimpleNamespace(
+            kind="token_maker",
+            claim="PRIVATE-MODEL-CONTENT",
+            review=review(FindingStatus.UNCERTAIN, same_reason),
+        ),
+        SimpleNamespace(
+            kind="go_wide_payoff",
+            claim="Supports a wide battlefield.",
+            review=review(FindingStatus.ACCEPTED),
+        ),
+        SimpleNamespace(
+            kind="combat_trick",
+            claim="A combat trick.",
+            review=review(FindingStatus.UNCERTAIN, None),
+        ),
+    )
+    relationships = (
+        SimpleNamespace(
+            participants=(1, 2),
+            mechanism="token-death-payoff",
+            claim="The enabler supports the token payoff.",
+            review=review(FindingStatus.ACCEPTED),
+        ),
+        SimpleNamespace(
+            participants=(2, 3),
+            mechanism="draw-payoff",
+            claim="The pair generates cards.",
+            review=review(FindingStatus.UNCERTAIN, "Evidence is incomplete."),
+        ),
+    )
+    accounting = _enrichment_accounting()
+    run = SimpleNamespace(
+        outcome=EnrichmentOutcome.COMPLETE,
+        set_source_sha256="b" * 64,
+        guide_ids=("guide-1",),
+        guide_results=(SimpleNamespace(malformed_reason="guide response malformed."),),
+        card_ids=(1, 2),
+        card_results=(
+            SimpleNamespace(malformed_reason="card response malformed."),
+            SimpleNamespace(malformed_reason=None),
+        ),
+        relationship_results=(
+            SimpleNamespace(malformed_reason="relationship response malformed."),
+        ),
+        progress=SimpleNamespace(accounting=accounting),
+    )
+    artifact = SimpleNamespace(
+        set_code="tst",
+        review=SimpleNamespace(state="pending"),
+        guides=(
+            SimpleNamespace(
+                url="https://guide.example.test/tst",
+                sha256="c" * 64,
+            ),
+        ),
+        runs=(
+            SimpleNamespace(
+                provider="openrouter",
+                model="model-a",
+                reasoning=SimpleNamespace(effort="medium"),
+                prompt_id="prompt-a",
+                response_schema_id="schema-a",
+            ),
+            SimpleNamespace(
+                provider="openrouter",
+                model="model-a",
+                reasoning=SimpleNamespace(effort=None),
+                prompt_id="prompt-a",
+                response_schema_id="schema-a",
+            ),
+            SimpleNamespace(
+                provider="other",
+                model="model-b",
+                reasoning=SimpleNamespace(effort="low"),
+                prompt_id="prompt-b",
+                response_schema_id="schema-b",
+            ),
+        ),
+        oracle_facts=oracle_facts,
+        guide_claims=guide_claims,
+        relationships=relationships,
+        rejected_findings=(
+            SimpleNamespace(
+                source_kind="guide",
+                summary="unsupported claim",
+                reason="schema rejected.",
+            ),
+        ),
+    )
+    return SimpleNamespace(
+        set_code="tst",
+        output_dir=tmp_path,
+        run_dir=tmp_path / "enrichment-runs" / "tst" / "run-1",
+        work_dir=tmp_path / "enrichment-work" / "tst",
+        card_database_path=tmp_path / "card-data" / "tst.json",
+        sources=SimpleNamespace(cards=cards),
+        run=run,
+        counts=SimpleNamespace(accepted=7, uncertain=4, rejected=2, failed=1),
+        artifact=artifact,
+        artifact_path=tmp_path / "artifacts" / "pending.json",
+    )
+
+
+def _enrichment_handler_argv(output_dir: Path) -> list[str]:
+    return [
+        "enrich-set",
+        "TST",
+        "--guide-url",
+        "https://guide.example.test/tst",
+        "--output-dir",
+        str(output_dir),
+    ]
+
+
+def _complete_enrichment_analysis(output_dir: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        output_dir=output_dir,
+        run=SimpleNamespace(outcome=EnrichmentOutcome.COMPLETE),
+    )
+
+
+def test_enrich_set_parser_registers_arguments_and_requires_each_input() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        args=[
+            "enrich-set",
+            "LCI",
+            "--guide-url",
+            "https://x/y",
+            "--output-dir",
+            "/tmp/enrichment",
+        ]
+    )
+
+    assert args.set == "LCI"
+    assert args.guide_url == "https://x/y"
+    assert args.output_dir == Path("/tmp/enrichment")
+    assert args.handler is cli.handle_enrich_set
+
+    missing_arguments = (
+        ["enrich-set", "--guide-url", "https://x/y", "--output-dir", "/tmp/enrichment"],
+        ["enrich-set", "LCI", "--output-dir", "/tmp/enrichment"],
+        ["enrich-set", "LCI", "--guide-url", "https://x/y"],
+    )
+    for missing in missing_arguments:
+        with pytest.raises(SystemExit) as error:
+            parser.parse_args(args=missing)
+        assert error.value.code == 2
+
+
+def test_enrich_set_help_does_not_require_credentials_or_invoke_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    def unexpected_analysis(**kwargs: object) -> NoReturn:
+        raise AssertionError("analysis must not run for --help")
+
+    monkeypatch.setattr(cli, "analyze_set_enrichment", unexpected_analysis)
+
+    with pytest.raises(SystemExit) as error:
+        main(argv=["enrich-set", "--help"])
+
+    assert error.value.code == 0
+
+
+@pytest.mark.parametrize(
+    ("phase", "counters", "projected", "expected"),
+    [
+        (
+            EnrichmentPhase.GUIDES,
+            {"guides_completed": 1, "guides_total": 2},
+            "0.012",
+            "enrich-set progress: guide analysis 1/2 (50.0%) input_tokens=1200 cached_input_tokens=300 output_tokens=200 reasoning_tokens=40 executed_work=3 reused_work=0 work_without_cost=0 actual_cost_usd=0.006 projected_final_cost_usd=0.012\n",
+        ),
+        (
+            EnrichmentPhase.CARD_CAPABILITIES,
+            {"cards_completed": 296, "cards_total": 296},
+            "0.012",
+            "enrich-set progress: card analysis 296/296 (100.0%) input_tokens=1200 cached_input_tokens=300 output_tokens=200 reasoning_tokens=40 executed_work=3 reused_work=0 work_without_cost=0 actual_cost_usd=0.006 projected_final_cost_usd=0.012\n",
+        ),
+        (
+            EnrichmentPhase.CANDIDATES,
+            {"relationships_completed": 2, "relationships_total": 4},
+            None,
+            "enrich-set progress: candidate validation 2/4 (50.0%) input_tokens=1200 cached_input_tokens=300 output_tokens=200 reasoning_tokens=40 executed_work=3 reused_work=0 work_without_cost=0 actual_cost_usd=0.006 projected_final_cost_usd=unknown\n",
+        ),
+        (
+            EnrichmentPhase.RELATIONSHIPS,
+            {"relationships_completed": 3, "relationships_total": 4},
+            "0.012",
+            "enrich-set progress: candidate validation 3/4 (75.0%) input_tokens=1200 cached_input_tokens=300 output_tokens=200 reasoning_tokens=40 executed_work=3 reused_work=0 work_without_cost=0 actual_cost_usd=0.006 projected_final_cost_usd=0.012\n",
+        ),
+    ],
+)
+def test_print_enrichment_progress_maps_phases_and_preserves_accounting(
+    phase: EnrichmentPhase,
+    counters: dict[str, int],
+    projected: str | None,
+    expected: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    accounting = _enrichment_accounting(projected_final_cost_usd=projected)
+
+    cli._print_enrichment_progress(
+        _enrichment_progress(phase, accounting=accounting, **counters)
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == expected
+
+
+def test_print_enrichment_progress_reports_reused_work_without_executed_work(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._print_enrichment_progress(
+        _enrichment_progress(
+            EnrichmentPhase.CARD_CAPABILITIES,
+            accounting=_enrichment_accounting(executed_work=0, reused_work=7),
+            cards_completed=296,
+            cards_total=296,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "enrich-set progress: card analysis 296/296 (100.0%) "
+        "input_tokens=1200 cached_input_tokens=300 output_tokens=200 reasoning_tokens=40 "
+        "executed_work=0 reused_work=7 work_without_cost=0 actual_cost_usd=0.006 "
+        "projected_final_cost_usd=0.012\n"
+    )
+
+
+def test_format_enrichment_review_renders_complete_typed_report_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    analysis = _enrichment_review_analysis(tmp_path)
+
+    report = cli._format_enrichment_review(analysis)
+
+    expected = f"""Draft Omen set enrichment review
+Set: TST
+Findings: accepted=7 uncertain=4 rejected=2 failed=1
+Mechanics
+- [accepted] Token creation: Creates creature tokens from a spell.
+Card mechanic support
+- combat_trick: accepted=0 uncertain=1
+- go_wide_payoff: accepted=1 uncertain=0
+- token_maker: accepted=1 uncertain=1
+Format, colors, and archetypes
+- [accepted] format_finding Limited: The format rewards efficient early plays.
+- [uncertain] archetype Tokens: Token decks can go wide.
+- [accepted] strategy Go wide: Build a broad battlefield.
+Named synergies
+- [uncertain] Delta (single-card plan): Use the first payoff.
+- [uncertain] Epsilon+Zeta (paired plan): Pair these cards for a closing line.
+Inferred synergies
+- [accepted] Alpha+Beta (token-death-payoff): The enabler supports the token payoff.
+- [uncertain] Beta+Gamma (draw-payoff): The pair generates cards.
+Uncertainty
+- 1x Evidence is incomplete.
+- 4x Needs more context.
+Validation failures
+- guide unsupported claim: schema rejected.
+- guide guide-1: guide response malformed.
+- card 1: card response malformed.
+- relationship 1: relationship response malformed.
+Provenance
+Source: set=tst sha256={"b" * 64}
+Guide: https://guide.example.test/tst sha256={"c" * 64}
+Model: provider=openrouter model=model-a reasoning=medium
+Model: provider=openrouter model=model-a reasoning=none
+Model: provider=other model=model-b reasoning=low
+Prompt: prompt-a schema=schema-a
+Prompt: prompt-b schema=schema-b
+Paths
+Run: {analysis.run_dir}
+Work: {analysis.work_dir}
+Card data: {analysis.card_database_path}
+Pending enrichment: {analysis.artifact_path}
+Final accounting: input_tokens=1200 cached_input_tokens=300 output_tokens=200 reasoning_tokens=40 executed_work=3 reused_work=0 work_without_cost=0 actual_cost_usd=0.006 projected_final_cost_usd=0.012 final_cost_usd=0.006
+"""
+
+    assert report == expected
+    assert '{"card_name":"Token Maker","role":"token_maker"}' not in report
+    assert "PRIVATE-MODEL-CONTENT" not in report
+    assert report.count("Delta") == 1
+    assert report.count("Epsilon") == 1
+    assert report.count("Zeta") == 1
+
+
+def test_format_enrichment_review_renders_none_for_empty_inferred_section(
+    tmp_path: Path,
+) -> None:
+    analysis = _enrichment_review_analysis(tmp_path)
+    analysis.artifact.relationships = ()
+
+    report = cli._format_enrichment_review(analysis)
+
+    assert "Inferred synergies\nnone\nUncertainty\n" in report
+
+
+def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    analysis = _complete_enrichment_analysis(tmp_path)
+    finalize_calls: dict[str, object] = {}
+    publication = SimpleNamespace(
+        artifact_path=tmp_path / "profile.json.gz",
+        manifest_path=tmp_path / "generation.json",
+        generation=SimpleNamespace(
+            report=SimpleNamespace(
+                profile_sha256="profile-sha",
+                gzip_sha256="gzip-sha",
+            )
+        ),
+    )
+
+    monkeypatch.setattr(cli, "analyze_set_enrichment", lambda **kwargs: analysis)
+    monkeypatch.setattr(cli, "_format_enrichment_review", lambda value: "")
+    monkeypatch.setattr("builtins.input", lambda prompt: "Confirm")
+
+    def finalize(**kwargs: object) -> SimpleNamespace:
+        finalize_calls.update(kwargs)
+        return SimpleNamespace(
+            decision=cli.EnrichmentReviewDecision.CONFIRM,
+            artifact=SimpleNamespace(),
+            artifact_path=tmp_path / "confirmed.json",
+            publication=publication,
+        )
+
+    monkeypatch.setattr(cli, "finalize_set_enrichment", finalize)
+
+    exit_code = main(argv=_enrichment_handler_argv(tmp_path))
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == (
+        "decision=Confirm\n"
+        f"enrichment_artifact={tmp_path / 'confirmed.json'}\n"
+        f"profile={tmp_path / 'profile.json.gz'}\n"
+        f"generation_report={tmp_path / 'generation.json'}\n"
+        "profile_sha256=profile-sha\n"
+        "gzip_sha256=gzip-sha\n"
+    )
+    assert captured.err == ""
+    assert finalize_calls["reviewer_id"] == "draftomen-tui"
+    assert finalize_calls["decision"] is cli.EnrichmentReviewDecision.CONFIRM
+    assert isinstance(finalize_calls["reviewed_at"], datetime)
+    assert finalize_calls["reviewed_at"].tzinfo is not None
+
+
+@pytest.mark.parametrize(
+    ("input_value", "invalid", "leading_newline"),
+    [
+        ("Cancel", False, False),
+        ("", False, False),
+        ("   ", False, False),
+        ("confirm", True, False),
+        ("yes", True, False),
+        (EOFError(), False, True),
+        (KeyboardInterrupt(), False, True),
+    ],
+    ids=[
+        "explicit-cancel",
+        "blank",
+        "whitespace",
+        "lowercase-confirm",
+        "yes",
+        "eof",
+        "prompt-ctrl-c",
+    ],
+)
+def test_handle_enrich_set_defaults_every_non_confirm_decision_to_cancel(
+    input_value: str | BaseException,
+    invalid: bool,
+    leading_newline: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    analysis = _complete_enrichment_analysis(tmp_path)
+    decisions: list[object] = []
+
+    monkeypatch.setattr(cli, "analyze_set_enrichment", lambda **kwargs: analysis)
+    monkeypatch.setattr(cli, "_format_enrichment_review", lambda value: "")
+
+    def input_value_or_raise(prompt: str) -> str:
+        if isinstance(input_value, BaseException):
+            raise input_value
+        return input_value
+
+    monkeypatch.setattr("builtins.input", input_value_or_raise)
+    monkeypatch.setattr(
+        cli,
+        "finalize_set_enrichment",
+        lambda **kwargs: (
+            decisions.append(kwargs["decision"])
+            or SimpleNamespace(
+                decision=cli.EnrichmentReviewDecision.CANCEL,
+                artifact=SimpleNamespace(),
+                artifact_path=tmp_path / "cancelled.json",
+                publication=None,
+            )
+        ),
+    )
+
+    exit_code = main(argv=_enrichment_handler_argv(tmp_path))
+
+    captured = capsys.readouterr()
+    prefix = "\n" if leading_newline else ""
+    assert exit_code == 0
+    assert captured.out == (
+        prefix
+        + "decision=Cancel\n"
+        + f"enrichment_artifact={tmp_path / 'cancelled.json'}\n"
+        + "profile=not-published\n"
+    )
+    assert captured.err == (
+        "Invalid decision; cancelling.\n" if invalid else ""
+    )
+    assert decisions == [cli.EnrichmentReviewDecision.CANCEL]
+
+
+@pytest.mark.parametrize("analysis_mode", ["cancelled", "keyboard-interrupt"])
+def test_handle_enrich_set_analysis_cancellation_preserves_work_and_skips_finalize(
+    analysis_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    finalize_called = False
+
+    if analysis_mode == "cancelled":
+        monkeypatch.setattr(
+            cli,
+            "analyze_set_enrichment",
+            lambda **kwargs: SimpleNamespace(
+                output_dir=tmp_path,
+                run=SimpleNamespace(outcome=EnrichmentOutcome.CANCELLED),
+            ),
+        )
+    else:
+        def interrupted_analysis(**kwargs: object) -> NoReturn:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "analyze_set_enrichment", interrupted_analysis)
+
+    def unexpected_finalize(**kwargs: object) -> NoReturn:
+        nonlocal finalize_called
+        finalize_called = True
+        raise AssertionError("finalization must not run")
+
+    monkeypatch.setattr(cli, "finalize_set_enrichment", unexpected_finalize)
+
+    exit_code = main(argv=_enrichment_handler_argv(tmp_path))
+
+    captured = capsys.readouterr()
+    assert exit_code == 130
+    assert captured.out == ""
+    assert captured.err == (
+        f"enrich-set cancelled: resumable work preserved under {tmp_path}\n"
+    )
+    assert finalize_called is False
+
+
+def test_handle_enrich_set_analysis_errors_are_bounded_and_path_free(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    sentinel = "PRIVATE-ANALYSIS-CAUSE"
+
+    def fail_analysis(**kwargs: object) -> NoReturn:
+        try:
+            raise RuntimeError(sentinel)
+        except RuntimeError as cause:
+            raise cli.SetEnrichmentWorkflowError(ANALYSIS_ERROR) from cause
+
+    monkeypatch.setattr(cli, "analyze_set_enrichment", fail_analysis)
+
+    exit_code = main(argv=_enrichment_handler_argv(tmp_path))
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "enrich-set failed: Set-enrichment analysis failed.\n"
+    assert sentinel not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("message", "with_review_result"),
+    [
+        (NO_PUBLISHABLE_ERROR, True),
+        (cli.PROFILE_PUBLICATION_ERROR, True),
+        (cli.INCOMPLETE_ANALYSIS_ERROR, False),
+    ],
+    ids=["no-publishable-retains-review", "publication-retains-review", "without-review"],
+)
+def test_handle_enrich_set_finalization_failures_report_only_retained_review(
+    message: str,
+    with_review_result: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    analysis = _complete_enrichment_analysis(tmp_path)
+    retained_path = tmp_path / "confirmed.json"
+
+    monkeypatch.setattr(cli, "analyze_set_enrichment", lambda **kwargs: analysis)
+    monkeypatch.setattr(cli, "_format_enrichment_review", lambda value: "")
+    monkeypatch.setattr("builtins.input", lambda prompt: "Confirm")
+
+    def fail_finalize(**kwargs: object) -> NoReturn:
+        review_result = (
+            SimpleNamespace(artifact_path=retained_path)
+            if with_review_result
+            else None
+        )
+        raise cli.SetEnrichmentWorkflowError(message, review_result=review_result)
+
+    monkeypatch.setattr(cli, "finalize_set_enrichment", fail_finalize)
+
+    exit_code = main(argv=_enrichment_handler_argv(tmp_path))
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err == f"enrich-set failed: {message}\n"
+    if with_review_result:
+        assert captured.out == (
+            "decision=Confirm\n"
+            f"enrichment_artifact={retained_path}\n"
+            "profile=not-published\n"
+        )
+    else:
+        assert captured.out == ""
+
