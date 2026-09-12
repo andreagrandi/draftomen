@@ -23,8 +23,13 @@ from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.guide_client import GuideClient
 from draftomen.openrouter_client import OpenRouterResponse
 from draftomen.profile_publication import ProfilePublicationError
+from draftomen.semantic_capability_records import CapabilityQuantity, CapabilityZone, QuantityRelation
 from draftomen.semantic_enrichment import SemanticEnrichmentArtifact
 from draftomen.semantic_enrichment_records import FindingStatus
+from draftomen.semantic_relationship_records import (
+    PREREQUISITE_CONTRADICTION_MESSAGE,
+    RelationshipPrerequisiteProjection,
+)
 from draftomen.set_card_data import SetCardData
 from draftomen.set_enrichment import EnrichmentOutcome, EnrichmentPhase, EnrichmentProgress
 from draftomen.set_enrichment_candidates import CandidateBounds, MAX_PAIR_WORK_OMITTED_REASON
@@ -35,7 +40,7 @@ from draftomen.set_enrichment_extraction import (
     ExtractionRequest,
 )
 from draftomen.set_enrichment_work import WorkIdentity, WorkKind, WorkModelConfig
-from draftomen.set_profile import SetProfile
+from draftomen.set_profile import SetProfile, load_set_profile
 
 
 SET_CODE = "TST"
@@ -62,6 +67,8 @@ WIDE_QUOTE = "Creatures you control get +1/+0 for each other creature you contro
 DRAW_ID = 3
 DRAW_NAME = "Card Draw"
 DRAW_QUOTE = "When this enters the battlefield, draw a card."
+TYPED_PAYOFF_QUOTE = "Creatures you control get +1/+1."
+TYPED_RELATIONSHIP_CLAIM = "The token maker supplies the wide payoff with the creatures it asks for."
 
 
 class _Response:
@@ -370,6 +377,9 @@ def _capability_content(
 
 
 def _relationship_content(request: dict[str, Any], *, status: str) -> str:
+    """Build the advisory v2 verdict one relationship request answers with.
+    The typed prerequisites stay advisory, so no projection is fabricated.
+    """
     source = request["source"]
     target = request["target"]
     if status == "malformed":
@@ -377,7 +387,7 @@ def _relationship_content(request: dict[str, Any], *, status: str) -> str:
     reason = None if status == "accepted" else "The interaction needs review."
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "verdict": status,
             "claim": "The token engine feeds the wide payoff.",
             "reason": reason,
@@ -392,6 +402,154 @@ def _relationship_content(request: dict[str, Any], *, status: str) -> str:
                     "face_index": target["face_index"],
                     "quote": target["evidence"][0]["quote"],
                 },
+            ],
+            "prerequisite_status": "uncertain",
+            "source_prerequisites": [],
+            "target_prerequisites": [],
+        }
+    )
+
+
+def _typed_cards() -> tuple[CardInfo, ...]:
+    """Return the frozen two-card source of the typed prerequisite fixture."""
+    return (
+        _card(card_id=TOKEN_ID, name=TOKEN_NAME, oracle_text=TOKEN_QUOTE),
+        _card(card_id=WIDE_ID, name=WIDE_NAME, oracle_text=TYPED_PAYOFF_QUOTE),
+    )
+
+
+def _typed_capability_content(payload: dict[str, Any]) -> str:
+    """Build the typed token-maker or wide-payoff capability of one fixture card."""
+    card = payload["card"]
+    if card["card_id"] == TOKEN_ID:
+        finding_id, role = "typed-token-maker", "token_maker"
+    elif card["card_id"] == WIDE_ID:
+        finding_id, role = "typed-wide-payoff", "go_wide_payoff"
+    else:
+        raise AssertionError(f"unexpected card id {card['card_id']}")
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "capabilities": [
+                _capability_candidate(
+                    finding_id=finding_id,
+                    card_id=card["card_id"],
+                    card_name=card["name"],
+                    role=role,
+                    quote=card["oracle_text"],
+                )
+            ],
+        }
+    )
+
+
+def _typed_token_output_clause(
+    *,
+    card_id: int,
+    oracle_text: str,
+    colors: Sequence[str] = ("W",),
+) -> dict[str, Any]:
+    """Build one complete `Create two 1/1 white Soldier creature tokens.` output clause.
+
+    `colors` is overridable so one fixture can declare a color its source contradicts.
+    """
+    return {
+        "kind": "condition",
+        "subject": "output",
+        "operation": "create",
+        "object_kind": "token",
+        "card_types": ["creature"],
+        "type_operator": "all_of",
+        "token_restriction": "token",
+        "exclusion": "none",
+        "subtype": "Soldier",
+        "color_operator": "exact",
+        "colors": list(colors),
+        "controller": "you",
+        "owner": "not_applicable",
+        "quantity": {"value": 2, "relation": "exactly"},
+        "source_zone": None,
+        "destination_zone": {"zone": "battlefield", "player": "you"},
+        "timing": {"window": "unrestricted", "turn": "any", "max_per_turn": None},
+        "required_card_id": None,
+        "evidence": {"card_id": card_id, "face_index": None, "quote": oracle_text},
+        "operation_quote": "Create",
+        "operation_occurrence": 0,
+        "object_quote": "two 1/1 white Soldier creature tokens",
+        "object_occurrence": 0,
+        "capability_prerequisite_indices": [],
+    }
+
+
+def _typed_wide_payoff_clause(*, card_id: int, oracle_text: str) -> dict[str, Any]:
+    """Build one complete `Creatures you control get +1/+1.` condition clause."""
+    return {
+        "kind": "condition",
+        "subject": "participant",
+        "operation": "control",
+        "object_kind": "permanent",
+        "card_types": ["creature"],
+        "type_operator": "all_of",
+        "token_restriction": "unrestricted",
+        "exclusion": "none",
+        "subtype": None,
+        "color_operator": "unrestricted",
+        "colors": [],
+        "controller": "you",
+        "owner": "not_applicable",
+        "quantity": None,
+        "source_zone": None,
+        "destination_zone": None,
+        "timing": {"window": "unrestricted", "turn": "any", "max_per_turn": None},
+        "required_card_id": None,
+        "evidence": {"card_id": card_id, "face_index": None, "quote": oracle_text},
+        "operation_quote": "control",
+        "operation_occurrence": 0,
+        "object_quote": "Creatures you control",
+        "object_occurrence": 0,
+        "capability_prerequisite_indices": [],
+    }
+
+
+def _typed_relationship_content(
+    payload: dict[str, Any],
+    *,
+    source_colors: Sequence[str] = ("W",),
+) -> str:
+    """Answer one relationship request with a complete typed token-go-wide projection."""
+    source = payload["source"]
+    target = payload["target"]
+    return json.dumps(
+        {
+            "schema_version": 2,
+            "verdict": "accepted",
+            "claim": TYPED_RELATIONSHIP_CLAIM,
+            "reason": None,
+            "evidence": [
+                {
+                    "card_id": source["card_id"],
+                    "face_index": source["face_index"],
+                    "quote": source["evidence"][0]["quote"],
+                },
+                {
+                    "card_id": target["card_id"],
+                    "face_index": target["face_index"],
+                    "quote": target["evidence"][0]["quote"],
+                },
+            ],
+            "prerequisite_status": "complete",
+            "source_prerequisites": [
+                _typed_token_output_clause(
+                    card_id=source["card_id"],
+                    oracle_text=payload["source_oracle_text"],
+                    colors=source_colors,
+                )
+            ],
+            "target_prerequisites": [
+                _typed_wide_payoff_clause(
+                    card_id=target["card_id"],
+                    oracle_text=payload["target_oracle_text"],
+                )
             ],
         }
     )
@@ -410,6 +568,8 @@ class _Completion:
         duplicate: bool = False,
         counts: bool = False,
         fidelity: bool = False,
+        typed: bool = False,
+        typed_source_colors: Sequence[str] = ("W",),
         malformed_card_ids: tuple[int, ...] = (),
         guide_category: str = "mechanic",
         relationship_mode: str = "accepted",
@@ -422,6 +582,8 @@ class _Completion:
         self.duplicate = duplicate
         self.counts = counts
         self.fidelity = fidelity
+        self.typed = typed
+        self.typed_source_colors = tuple(typed_source_colors)
         self.malformed_card_ids = malformed_card_ids
         self.guide_category = guide_category
         self.relationship_mode = relationship_mode
@@ -443,7 +605,9 @@ class _Completion:
         if request.prompt_id == GUIDE_EXTRACTION_PROMPT_ID:
             content = _guide_content(category=self.guide_category, counts=self.counts)
         elif request.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID:
-            if payload["card"]["card_id"] in self.malformed_card_ids:
+            if self.typed:
+                content = _typed_capability_content(payload)
+            elif payload["card"]["card_id"] in self.malformed_card_ids:
                 content = "{malformed"
             else:
                 content = _capability_content(
@@ -453,24 +617,30 @@ class _Completion:
                     fidelity=self.fidelity,
                 )
         elif request.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID:
-            relationship_index = sum(
-                call.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID for call in self.calls
-            ) - 1
-            if self.relationship_statuses:
-                status = self.relationship_statuses[relationship_index]
-            elif self.relationship_mode == "accepted-pair":
-                source_id = payload["source"]["finding_id"]
-                target_id = payload["target"]["finding_id"]
-                status = (
-                    "accepted"
-                    if (source_id, target_id) in self.accepted_pairs
-                    else "uncertain"
+            if self.typed:
+                content = _typed_relationship_content(
+                    payload,
+                    source_colors=self.typed_source_colors,
                 )
-            elif self.relationship_mode == "mixed":
-                status = "accepted" if len(self.calls) == 5 else "malformed"
             else:
-                status = self.relationship_mode
-            content = _relationship_content(payload, status=status)
+                relationship_index = sum(
+                    call.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID for call in self.calls
+                ) - 1
+                if self.relationship_statuses:
+                    status = self.relationship_statuses[relationship_index]
+                elif self.relationship_mode == "accepted-pair":
+                    source_id = payload["source"]["finding_id"]
+                    target_id = payload["target"]["finding_id"]
+                    status = (
+                        "accepted"
+                        if (source_id, target_id) in self.accepted_pairs
+                        else "uncertain"
+                    )
+                elif self.relationship_mode == "mixed":
+                    status = "accepted" if len(self.calls) == 5 else "malformed"
+                else:
+                    status = self.relationship_mode
+                content = _relationship_content(payload, status=status)
         else:
             raise AssertionError(f"unexpected prompt {request.prompt_id}")
         if self.null_cost_first and index == 0:
@@ -536,6 +706,15 @@ def _run(
         guide_client=guide_client,
         run_id=RUN_ID,
         clock=clock,
+    )
+
+
+def _typed_prerequisite_analysis(tmp_path: Path) -> workflow.SetEnrichmentWorkflowResult:
+    """Run the real pending workflow over one complete typed token-go-wide pair."""
+    return _run(
+        tmp_path,
+        cards=_typed_cards(),
+        completion=_Completion(typed=True),
     )
 
 
@@ -900,7 +1079,7 @@ def test_colliding_capabilities_prefer_accepted_relationship_and_rerun_is_identi
     assert len(first.artifact.relationships) == 1
     selected = first.artifact.relationships[0]
     assert selected.review.status is FindingStatus.ACCEPTED
-    assert selected.identity == ("token-go-wide-payoff", (TOKEN_ID, WIDE_ID))
+    assert selected.prerequisite_projection is None
     assert selected.finding_id.endswith(":relationship:token-go-wide-payoff:1:token-b:2:wide-b")
     assert first.artifact_path is not None
     first_bytes = first.artifact_path.read_bytes()
@@ -1087,6 +1266,129 @@ def test_confirm_selects_all_accepted_relationships_and_publishes_metadata_profi
     assert report.gzip_sha256 == hashlib.sha256(compressed).hexdigest()
     assert report.gzip_bytes == len(compressed)
     assert publication.manifest_path == _profile_marker(result.output_dir)
+
+
+def test_typed_prerequisite_projection_reaches_the_confirmed_profile(tmp_path: Path) -> None:
+    analysis = _typed_prerequisite_analysis(tmp_path)
+    assert analysis.artifact is not None
+    assert analysis.artifact.review.state == "pending"
+    assert len(analysis.artifact.relationships) == 1
+    original = analysis.artifact.relationships[0]
+    projection = original.prerequisite_projection
+    assert projection is not None
+    assert projection.source.card_id == TOKEN_ID
+    assert projection.target.card_id == WIDE_ID
+    assert original.identity[1] == (TOKEN_ID, WIDE_ID)
+    assert original.identity[2] == (
+        TOKEN_ID,
+        "typed-token-maker",
+        -1,
+        WIDE_ID,
+        "typed-wide-payoff",
+        -1,
+    )
+    source_clause = next(
+        clause for clause in projection.source.prerequisites if clause.operation == "create"
+    )
+    assert source_clause.quantity == CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY)
+    assert source_clause.colors == ("W",)
+    assert source_clause.subtype == "soldier"
+    assert source_clause.destination_zone is not None
+    assert source_clause.destination_zone.zone is CapabilityZone.BATTLEFIELD
+    assert source_clause.destination_zone.player == "you"
+    target_clause = next(
+        clause for clause in projection.target.prerequisites if clause.operation == "control"
+    )
+    assert target_clause.controller == "you"
+    assert target_clause.card_types == ("creature",)
+    assert target_clause.quantity is None
+
+    reviewed_at = datetime.fromisoformat(analysis.artifact.created_at.replace("Z", "+00:00"))
+    review = workflow.finalize_set_enrichment(
+        analysis=analysis,
+        decision=workflow.EnrichmentReviewDecision.CONFIRM,
+        reviewer_id="operator",
+        reviewed_at=reviewed_at + timedelta(seconds=1),
+    )
+    assert review.artifact.confirmed_relationship_ids == (original.finding_id,)
+    assert review.publication is not None
+    plain = tmp_path / "loaded-profile.json"
+    plain.write_bytes(gzip.decompress(review.publication.artifact_path.read_bytes()))
+    loaded = load_set_profile(
+        path=plain,
+        expected_set_code=analysis.set_code,
+        expected_format="quickdraft",
+    )
+    assert loaded.enhancement is not None
+    restored = next(
+        relationship
+        for relationship in loaded.enhancement.relationships
+        if relationship.finding_id == original.finding_id
+    )
+    assert restored.prerequisite_projection == projection
+    assert restored.identity == original.identity
+    assert restored.oracle_evidence == original.oracle_evidence
+
+
+def test_contradictory_complete_payload_yields_a_rejected_diagnostic(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        cards=_typed_cards(),
+        completion=_Completion(typed=True, typed_source_colors=("U",)),
+    )
+
+    assert result.run.outcome is EnrichmentOutcome.COMPLETE
+    assert result.artifact is not None
+    (validation,) = result.run.relationship_results
+    assert validation.outcome.value == "success"
+    assert validation.relationship is None
+    assert validation.rejected is not None
+    assert validation.rejected.source_kind == "relationship"
+    assert validation.rejected.summary == TYPED_RELATIONSHIP_CLAIM
+    assert validation.rejected.reason == PREREQUISITE_CONTRADICTION_MESSAGE
+    assert result.counts.rejected == 1
+    assert result.counts.failed == 0
+    assert result.artifact.relationships == ()
+    assert [finding.reason for finding in result.artifact.rejected_findings] == [
+        PREREQUISITE_CONTRADICTION_MESSAGE
+    ]
+    assert result.artifact.review.state == "pending"
+
+    reviewed_at = datetime.fromisoformat(result.artifact.created_at.replace("Z", "+00:00"))
+    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
+        workflow.finalize_set_enrichment(
+            analysis=result,
+            decision=workflow.EnrichmentReviewDecision.CONFIRM,
+            reviewer_id="operator",
+            reviewed_at=reviewed_at + timedelta(seconds=1),
+        )
+    assert str(raised.value) == workflow.NO_PUBLISHABLE_ERROR
+    assert raised.value.review_result is not None
+    assert raised.value.review_result.artifact.confirmed_relationship_ids == ()
+    assert raised.value.review_result.publication is None
+
+
+def test_reversed_direction_never_collapses_during_relationship_grouping(tmp_path: Path) -> None:
+    analysis = _typed_prerequisite_analysis(tmp_path)
+    assert analysis.artifact is not None
+    original = analysis.artifact.relationships[0]
+    projection = original.prerequisite_projection
+    assert projection is not None
+    reversed_relationship = replace(
+        original,
+        finding_id="relationship-reversed",
+        prerequisite_projection=RelationshipPrerequisiteProjection(
+            source=projection.target,
+            target=projection.source,
+        ),
+    )
+
+    assert reversed_relationship.identity != original.identity
+    assert workflow._project_relationships((original, reversed_relationship)) == (
+        original,
+        reversed_relationship,
+    )
+    assert workflow._project_relationships((original, original)) == (original,)
 
 
 def test_no_publishable_confirmation_keeps_review_artifact_and_marker_bytes(
@@ -1760,3 +2062,4 @@ def test_confirm_selection_matrix_covers_mechanic_only_relationship_only_and_unc
         (relationship.mechanism, relationship.participants)
         for relationship in profile.enhancement.relationships
     ) == (accepted_identity,)
+    assert profile.enhancement.relationships[0].prerequisite_projection is None

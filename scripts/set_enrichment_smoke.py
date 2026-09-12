@@ -208,12 +208,14 @@ def _capability_content(card_id: int) -> str:
 
 
 def _relationship_content(prompt: Mapping[str, Any]) -> str:
-    """Return one accepted verdict quoting both participants' exact Oracle text."""
+    """Return one accepted advisory v2 verdict quoting both participants' exact Oracle text.
+    The typed prerequisites stay advisory, so no projection is fabricated.
+    """
     source = prompt["source"]
     target = prompt["target"]
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "verdict": "accepted",
             "claim": RELATIONSHIP_CLAIM,
             "reason": None,
@@ -229,6 +231,9 @@ def _relationship_content(prompt: Mapping[str, Any]) -> str:
                     "quote": target["evidence"][0]["quote"],
                 },
             ],
+            "prerequisite_status": "uncertain",
+            "source_prerequisites": [],
+            "target_prerequisites": [],
         }
     )
 

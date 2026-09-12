@@ -37,7 +37,6 @@ from draftomen.semantic_enrichment import (
 )
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
-    CardRelationship,
     CardSourcePin,
     FindingReview,
     FindingStatus,
@@ -48,7 +47,15 @@ from draftomen.semantic_enrichment_records import (
     OracleEvidence,
     ReasoningConfig,
 )
+from draftomen.semantic_relationship_records import CardRelationship
 from draftomen.set_profile import EnhancementStatus, SetProfile
+
+from tests.test_profile_generation import (
+    TYPED_SOURCE_CARD_ID,
+    TYPED_TARGET_CARD_ID,
+    _typed_database,
+    _typed_enrichment_artifact,
+)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "profile-generation"
@@ -123,10 +130,15 @@ def _config() -> ProfileGenerationConfig:
     )
 
 
-def _write_inputs(tmp_path: Path, *, ratings: bool = False) -> tuple[Path, Path | None]:
+def _write_inputs(
+    tmp_path: Path,
+    *,
+    ratings: bool = False,
+    card_database: CardDatabase | None = None,
+) -> tuple[Path, Path | None]:
     card_database_path = tmp_path / "cards.json"
     card_database_path.write_text(
-        json.dumps(_database().to_json()),
+        json.dumps((_database() if card_database is None else card_database).to_json()),
         encoding="utf-8",
     )
     ratings_path = None
@@ -164,8 +176,13 @@ def _publish(
     draft_source_name: str | None = None,
     enrichment: SemanticEnrichmentArtifact | None = None,
     generated_at: datetime = GENERATED_AT,
+    card_database: CardDatabase | None = None,
 ) -> publication.ProfilePublicationResult:
-    card_database_path, ratings_path = _write_inputs(tmp_path, ratings=ratings)
+    card_database_path, ratings_path = _write_inputs(
+        tmp_path,
+        ratings=ratings,
+        card_database=card_database,
+    )
     return publication.generate_local_profile_artifacts(
         set_code="TST",
         event_format="quickdraft",
@@ -875,6 +892,43 @@ def test_enhanced_publication_round_trips_and_validates_artifact_and_report(
             event_format="quickdraft",
             stage="metadata",
         )
+
+
+def test_enhanced_publication_retains_typed_relationship_prerequisites(
+    tmp_path: Path,
+) -> None:
+    database = _typed_database()
+    card_database_path, _ = _write_inputs(tmp_path, card_database=database)
+    artifact = _typed_enrichment_artifact(
+        sources=_enrichment_sources(load_card_database(cache_path=card_database_path)),
+    )
+    result = _publish(tmp_path, enrichment=artifact, card_database=database)
+
+    profile = SetProfile.from_json(json.loads(gzip.decompress(result.artifact_path.read_bytes())))
+    assert profile.schema_version == 3
+    assert profile.enhancement_status is EnhancementStatus.ENHANCED
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    relationship = enhancement.relationships[0]
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert relationship.participants == (TYPED_TARGET_CARD_ID, TYPED_SOURCE_CARD_ID)
+    assert relationship.identity[2] == (
+        TYPED_SOURCE_CARD_ID,
+        "capability-typed-tokens",
+        -1,
+        TYPED_TARGET_CARD_ID,
+        "capability-typed-anthem",
+        -1,
+    )
+    assert projection.source.card_id == TYPED_SOURCE_CARD_ID
+    assert projection.target.card_id == TYPED_TARGET_CARD_ID
+    assert projection.source.prerequisites[0].colors == ("W",)
+    assert projection.source.prerequisites[0].evidence.quote == (
+        "Create two 1/1 white Soldier creature tokens."
+    )
+    marker = json.loads(result.manifest_path.read_bytes())
+    assert marker["enhancement"]["artifact_sha256"] == hashlib.sha256(artifact.to_bytes()).hexdigest()
 
 
 def _stale_card_artifact(loaded: CardDatabase) -> SemanticEnrichmentArtifact:

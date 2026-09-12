@@ -4,11 +4,18 @@ from dataclasses import FrozenInstanceError, replace
 from decimal import Inexact, Rounded, localcontext
 import hashlib
 import json
+from typing import Any
 
 import pytest
 
 from draftomen.carddb import CardFace, CardInfo
 import draftomen.semantic_enrichment as semantic_enrichment_module
+from draftomen.semantic_capability_records import (
+    CapabilityQuantity,
+    CapabilityZone,
+    PrerequisiteKind,
+    QuantityRelation,
+)
 from draftomen.semantic_enrichment import (
     SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
     EnrichmentSources,
@@ -19,7 +26,6 @@ from draftomen.semantic_enrichment import (
 )
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
-    CardRelationship,
     CardSourcePin,
     FindingReview,
     FindingStatus,
@@ -33,6 +39,16 @@ from draftomen.semantic_enrichment_records import (
     RejectedFinding,
     SemanticEnrichmentError,
 )
+from draftomen.semantic_relationship_records import (
+    CardRelationship,
+    PrerequisiteProjectionError,
+    RelationshipParticipant,
+    RelationshipPrerequisite,
+    RelationshipPrerequisiteProjection,
+    RelationshipTiming,
+    RelationshipZone,
+)
+from draftomen.semantic_roles import Role
 
 
 STARTED_AT = "2026-09-01T12:00:00Z"
@@ -561,7 +577,6 @@ def test_unordered_collections_are_sorted_and_duplicates_rejected() -> None:
     assert relationship.prerequisites == ("a", "z")
     assert [item.card_id for item in relationship.oracle_evidence] == [1, 2, 3]
     assert [item.guide_id for item in relationship.guide_evidence] == ["guide-1", "guide-2"]
-    assert relationship.identity == ("engine", (1, 2, 3))
     with pytest.raises(SemanticEnrichmentError):
         CardRelationship(
             finding_id="relationship",
@@ -1665,3 +1680,465 @@ def test_guide_source_preserves_text_and_rejects_wrong_scalar_types() -> None:
                 text=kwargs.get("text", GUIDE_TEXT),  # type: ignore[arg-type]
                 retrieved_at=kwargs.get("retrieved_at", STARTED_AT),  # type: ignore[arg-type]
             )
+
+
+TYPED_SOURCE_CARD_ID = 301
+TYPED_TARGET_CARD_ID = 11
+TYPED_SOURCE_CARD_NAME = "Typed Token Enabler"
+TYPED_TARGET_CARD_NAME = "Typed Wide Payoff"
+TYPED_TOKEN_PARAGRAPH = "Create two 1/1 white Soldier creature tokens."
+TYPED_ANTHEM_PARAGRAPH = "Creatures you control get +1/+1."
+TYPED_TOKEN_QUANTITY = CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY)
+
+
+def _typed_source_card(*, oracle_text: str = TYPED_TOKEN_PARAGRAPH) -> CardInfo:
+    return replace(
+        _source_card(TYPED_SOURCE_CARD_ID, TYPED_SOURCE_CARD_NAME, oracle_text, type_line="Creature"),
+        colors=("U", "B"),
+    )
+
+
+def _typed_target_card(*, oracle_text: str = TYPED_ANTHEM_PARAGRAPH) -> CardInfo:
+    return _source_card(TYPED_TARGET_CARD_ID, TYPED_TARGET_CARD_NAME, oracle_text, type_line="Creature")
+
+
+def _typed_sources(*, cards: tuple[CardInfo, ...] | None = None) -> EnrichmentSources:
+    return _sources(
+        cards=(
+            (*_default_cards(), _typed_source_card(), _typed_target_card())
+            if cards is None
+            else cards
+        )
+    )
+
+
+def _typed_zone() -> RelationshipZone:
+    return RelationshipZone(zone=CapabilityZone.BATTLEFIELD, player="you")
+
+
+def _typed_timing() -> RelationshipTiming:
+    return RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None)
+
+
+def _typed_source_clause(**overrides: Any) -> RelationshipPrerequisite:
+    """Build one complete source-side token output clause."""
+    values: dict[str, Any] = {
+        "kind": PrerequisiteKind.CONDITION,
+        "subject": "output",
+        "operation": "create",
+        "object_kind": "token",
+        "card_types": ("creature",),
+        "type_operator": "all_of",
+        "token_restriction": "token",
+        "exclusion": "none",
+        "subtype": "Soldier",
+        "color_operator": "exact",
+        "colors": ("W",),
+        "controller": "you",
+        "owner": "not_applicable",
+        "quantity": TYPED_TOKEN_QUANTITY,
+        "source_zone": None,
+        "destination_zone": _typed_zone(),
+        "timing": _typed_timing(),
+        "required_card_id": None,
+        "evidence": OracleEvidence(
+            card_id=TYPED_SOURCE_CARD_ID,
+            face_index=None,
+            quote=TYPED_TOKEN_PARAGRAPH,
+        ),
+        "operation_quote": "Create",
+        "operation_occurrence": 0,
+        "object_quote": "two 1/1 white Soldier creature tokens",
+        "object_occurrence": 0,
+        "capability_prerequisite_indices": (),
+    }
+    values.update(overrides)
+    return RelationshipPrerequisite(**values)  # type: ignore[arg-type]
+
+
+def _typed_target_clause(**overrides: Any) -> RelationshipPrerequisite:
+    """Build one complete target-side creature-control condition clause."""
+    values: dict[str, Any] = {
+        "kind": PrerequisiteKind.CONDITION,
+        "subject": "participant",
+        "operation": "control",
+        "object_kind": "permanent",
+        "card_types": ("creature",),
+        "type_operator": "all_of",
+        "token_restriction": "unrestricted",
+        "exclusion": "none",
+        "subtype": None,
+        "color_operator": "unrestricted",
+        "colors": (),
+        "controller": "you",
+        "owner": "not_applicable",
+        "quantity": None,
+        "source_zone": None,
+        "destination_zone": None,
+        "timing": _typed_timing(),
+        "required_card_id": None,
+        "evidence": OracleEvidence(
+            card_id=TYPED_TARGET_CARD_ID,
+            face_index=None,
+            quote=TYPED_ANTHEM_PARAGRAPH,
+        ),
+        "operation_quote": "control",
+        "operation_occurrence": 0,
+        "object_quote": "Creatures you control",
+        "object_occurrence": 0,
+        "capability_prerequisite_indices": (),
+    }
+    values.update(overrides)
+    return RelationshipPrerequisite(**values)  # type: ignore[arg-type]
+
+
+def _typed_source_participant(**overrides: Any) -> RelationshipParticipant:
+    """Build the token-making participant of the typed fixture pair."""
+    values: dict[str, Any] = {
+        "card_id": TYPED_SOURCE_CARD_ID,
+        "capability_id": "capability-typed-tokens",
+        "card_name": TYPED_SOURCE_CARD_NAME,
+        "face_index": None,
+        "face_name": None,
+        "card_source_sha256": card_source_sha256(_typed_source_card()),
+        "role": Role.TOKEN_MAKER,
+        "capability_prerequisites": (),
+        "prerequisites": (_typed_source_clause(),),
+    }
+    values.update(overrides)
+    return RelationshipParticipant(**values)  # type: ignore[arg-type]
+
+
+def _typed_target_participant(**overrides: Any) -> RelationshipParticipant:
+    """Build the go-wide payoff participant of the typed fixture pair."""
+    values: dict[str, Any] = {
+        "card_id": TYPED_TARGET_CARD_ID,
+        "capability_id": "capability-typed-anthem",
+        "card_name": TYPED_TARGET_CARD_NAME,
+        "face_index": None,
+        "face_name": None,
+        "card_source_sha256": card_source_sha256(_typed_target_card()),
+        "role": Role.GO_WIDE_PAYOFF,
+        "capability_prerequisites": (),
+        "prerequisites": (_typed_target_clause(),),
+    }
+    values.update(overrides)
+    return RelationshipParticipant(**values)  # type: ignore[arg-type]
+
+
+def _typed_projection(**overrides: Any) -> RelationshipPrerequisiteProjection:
+    """Build one complete typed prerequisite projection."""
+    values: dict[str, Any] = {
+        "source": _typed_source_participant(),
+        "target": _typed_target_participant(),
+    }
+    values.update(overrides)
+    return RelationshipPrerequisiteProjection(**values)  # type: ignore[arg-type]
+
+
+def _typed_relationship(**overrides: Any) -> CardRelationship:
+    """Build one accepted relationship carrying the typed projection."""
+    values: dict[str, Any] = {
+        "finding_id": "relationship:token-go-wide-payoff:301:11",
+        "mechanism": "token-go-wide-payoff",
+        "participants": (TYPED_TARGET_CARD_ID, TYPED_SOURCE_CARD_ID),
+        "claim": "The token maker feeds the go-wide payoff.",
+        "prerequisites": ("A creature token is created.",),
+        "oracle_evidence": (
+            OracleEvidence(
+                card_id=TYPED_SOURCE_CARD_ID,
+                face_index=None,
+                quote=TYPED_TOKEN_PARAGRAPH,
+            ),
+            OracleEvidence(
+                card_id=TYPED_TARGET_CARD_ID,
+                face_index=None,
+                quote=TYPED_ANTHEM_PARAGRAPH,
+            ),
+        ),
+        "guide_evidence": (),
+        "review": _review(),
+        "run_id": "run-1",
+        "prerequisite_projection": _typed_projection(),
+    }
+    values.update(overrides)
+    return CardRelationship(**values)  # type: ignore[arg-type]
+
+
+def _typed_artifact(**overrides: Any) -> SemanticEnrichmentArtifact:
+    """Build one artifact whose only relationship carries the typed projection."""
+    values: dict[str, Any] = {
+        "sources": _typed_sources(),
+        "relationships": (_typed_relationship(),),
+    }
+    values.update(overrides)
+    return _artifact(**values)  # type: ignore[arg-type]
+
+
+def test_typed_projection_survives_artifact_serialization_with_direction() -> None:
+    sources = _typed_sources()
+    artifact = _typed_artifact(sources=sources)
+    relationship = artifact.relationships[0]
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert relationship.participants == (TYPED_TARGET_CARD_ID, TYPED_SOURCE_CARD_ID)
+    assert relationship.identity == (
+        "token-go-wide-payoff",
+        (TYPED_TARGET_CARD_ID, TYPED_SOURCE_CARD_ID),
+        (
+            TYPED_SOURCE_CARD_ID,
+            "capability-typed-tokens",
+            -1,
+            TYPED_TARGET_CARD_ID,
+            "capability-typed-anthem",
+            -1,
+        ),
+    )
+    assert projection.source.prerequisites[0].colors == ("W",)
+    assert projection.source.prerequisites[0].quantity == TYPED_TOKEN_QUANTITY
+    assert projection.target.prerequisites[0].controller == "you"
+
+    restored = SemanticEnrichmentArtifact.from_bytes(artifact.to_bytes(), sources=sources)
+    assert restored.relationships[0] == relationship
+    assert restored.relationships[0].prerequisite_projection == projection
+
+
+def test_artifact_guard_rejects_projection_evidence_from_another_paragraph() -> None:
+    extended = replace(
+        _typed_source_card(),
+        oracle_text=f"{TYPED_TOKEN_PARAGRAPH} Draw a card.",
+    )
+    sources = _typed_sources(cards=(*_default_cards(), extended, _typed_target_card()))
+    relationship = _typed_relationship(
+        prerequisite_projection=_typed_projection(
+            source=replace(
+                _typed_source_participant(),
+                card_source_sha256=card_source_sha256(extended),
+            ),
+        ),
+    )
+
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        _typed_artifact(sources=sources, relationships=(relationship,))
+
+    assert error.value.code == "contradiction"
+
+
+def test_artifact_reader_rejects_invalid_present_projection_without_dropping_it() -> None:
+    sources = _typed_sources()
+    unknown_version = _artifact_json(_typed_artifact())
+    unknown_version["relationships"][0]["prerequisite_projection"]["schema_version"] = 2
+    with pytest.raises(SemanticEnrichmentError, match="schema_version is unsupported"):
+        SemanticEnrichmentArtifact.from_json(unknown_version, sources=sources)
+
+    missing_target = _artifact_json(_typed_artifact())
+    del missing_target["relationships"][0]["prerequisite_projection"]["target"]
+    with pytest.raises(SemanticEnrichmentError):
+        SemanticEnrichmentArtifact.from_bytes(
+            json.dumps(missing_target).encode("utf-8"),
+            sources=sources,
+        )
+
+    absent_projection = _artifact_json(_typed_artifact())
+    absent_projection["relationships"][0]["prerequisite_projection"] = None
+    with pytest.raises(SemanticEnrichmentError, match="must be an object when present"):
+        SemanticEnrichmentArtifact.from_json(absent_projection, sources=sources)
+
+    assert _typed_artifact().relationships[0].prerequisite_projection is not None
+
+
+def _stored_projection(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the only stored relationship's projection object."""
+    return payload["relationships"][0]["prerequisite_projection"]
+
+
+def _stored_clause(payload: dict[str, Any], side: str) -> dict[str, Any]:
+    """Return one stored participant's only atomic clause object."""
+    return _stored_projection(payload)[side]["prerequisites"][0]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected", "code"),
+    (
+        (
+            lambda payload: _stored_clause(payload, "source").update({"colors": ["U"]}),
+            "contradict their source evidence",
+            "contradiction",
+        ),
+        (
+            lambda payload: _stored_projection(payload)["source"].update({"face_index": 1}),
+            "contradict their source evidence",
+            "contradiction",
+        ),
+        (
+            lambda payload: _stored_projection(payload)["source"].update(
+                {"card_id": TYPED_TARGET_CARD_ID}
+            ),
+            "contradict their source evidence",
+            "contradiction",
+        ),
+        (
+            lambda payload: _stored_projection(payload)["source"].update(
+                {"role": Role.GO_WIDE_PAYOFF.value}
+            ),
+            "relationship prerequisites are incomplete",
+            "incomplete",
+        ),
+        (
+            lambda payload: _stored_clause(payload, "target").update({"controller": "opponent"}),
+            "contradict their source evidence",
+            "contradiction",
+        ),
+        (
+            lambda payload: _stored_clause(payload, "source").update({"required_card_id": 90001}),
+            "relationship prerequisites are incomplete",
+            "incomplete",
+        ),
+    ),
+    ids=(
+        "clause-color-contradicts-its-quotation",
+        "participant-face-index-mismatches-its-clause",
+        "participant-card-id-mismatches-its-clause",
+        "participant-role-mismatches-its-clauses",
+        "clause-controller-contradicts-its-quotation",
+        "clause-required-card-is-not-a-participant",
+    ),
+)
+def test_artifact_reader_rejects_mutated_stored_projection_clauses(
+    mutate: Any,
+    expected: str,
+    code: str,
+) -> None:
+    sources = _typed_sources()
+    payload = _artifact_json(_typed_artifact())
+    mutate(payload)
+
+    with pytest.raises(PrerequisiteProjectionError, match=expected) as error:
+        SemanticEnrichmentArtifact.from_json(payload, sources=sources)
+
+    assert error.value.code == code
+    restored = SemanticEnrichmentArtifact.from_bytes(_typed_artifact().to_bytes(), sources=sources)
+    assert restored.relationships[0].prerequisite_projection is not None
+
+
+@pytest.mark.parametrize(
+    ("projection", "expected"),
+    (
+        (
+            lambda: _typed_projection(
+                source=replace(_typed_source_participant(), card_name="Renamed Enabler"),
+            ),
+            "card name does not match",
+        ),
+        (
+            lambda: _typed_projection(
+                source=replace(_typed_source_participant(), card_source_sha256="0" * 64),
+            ),
+            "hash must match its card source pin",
+        ),
+    ),
+)
+def test_artifact_guard_rejects_projection_source_and_pin_mismatches(
+    projection: Any,
+    expected: str,
+) -> None:
+    relationship = _typed_relationship(prerequisite_projection=projection())
+
+    with pytest.raises(SemanticEnrichmentError) as error:
+        _typed_artifact(relationships=(relationship,))
+
+    assert expected in str(error.value)
+
+
+def test_artifact_keeps_reversed_directed_projections_distinct() -> None:
+    forward = _typed_relationship()
+    reversed_relationship = _typed_relationship(
+        finding_id="relationship:token-go-wide-payoff:11:301",
+        prerequisite_projection=_typed_projection(
+            source=_typed_target_participant(),
+            target=_typed_source_participant(),
+        ),
+    )
+
+    artifact = _typed_artifact(relationships=(forward, reversed_relationship))
+
+    assert len(artifact.relationships) == 2
+    assert len({item.identity for item in artifact.relationships}) == 2
+    restored = SemanticEnrichmentArtifact.from_bytes(artifact.to_bytes(), sources=_typed_sources())
+    by_id = {item.finding_id: item for item in restored.relationships}
+    reversed_projection = by_id["relationship:token-go-wide-payoff:11:301"].prerequisite_projection
+    assert reversed_projection is not None
+    assert reversed_projection.source.card_id == TYPED_TARGET_CARD_ID
+    assert reversed_projection.target.card_id == TYPED_SOURCE_CARD_ID
+
+    with pytest.raises(SemanticEnrichmentError, match="duplicate"):
+        _typed_artifact(relationships=(forward, _typed_relationship()))
+
+
+def test_artifact_guard_leaves_projection_free_relationships_untouched() -> None:
+    artifact = _typed_artifact(relationships=(_relationship(), _typed_relationship()))
+    by_id = {item.finding_id: item for item in artifact.relationships}
+
+    assert by_id["relationship-1"].prerequisite_projection is None
+    assert by_id["relationship-1"].identity == (
+        "draw-engine",
+        (70221, 70340),
+        (),
+    )
+    payload = _artifact_json(artifact)
+    legacy = next(item for item in payload["relationships"] if item["finding_id"] == "relationship-1")
+    assert "prerequisite_projection" not in legacy
+
+    restored = SemanticEnrichmentArtifact.from_bytes(artifact.to_bytes(), sources=_typed_sources())
+    assert {item.finding_id: item for item in restored.relationships}["relationship-1"].prerequisite_projection is None
+
+
+def test_artifact_reader_rejects_score_weight_and_adjustment_fields() -> None:
+    sources = _typed_sources()
+    base = _artifact_json(_typed_artifact())
+    relationship = base["relationships"][0]
+    projection = relationship["prerequisite_projection"]
+    clause = projection["source"]["prerequisites"][0]
+
+    scored = _artifact_json(_typed_artifact())
+    scored["relationships"][0]["score"] = 0.75
+    with pytest.raises(SemanticEnrichmentError, match="unknown fields"):
+        SemanticEnrichmentArtifact.from_json(scored, sources=sources)
+
+    weighted = _artifact_json(_typed_artifact())
+    weighted["relationships"][0]["prerequisite_projection"]["source"]["prerequisites"][0]["weight"] = 2
+    with pytest.raises(SemanticEnrichmentError, match="unknown fields"):
+        SemanticEnrichmentArtifact.from_json(weighted, sources=sources)
+
+    adjusted = _artifact_json(_typed_artifact())
+    adjusted["relationships"][0]["prerequisite_projection"]["adjustment"] = 0.25
+    with pytest.raises(SemanticEnrichmentError, match="unknown fields"):
+        SemanticEnrichmentArtifact.from_json(adjusted, sources=sources)
+
+    assert clause["quantity"] == {"value": 2, "relation": "exactly"}
+    assert projection["schema_version"] == 1
+
+
+def test_projection_is_independent_of_claim_prose_and_legacy_prerequisites() -> None:
+    first = _typed_artifact()
+    second = _typed_artifact(
+        relationships=(
+            _typed_relationship(
+                claim="Score 0.9: the enabler is worth three points more than the payoff.",
+                prerequisites=("A different descriptive reading.", "An extra legacy line."),
+            ),
+        ),
+    )
+
+    first_projection = _artifact_json(first)["relationships"][0]["prerequisite_projection"]
+    second_projection = _artifact_json(second)["relationships"][0]["prerequisite_projection"]
+
+    assert first_projection == second_projection
+    assert (
+        first.relationships[0].prerequisite_projection
+        == second.relationships[0].prerequisite_projection
+    )
+    assert second.relationships[0].prerequisites == (
+        "A different descriptive reading.",
+        "An extra legacy line.",
+    )

@@ -25,7 +25,6 @@ from draftomen.paths import app_data_dir
 from draftomen.semantic_enrichment import SEMANTIC_ENRICHMENT_SCHEMA_VERSION
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
-    CardRelationship,
     CardSourcePin,
     FindingStatus,
     GuideClaim,
@@ -33,6 +32,7 @@ from draftomen.semantic_enrichment_records import (
     ModelRun,
     SemanticEnrichmentError,
 )
+from draftomen.semantic_relationship_records import CardRelationship, validate_relationship_pins
 from draftomen.semantic_roles import (
     CompiledRoleProfile,
     ProfileCard,
@@ -897,6 +897,14 @@ class SetProfileEnhancement:
                 "enhancement.relationships must carry Oracle evidence for exactly their participants."
             )
         object.__setattr__(self, "relationships", relationships)
+        try:
+            for item in relationships:
+                validate_relationship_pins(
+                    relationship=item,
+                    pins={pin.card_id: pin for pin in cards},
+                )
+        except SemanticEnrichmentError as error:
+            raise SetProfileSchemaError(f"Invalid enhancement: {error}") from error
         if not mechanics and not relationships:
             raise SetProfileSchemaError(
                 "enhanced profiles require at least one confirmed semantic relationship or mechanic finding."

@@ -9,8 +9,22 @@ import pytest
 import draftomen.set_profile as set_profile_module
 
 from draftomen.config import COLOR_PAIRS
+from draftomen.semantic_capability_records import (
+    CapabilityQuantity,
+    CapabilityZone,
+    PrerequisiteKind,
+    QuantityRelation,
+)
 from draftomen.semantic_enrichment import SEMANTIC_ENRICHMENT_SCHEMA_VERSION
-from draftomen.semantic_enrichment_records import CardRelationship
+from draftomen.semantic_enrichment_records import OracleEvidence
+from draftomen.semantic_relationship_records import (
+    CardRelationship,
+    RelationshipParticipant,
+    RelationshipPrerequisite,
+    RelationshipPrerequisiteProjection,
+    RelationshipTiming,
+    RelationshipZone,
+)
 from draftomen.semantic_roles import CompiledRoleProfile, ProfileCard, Role, RoleAssignment
 from draftomen.set_profile import (
     SET_PROFILE_SCHEMA_VERSION,
@@ -1078,3 +1092,355 @@ def test_generic_profiles_reject_enhancement_data() -> None:
 
     with pytest.raises(SetProfileSchemaError, match="generic profiles cannot contain enhancement data"):
         replace(generic, schema_version=3, enhancement=enhancement)
+
+
+FIXTURE_SOURCE_CARD_ID = 102
+FIXTURE_TARGET_CARD_ID = 103
+FIXTURE_TOKEN_QUOTE = "Create a 1/1 red Goblin creature token."
+FIXTURE_ATTACK_QUOTE = "Whenever a creature you control attacks, it gets +1/+0 until end of turn."
+FIXTURE_ANTHEM_QUOTE = "Creatures you control get +1/+1."
+
+
+def _fixture_projection() -> RelationshipPrerequisiteProjection:
+    """Build one self-consistent typed projection for the enhanced fixture pair."""
+    payload = _enhanced_payload()
+    pins = {
+        pin["card_id"]: pin["sha256"]
+        for pin in payload["enhancement"]["cards"]  # type: ignore[index]
+    }
+    source = RelationshipParticipant(
+        card_id=FIXTURE_SOURCE_CARD_ID,
+        capability_id="capability-token-maker",
+        card_name="Goblin Enabler",
+        face_index=None,
+        face_name=None,
+        card_source_sha256=pins[FIXTURE_SOURCE_CARD_ID],
+        role=Role.TOKEN_MAKER,
+        capability_prerequisites=(),
+        prerequisites=(
+            RelationshipPrerequisite(
+                kind=PrerequisiteKind.CONDITION,
+                subject="output",
+                operation="create",
+                object_kind="token",
+                card_types=("creature",),
+                type_operator="all_of",
+                token_restriction="token",
+                exclusion="none",
+                subtype="Goblin",
+                color_operator="exact",
+                colors=("R",),
+                controller="you",
+                owner="not_applicable",
+                quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
+                source_zone=None,
+                destination_zone=RelationshipZone(
+                    zone=CapabilityZone.BATTLEFIELD,
+                    player="you",
+                ),
+                timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
+                required_card_id=None,
+                evidence=OracleEvidence(
+                    card_id=FIXTURE_SOURCE_CARD_ID,
+                    face_index=None,
+                    quote=FIXTURE_TOKEN_QUOTE,
+                ),
+                operation_quote="Create",
+                operation_occurrence=0,
+                object_quote="a 1/1 red Goblin creature token",
+                object_occurrence=0,
+                capability_prerequisite_indices=(),
+            ),
+        ),
+    )
+    target = RelationshipParticipant(
+        card_id=FIXTURE_TARGET_CARD_ID,
+        capability_id="capability-attack-payoff",
+        card_name="Attack Payoff",
+        face_index=None,
+        face_name=None,
+        card_source_sha256=pins[FIXTURE_TARGET_CARD_ID],
+        role=Role.GO_WIDE_PAYOFF,
+        capability_prerequisites=(),
+        prerequisites=(
+            RelationshipPrerequisite(
+                kind=PrerequisiteKind.CONDITION,
+                subject="participant",
+                operation="control",
+                object_kind="permanent",
+                card_types=("creature",),
+                type_operator="all_of",
+                token_restriction="unrestricted",
+                exclusion="none",
+                subtype=None,
+                color_operator="unrestricted",
+                colors=(),
+                controller="you",
+                owner="not_applicable",
+                quantity=None,
+                source_zone=None,
+                destination_zone=None,
+                timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
+                required_card_id=None,
+                evidence=OracleEvidence(
+                    card_id=FIXTURE_TARGET_CARD_ID,
+                    face_index=None,
+                    quote=FIXTURE_ANTHEM_QUOTE,
+                ),
+                operation_quote="control",
+                operation_occurrence=0,
+                object_quote="Creatures you control",
+                object_occurrence=0,
+                capability_prerequisite_indices=(),
+            ),
+        ),
+    )
+    return RelationshipPrerequisiteProjection(source=source, target=target)
+
+
+def _enhanced_payload_with_projection() -> dict[str, Any]:
+    """Return the enhanced fixture payload carrying the typed projection."""
+    payload = _enhanced_payload()
+    relationship = payload["enhancement"]["relationships"][0]  # type: ignore[index]
+    # The payoff clause binds to a retained anthem paragraph: the fixture's attack trigger
+    # quote states "until end of turn", which the bounded timing vocabulary rejects.
+    relationship["oracle_evidence"].append(  # type: ignore[union-attr]
+        {
+            "card_id": FIXTURE_TARGET_CARD_ID,
+            "face_index": None,
+            "quote": FIXTURE_ANTHEM_QUOTE,
+        }
+    )
+    relationship["prerequisite_projection"] = _fixture_projection().to_json()  # type: ignore[index]
+    return payload
+
+
+def test_legacy_enhanced_and_unenhanced_fixtures_stay_projection_free() -> None:
+    enhanced = load_set_profile(
+        FIXTURE_DIR / "enhanced.json",
+        expected_set_code="TST",
+        expected_format="QuickDraft",
+    )
+    enhancement = enhanced.enhancement
+    assert enhancement is not None
+    relationship = enhancement.relationships[0]
+    assert relationship.prerequisite_projection is None
+    assert relationship.prerequisites == ("a creature token is created",)
+    assert relationship.identity[2] == ()
+    serialized = enhanced.to_json()
+    assert all(
+        "prerequisite_projection" not in item
+        for item in serialized["enhancement"]["relationships"]  # type: ignore[index]
+    )
+    assert SetProfile.from_json(serialized).to_bytes() == enhanced.to_bytes()
+
+    unenhanced = load_set_profile(
+        FIXTURE_DIR / "unenhanced.json",
+        expected_set_code="TST",
+        expected_format="QuickDraft",
+    )
+    assert unenhanced.enhancement is None
+    assert SetProfile.from_json(unenhanced.to_json()).to_bytes() == unenhanced.to_bytes()
+
+
+def test_typed_projection_survives_profile_serialization_with_direction() -> None:
+    profile = SetProfile.from_json(_enhanced_payload_with_projection())
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    relationship = enhancement.relationships[0]
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert relationship.identity[2] == (
+        FIXTURE_SOURCE_CARD_ID,
+        "capability-token-maker",
+        -1,
+        FIXTURE_TARGET_CARD_ID,
+        "capability-attack-payoff",
+        -1,
+    )
+    assert projection.source.prerequisites[0].colors == ("R",)
+    assert projection.source.prerequisites[0].quantity == CapabilityQuantity(
+        value=1,
+        relation=QuantityRelation.EXACTLY,
+    )
+    assert projection.target.prerequisites[0].operation == "control"
+    assert projection.target.prerequisites[0].card_types == ("creature",)
+    assert projection.target.prerequisites[0].controller == "you"
+    assert projection.target.prerequisites[0].evidence.quote == FIXTURE_ANTHEM_QUOTE
+    assert projection.source.prerequisites[0].evidence.quote == FIXTURE_TOKEN_QUOTE
+    assert (
+        OracleEvidence(
+            card_id=FIXTURE_TARGET_CARD_ID,
+            face_index=None,
+            quote=FIXTURE_ATTACK_QUOTE,
+        )
+        in relationship.oracle_evidence
+    )
+
+    restored = SetProfile.from_json(profile.to_json())
+    assert restored.to_bytes() == profile.to_bytes()
+    restored_enhancement = restored.enhancement
+    assert restored_enhancement is not None
+    assert restored_enhancement.relationships[0].prerequisite_projection == projection
+    assert restored_enhancement.relationships[0].claim == "A token maker pairs with a go-wide payoff."
+
+
+def test_enhanced_profile_reader_rejects_invalid_present_projections() -> None:
+    unsupported = _enhanced_payload_with_projection()
+    unsupported["enhancement"]["relationships"][0]["prerequisite_projection"]["schema_version"] = 2  # type: ignore[index]
+    with pytest.raises(SetProfileSchemaError, match="schema_version is unsupported"):
+        SetProfile.from_json(unsupported)
+
+    missing_target = _enhanced_payload_with_projection()
+    del missing_target["enhancement"]["relationships"][0]["prerequisite_projection"]["target"]  # type: ignore[index]
+    with pytest.raises(SetProfileSchemaError, match="Invalid enhancement"):
+        SetProfile.from_json(missing_target)
+
+    mismatched_hash = _enhanced_payload_with_projection()
+    mismatched_hash["enhancement"]["relationships"][0]["prerequisite_projection"]["source"][  # type: ignore[index]
+        "card_source_sha256"
+    ] = "0" * 64
+    with pytest.raises(SetProfileSchemaError, match="hash must match its card source pin"):
+        SetProfile.from_json(mismatched_hash)
+
+    mismatched_participants = _enhanced_payload_with_projection()
+    mismatched_participants["enhancement"]["relationships"][0]["participants"] = [101, FIXTURE_TARGET_CARD_ID]  # type: ignore[index]
+    with pytest.raises(SetProfileSchemaError, match="projection participants must match"):
+        SetProfile.from_json(mismatched_participants)
+
+    uncertain = _enhanced_payload_with_projection()
+    uncertain["enhancement"]["relationships"][0]["review"] = {  # type: ignore[index]
+        "status": "uncertain",
+        "reason": "Needs a reviewer.",
+    }
+    with pytest.raises(SetProfileSchemaError, match="accepted review"):
+        SetProfile.from_json(uncertain)
+
+
+def _stored_projection(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the enhanced fixture relationship's stored projection object."""
+    return payload["enhancement"]["relationships"][0]["prerequisite_projection"]  # type: ignore[index]
+
+
+def _stored_clause(payload: dict[str, Any], side: str) -> dict[str, Any]:
+    """Return one stored participant's only atomic clause object."""
+    return _stored_projection(payload)[side]["prerequisites"][0]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    (
+        (
+            lambda payload: _stored_clause(payload, "source").update({"colors": ["U"]}),
+            "contradict their source evidence",
+        ),
+        (
+            lambda payload: _stored_projection(payload)["source"].update({"face_index": 1}),
+            "contradict their source evidence",
+        ),
+        (
+            lambda payload: _stored_projection(payload)["source"].update(
+                {"card_id": FIXTURE_TARGET_CARD_ID}
+            ),
+            "contradict their source evidence",
+        ),
+        (
+            lambda payload: _stored_projection(payload)["source"].update(
+                {"role": Role.GO_WIDE_PAYOFF.value}
+            ),
+            "relationship prerequisites are incomplete",
+        ),
+        (
+            lambda payload: _stored_clause(payload, "target").update({"controller": "opponent"}),
+            "contradict their source evidence",
+        ),
+        (
+            lambda payload: _stored_clause(payload, "source").update({"required_card_id": 999}),
+            "relationship prerequisites are incomplete",
+        ),
+        (
+            lambda payload: payload["enhancement"]["relationships"][0].update(
+                {"prerequisite_projection": None}
+            ),
+            "prerequisite_projection must be an object when present",
+        ),
+    ),
+    ids=(
+        "clause-color-contradicts-its-quotation",
+        "participant-face-index-mismatches-its-clause",
+        "participant-card-id-mismatches-its-clause",
+        "participant-role-mismatches-its-clauses",
+        "clause-controller-contradicts-its-quotation",
+        "clause-required-card-is-not-a-participant",
+        "explicit-null-projection-is-not-absent",
+    ),
+)
+def test_enhanced_profile_reader_rejects_mutated_stored_projection_clauses(
+    mutate: Any,
+    expected: str,
+) -> None:
+    payload = _enhanced_payload_with_projection()
+    mutate(payload)
+
+    with pytest.raises(SetProfileSchemaError, match=expected):
+        SetProfile.from_json(payload)
+
+    profile = SetProfile.from_json(_enhanced_payload_with_projection())
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    assert enhancement.relationships[0].prerequisite_projection is not None
+
+
+def test_unloadable_stored_projection_falls_back_instead_of_losing_prerequisites(tmp_path: Path) -> None:
+    payload = _enhanced_payload_with_projection()
+    _stored_clause(payload, "source").update({"colors": ["U"]})
+    path = tmp_path / "invalid-projection.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SetProfileSchemaError, match="contradict their source evidence"):
+        load_set_profile(path)
+
+    result = safe_load_set_profile("tst", "quickdraft", profile_path=path)
+
+    assert result.source == "generic"
+    assert result.profile.enhancement is None
+    assert result.profile.enhancement_status is EnhancementStatus.NOT_ENHANCED
+    assert any("contradict their source evidence" in diagnostic for diagnostic in result.diagnostics)
+
+
+def test_enhanced_profile_reader_rejects_score_weight_and_adjustment_fields() -> None:
+    scored = _enhanced_payload_with_projection()
+    scored["enhancement"]["relationships"][0]["score"] = 0.75  # type: ignore[index]
+    with pytest.raises(SetProfileSchemaError, match="unknown fields"):
+        SetProfile.from_json(scored)
+
+    weighted = _enhanced_payload_with_projection()
+    weighted["enhancement"]["relationships"][0]["prerequisite_projection"]["source"]["prerequisites"][0][  # type: ignore[index]
+        "weight"
+    ] = 2
+    with pytest.raises(SetProfileSchemaError, match="unknown fields"):
+        SetProfile.from_json(weighted)
+
+    adjusted = _enhanced_payload_with_projection()
+    adjusted["enhancement"]["relationships"][0]["prerequisite_projection"]["adjustment"] = 0.25  # type: ignore[index]
+    with pytest.raises(SetProfileSchemaError, match="unknown fields"):
+        SetProfile.from_json(adjusted)
+
+
+def test_typed_projection_ignores_claim_prose_at_the_profile_boundary() -> None:
+    plain = SetProfile.from_json(_enhanced_payload_with_projection())
+    prose = _enhanced_payload_with_projection()
+    prose["enhancement"]["relationships"][0]["claim"] = "Score 0.8: the enabler is worth four points."  # type: ignore[index]
+    prose["enhancement"]["relationships"][0]["prerequisites"] = ["a different reading"]  # type: ignore[index]
+    verbose = SetProfile.from_json(prose)
+
+    plain_enhancement = plain.enhancement
+    verbose_enhancement = verbose.enhancement
+    assert plain_enhancement is not None
+    assert verbose_enhancement is not None
+    plain_projection = plain_enhancement.relationships[0].prerequisite_projection
+    verbose_projection = verbose_enhancement.relationships[0].prerequisite_projection
+    assert plain_projection is not None
+    assert plain_projection == verbose_projection
+    assert plain.enhancement.relationships[0].prerequisites != verbose.enhancement.relationships[0].prerequisites
+    assert plain.fingerprint != verbose.fingerprint

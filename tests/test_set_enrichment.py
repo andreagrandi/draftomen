@@ -119,7 +119,7 @@ WORKED_CALLS = 8
 RELATIONSHIP_EVIDENCE_QUOTE_REASON = (
     "relationship Oracle evidence quote is not an exact source substring."
 )
-RELATIONSHIP_MALFORMED_REASON = "response does not match relationship validation schema version 1."
+RELATIONSHIP_MALFORMED_REASON = "response does not match relationship validation schema version 2."
 RELATIONSHIP_UNCERTAIN_REASON = (
     "Both Oracle texts support the interaction but the timing is ambiguous."
 )
@@ -400,13 +400,15 @@ def _capability_content(card_id: int) -> str:
 
 
 def _relationship_content(prompt: dict[str, Any], *, foreign_quote: str | None) -> str:
-    """Build one accepted verdict for the single candidate a request describes."""
+    """Build one accepted v2 verdict for the single candidate a request describes.
+    The typed prerequisites stay advisory, so no projection is fabricated.
+    """
     source = prompt["source"]
     target = prompt["target"]
     source_quote = source["evidence"][0]["quote"] if foreign_quote is None else foreign_quote
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "verdict": "accepted",
             "claim": RELATIONSHIP_CLAIM,
             "reason": None,
@@ -422,19 +424,25 @@ def _relationship_content(prompt: dict[str, Any], *, foreign_quote: str | None) 
                     "quote": target["evidence"][0]["quote"],
                 },
             ],
+            "prerequisite_status": "uncertain",
+            "source_prerequisites": [],
+            "target_prerequisites": [],
         }
     )
 
 
 def _uncertain_relationship_content() -> str:
-    """Build one schema-valid uncertain verdict that carries no evidence at all."""
+    """Build one uncertain v2 verdict that omits the participant evidence a record requires."""
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "verdict": "uncertain",
             "claim": RELATIONSHIP_CLAIM,
             "reason": RELATIONSHIP_UNCERTAIN_REASON,
             "evidence": [],
+            "prerequisite_status": "uncertain",
+            "source_prerequisites": [],
+            "target_prerequisites": [],
         }
     )
 
@@ -694,6 +702,7 @@ def test_unvalidated_durable_response_is_reparsed_without_a_request(tmp_path: Pa
 def test_unvalidated_relationship_response_resumes_to_a_malformed_outcome(
     tmp_path: Path,
 ) -> None:
+    """Prove a durable v2 response that omits participant evidence resumes as malformed."""
     work_root = tmp_path / "work"
     store = _store(work_root)
     identity = _relationship_identity()
@@ -783,6 +792,7 @@ def test_accepted_relationship_preserves_candidate_capability_content(tmp_path: 
         assert relationship.target == package.target
         assert relationship.review.status is FindingStatus.ACCEPTED
         assert relationship.review.reason is None
+        assert relationship.prerequisite_projection is None
         assert relationship.evidence == tuple(
             sorted(
                 (

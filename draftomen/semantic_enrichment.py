@@ -13,7 +13,6 @@ from typing import Any, Self
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
-    CardRelationship,
     CardSourcePin,
     GuideClaim,
     GuideEvidence,
@@ -26,6 +25,7 @@ from draftomen.semantic_enrichment_records import (
     FindingStatus,
     require_utf8_text,
 )
+from draftomen.semantic_relationship_records import CardRelationship, validate_relationship_sources
 
 
 SEMANTIC_ENRICHMENT_SCHEMA_VERSION = 1
@@ -403,7 +403,8 @@ class SemanticEnrichmentArtifact:
                     raise SemanticEnrichmentError("guide claim references an unknown card.")
             for evidence in claim.evidence:
                 self._validate_guide_evidence(evidence=evidence, guide_by_id=guide_by_id)
-        relationship_identities: set[tuple[str, tuple[int, ...]]] = set()
+        pins_by_card_id = {pin.card_id: pin for pin in cards}
+        relationship_identities: set[tuple[str, tuple[int, ...], tuple[int | str, ...]]] = set()
         for relationship in relationships:
             if relationship.run_id not in run_ids:
                 raise SemanticEnrichmentError("relationship references an unknown run.")
@@ -420,6 +421,11 @@ class SemanticEnrichmentArtifact:
             if relationship.identity in relationship_identities:
                 raise SemanticEnrichmentError("relationships contain duplicate identities.")
             relationship_identities.add(relationship.identity)
+            validate_relationship_sources(
+                relationship=relationship,
+                cards=card_by_id,
+                pins=pins_by_card_id,
+            )
         for rejected in rejected_findings:
             if rejected.run_id not in run_ids:
                 raise SemanticEnrichmentError("rejected finding references an unknown run.")

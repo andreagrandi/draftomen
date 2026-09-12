@@ -304,9 +304,12 @@ def _relationship_target() -> CardCapability:
 
 
 def _relationship_content() -> str:
+    """Build the advisory v2 verdict one relationship request answers with.
+    The typed prerequisites stay advisory, so no projection is fabricated.
+    """
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "verdict": "accepted",
             "claim": RELATIONSHIP_CLAIM,
             "reason": None,
@@ -314,6 +317,9 @@ def _relationship_content() -> str:
                 {"card_id": PLAIN_CARD_ID, "face_index": None, "quote": DRAW_QUOTE},
                 {"card_id": TWO_FACE_CARD_ID, "face_index": 1, "quote": BACK_MILL_QUOTE},
             ],
+            "prerequisite_status": "uncertain",
+            "source_prerequisites": [],
+            "target_prerequisites": [],
         }
     )
 
@@ -374,6 +380,88 @@ def _relationship_result() -> RelationshipValidationResult:
         rejected=None,
         malformed_reason=None,
     )
+
+
+# Exact pre-projection relationship result bytes: the legacy key set without a
+# prerequisite projection. Stored results written before v2 still decode as-is.
+LEGACY_V1_RELATIONSHIP_RESULT_JSON = """
+{
+    "outcome": "success",
+    "relationship": {
+        "mechanism": "draw-mill",
+        "source": {
+            "finding_id": "capability-draw",
+            "card_id": 201,
+            "card_name": "Solo Sentinel",
+            "face_index": null,
+            "face_name": null,
+            "role": "draw",
+            "quantity": null,
+            "timing": null,
+            "source_zone": null,
+            "destination_zone": null,
+            "prerequisites": [],
+            "evidence": [
+                {
+                    "card_id": 201,
+                    "face_index": null,
+                    "quote": "When this creature enters, draw a card."
+                }
+            ],
+            "review": {
+                "status": "accepted",
+                "reason": null
+            },
+            "run_id": "run-1"
+        },
+        "target": {
+            "finding_id": "capability-mill",
+            "card_id": 202,
+            "card_name": "Alpha // Beta",
+            "face_index": 1,
+            "face_name": "Beta",
+            "role": "self_mill",
+            "quantity": null,
+            "timing": null,
+            "source_zone": null,
+            "destination_zone": null,
+            "prerequisites": [],
+            "evidence": [
+                {
+                    "card_id": 202,
+                    "face_index": 1,
+                    "quote": "each opponent mills two cards"
+                }
+            ],
+            "review": {
+                "status": "accepted",
+                "reason": null
+            },
+            "run_id": "run-1"
+        },
+        "claim": "The entering draw feeds the mill payoff.",
+        "evidence": [
+            {
+                "card_id": 201,
+                "face_index": null,
+                "quote": "When this creature enters, draw a card."
+            },
+            {
+                "card_id": 202,
+                "face_index": 1,
+                "quote": "each opponent mills two cards"
+            }
+        ],
+        "review": {
+            "status": "accepted",
+            "reason": null
+        },
+        "run_id": "run-1"
+    },
+    "rejected": null,
+    "malformed_reason": null
+}
+"""
 
 
 def _populated_guide_result() -> GuideExtractionResult:
@@ -767,6 +855,32 @@ def test_stored_relationship_result_is_recovered_without_a_new_request(tmp_path:
     other = make_store(tmp_path / "work").lookup(identity=_card_identity())
     assert other.state is WorkState.MISSING
     assert other.result is None
+
+
+def test_legacy_relationship_result_without_a_projection_stays_readable(
+    tmp_path: Path,
+) -> None:
+    """Prove stored relationship bytes written before v2 still decode without a projection."""
+    payload: dict[str, Any] = json.loads(LEGACY_V1_RELATIONSHIP_RESULT_JSON)
+    assert "prerequisite_projection" not in payload["relationship"]
+    legacy_result = RelationshipValidationResult.from_json(payload)
+    assert legacy_result == _relationship_result()
+    assert legacy_result.relationship is not None
+    assert legacy_result.relationship.prerequisite_projection is None
+
+    store = make_store(tmp_path / "work")
+    identity = _relationship_identity()
+    store.record_attempt(identity=identity)
+    store.record_response(identity=identity, response=_relationship_response())
+    assert store.record_result(identity=identity, result=legacy_result).state is WorkState.COMPLETED
+
+    stored: dict[str, Any] = json.loads(
+        _stage_path(store, "result", identity).read_text(encoding="utf-8")
+    )
+    assert "prerequisite_projection" not in stored["result"]["relationship"]
+    recovered = make_store(tmp_path / "work").lookup(identity=identity)
+    assert recovered.state is WorkState.COMPLETED
+    assert recovered.result == legacy_result
 
 
 def test_changed_input_model_prompt_or_schema_prevents_stale_reuse(tmp_path: Path) -> None:
