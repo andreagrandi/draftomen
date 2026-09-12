@@ -41,7 +41,6 @@ from draftomen.semantic_enrichment import (
 )
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
-    CardRelationship,
     CardSourcePin,
     FindingStatus,
     GuideClaim,
@@ -51,6 +50,7 @@ from draftomen.semantic_enrichment_records import (
     ReasoningConfig,
     RejectedFinding,
 )
+from draftomen.semantic_relationship_records import CardRelationship
 from draftomen.set_enrichment import (
     Completion,
     EnrichmentAccounting,
@@ -716,6 +716,7 @@ def _mapped_findings(
                         guide_evidence=(),
                         review=relationship.review,
                         run_id=f"work-{identity.content_sha256}",
+                        prerequisite_projection=relationship.prerequisite_projection,
                     )
                 )
             if result.rejected is not None:
@@ -739,7 +740,7 @@ def _mapped_findings(
 
 def _project_relationships(candidates: tuple[CardRelationship, ...]) -> tuple[CardRelationship, ...]:
     """Retain one accepted or uncertain candidate for each semantic identity."""
-    grouped: dict[tuple[str, tuple[int, ...]], list[CardRelationship]] = {}
+    grouped: dict[tuple[str, tuple[int, ...], tuple[int | str, ...]], list[CardRelationship]] = {}
     for candidate in candidates:
         grouped.setdefault(candidate.identity, []).append(candidate)
     selected: list[CardRelationship] = []

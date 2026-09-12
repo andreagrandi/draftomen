@@ -1660,6 +1660,35 @@ content and provenance.
 The block reuses the semantic-enrichment record types (`CardSourcePin`,
 `GuideSourcePin`, `ModelRun`, `GuideClaim`, `CardRelationship`,
 `ArtifactReview`) verbatim instead of defining parallel profile-side records.
+`CardRelationship` and the typed relationship records live in
+`draftomen.semantic_relationship_records`; the semantic-enrichment record module
+keeps the guide, card-pin and run records.
+
+An accepted relationship may carry an optional `prerequisite_projection`
+(projection `schema_version` 1) whose `source` and `target` participants name
+one capability, card and face each in the validated direction, independently of
+the sorted `participants` field. Its atomic clauses bind every controlling cost,
+trigger, condition, threshold and supplied output fact to one exact frozen Oracle
+ability paragraph, with operation and object selectors, occurrence indices, the
+closed color, card-type, token, zone, controller, owner, quantity and timing
+vocabulary, and the complete indices of the capability prerequisites the clause
+discharges. A projection is present only when the typed, source-bound and
+completeness gates passed; its presence still does not mean a draft pool
+satisfies those conditions, and no relationship prerequisite is a scoring input.
+Incomplete, ambiguous or unsupported prerequisites never produce a projection and
+leave the relationship advisory, while prerequisites that contradict their source
+evidence produce a rejected diagnostic instead. Stored projections repeat that
+semantic validation of their clauses, and readers re-check them against the frozen
+card sources and pins. Relationship duplicate identity is direction-sensitive:
+identical directed capabilities deduplicate, while a reversed direction or a
+different capability of the same cards stays a distinct relationship. A
+relationship without the field remains loadable and serializes without the new
+key, so existing artifacts and enhanced profiles keep working; a present but
+invalid projection is rejected rather than dropped.
+Relationship validation now uses the pinned `draftomen-relationship-validation-v2`
+request and response contract, while guide and card extraction stay on their
+existing version, so retained v1 relationship results remain readable but are not
+reused for v2 requests.
 
 The optional `role_profile` object carries compiled per-card semantic roles. It
 uses the existing semantic-role vocabulary and assignment types, and declares

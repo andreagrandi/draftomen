@@ -5,6 +5,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,6 +32,12 @@ from draftomen.seventeen import (
     SeventeenCardStats,
     SeventeenLandsFormatData,
 )
+from draftomen.semantic_capability_records import (
+    CapabilityQuantity,
+    CapabilityZone,
+    PrerequisiteKind,
+    QuantityRelation,
+)
 from draftomen.semantic_enrichment import (
     EnrichmentSources,
     GuideSource,
@@ -40,7 +47,6 @@ from draftomen.semantic_enrichment import (
 )
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
-    CardRelationship,
     CardSourcePin,
     FindingReview,
     FindingStatus,
@@ -50,6 +56,14 @@ from draftomen.semantic_enrichment_records import (
     ModelRun,
     OracleEvidence,
     ReasoningConfig,
+)
+from draftomen.semantic_relationship_records import (
+    CardRelationship,
+    RelationshipParticipant,
+    RelationshipPrerequisite,
+    RelationshipPrerequisiteProjection,
+    RelationshipTiming,
+    RelationshipZone,
 )
 from draftomen.semantic_roles import Role
 from draftomen.set_profile import (
@@ -293,12 +307,16 @@ def _enrichment_artifact(
     )
 
 
-def _enhanced_generation(*, enrichment: SemanticEnrichmentArtifact) -> ProfileGenerationResult:
+def _enhanced_generation(
+    *,
+    enrichment: SemanticEnrichmentArtifact,
+    card_database: CardDatabase | None = None,
+) -> ProfileGenerationResult:
     return generate_set_profile(
         set_code="TST",
         event_format="QuickDraft",
         stage="early",
-        card_database=_database(),
+        card_database=_database() if card_database is None else card_database,
         ratings=_ratings(),
         generated_at=GENERATED_AT,
         config=_config(),
@@ -2141,3 +2159,377 @@ def test_report_provenance_rejects_path_shaped_identities(
         replace(provenance, **change)
 
     assert str(raised.value) == expected_error
+
+
+TYPED_SOURCE_CARD_ID = 301
+TYPED_TARGET_CARD_ID = 11
+TYPED_SOURCE_CARD_NAME = "Typed Token Enabler"
+TYPED_TARGET_CARD_NAME = "Typed Wide Payoff"
+TYPED_TOKEN_PARAGRAPH = "Create two 1/1 white Soldier creature tokens."
+TYPED_ANTHEM_PARAGRAPH = "Creatures you control get +1/+1."
+TYPED_TOKEN_QUANTITY = CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY)
+
+
+def _typed_card(card_id: int, name: str, oracle_text: str) -> CardInfo:
+    """Build one frozen card of the typed relationship fixture pair."""
+    return CardInfo(
+        grp_id=card_id,
+        name=name,
+        colors=("U", "B"),
+        mana_value=3.0,
+        rarity="uncommon",
+        types=("Creature",),
+        oracle_text=oracle_text,
+        type_line="Creature — Soldier",
+        oracle_id=f"typed-oracle-{card_id}",
+        set_code="TST",
+        collector_number=str(card_id),
+        arena_id=card_id,
+        source_provenance=("synthetic",),
+    )
+
+
+def _typed_source_card() -> CardInfo:
+    """Build the card whose typed clause declares the white token output."""
+    return _typed_card(TYPED_SOURCE_CARD_ID, TYPED_SOURCE_CARD_NAME, TYPED_TOKEN_PARAGRAPH)
+
+
+def _typed_target_card() -> CardInfo:
+    """Build the card whose typed clause declares the creature control condition."""
+    return _typed_card(TYPED_TARGET_CARD_ID, TYPED_TARGET_CARD_NAME, TYPED_ANTHEM_PARAGRAPH)
+
+
+def _typed_database() -> CardDatabase:
+    """Build the generation card database extended with the typed pair."""
+    return CardDatabase(
+        cards={
+            **_database().cards,
+            TYPED_TARGET_CARD_ID: _typed_target_card(),
+            TYPED_SOURCE_CARD_ID: _typed_source_card(),
+        }
+    )
+
+
+def _typed_source_clause() -> RelationshipPrerequisite:
+    """Build one complete source-side token output clause."""
+    return RelationshipPrerequisite(
+        kind=PrerequisiteKind.CONDITION,
+        subject="output",
+        operation="create",
+        object_kind="token",
+        card_types=("creature",),
+        type_operator="all_of",
+        token_restriction="token",
+        exclusion="none",
+        subtype="Soldier",
+        color_operator="exact",
+        colors=("W",),
+        controller="you",
+        owner="not_applicable",
+        quantity=TYPED_TOKEN_QUANTITY,
+        source_zone=None,
+        destination_zone=RelationshipZone(zone=CapabilityZone.BATTLEFIELD, player="you"),
+        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
+        required_card_id=None,
+        evidence=OracleEvidence(
+            card_id=TYPED_SOURCE_CARD_ID,
+            face_index=None,
+            quote=TYPED_TOKEN_PARAGRAPH,
+        ),
+        operation_quote="Create",
+        operation_occurrence=0,
+        object_quote="two 1/1 white Soldier creature tokens",
+        object_occurrence=0,
+        capability_prerequisite_indices=(),
+    )
+
+
+def _typed_target_clause() -> RelationshipPrerequisite:
+    """Build one complete target-side creature control condition clause."""
+    return RelationshipPrerequisite(
+        kind=PrerequisiteKind.CONDITION,
+        subject="participant",
+        operation="control",
+        object_kind="permanent",
+        card_types=("creature",),
+        type_operator="all_of",
+        token_restriction="unrestricted",
+        exclusion="none",
+        subtype=None,
+        color_operator="unrestricted",
+        colors=(),
+        controller="you",
+        owner="not_applicable",
+        quantity=None,
+        source_zone=None,
+        destination_zone=None,
+        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
+        required_card_id=None,
+        evidence=OracleEvidence(
+            card_id=TYPED_TARGET_CARD_ID,
+            face_index=None,
+            quote=TYPED_ANTHEM_PARAGRAPH,
+        ),
+        operation_quote="control",
+        operation_occurrence=0,
+        object_quote="Creatures you control",
+        object_occurrence=0,
+        capability_prerequisite_indices=(),
+    )
+
+
+def _typed_projection(
+    *,
+    source_card: CardInfo | None = None,
+    target_card: CardInfo | None = None,
+) -> RelationshipPrerequisiteProjection:
+    """Build one complete typed projection over the given frozen fixture cards."""
+    source = _typed_source_card() if source_card is None else source_card
+    target = _typed_target_card() if target_card is None else target_card
+    return RelationshipPrerequisiteProjection(
+        source=RelationshipParticipant(
+            card_id=source.grp_id,
+            capability_id="capability-typed-tokens",
+            card_name=source.name,
+            face_index=None,
+            face_name=None,
+            card_source_sha256=card_source_sha256(source),
+            role=Role.TOKEN_MAKER,
+            capability_prerequisites=(),
+            prerequisites=(_typed_source_clause(),),
+        ),
+        target=RelationshipParticipant(
+            card_id=target.grp_id,
+            capability_id="capability-typed-anthem",
+            card_name=target.name,
+            face_index=None,
+            face_name=None,
+            card_source_sha256=card_source_sha256(target),
+            role=Role.GO_WIDE_PAYOFF,
+            capability_prerequisites=(),
+            prerequisites=(_typed_target_clause(),),
+        ),
+    )
+
+
+def _typed_relationship(
+    *,
+    source_card: CardInfo | None = None,
+    target_card: CardInfo | None = None,
+) -> CardRelationship:
+    """Build one accepted relationship carrying the typed projection."""
+    return CardRelationship(
+        finding_id="relationship:token-go-wide-payoff:301:11",
+        mechanism="token-go-wide-payoff",
+        participants=(TYPED_TARGET_CARD_ID, TYPED_SOURCE_CARD_ID),
+        claim="The token maker feeds the go-wide payoff.",
+        prerequisites=("A creature token is created.",),
+        oracle_evidence=(
+            OracleEvidence(
+                card_id=TYPED_SOURCE_CARD_ID,
+                face_index=None,
+                quote=TYPED_TOKEN_PARAGRAPH,
+            ),
+            OracleEvidence(
+                card_id=TYPED_TARGET_CARD_ID,
+                face_index=None,
+                quote=TYPED_ANTHEM_PARAGRAPH,
+            ),
+        ),
+        guide_evidence=(GuideEvidence(guide_id="tst-guide", quote="rewards going wide"),),
+        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+        run_id="run-1",
+        prerequisite_projection=_typed_projection(
+            source_card=source_card,
+            target_card=target_card,
+        ),
+    )
+
+
+def _typed_enrichment_artifact(
+    *,
+    sources: EnrichmentSources | None = None,
+    relationships: tuple[CardRelationship, ...] | None = None,
+    review: ArtifactReview | None = None,
+) -> SemanticEnrichmentArtifact:
+    """Build one artifact whose relationship carries the typed projection."""
+    return _enrichment_artifact(
+        sources=_enrichment_sources(cards=_typed_database()) if sources is None else sources,
+        relationships=(_typed_relationship(),) if relationships is None else relationships,
+        review=review,
+    )
+
+
+def test_confirmed_typed_projection_reaches_the_loaded_profile(tmp_path: Path) -> None:
+    database = _typed_database()
+    artifact = _typed_enrichment_artifact(sources=_enrichment_sources(cards=database))
+    generated = _enhanced_generation(enrichment=artifact, card_database=database)
+    enhancement = generated.profile.enhancement
+    assert enhancement is not None
+    assert generated.profile.schema_version == 3
+    assert enhancement.relationships == artifact.confirmed_relationships
+
+    path = tmp_path / "typed-profile.json"
+    dump_set_profile(generated.profile, path)
+    loaded = load_set_profile(path, expected_set_code="TST", expected_format="QuickDraft")
+    assert loaded.to_bytes() == generated.profile.to_bytes()
+    loaded_enhancement = loaded.enhancement
+    assert loaded_enhancement is not None
+    relationship = loaded_enhancement.relationships[0]
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection == _typed_relationship().prerequisite_projection
+    assert relationship.participants == (TYPED_TARGET_CARD_ID, TYPED_SOURCE_CARD_ID)
+    assert relationship.identity[2] == (
+        TYPED_SOURCE_CARD_ID,
+        "capability-typed-tokens",
+        -1,
+        TYPED_TARGET_CARD_ID,
+        "capability-typed-anthem",
+        -1,
+    )
+    assert projection.source.card_id == TYPED_SOURCE_CARD_ID
+    assert projection.target.card_id == TYPED_TARGET_CARD_ID
+    assert projection.source.prerequisites[0].quantity == TYPED_TOKEN_QUANTITY
+    assert projection.source.prerequisites[0].colors == ("W",)
+    assert projection.source.prerequisites[0].destination_zone == RelationshipZone(
+        zone=CapabilityZone.BATTLEFIELD,
+        player="you",
+    )
+    assert projection.target.prerequisites[0].controller == "you"
+    assert projection.source.prerequisites[0].evidence.quote == TYPED_TOKEN_PARAGRAPH
+    assert relationship.prerequisites == ("A creature token is created.",)
+    assert relationship.guide_evidence == artifact.confirmed_relationships[0].guide_evidence
+
+
+def test_projection_free_enrichment_compiles_without_invented_prerequisites() -> None:
+    generated = _enhanced_generation(enrichment=_enrichment_artifact())
+    enhancement = generated.profile.enhancement
+    assert enhancement is not None
+    relationship = enhancement.relationships[0]
+    assert relationship.prerequisite_projection is None
+    assert relationship.identity[2] == ()
+    serialized = json.loads(generated.profile_bytes)
+    assert "prerequisite_projection" not in serialized["enhancement"]["relationships"][0]
+    assert relationship.prerequisites == ("A support creature is on the battlefield.",)
+
+
+def test_typed_projection_ignores_model_prose_during_compilation() -> None:
+    database = _typed_database()
+    relationship = _typed_relationship()
+    plain = _enhanced_generation(
+        enrichment=_typed_enrichment_artifact(
+            sources=_enrichment_sources(cards=database),
+        ),
+        card_database=database,
+    )
+    prose = _enhanced_generation(
+        enrichment=_typed_enrichment_artifact(
+            sources=_enrichment_sources(cards=database),
+            relationships=(
+                replace(
+                    relationship,
+                    claim="Score 0.7: the enabler is worth two points.",
+                    prerequisites=("Legacy reading one.", "Legacy reading two."),
+                ),
+            ),
+        ),
+        card_database=database,
+    )
+    plain_enhancement = plain.profile.enhancement
+    prose_enhancement = prose.profile.enhancement
+    assert plain_enhancement is not None
+    assert prose_enhancement is not None
+    plain_projection = plain_enhancement.relationships[0].prerequisite_projection
+    assert plain_projection is not None
+    assert plain_projection == prose_enhancement.relationships[0].prerequisite_projection
+    assert plain.profile_bytes != prose.profile_bytes
+    assert prose_enhancement.relationships[0].prerequisites == (
+        "Legacy reading one.",
+        "Legacy reading two.",
+    )
+
+
+@pytest.mark.parametrize(
+    ("review", "expected_error"),
+    [
+        (
+            ArtifactReview(state="pending", reviewer_id=None, reviewed_at=None),
+            "The enrichment artifact has not been confirmed.",
+        ),
+        (
+            ArtifactReview(
+                state="cancelled",
+                reviewer_id="local-review",
+                reviewed_at=ENRICHMENT_REVIEWED_AT,
+            ),
+            "The enrichment artifact review was cancelled.",
+        ),
+    ],
+)
+def test_typed_enrichment_review_state_is_required_before_compilation(
+    review: ArtifactReview,
+    expected_error: str,
+) -> None:
+    database = _typed_database()
+    artifact = _typed_enrichment_artifact(
+        sources=_enrichment_sources(cards=database),
+        review=review,
+    )
+    assert artifact.relationships[0].prerequisite_projection is not None
+
+    with pytest.raises(ProfileEnhancementError) as raised:
+        _enhanced_generation(enrichment=artifact, card_database=database)
+
+    assert str(raised.value) == expected_error
+
+
+def test_typed_enrichment_set_and_card_data_mismatches_are_rejected() -> None:
+    database = _typed_database()
+    eld_cards = CardDatabase(
+        cards={
+            card_id: replace(card, set_code="ELD")
+            for card_id, card in database.cards.items()
+        }
+    )
+    wrong_set = _typed_enrichment_artifact(
+        sources=_enrichment_sources(cards=eld_cards, set_code="ELD"),
+        relationships=(
+            _typed_relationship(
+                source_card=eld_cards.cards[TYPED_SOURCE_CARD_ID],
+                target_card=eld_cards.cards[TYPED_TARGET_CARD_ID],
+            ),
+        ),
+    )
+    stale_database = CardDatabase(
+        cards={
+            **database.cards,
+            1: replace(
+                database.cards[1],
+                oracle_text=(
+                    "Whenever this enters the battlefield, draw a card. "
+                    "Whenever this enters, draw two cards instead."
+                ),
+            ),
+        }
+    )
+    stale_artifact = _typed_enrichment_artifact(
+        sources=_enrichment_sources(cards=database),
+    )
+
+    for artifact, generation_database, expected_error in (
+        (
+            wrong_set,
+            database,
+            "The enrichment artifact set code does not match the generated set.",
+        ),
+        (
+            stale_artifact,
+            stale_database,
+            "The enrichment artifact card data does not match the generation card database.",
+        ),
+    ):
+        assert artifact.relationships[0].prerequisite_projection is not None
+        with pytest.raises(ProfileEnhancementError) as raised:
+            _enhanced_generation(enrichment=artifact, card_database=generation_database)
+        assert str(raised.value) == expected_error

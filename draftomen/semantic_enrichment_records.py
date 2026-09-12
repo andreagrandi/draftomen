@@ -383,127 +383,6 @@ class GuideClaim:
 
 
 @dataclass(frozen=True, slots=True)
-class CardRelationship:
-    """A card or package relationship with Oracle support."""
-
-    finding_id: str
-    mechanism: str
-    participants: tuple[int, ...]
-    claim: str
-    prerequisites: tuple[str, ...]
-    oracle_evidence: tuple[OracleEvidence, ...]
-    guide_evidence: tuple[GuideEvidence, ...]
-    review: FindingReview
-    run_id: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "finding_id", _identifier(self.finding_id, "finding_id"))
-        object.__setattr__(self, "mechanism", _identifier(self.mechanism, "mechanism").casefold())
-        participants = _tuple(self.participants, "participants")
-        if len(participants) < 2:
-            raise SemanticEnrichmentError("participants must contain at least two cards.")
-        if any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in participants):
-            raise SemanticEnrichmentError("participants must contain positive integers.")
-        canonical_participants = _canonical(participants, field_name="participants", key=lambda item: item)
-        object.__setattr__(self, "participants", canonical_participants)
-        object.__setattr__(self, "claim", _exact_text(self.claim, "claim"))
-        prerequisites = _tuple(self.prerequisites, "prerequisites")
-        if not prerequisites:
-            raise SemanticEnrichmentError("prerequisites must not be empty.")
-        if any(not isinstance(item, str) or not item.strip() for item in prerequisites):
-            raise SemanticEnrichmentError("prerequisites must contain nonblank strings.")
-        for prerequisite in prerequisites:
-            require_utf8_text(prerequisite, "prerequisites")
-        object.__setattr__(
-            self,
-            "prerequisites",
-            _canonical(prerequisites, field_name="prerequisites", key=lambda item: item),
-        )
-        oracle_evidence = _tuple(self.oracle_evidence, "oracle_evidence")
-        if not oracle_evidence:
-            raise SemanticEnrichmentError("oracle_evidence must not be empty.")
-        if any(not isinstance(item, OracleEvidence) for item in oracle_evidence):
-            raise SemanticEnrichmentError("oracle_evidence must contain OracleEvidence records.")
-        object.__setattr__(
-            self,
-            "oracle_evidence",
-            _canonical(
-                oracle_evidence,
-                field_name="oracle_evidence",
-                key=lambda item: (
-                    item.card_id,
-                    -1 if item.face_index is None else item.face_index,
-                    item.quote,
-                ),
-            ),
-        )
-        guide_evidence = _tuple(self.guide_evidence, "guide_evidence")
-        if any(not isinstance(item, GuideEvidence) for item in guide_evidence):
-            raise SemanticEnrichmentError("guide_evidence must contain GuideEvidence records.")
-        object.__setattr__(
-            self,
-            "guide_evidence",
-            _canonical(guide_evidence, field_name="guide_evidence", key=lambda item: (item.guide_id, item.quote)),
-        )
-        if not isinstance(self.review, FindingReview):
-            raise SemanticEnrichmentError("review must be a FindingReview.")
-        object.__setattr__(self, "run_id", _identifier(self.run_id, "run_id"))
-
-    @property
-    def identity(self) -> tuple[str, tuple[int, ...]]:
-        """Return the duplicate identity of this relationship."""
-        return self.mechanism, self.participants
-
-    def to_json(self) -> dict[str, object]:
-        return {
-            "finding_id": self.finding_id,
-            "mechanism": self.mechanism,
-            "participants": list(self.participants),
-            "claim": self.claim,
-            "prerequisites": list(self.prerequisites),
-            "oracle_evidence": [item.to_json() for item in self.oracle_evidence],
-            "guide_evidence": [item.to_json() for item in self.guide_evidence],
-            "review": self.review.to_json(),
-            "run_id": self.run_id,
-        }
-
-    @classmethod
-    def from_json(cls, value: Mapping[str, Any]) -> Self:
-        if not isinstance(value, Mapping):
-            raise SemanticEnrichmentError("card relationship must be an object.")
-        _keys(
-            value,
-            {
-                "finding_id",
-                "mechanism",
-                "participants",
-                "claim",
-                "prerequisites",
-                "oracle_evidence",
-                "guide_evidence",
-                "review",
-                "run_id",
-            },
-            "card relationship",
-        )
-        return cls(
-            finding_id=value["finding_id"],
-            mechanism=value["mechanism"],
-            participants=_json_array(value["participants"], "participants"),
-            claim=value["claim"],
-            prerequisites=_json_array(value["prerequisites"], "prerequisites"),
-            oracle_evidence=_nested_json_array(
-                value["oracle_evidence"], "oracle_evidence", OracleEvidence.from_json
-            ),
-            guide_evidence=_nested_json_array(
-                value["guide_evidence"], "guide_evidence", GuideEvidence.from_json
-            ),
-            review=FindingReview.from_json(value["review"]),
-            run_id=value["run_id"],
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class RejectedFinding:
     """Diagnostic for a finding rejected before typed storage."""
 
@@ -819,7 +698,6 @@ class ArtifactReview:
 
 __all__ = [
     "ArtifactReview",
-    "CardRelationship",
     "CardSourcePin",
     "FindingReview",
     "FindingStatus",

@@ -342,12 +342,14 @@ def _dry_run_guide_content(prompt: Mapping[str, Any]) -> str:
 
 
 def _dry_run_relationship_content(prompt: Mapping[str, Any]) -> str:
-    """Answer one relationship request with a verdict quoting both participants exactly."""
+    """Answer one relationship request with an advisory v2 verdict quoting both participants.
+    The typed prerequisites stay advisory, so no projection is fabricated.
+    """
     source: Mapping[str, Any] = prompt["source"]
     target: Mapping[str, Any] = prompt["target"]
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "verdict": "accepted",
             "claim": (
                 f"{source['card_name']} enables {target['card_name']} "
@@ -366,6 +368,9 @@ def _dry_run_relationship_content(prompt: Mapping[str, Any]) -> str:
                     "quote": target["evidence"][0]["quote"],
                 },
             ],
+            "prerequisite_status": "uncertain",
+            "source_prerequisites": [],
+            "target_prerequisites": [],
         }
     )
 

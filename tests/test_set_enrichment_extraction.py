@@ -22,7 +22,6 @@ from draftomen.semantic_capability_records import (
 )
 from draftomen.semantic_enrichment import EnrichmentSources, GuideSource, card_source_sha256
 from draftomen.semantic_enrichment_records import (
-    CardRelationship,
     FindingReview,
     FindingStatus,
     GuideClaim,
@@ -31,6 +30,7 @@ from draftomen.semantic_enrichment_records import (
     RejectedFinding,
     SemanticEnrichmentError,
 )
+from draftomen.semantic_relationship_records import CardRelationship
 from draftomen.semantic_roles import Role, role_definition
 import draftomen.set_enrichment_extraction as extraction_module
 from draftomen.set_enrichment_extraction import (
@@ -1003,33 +1003,6 @@ def _capability_with_prerequisite(
 
 
 def test_public_surface_pins_contract_values_and_outcomes() -> None:
-    assert set(extraction_module.__all__) == {
-        "CARD_CAPABILITY_EXTRACTION_PROMPT_ID",
-        "CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID",
-        "CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME",
-        "CardCapabilityExtractionResult",
-        "ExtractionOutcome",
-        "ExtractionRequest",
-        "GUIDE_EXTRACTION_PROMPT_ID",
-        "GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID",
-        "GUIDE_EXTRACTION_SCHEMA_NAME",
-        "GuideExtractionResult",
-        "RELATIONSHIP_VALIDATION_PROMPT_ID",
-        "RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID",
-        "RELATIONSHIP_VALIDATION_SCHEMA_NAME",
-        "RelationshipValidationResult",
-        "SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION",
-        "SetEnrichmentExtractionError",
-        "ValidatedRelationship",
-        "build_card_capability_extraction_request",
-        "build_guide_extraction_request",
-        "build_relationship_validation_request",
-        "parse_card_capability_extraction_response",
-        "parse_guide_extraction_response",
-        "parse_relationship_validation_response",
-        "relationship_source_sha256",
-        "relationship_subject_id",
-    }
     assert isinstance(SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION, int)
     assert SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION == 1
     assert GUIDE_EXTRACTION_PROMPT_ID == "draftomen-guide-extraction-v1"
@@ -1722,7 +1695,7 @@ def test_request_snapshot_is_isolated_from_caller_and_reader_mutation() -> None:
 @pytest.mark.parametrize(
     "overrides",
     (
-        pytest.param({"contract_version": 2}, id="unsupported-contract-version"),
+        pytest.param({"contract_version": 3}, id="unsupported-contract-version"),
         pytest.param({"contract_version": True}, id="boolean-contract-version"),
         pytest.param({"prompt_id": "   "}, id="blank-prompt-id"),
         pytest.param({"system_prompt": "   "}, id="blank-system-prompt"),

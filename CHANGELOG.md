@@ -3,6 +3,22 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Establish one shared typed relationship prerequisite contract in the new
+  `draftomen.semantic_relationship_records` module: an accepted relationship may carry an
+  optional directional `prerequisite_projection` whose atomic clauses bind each controlling
+  cost, trigger, condition, threshold and supplied output fact to one exact frozen Oracle
+  ability paragraph, a closed color/type/zone/controller/quantity/timing vocabulary and the
+  complete indices of the capability prerequisites it discharges, with shared validators that
+  decline to project incomplete, ambiguous or unsupported prerequisites instead of inventing
+  constraints, while a prerequisite that contradicts its own source evidence becomes a
+  rejected diagnostic rather than an advisory relationship; `CardRelationship` moves to that
+  module and keeps every legacy descriptive
+  field, artifacts and profiles without a projection stay loadable and serialize without the
+  new key, and relationship duplicate identity now carries the projected direction so
+  reversed and distinct-capability relationships no longer collapse. Relationship validation moves
+  to the pinned v2 request and response contract while guide and card extraction stay on their
+  existing version, so retained v1 relationship results stay readable but are never reused for a
+  v2 request. (#508)
 - Add the interactive terminal `enrich-set` command that turns the UI-neutral
   set-enrichment workflow into one operator journey on the packaged `draftomen-tui`
   executable: `draftomen-tui enrich-set SET --guide-url URL --output-dir PATH` streams one

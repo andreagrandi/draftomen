@@ -111,6 +111,7 @@ files = [
     "draftomen/semantic_capability_records.py",
     "draftomen/semantic_enrichment.py",
     "draftomen/semantic_enrichment_records.py",
+    "draftomen/semantic_relationship_records.py",
     "draftomen/semantic_roles.py",
     "draftomen/session.py",
     "draftomen/set_profile.py",

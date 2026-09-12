@@ -35,19 +35,30 @@ from draftomen.semantic_enrichment_records import (
     RejectedFinding,
     SemanticEnrichmentError,
 )
+from draftomen.semantic_relationship_records import (
+    PREREQUISITE_CONTRADICTION_MESSAGE,
+    RELATIONSHIP_ZONE_PLAYERS,
+    PrerequisiteProjectionError,
+    RelationshipParticipant,
+    RelationshipPrerequisite,
+    RelationshipPrerequisiteProjection,
+    role_anchor_covered,
+    validate_relationship_participant_sources,
+)
 from draftomen.semantic_roles import Role, role_definition
 
 
 SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION = 1
+RELATIONSHIP_VALIDATION_CONTRACT_VERSION = 2
 GUIDE_EXTRACTION_PROMPT_ID = "draftomen-guide-extraction-v1"
 GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID = "draftomen-guide-extraction-response-v1"
 GUIDE_EXTRACTION_SCHEMA_NAME = "draftomen_guide_extraction_v1"
 CARD_CAPABILITY_EXTRACTION_PROMPT_ID = "draftomen-card-capability-extraction-v1"
 CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID = "draftomen-card-capability-extraction-response-v1"
 CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME = "draftomen_card_capability_extraction_v1"
-RELATIONSHIP_VALIDATION_PROMPT_ID = "draftomen-relationship-validation-v1"
-RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID = "draftomen-relationship-validation-response-v1"
-RELATIONSHIP_VALIDATION_SCHEMA_NAME = "draftomen_relationship_validation_v1"
+RELATIONSHIP_VALIDATION_PROMPT_ID = "draftomen-relationship-validation-v2"
+RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID = "draftomen-relationship-validation-response-v2"
+RELATIONSHIP_VALIDATION_SCHEMA_NAME = "draftomen_relationship_validation_v2"
 
 _GUIDE_SYSTEM_PROMPT = (
     "Extract only claims stated in the supplied frozen guide. Return an exact guide quotation "
@@ -94,8 +105,13 @@ _RELATIONSHIP_SYSTEM_PROMPT = (
     "interaction only when both supplied Oracle texts support it, and quote substrings copied "
     "exactly from the listed Oracle text of each participant. Never rename, re-identify, or "
     "introduce another card, and never restate a mechanism other than the declared one. Return "
-    "only the pinned JSON object: an accepted verdict carries a null reason, while uncertain "
-    "and rejected verdicts require a nonblank reason."
+    "every controlling cost, trigger, threshold, and condition for both directional capabilities "
+    "as typed clauses. Distinguish the capability's output from the objects that trigger or pay "
+    "its costs. Quote complete controlling ability text including its restrictions, and report "
+    "uncertain or unsupported whenever the supplied vocabulary cannot express a stated condition "
+    "or its completeness is unknown. Never supply scores, weights, confidence values, or "
+    "adjustments. Return only the pinned JSON object: an accepted verdict carries a null reason, "
+    "while uncertain and rejected verdicts require a nonblank reason."
 )
 
 _MALFORMED_RESPONSE_REASON = "response does not match guide extraction schema version 1."
@@ -150,7 +166,7 @@ _NONTOKEN_CREATURE_CLAUSE = re.compile(r"\bnontoken\b", re.IGNORECASE)
 _CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card."
 
 _RELATIONSHIP_MALFORMED_RESPONSE_REASON = (
-    "response does not match relationship validation schema version 1."
+    "response does not match relationship validation schema version 2."
 )
 _RELATIONSHIP_EVIDENCE_OWNER_REASON = (
     "relationship Oracle evidence does not belong to a candidate participant."
@@ -231,11 +247,21 @@ _CARD_RESULT_KEYS = frozenset(
     }
 )
 _RELATIONSHIP_RESPONSE_KEYS = frozenset(
-    {"schema_version", "verdict", "claim", "reason", "evidence"}
+    {
+        "schema_version",
+        "verdict",
+        "claim",
+        "reason",
+        "evidence",
+        "prerequisite_status",
+        "source_prerequisites",
+        "target_prerequisites",
+    }
 )
 _RELATIONSHIP_KEYS = frozenset(
     {"mechanism", "source", "target", "claim", "evidence", "review", "run_id"}
 )
+_RELATIONSHIP_PROJECTED_KEYS = _RELATIONSHIP_KEYS | {"prerequisite_projection"}
 _RELATIONSHIP_RESULT_KEYS = frozenset(
     {"outcome", "relationship", "rejected", "malformed_reason"}
 )
@@ -248,6 +274,62 @@ _ROLE_DEFINITION_PAIRS: tuple[tuple[str, str], ...] = tuple(
 _ZONE_VALUES = sorted(member.value for member in CapabilityZone)
 _QUANTITY_RELATION_VALUES = sorted(member.value for member in QuantityRelation)
 _PREREQUISITE_KIND_VALUES = sorted(member.value for member in PrerequisiteKind)
+
+# The v2 prerequisite vocabulary is the closed set `RelationshipPrerequisite` validates. It is
+# restated here because the provider schema must enumerate those values before any record exists.
+_PREREQUISITE_STATUS_VALUES = ["complete", "uncertain", "unsupported"]
+_RELATIONSHIP_SUBJECT_VALUES = ["event", "input", "output", "participant"]
+_RELATIONSHIP_OPERATION_VALUES = [
+    "attack",
+    "cast",
+    "control",
+    "count",
+    "create",
+    "die",
+    "discard",
+    "draw",
+    "enter",
+    "leave",
+    "mill",
+    "none",
+    "return",
+    "sacrifice",
+]
+_RELATIONSHIP_OBJECT_KIND_VALUES = ["card", "permanent", "spell", "token"]
+_RELATIONSHIP_TYPE_OPERATOR_VALUES = ["all_of", "any_of", "unrestricted"]
+_RELATIONSHIP_CARD_TYPE_VALUES = [
+    "artifact",
+    "battle",
+    "creature",
+    "enchantment",
+    "instant",
+    "kindred",
+    "land",
+    "planeswalker",
+    "sorcery",
+]
+_RELATIONSHIP_TOKEN_RESTRICTION_VALUES = ["nontoken", "token", "unrestricted"]
+_RELATIONSHIP_EXCLUSION_VALUES = ["ability_source", "none"]
+_RELATIONSHIP_COLOR_OPERATOR_VALUES = ["all_of", "any_of", "exact", "unrestricted"]
+_RELATIONSHIP_COLOR_VALUES = ["B", "G", "R", "U", "W"]
+_RELATIONSHIP_CONTROLLER_VALUES = ["any", "not_applicable", "opponent", "you"]
+_RELATIONSHIP_TIMING_WINDOW_VALUES = [
+    "attack",
+    "beginning_of_combat",
+    "combat",
+    "dies",
+    "end_step",
+    "enters",
+    "landfall",
+    "main_phase",
+    "next_turn",
+    "same_turn",
+    "sorcery_speed",
+    "unrestricted",
+    "upkeep",
+]
+_RELATIONSHIP_TIMING_TURN_VALUES = ["any", "opponent", "your"]
+_RELATIONSHIP_ZONE_PLAYER_VALUES = sorted(RELATIONSHIP_ZONE_PLAYERS)
 
 
 class ExtractionOutcome(StrEnum):
@@ -509,18 +591,103 @@ def _card_capability_response_schema() -> dict[str, Any]:
     )
 
 
+def _relationship_zone_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one typed relationship zone."""
+    return _object_schema(
+        {
+            "zone": {"type": "string", "enum": list(_ZONE_VALUES)},
+            "player": {"type": "string", "enum": list(_RELATIONSHIP_ZONE_PLAYER_VALUES)},
+        }
+    )
+
+
+def _nullable_relationship_zone_schema() -> dict[str, Any]:
+    """Return a fresh schema accepting null or one typed relationship zone."""
+    return {"anyOf": [{"type": "null"}, _relationship_zone_schema()]}
+
+
+def _relationship_timing_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one closed relationship timing object."""
+    return _object_schema(
+        {
+            "window": {"type": "string", "enum": list(_RELATIONSHIP_TIMING_WINDOW_VALUES)},
+            "turn": {"type": "string", "enum": list(_RELATIONSHIP_TIMING_TURN_VALUES)},
+            "max_per_turn": {"type": ["integer", "null"], "minimum": 1},
+        }
+    )
+
+
+def _relationship_prerequisite_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one typed relationship prerequisite clause."""
+    return _object_schema(
+        {
+            "kind": {"type": "string", "enum": list(_PREREQUISITE_KIND_VALUES)},
+            "subject": {"type": "string", "enum": list(_RELATIONSHIP_SUBJECT_VALUES)},
+            "operation": {"type": "string", "enum": list(_RELATIONSHIP_OPERATION_VALUES)},
+            "object_kind": {"type": "string", "enum": list(_RELATIONSHIP_OBJECT_KIND_VALUES)},
+            "card_types": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(_RELATIONSHIP_CARD_TYPE_VALUES)},
+            },
+            "type_operator": {"type": "string", "enum": list(_RELATIONSHIP_TYPE_OPERATOR_VALUES)},
+            "token_restriction": {
+                "type": "string",
+                "enum": list(_RELATIONSHIP_TOKEN_RESTRICTION_VALUES),
+            },
+            "exclusion": {"type": "string", "enum": list(_RELATIONSHIP_EXCLUSION_VALUES)},
+            "subtype": {"type": ["string", "null"], "minLength": 1},
+            "color_operator": {
+                "type": "string",
+                "enum": list(_RELATIONSHIP_COLOR_OPERATOR_VALUES),
+            },
+            "colors": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(_RELATIONSHIP_COLOR_VALUES)},
+            },
+            "controller": {"type": "string", "enum": list(_RELATIONSHIP_CONTROLLER_VALUES)},
+            "owner": {"type": "string", "enum": list(_RELATIONSHIP_CONTROLLER_VALUES)},
+            "quantity": _nullable_quantity_schema(),
+            "source_zone": _nullable_relationship_zone_schema(),
+            "destination_zone": _nullable_relationship_zone_schema(),
+            "timing": _relationship_timing_schema(),
+            "required_card_id": {"type": ["integer", "null"], "minimum": 1},
+            "evidence": _oracle_evidence_schema(),
+            "operation_quote": {"type": "string", "minLength": 1},
+            "operation_occurrence": {"type": "integer", "minimum": 0},
+            "object_quote": {"type": "string", "minLength": 1},
+            "object_occurrence": {"type": "integer", "minimum": 0},
+            "capability_prerequisite_indices": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 0},
+            },
+        }
+    )
+
+
 def _relationship_response_schema() -> dict[str, Any]:
     """Return a fresh strict schema for one relationship validation response."""
     return _object_schema(
         {
             "schema_version": {
                 "type": "integer",
-                "enum": [SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION],
+                "enum": [RELATIONSHIP_VALIDATION_CONTRACT_VERSION],
             },
             "verdict": {"type": "string", "enum": list(_STATUS_VALUES)},
             "claim": {"type": "string", "minLength": 1},
             "reason": {"type": ["string", "null"]},
             "evidence": {"type": "array", "items": _oracle_evidence_schema()},
+            "prerequisite_status": {
+                "type": "string",
+                "enum": list(_PREREQUISITE_STATUS_VALUES),
+            },
+            "source_prerequisites": {
+                "type": "array",
+                "items": _relationship_prerequisite_schema(),
+            },
+            "target_prerequisites": {
+                "type": "array",
+                "items": _relationship_prerequisite_schema(),
+            },
         }
     )
 
@@ -541,7 +708,10 @@ class ExtractionRequest:
     def __post_init__(self, schema: Mapping[str, Any]) -> None:
         if isinstance(self.contract_version, bool) or not isinstance(self.contract_version, int):
             raise SetEnrichmentExtractionError("contract_version must be an integer.")
-        if self.contract_version != SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION:
+        if self.contract_version not in (
+            SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+            RELATIONSHIP_VALIDATION_CONTRACT_VERSION,
+        ):
             raise SetEnrichmentExtractionError("contract_version is not supported.")
         for field_name in ("prompt_id", "response_schema_id", "response_schema_name"):
             object.__setattr__(self, field_name, _identifier(getattr(self, field_name), field_name))
@@ -875,6 +1045,7 @@ class ValidatedRelationship:
     evidence: tuple[OracleEvidence, ...]
     review: FindingReview
     run_id: str
+    prerequisite_projection: RelationshipPrerequisiteProjection | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mechanism", _identifier(self.mechanism, "mechanism"))
@@ -890,6 +1061,35 @@ class ValidatedRelationship:
         if self.review.status is FindingStatus.REJECTED:
             raise SetEnrichmentExtractionError("rejected relationships must be diagnostics.")
         object.__setattr__(self, "run_id", _identifier(self.run_id, "run_id"))
+        projection = self.prerequisite_projection
+        if projection is None:
+            return
+        if not isinstance(projection, RelationshipPrerequisiteProjection):
+            raise SetEnrichmentExtractionError(
+                "prerequisite_projection must be a RelationshipPrerequisiteProjection or null."
+            )
+        if self.review.status is not FindingStatus.ACCEPTED:
+            raise SetEnrichmentExtractionError("projected relationships require an accepted review.")
+        for capability, participant in ((source, projection.source), (target, projection.target)):
+            if (
+                participant.card_id != capability.card_id
+                or participant.capability_id != capability.finding_id
+                or participant.card_name != capability.card_name
+                or participant.face_index != capability.face_index
+                or participant.face_name != capability.face_name
+                or participant.role is not capability.role
+                or participant.capability_prerequisites != capability.prerequisites
+            ):
+                raise SetEnrichmentExtractionError(
+                    "projection participants must match the validated capabilities."
+                )
+        owned = set(self.evidence)
+        for participant in (projection.source, projection.target):
+            for clause in participant.prerequisites:
+                if clause.evidence not in owned:
+                    raise SetEnrichmentExtractionError(
+                        "projection clause evidence must be validated relationship evidence."
+                    )
 
     @property
     def finding_id(self) -> str:
@@ -913,7 +1113,7 @@ class ValidatedRelationship:
 
     def to_json(self) -> dict[str, object]:
         """Return a fresh JSON-compatible relationship object."""
-        return {
+        encoded: dict[str, object] = {
             "mechanism": self.mechanism,
             "source": self.source.to_json(),
             "target": self.target.to_json(),
@@ -922,11 +1122,23 @@ class ValidatedRelationship:
             "review": self.review.to_json(),
             "run_id": self.run_id,
         }
+        if self.prerequisite_projection is not None:
+            encoded["prerequisite_projection"] = self.prerequisite_projection.to_json()
+        return encoded
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> ValidatedRelationship:
         """Decode validated stored bytes into one exact validated relationship."""
-        _result_keys(value, _RELATIONSHIP_KEYS, "validated relationship")
+        projection: RelationshipPrerequisiteProjection | None = None
+        if "prerequisite_projection" in value:
+            _result_keys(value, _RELATIONSHIP_PROJECTED_KEYS, "validated relationship")
+            projection = _stored_record(
+                value["prerequisite_projection"],
+                "prerequisite_projection",
+                RelationshipPrerequisiteProjection.from_json,
+            )
+        else:
+            _result_keys(value, _RELATIONSHIP_KEYS, "validated relationship")
         return cls(
             mechanism=value["mechanism"],
             source=_stored_record(value["source"], "source", CardCapability.from_json),
@@ -935,6 +1147,7 @@ class ValidatedRelationship:
             evidence=_nested_records(value["evidence"], "evidence", OracleEvidence.from_json),
             review=_stored_record(value["review"], "review", FindingReview.from_json),
             run_id=value["run_id"],
+            prerequisite_projection=projection,
         )
 
 
@@ -1171,15 +1384,19 @@ def build_relationship_validation_request(
     _validated_participant_faces(source, target, source_card=source_card, target_card=target_card)
     user_prompt = _canonical_bytes(
         {
-            "contract_version": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+            "contract_version": RELATIONSHIP_VALIDATION_CONTRACT_VERSION,
             "set_code": sources.set_code,
             "mechanism": normalized_mechanism,
             "source": _capability_prompt_projection(source),
             "target": _capability_prompt_projection(target),
+            "source_oracle_text": _participant_oracle_text(source, source_card),
+            "target_oracle_text": _participant_oracle_text(target, target_card),
+            "source_role_definition": role_definition(source.role),
+            "target_role_definition": role_definition(target.role),
         }
     ).decode("utf-8")
     return ExtractionRequest(
-        contract_version=SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+        contract_version=RELATIONSHIP_VALIDATION_CONTRACT_VERSION,
         prompt_id=RELATIONSHIP_VALIDATION_PROMPT_ID,
         system_prompt=_RELATIONSHIP_SYSTEM_PROMPT,
         user_prompt=user_prompt,
@@ -1515,7 +1732,41 @@ def _validated_relationship_evidence(entry: Any) -> Mapping[str, Any]:
     return entry
 
 
-def _relationship_document(document: Any) -> tuple[str, str, str | None, list[Mapping[str, Any]]]:
+@dataclass(frozen=True, slots=True)
+class _RelationshipResponse:
+    """One strictly decoded v2 relationship validation response."""
+
+    verdict: str
+    claim: str
+    reason: str | None
+    evidence: tuple[Mapping[str, Any], ...]
+    prerequisite_status: str
+    source_prerequisites: tuple[RelationshipPrerequisite, ...]
+    target_prerequisites: tuple[RelationshipPrerequisite, ...]
+
+
+def _relationship_clauses(entries: Any) -> tuple[RelationshipPrerequisite, ...]:
+    """Decode one strict prerequisite array that never repeats a clause."""
+    if not isinstance(entries, list):
+        raise _MalformedResponse
+    clauses: list[RelationshipPrerequisite] = []
+    seen: set[bytes] = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise _MalformedResponse
+        try:
+            clause = RelationshipPrerequisite.from_json(entry)
+        except SemanticEnrichmentError as error:
+            raise _MalformedResponse from error
+        reference = _canonical_bytes(clause.to_json())
+        if reference in seen:
+            raise _MalformedResponse
+        seen.add(reference)
+        clauses.append(clause)
+    return tuple(clauses)
+
+
+def _relationship_document(document: Any) -> _RelationshipResponse:
     """Validate one relationship response document before any verdict is retained."""
     if not isinstance(document, Mapping):
         raise _MalformedResponse
@@ -1523,7 +1774,7 @@ def _relationship_document(document: Any) -> tuple[str, str, str | None, list[Ma
     version = document["schema_version"]
     if isinstance(version, bool) or not isinstance(version, int):
         raise _MalformedResponse
-    if version != SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION:
+    if version != RELATIONSHIP_VALIDATION_CONTRACT_VERSION:
         raise _MalformedResponse
     verdict = document["verdict"]
     if not isinstance(verdict, str):
@@ -1537,7 +1788,20 @@ def _relationship_document(document: Any) -> tuple[str, str, str | None, list[Ma
     if not isinstance(evidence, list):
         raise _MalformedResponse
     entries = [_validated_relationship_evidence(entry) for entry in evidence]
-    return verdict, claim, reason, entries
+    prerequisite_status = document["prerequisite_status"]
+    if not isinstance(prerequisite_status, str):
+        raise _MalformedResponse
+    if prerequisite_status not in _PREREQUISITE_STATUS_VALUES:
+        raise _MalformedResponse
+    return _RelationshipResponse(
+        verdict=verdict,
+        claim=claim,
+        reason=reason,
+        evidence=tuple(entries),
+        prerequisite_status=prerequisite_status,
+        source_prerequisites=_relationship_clauses(document["source_prerequisites"]),
+        target_prerequisites=_relationship_clauses(document["target_prerequisites"]),
+    )
 
 
 def _source_reference_reason(
@@ -1891,6 +2155,94 @@ def _participant_oracle_text(capability: CardCapability, card: CardInfo) -> str:
     return ""
 
 
+def _relationship_participant(
+    *,
+    capability: CardCapability,
+    card: CardInfo,
+    clauses: tuple[RelationshipPrerequisite, ...],
+) -> RelationshipParticipant:
+    """Build one directional participant from its trusted capability and frozen card."""
+    return RelationshipParticipant(
+        card_id=capability.card_id,
+        capability_id=capability.finding_id,
+        card_name=capability.card_name,
+        face_index=capability.face_index,
+        face_name=capability.face_name,
+        card_source_sha256=card_source_sha256(card),
+        role=capability.role,
+        capability_prerequisites=capability.prerequisites,
+        prerequisites=clauses,
+    )
+
+
+def _prerequisite_projection(
+    *,
+    status: str,
+    source: CardCapability,
+    target: CardCapability,
+    source_card: CardInfo,
+    target_card: CardInfo,
+    source_clauses: tuple[RelationshipPrerequisite, ...],
+    target_clauses: tuple[RelationshipPrerequisite, ...],
+) -> RelationshipPrerequisiteProjection | None:
+    """Build one fully source-bound projection, or None when it is not complete."""
+    source_participant = (
+        _relationship_participant(capability=source, card=source_card, clauses=source_clauses)
+        if source_clauses
+        else None
+    )
+    target_participant = (
+        _relationship_participant(capability=target, card=target_card, clauses=target_clauses)
+        if target_clauses
+        else None
+    )
+    # Supplied clauses are bound to their frozen source and assessed for contradictions before any
+    # completeness gate, so an uncertain status or an empty side cannot hide a contradiction.
+    for participant, other, capability, card in (
+        (source_participant, target_participant, source, source_card),
+        (target_participant, source_participant, target, target_card),
+    ):
+        if participant is None:
+            continue
+        try:
+            validate_relationship_participant_sources(
+                participant=participant,
+                other=other,
+                oracle_text=_participant_oracle_text(capability, card),
+                evidence=capability.evidence,
+            )
+        except PrerequisiteProjectionError as error:
+            if error.code == "contradiction":
+                raise
+    if source_participant is None or target_participant is None:
+        return None
+    projection = RelationshipPrerequisiteProjection(
+        source=source_participant,
+        target=target_participant,
+    )
+    if status != "complete":
+        return None
+    if not role_anchor_covered(participant=projection.source):
+        return None
+    if not role_anchor_covered(participant=projection.target):
+        return None
+    return projection
+
+
+def _projection_evidence(
+    *,
+    projection: RelationshipPrerequisiteProjection,
+) -> tuple[OracleEvidence, ...]:
+    """Return every clause and copied prerequisite evidence of one projection."""
+    collected: list[OracleEvidence] = []
+    for participant in (projection.source, projection.target):
+        collected.extend(clause.evidence for clause in participant.prerequisites)
+        collected.extend(
+            prerequisite.evidence for prerequisite in participant.capability_prerequisites
+        )
+    return _canonical_evidence(tuple(collected))
+
+
 def _relationship_verdict_reason(
     *,
     status: FindingStatus,
@@ -2010,6 +2362,28 @@ def parse_card_capability_extraction_response(
     )
 
 
+def _relationship_rejection(
+    *,
+    finding_id: str,
+    claim: str,
+    reason: str,
+    run_id: str,
+) -> RelationshipValidationResult:
+    """Build one successful validation that publishes a relationship diagnostic."""
+    return RelationshipValidationResult(
+        outcome=ExtractionOutcome.SUCCESS,
+        relationship=None,
+        rejected=RejectedFinding(
+            finding_id=finding_id,
+            source_kind="relationship",
+            summary=claim,
+            reason=reason,
+            run_id=run_id,
+        ),
+        malformed_reason=None,
+    )
+
+
 def _malformed_relationship_result() -> RelationshipValidationResult:
     """Return the fixed all-or-nothing malformed relationship outcome."""
     return RelationshipValidationResult(
@@ -2044,10 +2418,29 @@ def parse_relationship_validation_response(
         target=target,
     )
     try:
-        verdict, claim, reason, entries = _relationship_document(_decode_response_document(content))
+        response = _relationship_document(_decode_response_document(content))
     except (_MalformedResponse, SemanticEnrichmentError):
         return _malformed_relationship_result()
     try:
+        try:
+            projection = _prerequisite_projection(
+                status=response.prerequisite_status,
+                source=source,
+                target=target,
+                source_card=source_card,
+                target_card=target_card,
+                source_clauses=response.source_prerequisites,
+                target_clauses=response.target_prerequisites,
+            )
+        except PrerequisiteProjectionError as error:
+            if error.code == "contradiction":
+                return _relationship_rejection(
+                    finding_id=finding_id,
+                    claim=response.claim,
+                    reason=PREREQUISITE_CONTRADICTION_MESSAGE,
+                    run_id=normalized_run_id,
+                )
+            projection = None
         declared_claim = _creature_token_death_claim(
             mechanism=normalized_mechanism,
             source=source,
@@ -2057,7 +2450,11 @@ def parse_relationship_validation_response(
             # The rule is read before the model's verdict and publishes the participants' own
             # evidence, so identical evidence shapes cannot diverge on one sampling draw. The
             # response still has to decode into the pinned schema first, which is what keeps a
-            # refusal or a malformed completion out of the accepted set.
+            # refusal or a malformed completion out of the accepted set. A projection that passed
+            # every gate is carried through with its own evidence; incomplete inputs keep None.
+            evidence = _canonical_evidence(source.evidence + target.evidence)
+            if projection is not None:
+                evidence = _canonical_evidence(evidence + _projection_evidence(projection=projection))
             return RelationshipValidationResult(
                 outcome=ExtractionOutcome.SUCCESS,
                 relationship=ValidatedRelationship(
@@ -2065,18 +2462,19 @@ def parse_relationship_validation_response(
                     source=source,
                     target=target,
                     claim=declared_claim,
-                    evidence=_canonical_evidence(source.evidence + target.evidence),
+                    evidence=evidence,
                     review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
                     run_id=normalized_run_id,
+                    prerequisite_projection=projection,
                 ),
                 rejected=None,
                 malformed_reason=None,
             )
-        evidence = _canonical_evidence(tuple(_decoded_evidence(entry) for entry in entries))
-        status = FindingStatus(verdict)
+        evidence = _canonical_evidence(tuple(_decoded_evidence(entry) for entry in response.evidence))
+        status = FindingStatus(response.verdict)
         rejection_reason = _relationship_verdict_reason(
             status=status,
-            reason=reason,
+            reason=response.reason,
             evidence=evidence,
             source=source,
             target=target,
@@ -2084,41 +2482,34 @@ def parse_relationship_validation_response(
             target_card=target_card,
         )
         if rejection_reason is not None:
-            return RelationshipValidationResult(
-                outcome=ExtractionOutcome.SUCCESS,
-                relationship=None,
-                rejected=RejectedFinding(
-                    finding_id=finding_id,
-                    source_kind="relationship",
-                    summary=claim,
-                    reason=rejection_reason,
-                    run_id=normalized_run_id,
-                ),
-                malformed_reason=None,
+            return _relationship_rejection(
+                finding_id=finding_id,
+                claim=response.claim,
+                reason=rejection_reason,
+                run_id=normalized_run_id,
             )
         if status is FindingStatus.REJECTED:
-            return RelationshipValidationResult(
-                outcome=ExtractionOutcome.SUCCESS,
-                relationship=None,
-                rejected=RejectedFinding(
-                    finding_id=finding_id,
-                    source_kind="relationship",
-                    summary=claim,
-                    reason=reason,
-                    run_id=normalized_run_id,
-                ),
-                malformed_reason=None,
+            return _relationship_rejection(
+                finding_id=finding_id,
+                claim=response.claim,
+                reason=response.reason,
+                run_id=normalized_run_id,
             )
+        if status is FindingStatus.ACCEPTED and projection is not None:
+            evidence = _canonical_evidence(evidence + _projection_evidence(projection=projection))
         return RelationshipValidationResult(
             outcome=ExtractionOutcome.SUCCESS,
             relationship=ValidatedRelationship(
                 mechanism=normalized_mechanism,
                 source=source,
                 target=target,
-                claim=claim,
+                claim=response.claim,
                 evidence=evidence,
-                review=FindingReview(status=status, reason=reason),
+                review=FindingReview(status=status, reason=response.reason),
                 run_id=normalized_run_id,
+                prerequisite_projection=(
+                    projection if status is FindingStatus.ACCEPTED else None
+                ),
             ),
             rejected=None,
             malformed_reason=None,
@@ -2138,6 +2529,7 @@ __all__ = [
     "GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID",
     "GUIDE_EXTRACTION_SCHEMA_NAME",
     "GuideExtractionResult",
+    "RELATIONSHIP_VALIDATION_CONTRACT_VERSION",
     "RELATIONSHIP_VALIDATION_PROMPT_ID",
     "RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID",
     "RELATIONSHIP_VALIDATION_SCHEMA_NAME",
