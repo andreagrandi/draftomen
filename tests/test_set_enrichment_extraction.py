@@ -185,6 +185,56 @@ FILI_KEYWORD_QUOTE = (
 )
 FILI_PAYOFF_QUOTE = "As long as you have an enduring story, creatures you control get +1/+1."
 
+DANCING_FROM_DARK_TO_DUSK_CARD_ID = 103503
+DANCING_FROM_DARK_TO_DUSK_CARD_NAME = "Dancing from Dark to Dawn"
+DANCING_FROM_DARK_TO_DUSK_TRIGGER_QUOTE = "Whenever a land you control enters"
+DANCING_FROM_DARK_TO_DUSK_TOKEN_QUOTE = (
+    "Landfall — Whenever a land you control enters, create a 2/2 green Bear creature token."
+)
+DANCING_FROM_DARK_TO_DUSK_TOKEN_FRAGMENT_QUOTE = "create a 2/2 green Bear creature token."
+DANCING_FROM_DARK_TO_DUSK_COUNTERS_QUOTE = (
+    "Whenever you cast a creature spell, put X +1/+1 counters on target creature you control, "
+    "where X is that spell's mana value."
+)
+DANCING_FROM_DARK_TO_DUSK_CARD_TEXT = (
+    f"{DANCING_FROM_DARK_TO_DUSK_COUNTERS_QUOTE}\n"
+    f"{DANCING_FROM_DARK_TO_DUSK_TOKEN_QUOTE}"
+)
+
+STONE_GIANT_CARD_ID = 103492
+STONE_GIANT_CARD_NAME = "Stone-Giant of High Pass"
+STONE_GIANT_TOKEN_QUOTE = (
+    "Whenever this creature enters or attacks, create a 3/1 colorless Wall artifact creature "
+    "token with defender named Stone Boulder."
+)
+STONE_GIANT_CARD_TEXT = (
+    f"{STONE_GIANT_TOKEN_QUOTE}\n"
+    "{2}{R}, Sacrifice an artifact: This creature deals 4 damage to any target."
+)
+
+TREASURE_TOKEN_CARD_ID = 205
+TREASURE_TOKEN_CARD_NAME = "Hoard Courier"
+TREASURE_TOKEN_QUOTE = "When this creature enters, create a Treasure token."
+TREASURE_TOKEN_CARD_TEXT = TREASURE_TOKEN_QUOTE
+
+TOKEN_MENTION_CARD_ID = 206
+TOKEN_MENTION_CARD_NAME = "Ember Ritualist"
+TOKEN_MENTION_QUOTE = "Sacrifice a creature token: add one mana of any color."
+TOKEN_MENTION_CARD_TEXT = TOKEN_MENTION_QUOTE
+
+PILOT_TOKEN_CARD_ID = 207
+PILOT_TOKEN_CARD_NAME = "Charge Wagon"
+PILOT_TOKEN_QUOTE = "create a Treasure token and a 2/2 colorless Pilot creature token."
+PILOT_TOKEN_CARD_TEXT = PILOT_TOKEN_QUOTE
+
+REPLACEMENT_TOKEN_CARD_ID = 208
+REPLACEMENT_TOKEN_CARD_NAME = "Angelic Visitation"
+REPLACEMENT_TOKEN_QUOTE = (
+    "If one or more creature tokens would be created under your control, that many 4/4 white "
+    "Angel creature tokens with flying and vigilance are created instead."
+)
+REPLACEMENT_TOKEN_CARD_TEXT = REPLACEMENT_TOKEN_QUOTE
+
 FRONT_EFFECT_QUOTE = "draw a card"
 BACK_TRIGGER_QUOTE = "At the beginning of your upkeep"
 BACK_MILL_QUOTE = "each opponent mills two cards"
@@ -198,6 +248,9 @@ CAPABILITY_CARD_NAME_REASON = "capability card name does not match the selected 
 CAPABILITY_FACE_REASON = "capability face identity does not match the selected canonical card."
 CAPABILITY_EVIDENCE_OWNER_REASON = "Oracle evidence does not belong to the selected card face."
 CAPABILITY_EVIDENCE_QUOTE_REASON = "Oracle evidence quote is not an exact source substring."
+TOKEN_MAKER_DERIVATION_REASON = (
+    "token_maker is derived from the quoted ability, which creates a creature token."
+)
 CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card."
 
 # Keywords OpenAI strict structured outputs reject; see
@@ -532,6 +585,99 @@ def _fili_the_pathfinder_card() -> CardInfo:
 BARDS_COMPANY_CARD = _bards_company_card()
 ESGAROTH_GARRISON_CARD = _esgaroth_garrison_card()
 FILI_CARD = _fili_the_pathfinder_card()
+
+
+def _dancing_from_dark_to_dusk_card() -> CardInfo:
+    return CardInfo(
+        grp_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+        name=DANCING_FROM_DARK_TO_DUSK_CARD_NAME,
+        colors=("G",),
+        mana_value=5.0,
+        rarity="mythic",
+        types=("Enchantment",),
+        oracle_text=DANCING_FROM_DARK_TO_DUSK_CARD_TEXT,
+        keywords=("Landfall",),
+        type_line="Enchantment",
+        set_code=SET_CODE,
+    )
+
+
+def _stone_giant_card() -> CardInfo:
+    return CardInfo(
+        grp_id=STONE_GIANT_CARD_ID,
+        name=STONE_GIANT_CARD_NAME,
+        colors=("R",),
+        mana_value=7.0,
+        rarity="rare",
+        types=("Creature",),
+        oracle_text=STONE_GIANT_CARD_TEXT,
+        type_line="Creature — Giant",
+        set_code=SET_CODE,
+        power="7",
+        toughness="7",
+    )
+
+
+def _treasure_token_card() -> CardInfo:
+    return CardInfo(
+        grp_id=TREASURE_TOKEN_CARD_ID,
+        name=TREASURE_TOKEN_CARD_NAME,
+        colors=("R",),
+        mana_value=3.0,
+        rarity="common",
+        types=("Creature",),
+        oracle_text=TREASURE_TOKEN_CARD_TEXT,
+        type_line="Creature — Dwarf",
+        set_code=SET_CODE,
+        power="2",
+        toughness="2",
+    )
+
+
+def _token_mention_card() -> CardInfo:
+    return CardInfo(
+        grp_id=TOKEN_MENTION_CARD_ID,
+        name=TOKEN_MENTION_CARD_NAME,
+        colors=("R",),
+        mana_value=2.0,
+        rarity="common",
+        types=("Creature",),
+        oracle_text=TOKEN_MENTION_CARD_TEXT,
+        type_line="Creature — Goblin Shaman",
+        set_code=SET_CODE,
+        power="1",
+        toughness="2",
+    )
+
+
+def _pilot_token_card() -> CardInfo:
+    return CardInfo(
+        grp_id=PILOT_TOKEN_CARD_ID,
+        name=PILOT_TOKEN_CARD_NAME,
+        colors=("R",),
+        mana_value=4.0,
+        rarity="rare",
+        types=("Artifact", "Creature"),
+        oracle_text=PILOT_TOKEN_CARD_TEXT,
+        type_line="Artifact Creature — Construct",
+        set_code=SET_CODE,
+        power="3",
+        toughness="3",
+    )
+
+
+def _replacement_token_card() -> CardInfo:
+    return CardInfo(
+        grp_id=REPLACEMENT_TOKEN_CARD_ID,
+        name=REPLACEMENT_TOKEN_CARD_NAME,
+        colors=("W",),
+        mana_value=4.0,
+        rarity="mythic",
+        types=("Enchantment",),
+        oracle_text=REPLACEMENT_TOKEN_CARD_TEXT,
+        type_line="Enchantment",
+        set_code=SET_CODE,
+    )
 
 
 def _two_face_card_faces() -> tuple[CardFace, ...]:
@@ -2163,6 +2309,356 @@ def test_static_payoff_parses_beside_the_keyword_role(
             (OracleEvidence(card_id=card.grp_id, face_index=None, quote=payoff_quote),),
         ),
     }
+
+
+def test_creature_token_ability_keeps_its_role_beside_a_derived_token_maker() -> None:
+    sources = _card_sources(_dancing_from_dark_to_dusk_card())
+    candidate = _capability_candidate(
+        finding_id="capability-landfall",
+        card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+        card_name=DANCING_FROM_DARK_TO_DUSK_CARD_NAME,
+        face_index=None,
+        face_name=None,
+        role="landfall_payoff",
+        quantity=_quantity(value=1, relation="exactly"),
+        timing=DANCING_FROM_DARK_TO_DUSK_TRIGGER_QUOTE,
+        source_zone="battlefield",
+        destination_zone="battlefield",
+        prerequisites=[
+            _prerequisite_entry(
+                kind="trigger",
+                timing=DANCING_FROM_DARK_TO_DUSK_TRIGGER_QUOTE,
+                evidence=_evidence_entry(
+                    card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                    face_index=None,
+                    quote=DANCING_FROM_DARK_TO_DUSK_TRIGGER_QUOTE,
+                ),
+            )
+        ],
+        evidence=[
+            _evidence_entry(
+                card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                face_index=None,
+                quote=DANCING_FROM_DARK_TO_DUSK_TOKEN_QUOTE,
+            )
+        ],
+        review={"status": "uncertain", "reason": MODEL_UNCERTAINTY_REASON},
+    )
+
+    result = _parse_card(
+        _content(_capability_response([candidate])),
+        sources,
+        card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.accepted_capabilities == ()
+    assert result.rejected_capabilities == ()
+    assert [capability.role for capability in result.capabilities] == [
+        Role.LANDFALL_PAYOFF,
+        Role.TOKEN_MAKER,
+    ]
+
+    donor, derived = result.capabilities
+    assert donor.evidence == (
+        OracleEvidence(
+            card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+            face_index=None,
+            quote=DANCING_FROM_DARK_TO_DUSK_TOKEN_QUOTE,
+        ),
+    )
+    assert donor.review == FindingReview(
+        status=FindingStatus.UNCERTAIN,
+        reason=MODEL_UNCERTAINTY_REASON,
+    )
+    assert derived == replace(
+        donor,
+        finding_id="capability-landfall-token-maker",
+        role=Role.TOKEN_MAKER,
+        review=FindingReview(
+            status=FindingStatus.UNCERTAIN,
+            reason=TOKEN_MAKER_DERIVATION_REASON,
+        ),
+    )
+
+
+def test_artifact_creature_token_ability_also_derives_a_token_maker() -> None:
+    sources = _card_sources(_stone_giant_card())
+    candidate = _capability_candidate(
+        finding_id="capability-attack",
+        card_id=STONE_GIANT_CARD_ID,
+        card_name=STONE_GIANT_CARD_NAME,
+        face_index=None,
+        face_name=None,
+        role="attack_matters",
+        evidence=[
+            _evidence_entry(
+                card_id=STONE_GIANT_CARD_ID,
+                face_index=None,
+                quote=STONE_GIANT_TOKEN_QUOTE,
+            )
+        ],
+    )
+
+    result = _parse_card(
+        _content(_capability_response([candidate])),
+        sources,
+        card_id=STONE_GIANT_CARD_ID,
+    )
+
+    assert [capability.role for capability in result.capabilities] == [
+        Role.ATTACK_MATTERS,
+        Role.TOKEN_MAKER,
+    ]
+    assert [capability.finding_id for capability in result.capabilities] == [
+        "capability-attack",
+        "capability-attack-token-maker",
+    ]
+    assert result.capabilities[1].evidence == (
+        OracleEvidence(
+            card_id=STONE_GIANT_CARD_ID,
+            face_index=None,
+            quote=STONE_GIANT_TOKEN_QUOTE,
+        ),
+    )
+
+
+def test_noncreature_artifact_token_ability_adds_no_token_maker() -> None:
+    sources = _card_sources(_treasure_token_card())
+    candidate = _capability_candidate(
+        finding_id="capability-treasure",
+        card_id=TREASURE_TOKEN_CARD_ID,
+        card_name=TREASURE_TOKEN_CARD_NAME,
+        face_index=None,
+        face_name=None,
+        role="ramp",
+        evidence=[
+            _evidence_entry(
+                card_id=TREASURE_TOKEN_CARD_ID,
+                face_index=None,
+                quote=TREASURE_TOKEN_QUOTE,
+            )
+        ],
+    )
+
+    result = _parse_card(
+        _content(_capability_response([candidate])),
+        sources,
+        card_id=TREASURE_TOKEN_CARD_ID,
+    )
+
+    assert result.rejected_capabilities == ()
+    assert [capability.role for capability in result.capabilities] == [Role.RAMP]
+    assert result.capabilities[0].evidence == (
+        OracleEvidence(card_id=TREASURE_TOKEN_CARD_ID, face_index=None, quote=TREASURE_TOKEN_QUOTE),
+    )
+
+
+def test_creature_token_beside_a_noncreature_token_also_derives_a_token_maker() -> None:
+    sources = _card_sources(_pilot_token_card())
+    candidate = _capability_candidate(
+        finding_id="capability-treasure",
+        card_id=PILOT_TOKEN_CARD_ID,
+        card_name=PILOT_TOKEN_CARD_NAME,
+        face_index=None,
+        face_name=None,
+        role="ramp",
+        evidence=[
+            _evidence_entry(card_id=PILOT_TOKEN_CARD_ID, face_index=None, quote=PILOT_TOKEN_QUOTE)
+        ],
+    )
+
+    result = _parse_card(
+        _content(_capability_response([candidate])),
+        sources,
+        card_id=PILOT_TOKEN_CARD_ID,
+    )
+
+    assert result.rejected_capabilities == ()
+    assert [capability.role for capability in result.capabilities] == [Role.RAMP, Role.TOKEN_MAKER]
+    assert result.capabilities[1].evidence == (
+        OracleEvidence(card_id=PILOT_TOKEN_CARD_ID, face_index=None, quote=PILOT_TOKEN_QUOTE),
+    )
+
+
+def test_replacement_creature_token_ability_also_derives_a_token_maker() -> None:
+    sources = _card_sources(_replacement_token_card())
+    candidate = _capability_candidate(
+        finding_id="capability-typal",
+        card_id=REPLACEMENT_TOKEN_CARD_ID,
+        card_name=REPLACEMENT_TOKEN_CARD_NAME,
+        face_index=None,
+        face_name=None,
+        role="typal_payoff",
+        evidence=[
+            _evidence_entry(
+                card_id=REPLACEMENT_TOKEN_CARD_ID,
+                face_index=None,
+                quote=REPLACEMENT_TOKEN_QUOTE,
+            )
+        ],
+    )
+
+    result = _parse_card(
+        _content(_capability_response([candidate])),
+        sources,
+        card_id=REPLACEMENT_TOKEN_CARD_ID,
+    )
+
+    assert result.rejected_capabilities == ()
+    assert [capability.role for capability in result.capabilities] == [
+        Role.TYPAL_PAYOFF,
+        Role.TOKEN_MAKER,
+    ]
+    assert result.capabilities[1].evidence == (
+        OracleEvidence(
+            card_id=REPLACEMENT_TOKEN_CARD_ID,
+            face_index=None,
+            quote=REPLACEMENT_TOKEN_QUOTE,
+        ),
+    )
+
+
+def test_creature_token_mention_without_a_create_clause_adds_no_token_maker() -> None:
+    sources = _card_sources(_token_mention_card())
+    candidate = _capability_candidate(
+        finding_id="capability-outlet",
+        card_id=TOKEN_MENTION_CARD_ID,
+        card_name=TOKEN_MENTION_CARD_NAME,
+        face_index=None,
+        face_name=None,
+        role="sacrifice_outlet",
+        evidence=[
+            _evidence_entry(
+                card_id=TOKEN_MENTION_CARD_ID,
+                face_index=None,
+                quote=TOKEN_MENTION_QUOTE,
+            )
+        ],
+    )
+
+    result = _parse_card(
+        _content(_capability_response([candidate])),
+        sources,
+        card_id=TOKEN_MENTION_CARD_ID,
+    )
+
+    assert result.rejected_capabilities == ()
+    assert [capability.role for capability in result.capabilities] == [Role.SACRIFICE_OUTLET]
+    assert result.capabilities[0].evidence == (
+        OracleEvidence(card_id=TOKEN_MENTION_CARD_ID, face_index=None, quote=TOKEN_MENTION_QUOTE),
+    )
+
+
+@pytest.mark.parametrize(
+    "recorded_quote",
+    (
+        pytest.param(DANCING_FROM_DARK_TO_DUSK_TOKEN_QUOTE, id="identical-quote"),
+        pytest.param(DANCING_FROM_DARK_TO_DUSK_TOKEN_FRAGMENT_QUOTE, id="quoted-fragment"),
+    ),
+)
+def test_recorded_token_maker_suppresses_the_derived_duplicate(recorded_quote: str) -> None:
+    sources = _card_sources(_dancing_from_dark_to_dusk_card())
+    response = _capability_response(
+        [
+            _capability_candidate(
+                finding_id="capability-landfall",
+                card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                card_name=DANCING_FROM_DARK_TO_DUSK_CARD_NAME,
+                face_index=None,
+                face_name=None,
+                role="landfall_payoff",
+                evidence=[
+                    _evidence_entry(
+                        card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                        face_index=None,
+                        quote=DANCING_FROM_DARK_TO_DUSK_TOKEN_QUOTE,
+                    )
+                ],
+            ),
+            _capability_candidate(
+                finding_id="capability-tokens",
+                card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                card_name=DANCING_FROM_DARK_TO_DUSK_CARD_NAME,
+                face_index=None,
+                face_name=None,
+                role="token_maker",
+                evidence=[
+                    _evidence_entry(
+                        card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                        face_index=None,
+                        quote=recorded_quote,
+                    )
+                ],
+            ),
+        ]
+    )
+
+    result = _parse_card(
+        _content(response),
+        sources,
+        card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+    )
+
+    assert [capability.finding_id for capability in result.capabilities] == [
+        "capability-landfall",
+        "capability-tokens",
+    ]
+
+
+def test_recorded_token_maker_holding_the_derived_id_fails_no_response() -> None:
+    sources = _card_sources(_dancing_from_dark_to_dusk_card())
+    response = _capability_response(
+        [
+            _capability_candidate(
+                finding_id="capability-landfall",
+                card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                card_name=DANCING_FROM_DARK_TO_DUSK_CARD_NAME,
+                face_index=None,
+                face_name=None,
+                role="landfall_payoff",
+                evidence=[
+                    _evidence_entry(
+                        card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                        face_index=None,
+                        quote=DANCING_FROM_DARK_TO_DUSK_TOKEN_QUOTE,
+                    )
+                ],
+            ),
+            _capability_candidate(
+                finding_id="capability-landfall-token-maker",
+                card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                card_name=DANCING_FROM_DARK_TO_DUSK_CARD_NAME,
+                face_index=None,
+                face_name=None,
+                role="token_maker",
+                evidence=[
+                    _evidence_entry(
+                        card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+                        face_index=None,
+                        quote=DANCING_FROM_DARK_TO_DUSK_COUNTERS_QUOTE,
+                    )
+                ],
+            ),
+        ]
+    )
+
+    result = _parse_card(
+        _content(response),
+        sources,
+        card_id=DANCING_FROM_DARK_TO_DUSK_CARD_ID,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.rejected_capabilities == ()
+    assert [capability.finding_id for capability in result.capabilities] == [
+        "capability-landfall",
+        "capability-landfall-token-maker",
+    ]
+    assert [capability.role for capability in result.capabilities] == [
+        Role.LANDFALL_PAYOFF,
+        Role.TOKEN_MAKER,
+    ]
 
 
 @pytest.mark.parametrize(
