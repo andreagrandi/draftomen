@@ -3,6 +3,40 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Run one set-enrichment analysis as a resumable, UI-neutral workflow through
+  `analyze_set_enrichment`, and publish its reviewed outcome through
+  `finalize_set_enrichment`, instead of leaving the extraction engine, the
+  durable work store and the profile publisher to a future interactive surface:
+  the module resolves one output root and confines every cache, run, source, work
+  and artifact path to it, re-validating the layout at each phase boundary and
+  immediately before publishing and rejecting any nested symlink in the source or
+  profile tree, acquires the pinned card data and freezes the guide under
+  `enrichment-runs/<set>/<guide-key>/` without clobbering an existing freeze —
+  re-validating a reused freeze against the acquisition path's URL rules and a
+  strict integer schema version — and replays the card-to-card
+  analysis over durable content-addressed work identities, so a compatible rerun
+  reuses the completed prefix without a replacement paid request. Analysis
+  reports the guide, capability, candidate and relationship phases; ordered
+  progress events; running token and cost accounting — including cached input
+  tokens — reconciled against exactly one durable model run per request, with a
+  null response cost disabling the projected-final-cost claim; globally namespaced
+  findings; and the accepted, uncertain, rejected and failed counts, keeping
+  candidate omissions out of the failed count. Cancellation before each paid
+  request and an interrupted analysis preserve the durable prefix, and a
+  provider failure raises a bounded, path-free error with no artifact. A
+  completed analysis publishes a pending artifact under the guide-keyed
+  artifacts directory and leaves it in place for review; a decision records a
+  distinct content-addressed reviewed artifact, installing it without clobbering
+  an identical existing object, and rejects an incomplete or already reviewed
+  analysis, a blank reviewer ID, a naive timestamp, a timestamp preceding the
+  artifact, and a decision that is not an `EnrichmentReviewDecision` value; any
+  failure after that review publication carries the persisted reviewed artifact
+  on the error. It generates the metadata-only QuickDraft schema-3 profile plus
+  its `generation.json` — with matching profile and gzip checksums — only for an
+  explicit operator Confirm. Cancel records a cancelled artifact and publishes
+  nothing; confirming nothing publishable fails closed with `NO_PUBLISHABLE_ERROR`;
+  and a publication failure keeps the confirmed review artifact and leaves any
+  existing generation marker authoritative. (#503)
 - Compile a confirmed semantic-enrichment artifact into local profile
   generation instead of leaving schema 3 unreachable: `generate_set_profile(...)`
   and `generate_local_profile_artifacts(...)` accept one optional keyword-only
