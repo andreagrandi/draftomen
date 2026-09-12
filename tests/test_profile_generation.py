@@ -11,9 +11,12 @@ import pytest
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DeckBuilderConfig
 from draftomen.pickengine import PickEngine
+from draftomen.profile_enhancement import ProfileEnhancementError
 from draftomen.profile_generation import (
+    ProfileEnhancementProvenance,
     ProfileGenerationConfig,
     ProfileGenerationError,
+    ProfileGenerationResult,
     ProfileGenerationStage,
     aggregate_evidence_needs_fallback,
     deterministic_profile_gzip,
@@ -28,8 +31,30 @@ from draftomen.seventeen import (
     SeventeenCardStats,
     SeventeenLandsFormatData,
 )
+from draftomen.semantic_enrichment import (
+    EnrichmentSources,
+    GuideSource,
+    SemanticEnrichmentArtifact,
+    card_source_sha256,
+    set_source_sha256,
+)
+from draftomen.semantic_enrichment_records import (
+    ArtifactReview,
+    CardRelationship,
+    CardSourcePin,
+    FindingReview,
+    FindingStatus,
+    GuideClaim,
+    GuideEvidence,
+    GuideSourcePin,
+    ModelRun,
+    OracleEvidence,
+    ReasoningConfig,
+)
 from draftomen.semantic_roles import Role
 from draftomen.set_profile import (
+    EnhancementCardData,
+    EnhancementStatus,
     ProfileMaturity,
     SetProfile,
     dump_set_profile,
@@ -81,6 +106,203 @@ def _database() -> CardDatabase:
                 set_code="TST",
             ),
         }
+    )
+
+
+ENRICHMENT_GUIDE_TEXT = "TST rewards going wide with support creatures."
+ENRICHMENT_CREATED_AT = "2026-09-01T12:02:00Z"
+ENRICHMENT_REVIEWED_AT = "2026-09-01T14:00:00Z"
+
+
+def _enrichment_sources(
+    *,
+    cards: CardDatabase | None = None,
+    set_code: str = "TST",
+) -> EnrichmentSources:
+    source_cards = _database() if cards is None else cards
+    return EnrichmentSources(
+        set_code=set_code,
+        cards=tuple(source_cards.cards.values()),
+        guides=(
+            GuideSource(
+                guide_id="tst-guide",
+                url="https://draftsim.example.test/tst/",
+                text=ENRICHMENT_GUIDE_TEXT,
+                retrieved_at="2026-09-01T12:00:00Z",
+            ),
+        ),
+    )
+
+
+def _enrichment_pins(sources: EnrichmentSources) -> tuple[CardSourcePin, ...]:
+    return tuple(
+        CardSourcePin(
+            card_id=card.grp_id,
+            oracle_id=card.oracle_id,
+            collector_number=card.collector_number,
+            sha256=card_source_sha256(card),
+        )
+        for card in sources.cards
+    )
+
+
+def _enrichment_guides(sources: EnrichmentSources) -> tuple[GuideSourcePin, ...]:
+    return tuple(
+        GuideSourcePin(
+            guide_id=guide.guide_id,
+            url=guide.url,
+            sha256=guide.text_sha256,
+            retrieved_at=guide.retrieved_at,
+        )
+        for guide in sources.guides
+    )
+
+
+def _enrichment_run(
+    *,
+    run_id: str = "run-1",
+    provider: str = "openrouter",
+    model: str = "example/model",
+) -> ModelRun:
+    return ModelRun(
+        run_id=run_id,
+        provider=provider,
+        model=model,
+        reasoning=ReasoningConfig(enabled=True, effort="medium", max_tokens=4096, exclude=None),
+        prompt_id="set-relationship-analysis",
+        prompt_sha256="a" * 64,
+        response_schema_id="set-relationship-analysis-response",
+        response_schema_sha256="b" * 64,
+        started_at="2026-09-01T12:00:00Z",
+        completed_at="2026-09-01T12:01:00Z",
+        input_tokens=1200,
+        output_tokens=400,
+        reasoning_tokens=120,
+        cost_usd="0.31",
+    )
+
+
+def _enrichment_mechanic(
+    *,
+    status: FindingStatus = FindingStatus.ACCEPTED,
+    reason: str | None = None,
+) -> GuideClaim:
+    return GuideClaim(
+        finding_id="mechanic-wide-board",
+        category="mechanic",
+        name="wide board",
+        claim=ENRICHMENT_GUIDE_TEXT,
+        card_ids=(1, 2),
+        evidence=(GuideEvidence(guide_id="tst-guide", quote="rewards going wide"),),
+        review=FindingReview(status=status, reason=reason),
+        run_id="run-1",
+    )
+
+
+def _enrichment_strategy(
+    *,
+    status: FindingStatus = FindingStatus.UNCERTAIN,
+    reason: str | None = "Not reviewed.",
+) -> GuideClaim:
+    return GuideClaim(
+        finding_id="strategy-go-wide",
+        category="strategy",
+        name="go wide",
+        claim=ENRICHMENT_GUIDE_TEXT,
+        card_ids=(1,),
+        evidence=(GuideEvidence(guide_id="tst-guide", quote="rewards going wide"),),
+        review=FindingReview(status=status, reason=reason),
+        run_id="run-1",
+    )
+
+
+def _enrichment_relationship() -> CardRelationship:
+    return CardRelationship(
+        finding_id="relationship-draw-payoff",
+        mechanism="draw-payoff",
+        participants=(1, 2),
+        claim="Support creature pairs with removal.",
+        prerequisites=("A support creature is on the battlefield.",),
+        oracle_evidence=(
+            OracleEvidence(
+                card_id=1,
+                face_index=None,
+                quote="Whenever this enters the battlefield, draw a card.",
+            ),
+            OracleEvidence(card_id=2, face_index=None, quote="Destroy target creature."),
+        ),
+        guide_evidence=(GuideEvidence(guide_id="tst-guide", quote="rewards going wide"),),
+        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+        run_id="run-1",
+    )
+
+
+def _enrichment_artifact(
+    *,
+    sources: EnrichmentSources | None = None,
+    review: ArtifactReview | None = None,
+    guide_claims: tuple[GuideClaim, ...] | None = None,
+    relationships: tuple[CardRelationship, ...] | None = None,
+    confirmed_relationship_ids: tuple[str, ...] | None = None,
+    set_source_id: str = "tst-card-data-v1",
+    runs: tuple[ModelRun, ...] | None = None,
+) -> SemanticEnrichmentArtifact:
+    resolved_sources = _enrichment_sources() if sources is None else sources
+    resolved_claims = (
+        (_enrichment_mechanic(), _enrichment_strategy())
+        if guide_claims is None
+        else guide_claims
+    )
+    resolved_relationships = (
+        (_enrichment_relationship(),) if relationships is None else relationships
+    )
+    resolved_review = (
+        ArtifactReview(
+            state="confirmed",
+            reviewer_id="local-review",
+            reviewed_at=ENRICHMENT_REVIEWED_AT,
+        )
+        if review is None
+        else review
+    )
+    if confirmed_relationship_ids is None:
+        # Only a confirmed artifact may select relationships, so an unreviewed
+        # artifact defaults to no selection rather than an invalid fixture.
+        resolved_confirmed = (
+            tuple(item.finding_id for item in resolved_relationships)
+            if resolved_review.state == "confirmed"
+            else ()
+        )
+    else:
+        resolved_confirmed = confirmed_relationship_ids
+    return SemanticEnrichmentArtifact(
+        set_code=resolved_sources.set_code,
+        set_source_id=set_source_id,
+        set_source_sha256=set_source_sha256(resolved_sources),
+        created_at=ENRICHMENT_CREATED_AT,
+        cards=_enrichment_pins(resolved_sources),
+        guides=_enrichment_guides(resolved_sources),
+        runs=(_enrichment_run(),) if runs is None else runs,
+        oracle_facts=(),
+        guide_claims=resolved_claims,
+        relationships=resolved_relationships,
+        rejected_findings=(),
+        review=resolved_review,
+        confirmed_relationship_ids=resolved_confirmed,
+        sources=resolved_sources,
+    )
+
+
+def _enhanced_generation(*, enrichment: SemanticEnrichmentArtifact) -> ProfileGenerationResult:
+    return generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=_database(),
+        ratings=_ratings(),
+        generated_at=GENERATED_AT,
+        config=_config(),
+        enrichment=enrichment,
     )
 
 
@@ -1660,3 +1882,262 @@ def test_lci_aggregate_generation_serialization_scoring_and_order_are_canonical(
     )
     assert reversed_candidates.profile.to_bytes() == complete_fallback.profile.to_bytes()
     assert reversed_candidates.report.to_bytes() == complete_fallback.report.to_bytes()
+
+
+def test_confirmed_enrichment_compiles_into_a_deterministic_schema_three_profile() -> None:
+    artifact = _enrichment_artifact()
+    first = _enhanced_generation(enrichment=artifact)
+    second = _enhanced_generation(enrichment=_enrichment_artifact())
+    enhancement = first.profile.enhancement
+    assert enhancement is not None
+
+    assert first.profile.schema_version == 3
+    assert first.profile.enhancement_status is EnhancementStatus.ENHANCED
+    assert first.profile.maturity is ProfileMaturity.EARLY
+    assert first.profile.samples is not None
+    assert first.report.set_profile_schema_version == 3
+    assert first.report.enhancement == ProfileEnhancementProvenance.from_enhancement(enhancement)
+    assert enhancement.artifact_sha256 == hashlib.sha256(artifact.to_bytes()).hexdigest()
+    assert enhancement.card_data == EnhancementCardData(
+        source="tst-card-data-v1",
+        sha256=artifact.set_source_sha256,
+        card_count=2,
+    )
+    assert [item.finding_id for item in enhancement.mechanics] == ["mechanic-wide-board"]
+    assert enhancement.relationships == artifact.confirmed_relationships
+    assert enhancement.confidence == 2 / 3
+    assert enhancement.review.state == "confirmed"
+    assert SetProfile.from_json(json.loads(first.profile_bytes)) == first.profile
+
+    assert first.profile_bytes == second.profile_bytes
+    assert first.gzip_bytes == second.gzip_bytes
+    assert first.profile.fingerprint == second.profile.fingerprint
+    assert first.report.profile_sha256 == second.report.profile_sha256
+    assert first.report.gzip_sha256 == second.report.gzip_sha256
+
+
+@pytest.mark.parametrize(
+    ("review", "expected_error"),
+    [
+        (
+            ArtifactReview(state="pending", reviewer_id=None, reviewed_at=None),
+            "The enrichment artifact has not been confirmed.",
+        ),
+        (
+            ArtifactReview(
+                state="cancelled",
+                reviewer_id="local-review",
+                reviewed_at=ENRICHMENT_REVIEWED_AT,
+            ),
+            "The enrichment artifact review was cancelled.",
+        ),
+    ],
+)
+def test_enrichment_review_state_is_required_before_compilation(
+    review: ArtifactReview,
+    expected_error: str,
+) -> None:
+    artifact = _enrichment_artifact(review=review)
+
+    with pytest.raises(ProfileEnhancementError) as raised:
+        _enhanced_generation(enrichment=artifact)
+
+    assert str(raised.value) == expected_error
+
+
+def test_enrichment_set_and_card_data_mismatches_are_rejected() -> None:
+    changed_card = replace(
+        _database().cards[1],
+        oracle_text=(
+            "Whenever this enters the battlefield, draw a card. "
+            "Whenever this enters, draw two cards instead."
+        ),
+    )
+    changed_database = CardDatabase(cards={**_database().cards, 1: changed_card})
+    stale_card_data = _enrichment_artifact(sources=_enrichment_sources(cards=changed_database))
+    eld_database = CardDatabase(
+        cards={
+            1: replace(_database().cards[1], set_code="ELD"),
+            2: replace(_database().cards[2], set_code="ELD"),
+        }
+    )
+    wrong_set = _enrichment_artifact(
+        sources=_enrichment_sources(cards=eld_database, set_code="ELD")
+    )
+    bad_identity = _enrichment_artifact(set_source_id="tst/card-data")
+
+    for artifact, expected_error in (
+        (
+            stale_card_data,
+            "The enrichment artifact card data does not match the generation card database.",
+        ),
+        (wrong_set, "The enrichment artifact set code does not match the generated set."),
+        (
+            bad_identity,
+            "The enrichment artifact card data identity cannot be recorded in a profile.",
+        ),
+    ):
+        with pytest.raises(ProfileEnhancementError) as raised:
+            _enhanced_generation(enrichment=artifact)
+        assert str(raised.value) == expected_error
+
+
+def test_enrichment_without_findings_is_rejected() -> None:
+    artifact = _enrichment_artifact(
+        guide_claims=(_enrichment_strategy(),),
+        relationships=(),
+        confirmed_relationship_ids=(),
+    )
+
+    with pytest.raises(ProfileEnhancementError) as raised:
+        _enhanced_generation(enrichment=artifact)
+
+    assert str(raised.value) == (
+        "The enrichment artifact contains no confirmed relationship or accepted mechanic finding."
+    )
+
+
+def test_enrichment_provenance_is_privacy_safe_and_matches_the_profile_block(
+    tmp_path: Path,
+) -> None:
+    result = _enhanced_generation(enrichment=_enrichment_artifact())
+    provenance = result.report.enhancement
+    assert provenance is not None
+
+    assert set(provenance.to_json()) == {
+        "artifact_schema_version",
+        "artifact_sha256",
+        "card_data",
+        "confidence",
+        "created_at",
+        "guide_ids",
+        "mechanic_count",
+        "models",
+        "providers",
+        "relationship_count",
+        "review_state",
+        "reviewed_at",
+        "run_ids",
+        "set_source_id",
+        "set_source_sha256",
+    }
+    assert result.report.to_json()["enhancement"] == provenance.to_json()
+    assert provenance.guide_ids == ("tst-guide",)
+    assert provenance.run_ids == ("run-1",)
+    assert provenance.providers == ("openrouter",)
+    assert provenance.models == ("example/model",)
+    assert provenance.mechanic_count == 1
+    assert provenance.relationship_count == 1
+    assert provenance.review_state == "confirmed"
+
+    serialized = result.report.to_bytes().decode("utf-8")
+    for private in (
+        ENRICHMENT_GUIDE_TEXT,
+        "Draw a card.",
+        "local-review",
+        "Destroy target creature.",
+        str(tmp_path),
+    ):
+        assert private not in serialized
+
+    unenhanced = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=_database(),
+        ratings=_ratings(),
+        generated_at=GENERATED_AT,
+        config=_config(),
+    )
+    assert unenhanced.report.enhancement is None
+    assert "enhancement" not in unenhanced.report.to_json()
+
+
+PUBLISHED_IDENTITY_ERROR = (
+    "The enrichment artifact carries a local filesystem path where a published identity is required."
+)
+
+
+@pytest.mark.parametrize(
+    ("run", "expected_error"),
+    [
+        (
+            _enrichment_run(model="/Users/alice/models/private-model.gguf"),
+            PUBLISHED_IDENTITY_ERROR,
+        ),
+        (
+            _enrichment_run(provider="C:\\\\tools\\\\llama.exe"),
+            PUBLISHED_IDENTITY_ERROR,
+        ),
+    ],
+)
+def test_published_identities_that_look_like_local_paths_are_rejected(
+    run: ModelRun,
+    expected_error: str,
+) -> None:
+    artifact = _enrichment_artifact(runs=(run,))
+
+    with pytest.raises(ProfileEnhancementError) as raised:
+        _enhanced_generation(enrichment=artifact)
+
+    assert str(raised.value) == expected_error
+
+
+def test_unreferenced_runs_are_dropped_before_the_identity_check() -> None:
+    artifact = _enrichment_artifact(
+        runs=(
+            _enrichment_run(),
+            _enrichment_run(
+                run_id="run-2",
+                provider="/usr/local/bin/ollama",
+                model="/Users/alice/models/private-model.gguf",
+            ),
+        )
+    )
+
+    result = _enhanced_generation(enrichment=artifact)
+
+    provenance = result.report.enhancement
+    assert provenance is not None
+    assert provenance.run_ids == ("run-1",)
+    assert provenance.providers == ("openrouter",)
+    assert provenance.models == ("example/model",)
+    serialized = result.report.to_bytes().decode("utf-8") + result.profile_bytes.decode("utf-8")
+    assert "/Users/alice" not in serialized
+    assert "ollama" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_error"),
+    [
+        (
+            {"models": ("/Users/alice/models/private-model.gguf",)},
+            "report.enhancement.models must not look like a local filesystem path.",
+        ),
+        (
+            {"providers": ("C:\\\\tools\\\\llama.exe",)},
+            "report.enhancement.providers must not look like a local filesystem path.",
+        ),
+        (
+            {"guide_ids": ("~/notes/tst-guide.txt",)},
+            "report.enhancement.guide_ids must not look like a local filesystem path.",
+        ),
+        (
+            {"run_ids": ("../runs/run-1",)},
+            "report.enhancement.run_ids must not look like a local filesystem path.",
+        ),
+    ],
+)
+def test_report_provenance_rejects_path_shaped_identities(
+    change: dict[str, tuple[str, ...]],
+    expected_error: str,
+) -> None:
+    result = _enhanced_generation(enrichment=_enrichment_artifact())
+    provenance = result.report.enhancement
+    assert provenance is not None
+    assert replace(provenance) == provenance
+
+    with pytest.raises(ProfileGenerationError) as raised:
+        replace(provenance, **change)
+
+    assert str(raised.value) == expected_error

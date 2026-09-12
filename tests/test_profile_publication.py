@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 import gzip
@@ -11,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import draftomen.profile_publication as publication
-from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.carddb import CardDatabase, CardInfo, load_card_database
 from draftomen.config import COLOR_PAIRS, DeckBuilderConfig
 from draftomen.profile_generation import ProfileGenerationConfig
 from draftomen.public_dump import PublicDumpManifest, PublicDumpSource
@@ -27,7 +28,27 @@ from draftomen.profile_manifest import (
     ProfileManifestArtifact,
     load_profile_manifest,
 )
-from draftomen.set_profile import SetProfile
+from draftomen.semantic_enrichment import (
+    EnrichmentSources,
+    GuideSource,
+    SemanticEnrichmentArtifact,
+    card_source_sha256,
+    set_source_sha256,
+)
+from draftomen.semantic_enrichment_records import (
+    ArtifactReview,
+    CardRelationship,
+    CardSourcePin,
+    FindingReview,
+    FindingStatus,
+    GuideClaim,
+    GuideEvidence,
+    GuideSourcePin,
+    ModelRun,
+    OracleEvidence,
+    ReasoningConfig,
+)
+from draftomen.set_profile import EnhancementStatus, SetProfile
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "profile-generation"
@@ -141,6 +162,7 @@ def _publish(
     ratings: bool = False,
     manifest: Path | None = None,
     draft_source_name: str | None = None,
+    enrichment: SemanticEnrichmentArtifact | None = None,
     generated_at: datetime = GENERATED_AT,
 ) -> publication.ProfilePublicationResult:
     card_database_path, ratings_path = _write_inputs(tmp_path, ratings=ratings)
@@ -154,7 +176,173 @@ def _publish(
         ratings_path=ratings_path,
         source_manifest_path=manifest,
         draft_source_name=draft_source_name,
+        enrichment=enrichment,
         config=_config(),
+    )
+
+
+ENRICHMENT_GUIDE_TEXT = "TST rewards going wide with support creatures."
+ENRICHMENT_CREATED_AT = "2026-09-01T12:02:00Z"
+ENRICHMENT_REVIEWED_AT = "2026-09-01T14:00:00Z"
+
+
+def _enrichment_sources(cards: CardDatabase, *, set_code: str = "TST") -> EnrichmentSources:
+    return EnrichmentSources(
+        set_code=set_code,
+        cards=tuple(cards.cards.values()),
+        guides=(
+            GuideSource(
+                guide_id="tst-guide",
+                url="https://draftsim.example.test/tst/",
+                text=ENRICHMENT_GUIDE_TEXT,
+                retrieved_at="2026-09-01T12:00:00Z",
+            ),
+        ),
+    )
+
+
+def _enrichment_run(
+    *,
+    run_id: str = "run-1",
+    provider: str = "openrouter",
+    model: str = "example/model",
+) -> ModelRun:
+    return ModelRun(
+        run_id=run_id,
+        provider=provider,
+        model=model,
+        reasoning=ReasoningConfig(
+            enabled=True, effort="medium", max_tokens=4096, exclude=None
+        ),
+        prompt_id="set-relationship-analysis",
+        prompt_sha256="a" * 64,
+        response_schema_id="set-relationship-analysis-response",
+        response_schema_sha256="b" * 64,
+        started_at="2026-09-01T12:00:00Z",
+        completed_at="2026-09-01T12:01:00Z",
+        input_tokens=1200,
+        output_tokens=400,
+        reasoning_tokens=120,
+        cost_usd="0.31",
+    )
+
+
+def _enrichment_mechanic() -> GuideClaim:
+    return GuideClaim(
+        finding_id="mechanic-wide-board",
+        category="mechanic",
+        name="wide board",
+        claim=ENRICHMENT_GUIDE_TEXT,
+        card_ids=(1, 2),
+        evidence=(GuideEvidence(guide_id="tst-guide", quote="rewards going wide"),),
+        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+        run_id="run-1",
+    )
+
+
+def _enrichment_strategy() -> GuideClaim:
+    return GuideClaim(
+        finding_id="strategy-go-wide",
+        category="strategy",
+        name="go wide",
+        claim=ENRICHMENT_GUIDE_TEXT,
+        card_ids=(1,),
+        evidence=(GuideEvidence(guide_id="tst-guide", quote="rewards going wide"),),
+        review=FindingReview(status=FindingStatus.UNCERTAIN, reason="Not reviewed."),
+        run_id="run-1",
+    )
+
+
+def _enrichment_relationship() -> CardRelationship:
+    return CardRelationship(
+        finding_id="relationship-draw-payoff",
+        mechanism="draw-payoff",
+        participants=(1, 2),
+        claim="Support creature pairs with removal.",
+        prerequisites=("A support creature is on the battlefield.",),
+        oracle_evidence=(
+            OracleEvidence(
+                card_id=1,
+                face_index=None,
+                quote="Whenever this enters the battlefield, draw a card.",
+            ),
+            OracleEvidence(card_id=2, face_index=None, quote="Destroy target creature."),
+        ),
+        guide_evidence=(GuideEvidence(guide_id="tst-guide", quote="rewards going wide"),),
+        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+        run_id="run-1",
+    )
+
+
+def _eld_cards(cards: CardDatabase) -> CardDatabase:
+    return CardDatabase(
+        cards={
+            card_id: replace(card, set_code="ELD") for card_id, card in cards.cards.items()
+        }
+    )
+
+
+def _enrichment_artifact(
+    card_database: CardDatabase,
+    *,
+    review: ArtifactReview | None = None,
+    set_source_id: str = "tst-card-data-v1",
+    cards: CardDatabase | None = None,
+    set_code: str = "TST",
+    guide_claims: tuple[GuideClaim, ...] | None = None,
+    relationships: tuple[CardRelationship, ...] | None = None,
+    confirmed_relationship_ids: tuple[str, ...] | None = None,
+    run: ModelRun | None = None,
+) -> SemanticEnrichmentArtifact:
+    sources = _enrichment_sources(card_database if cards is None else cards, set_code=set_code)
+    resolved_review = (
+        ArtifactReview(
+            state="confirmed",
+            reviewer_id="local-review",
+            reviewed_at=ENRICHMENT_REVIEWED_AT,
+        )
+        if review is None
+        else review
+    )
+    if confirmed_relationship_ids is None:
+        # Only a confirmed artifact may select relationships, so an unreviewed
+        # artifact defaults to no selection rather than an invalid fixture.
+        confirmed_relationship_ids = (
+            ("relationship-draw-payoff",) if resolved_review.state == "confirmed" else ()
+        )
+    return SemanticEnrichmentArtifact(
+        set_code=set_code,
+        set_source_id=set_source_id,
+        set_source_sha256=set_source_sha256(sources),
+        created_at=ENRICHMENT_CREATED_AT,
+        cards=tuple(
+            CardSourcePin(
+                card_id=card.grp_id,
+                oracle_id=card.oracle_id,
+                collector_number=card.collector_number,
+                sha256=card_source_sha256(card),
+            )
+            for card in sources.cards
+        ),
+        guides=tuple(
+            GuideSourcePin(
+                guide_id=guide.guide_id,
+                url=guide.url,
+                sha256=guide.text_sha256,
+                retrieved_at=guide.retrieved_at,
+            )
+            for guide in sources.guides
+        ),
+        runs=(_enrichment_run() if run is None else run,),
+        oracle_facts=(),
+        guide_claims=(_enrichment_mechanic(),) if guide_claims is None else guide_claims,
+        relationships=(_enrichment_relationship(),)
+        if relationships is None
+        else relationships,
+        rejected_findings=(),
+        review=resolved_review,
+        confirmed_relationship_ids=confirmed_relationship_ids,
+        sources=sources,
     )
 
 
@@ -630,3 +818,207 @@ def test_manifest_publication_failure_preserves_previous_bytes(
     with pytest.raises(publication.ProfilePublicationError, match="Could not publish"):
         publication.publish_profile_manifest(path, manifest)
     assert path.read_bytes() == previous
+
+
+def test_enhanced_publication_round_trips_and_validates_artifact_and_report(
+    tmp_path: Path,
+) -> None:
+    card_database_path, _ = _write_inputs(tmp_path)
+    artifact = _enrichment_artifact(load_card_database(cache_path=card_database_path))
+    result = _publish(tmp_path, enrichment=artifact)
+
+    validated = publication.validate_profile_generation(
+        generation=result.generation,
+        set_code="tst",
+        event_format="quickdraft",
+        stage="metadata",
+    )
+    report = result.generation.report
+    assert result.artifact_path == (
+        tmp_path
+        / "published"
+        / "tst-quickdraft"
+        / "artifacts"
+        / f"{report.gzip_sha256}.json.gz"
+    )
+    compressed = result.artifact_path.read_bytes()
+    assert compressed == validated.gzip_bytes
+    assert result.manifest_path.read_bytes() == validated.report_bytes
+    assert result.manifest_path.read_bytes() == report.to_bytes()
+    assert gzip.decompress(compressed) == result.generation.profile_bytes
+    profile = SetProfile.from_json(json.loads(gzip.decompress(compressed)))
+    assert profile == result.generation.profile
+    assert profile.schema_version == 3
+    assert profile.enhancement_status is EnhancementStatus.ENHANCED
+
+    marker = json.loads(result.manifest_path.read_bytes())
+    assert marker["set_profile_schema_version"] == 3
+    assert marker["checksums"]["gzip"] == report.gzip_sha256
+    assert marker["checksums"]["profile"] == report.profile_sha256
+    assert marker["gzip_bytes"] == len(compressed)
+    assert marker["profile_bytes"] == len(result.generation.profile_bytes)
+    assert marker["enhancement"]["artifact_sha256"] == hashlib.sha256(
+        artifact.to_bytes()
+    ).hexdigest()
+
+    tampered = replace(
+        result.generation,
+        report=replace(result.generation.report, enhancement=None),
+    )
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="Generation report enhancement provenance does not match the profile.",
+    ):
+        publication.validate_profile_generation(
+            generation=tampered,
+            set_code="tst",
+            event_format="quickdraft",
+            stage="metadata",
+        )
+
+
+def _stale_card_artifact(loaded: CardDatabase) -> SemanticEnrichmentArtifact:
+    # The stale database must still satisfy the artifact's own Oracle-evidence
+    # substring rule, so card 2 keeps its quoted text and gains an extra line.
+    stale_cards = CardDatabase(
+        cards={
+            **loaded.cards,
+            2: replace(
+                loaded.cards[2],
+                oracle_text="Destroy target creature. Exile it instead.",
+            ),
+        }
+    )
+    return _enrichment_artifact(loaded, cards=stale_cards)
+
+
+@pytest.mark.parametrize(
+    ("build", "expected_error"),
+    [
+        (
+            lambda loaded: _stale_card_artifact(loaded),
+            "The enrichment artifact card data does not match the generation card database.",
+        ),
+        (
+            lambda loaded: _enrichment_artifact(
+                loaded,
+                review=ArtifactReview(state="pending", reviewer_id=None, reviewed_at=None),
+            ),
+            "The enrichment artifact has not been confirmed.",
+        ),
+        (
+            lambda loaded: _enrichment_artifact(
+                loaded,
+                review=ArtifactReview(
+                    state="cancelled",
+                    reviewer_id="local-review",
+                    reviewed_at=ENRICHMENT_REVIEWED_AT,
+                ),
+            ),
+            "The enrichment artifact review was cancelled.",
+        ),
+        (
+            lambda loaded: _enrichment_artifact(
+                loaded, cards=_eld_cards(loaded), set_code="ELD"
+            ),
+            "The enrichment artifact set code does not match the generated set.",
+        ),
+        (
+            lambda loaded: _enrichment_artifact(loaded, set_source_id="tst/card-data"),
+            "The enrichment artifact card data identity cannot be recorded in a profile.",
+        ),
+        (
+            lambda loaded: _enrichment_artifact(
+                loaded,
+                guide_claims=(_enrichment_strategy(),),
+                relationships=(),
+                confirmed_relationship_ids=(),
+            ),
+            "The enrichment artifact contains no confirmed relationship or accepted mechanic finding.",
+        ),
+        (
+            lambda loaded: _enrichment_artifact(
+                loaded,
+                run=_enrichment_run(model="/Users/alice/models/private-model.gguf"),
+            ),
+            "The enrichment artifact carries a local filesystem path where a published identity is required.",
+        ),
+    ],
+    ids=[
+        "stale-card-data",
+        "pending-review",
+        "cancelled-review",
+        "set-mismatch",
+        "card-data-identity",
+        "no-findings",
+        "local-path-identity",
+    ],
+)
+def test_rejected_enrichment_writes_no_profile_bytes(
+    tmp_path: Path,
+    build: Callable[[CardDatabase], SemanticEnrichmentArtifact],
+    expected_error: str,
+) -> None:
+    card_database_path, _ = _write_inputs(tmp_path)
+    loaded = load_card_database(cache_path=card_database_path)
+
+    with pytest.raises(publication.ProfilePublicationError) as raised:
+        _publish(tmp_path, enrichment=build(loaded))
+
+    assert str(raised.value) == expected_error
+    assert not (tmp_path / "published").exists()
+
+
+def test_enhanced_publication_leaves_prior_unenhanced_artifacts_untouched(
+    tmp_path: Path,
+) -> None:
+    first = _publish(tmp_path)
+    first_artifact_bytes = first.artifact_path.read_bytes()
+    first_manifest_bytes = first.manifest_path.read_bytes()
+    artifact = _enrichment_artifact(load_card_database(cache_path=tmp_path / "cards.json"))
+
+    second = _publish(tmp_path, enrichment=artifact)
+
+    assert first.artifact_path.exists()
+    assert first.artifact_path.read_bytes() == first_artifact_bytes
+    assert first.artifact_path.stat().st_size == len(first_artifact_bytes)
+    assert second.artifact_path != first.artifact_path
+    assert second.artifact_path.read_bytes() != first_artifact_bytes
+    assert second.manifest_path.read_bytes() != first_manifest_bytes
+    marker = json.loads(second.manifest_path.read_bytes())
+    assert marker["set_profile_schema_version"] == 3
+    assert marker["checksums"]["gzip"] == second.generation.report.gzip_sha256
+
+
+def test_cli_boundary_smoke_publishes_the_enhanced_layout(tmp_path: Path) -> None:
+    card_database_path, _ = _write_inputs(tmp_path)
+    artifact = _enrichment_artifact(load_card_database(cache_path=card_database_path))
+    result = _publish(tmp_path, stage="metadata", enrichment=artifact)
+
+    output_dir = tmp_path / "published"
+    report = result.generation.report
+    assert report.enhancement is not None
+    assert result.validation_outcome == "passed"
+    assert result.input_count == 1
+    assert result.generation.profile.maturity.value == "metadata-only"
+    assert result.artifact_path == (
+        output_dir / "tst-quickdraft" / "artifacts" / f"{report.gzip_sha256}.json.gz"
+    )
+    assert result.manifest_path == output_dir / "tst-quickdraft" / "generation.json"
+    assert result.artifact_path.is_file()
+    assert result.manifest_path.is_file()
+    assert result.sample_count == report.samples.total
+    assert result.skip_count == sum(report.skip_reasons.values())
+    assert result.error_count == sum(report.error_reasons.values())
+
+    marker = json.loads(result.manifest_path.read_bytes())
+    assert marker["stage"] == "metadata"
+    assert marker["set_code"] == "tst"
+    assert marker["event_format"] == "quickdraft"
+    assert marker["set_profile_schema_version"] == 3
+    assert marker["checksums"] == {
+        "gzip": report.gzip_sha256,
+        "inputs": dict(report.input_checksums),
+        "profile": report.profile_sha256,
+    }
+    assert marker["enhancement"] == report.enhancement.to_json()
