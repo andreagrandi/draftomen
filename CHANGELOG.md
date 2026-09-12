@@ -3,6 +3,19 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Decide a `token-death-payoff` relationship from its two frozen participants
+  instead of the model's sampling draw: an enabler that creates a creature token
+  and a payoff that rewards creatures dying is valid without the enabler's text
+  showing the token dying, while a payoff whose quoted reward is restricted to
+  nontoken creatures is not declared. Prompt guidance cannot make identical
+  evidence receive one verdict — fresh draws of the same pairs arrived 2
+  accepted / 2 rejected and 0 accepted / 4 rejected — so the rule is read in
+  `parse_relationship_validation_response` before the model's verdict, keyed on
+  the declared mechanism, the two participants' roles and the payoff's quoted
+  evidence, with the relationship prompt and every work identity left
+  byte-identical. The re-derived HOB run answers R5 as an accepted relationship,
+  changes no verdict of any other mechanism, and passes acceptance for the first
+  time. (#496) (#472)
 - Record `token_maker` for a quoted ability that creates a creature token, even
   when the same ability already carries the role of its trigger condition, so a
   landfall payoff or an attack trigger that makes a creature token still pairs

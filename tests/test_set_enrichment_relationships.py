@@ -53,6 +53,10 @@ TOKEN_ID = 301
 WIDE_ID = 311
 MULTIFACE_ID = 321
 FOREIGN_CARD_ID = 999
+DEATH_ID = 331
+NONTOKEN_DEATH_ID = 341
+LOOT_ID = 351
+TOKEN_DEATH_MECHANISM = "token-death-payoff"
 
 TOKEN_CARD_NAME = "Token Enabler"
 TOKEN_PREREQUISITE_QUOTE = "You may sacrifice a creature."
@@ -63,6 +67,22 @@ WIDE_CARD_NAME = "Wide Payoff"
 WIDE_QUOTE = "Creatures you control get +1/+0 for each other creature you control."
 WIDE_CARD_TEXT = f"{WIDE_QUOTE} Until end of turn."
 FABRICATED_QUOTE = "create three 1/1 colorless Soldier artifact creature tokens"
+TOKEN_DEATH_CLAIM = (
+    "The enabler creates a creature token, and a creature token that dies triggers the payoff's "
+    "reward for creatures dying."
+)
+DEATH_QUOTE = "Whenever one or more other creatures die, scry 1."
+DEATH_CARD_TEXT = (
+    f"{DEATH_QUOTE} (Look at the top card of your library. You may put that card on the bottom.)"
+)
+NONTOKEN_DEATH_QUOTE = "Whenever one or more nontoken creatures you control die, scry 1."
+NONTOKEN_DEATH_CARD_TEXT = (
+    f"{NONTOKEN_DEATH_QUOTE} "
+    "(Look at the top card of your library. You may put that card on the bottom.)"
+)
+DEATH_CARD_NAME = "Death Payoff"
+NONTOKEN_DEATH_CARD_NAME = "Nontoken Death Payoff"
+LOOT_CARD_NAME = "Loot With Tokens"
 
 MULTIFACE_CARD_NAME = "Vanguard // Rearguard"
 FRONT_FACE_NAME = "Vanguard"
@@ -136,6 +156,9 @@ def _sources() -> EnrichmentSources:
         cards=(
             _card(TOKEN_ID, TOKEN_CARD_NAME, TOKEN_CARD_TEXT),
             _card(WIDE_ID, WIDE_CARD_NAME, WIDE_CARD_TEXT),
+            _card(DEATH_ID, DEATH_CARD_NAME, DEATH_CARD_TEXT),
+            _card(NONTOKEN_DEATH_ID, NONTOKEN_DEATH_CARD_NAME, NONTOKEN_DEATH_CARD_TEXT),
+            _card(LOOT_ID, LOOT_CARD_NAME, TOKEN_CARD_TEXT),
             _multiface_card(),
         ),
         guides=(),
@@ -242,6 +265,39 @@ def _wide_payoff(*, run_id: str = RUN_ID) -> CardCapability:
         role=Role.GO_WIDE_PAYOFF,
         quote=WIDE_QUOTE,
         run_id=run_id,
+    )
+
+
+def _death_payoff() -> CardCapability:
+    """Build one creature-death payoff candidate participant."""
+    return _capability(
+        finding_id="capability-death",
+        card_id=DEATH_ID,
+        card_name=DEATH_CARD_NAME,
+        role=Role.DEATH_PAYOFF,
+        quote=DEATH_QUOTE,
+    )
+
+
+def _nontoken_death_payoff() -> CardCapability:
+    """Build one death payoff whose quoted reward names nontoken creatures."""
+    return _capability(
+        finding_id="capability-nontoken-death",
+        card_id=NONTOKEN_DEATH_ID,
+        card_name=NONTOKEN_DEATH_CARD_NAME,
+        role=Role.DEATH_PAYOFF,
+        quote=NONTOKEN_DEATH_QUOTE,
+    )
+
+
+def _loot_token_enabler() -> CardCapability:
+    """Build one loot participant whose quoted ability creates a creature token."""
+    return _capability(
+        finding_id="capability-loot",
+        card_id=LOOT_ID,
+        card_name=LOOT_CARD_NAME,
+        role=Role.LOOT,
+        quote=TOKEN_QUOTE,
     )
 
 
@@ -793,6 +849,242 @@ def test_model_rejected_verdict_keeps_its_reason_as_a_diagnostic(
     assert result.rejected.summary == RELATIONSHIP_CLAIM
     assert result.rejected.reason == MODEL_REJECTION_REASON
     assert result.rejected.run_id == RUN_ID
+
+
+def test_token_death_pair_is_decided_before_the_model_verdict(
+    sources: EnrichmentSources,
+) -> None:
+    source = _token_enabler()
+    target = _death_payoff()
+
+    result = _parse(
+        _content(_response(verdict="rejected", reason=MODEL_REJECTION_REASON)),
+        sources,
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=source,
+        target=target,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.rejected is None
+    assert result.malformed_reason is None
+    relationship = result.relationship
+    assert relationship is not None
+    assert type(relationship) is ValidatedRelationship
+    assert relationship.review == FindingReview(status=FindingStatus.ACCEPTED, reason=None)
+    assert relationship.claim == TOKEN_DEATH_CLAIM
+    assert relationship.evidence == (
+        OracleEvidence(card_id=TOKEN_ID, face_index=None, quote=TOKEN_QUOTE),
+        OracleEvidence(card_id=DEATH_ID, face_index=None, quote=DEATH_QUOTE),
+    )
+    assert relationship.identity == (
+        TOKEN_DEATH_MECHANISM,
+        TOKEN_ID,
+        source.finding_id,
+        DEATH_ID,
+        target.finding_id,
+    )
+    assert relationship.identity == CandidatePackage(
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=source,
+        target=target,
+        reason=CANDIDATE_REASON,
+    ).identity
+    assert relationship.finding_id == relationship_subject_id(
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=source,
+        target=target,
+    )
+
+
+def test_token_death_verdict_is_identical_across_model_draws(
+    sources: EnrichmentSources,
+) -> None:
+    source = _token_enabler()
+    target = _death_payoff()
+
+    results = [
+        _parse(
+            _content(_response(verdict=verdict, reason=reason)),
+            sources,
+            mechanism=TOKEN_DEATH_MECHANISM,
+            source=source,
+            target=target,
+        )
+        for verdict, reason in (
+            ("accepted", None),
+            ("uncertain", MODEL_UNCERTAINTY_REASON),
+            ("rejected", MODEL_REJECTION_REASON),
+        )
+    ]
+
+    assert results[1] == results[0]
+    assert results[2] == results[0]
+    for result in results:
+        relationship = result.relationship
+        assert relationship is not None
+        assert relationship.review == FindingReview(status=FindingStatus.ACCEPTED, reason=None)
+        assert relationship.claim == TOKEN_DEATH_CLAIM
+        assert relationship.evidence == (
+            OracleEvidence(card_id=TOKEN_ID, face_index=None, quote=TOKEN_QUOTE),
+            OracleEvidence(card_id=DEATH_ID, face_index=None, quote=DEATH_QUOTE),
+        )
+
+
+def test_nontoken_death_payoff_keeps_the_model_rejection(
+    sources: EnrichmentSources,
+) -> None:
+    source = _token_enabler()
+    target = _nontoken_death_payoff()
+
+    result = _parse(
+        _content(
+            _response(
+                verdict="rejected",
+                reason=MODEL_REJECTION_REASON,
+                evidence=_participant_coverage(source, target),
+            )
+        ),
+        sources,
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=source,
+        target=target,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.relationship is None
+    assert result.rejected is not None
+    assert result.rejected.reason == MODEL_REJECTION_REASON
+
+
+def test_token_death_pair_under_another_mechanism_keeps_the_model_rejection(
+    sources: EnrichmentSources,
+) -> None:
+    source = _token_enabler()
+    target = _death_payoff()
+
+    result = _parse(
+        _content(
+            _response(
+                verdict="rejected",
+                reason=MODEL_REJECTION_REASON,
+                evidence=_participant_coverage(source, target),
+            )
+        ),
+        sources,
+        source=source,
+        target=target,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.relationship is None
+    assert result.rejected is not None
+    assert result.rejected.reason == MODEL_REJECTION_REASON
+
+
+def test_payoff_without_the_death_role_keeps_the_model_rejection(
+    sources: EnrichmentSources,
+) -> None:
+    result = _parse(
+        _content(_response(verdict="rejected", reason=MODEL_REJECTION_REASON)),
+        sources,
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=_token_enabler(),
+        target=_wide_payoff(),
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.relationship is None
+    assert result.rejected is not None
+    assert result.rejected.reason == MODEL_REJECTION_REASON
+
+
+def test_enabler_without_the_token_role_keeps_the_model_rejection(
+    sources: EnrichmentSources,
+) -> None:
+    source = _loot_token_enabler()
+    target = _death_payoff()
+
+    result = _parse(
+        _content(
+            _response(
+                verdict="rejected",
+                reason=MODEL_REJECTION_REASON,
+                evidence=_participant_coverage(source, target),
+            )
+        ),
+        sources,
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=source,
+        target=target,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.relationship is None
+    assert result.rejected is not None
+    assert result.rejected.reason == MODEL_REJECTION_REASON
+
+
+def test_covered_pair_publishes_participant_evidence_not_the_model_evidence(
+    sources: EnrichmentSources,
+) -> None:
+    result = _parse(
+        _content(_response(evidence=[_evidence(card_id=FOREIGN_CARD_ID, quote=TOKEN_QUOTE)])),
+        sources,
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=_token_enabler(),
+        target=_death_payoff(),
+    )
+
+    relationship = result.relationship
+    assert relationship is not None
+    assert relationship.review.status is FindingStatus.ACCEPTED
+    assert {item.card_id for item in relationship.evidence} == {TOKEN_ID, DEATH_ID}
+
+
+def test_undecodable_response_for_a_covered_pair_is_still_malformed(
+    sources: EnrichmentSources,
+) -> None:
+    result = _parse(
+        _content({"verdict": "accepted"}),
+        sources,
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=_token_enabler(),
+        target=_death_payoff(),
+    )
+
+    assert result.outcome is ExtractionOutcome.MALFORMED
+    assert result.malformed_reason == MALFORMED_REASON
+    assert result.relationship is None
+    assert result.rejected is None
+
+
+def test_identical_token_death_evidence_shapes_share_one_verdict(
+    sources: EnrichmentSources,
+) -> None:
+    first = _parse(
+        _content(_response(verdict="rejected", reason=MODEL_REJECTION_REASON)),
+        sources,
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=_token_enabler(),
+        target=_death_payoff(),
+    )
+    second = _parse(
+        _content(_response(verdict="rejected", reason=MODEL_REJECTION_REASON)),
+        sources,
+        mechanism=TOKEN_DEATH_MECHANISM,
+        source=_second_token_enabler(),
+        target=_death_payoff(),
+    )
+
+    first_relationship = first.relationship
+    second_relationship = second.relationship
+    assert first_relationship is not None
+    assert second_relationship is not None
+    assert first_relationship.review.status is FindingStatus.ACCEPTED
+    assert second_relationship.review.status is FindingStatus.ACCEPTED
+    assert first_relationship.claim == TOKEN_DEATH_CLAIM == second_relationship.claim
+    assert first_relationship.identity != second_relationship.identity
 
 
 def test_uncertain_verdict_without_evidence_is_malformed(

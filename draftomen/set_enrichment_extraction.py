@@ -135,6 +135,18 @@ _CREATURE_TOKEN_CLAUSE = re.compile(
     re.IGNORECASE,
 )
 
+# `token-death-payoff` pairs a token maker with a reward for creatures dying. A creature token
+# that dies triggers that reward, so the enabler's own text need not show the token dying, and a
+# payoff that restricts its reward to nontoken creatures is outside the declared rule. The verdict
+# for this declared shape is therefore a function of the two participants instead of one sampling
+# draw, which arrived accepted, uncertain and rejected on identical evidence (#496).
+_TOKEN_DEATH_PAYOFF_MECHANISM = "token-death-payoff"
+_RELATIONSHIP_TOKEN_DEATH_CLAIM = (
+    "The enabler creates a creature token, and a creature token that dies triggers the payoff's "
+    "reward for creatures dying."
+)
+_NONTOKEN_CREATURE_CLAUSE = re.compile(r"\bnontoken\b", re.IGNORECASE)
+
 _CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card."
 
 _RELATIONSHIP_MALFORMED_RESPONSE_REASON = (
@@ -1790,6 +1802,25 @@ def _creates_creature_token(quote: str) -> bool:
     return _CREATURE_TOKEN_CLAUSE.search(quote) is not None
 
 
+def _creature_token_death_claim(
+    *,
+    mechanism: str,
+    source: CardCapability,
+    target: CardCapability,
+) -> str | None:
+    """Return the declared token-death claim for one rule-covered pair.
+
+    The verdict is a function of the two frozen participants and the declared mechanism only.
+    """
+    if mechanism != _TOKEN_DEATH_PAYOFF_MECHANISM:
+        return None
+    if source.role is not Role.TOKEN_MAKER or target.role is not Role.DEATH_PAYOFF:
+        return None
+    if any(_NONTOKEN_CREATURE_CLAUSE.search(item.quote) for item in target.evidence):
+        return None
+    return _RELATIONSHIP_TOKEN_DEATH_CLAIM
+
+
 def _overlapping_quotes(left: str, right: str) -> bool:
     """Report whether two evidence quotes cover the same passage."""
     first = " ".join(left.split())
@@ -2017,6 +2048,30 @@ def parse_relationship_validation_response(
     except (_MalformedResponse, SemanticEnrichmentError):
         return _malformed_relationship_result()
     try:
+        declared_claim = _creature_token_death_claim(
+            mechanism=normalized_mechanism,
+            source=source,
+            target=target,
+        )
+        if declared_claim is not None:
+            # The rule is read before the model's verdict and publishes the participants' own
+            # evidence, so identical evidence shapes cannot diverge on one sampling draw. The
+            # response still has to decode into the pinned schema first, which is what keeps a
+            # refusal or a malformed completion out of the accepted set.
+            return RelationshipValidationResult(
+                outcome=ExtractionOutcome.SUCCESS,
+                relationship=ValidatedRelationship(
+                    mechanism=normalized_mechanism,
+                    source=source,
+                    target=target,
+                    claim=declared_claim,
+                    evidence=_canonical_evidence(source.evidence + target.evidence),
+                    review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+                    run_id=normalized_run_id,
+                ),
+                rejected=None,
+                malformed_reason=None,
+            )
         evidence = _canonical_evidence(tuple(_decoded_evidence(entry) for entry in entries))
         status = FindingStatus(verdict)
         rejection_reason = _relationship_verdict_reason(
