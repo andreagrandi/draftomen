@@ -1,0 +1,11 @@
+{
+  "confidence": 0.2,
+  "enhancement_status": "not-enhanced",
+  "format": "quickdraft",
+  "generated_at": "2026-08-29T04:30:00+00:00",
+  "maturity": "metadata-only",
+  "profile_version": "3.0-unenhanced",
+  "schema_version": 3,
+  "set_code": "tst",
+  "source": {"artifact": "fixture-unenhanced", "provider": "fixture", "revision": "1"}
+}

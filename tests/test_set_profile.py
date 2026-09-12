@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -8,10 +9,16 @@ import pytest
 import draftomen.set_profile as set_profile_module
 
 from draftomen.config import COLOR_PAIRS
+from draftomen.semantic_enrichment import SEMANTIC_ENRICHMENT_SCHEMA_VERSION
+from draftomen.semantic_enrichment_records import CardRelationship
 from draftomen.semantic_roles import CompiledRoleProfile, ProfileCard, Role, RoleAssignment
 from draftomen.set_profile import (
+    SET_PROFILE_SCHEMA_VERSION,
     AggregateEvidence,
+    CardPairSynergy,
     CardRating,
+    EnhancementCardData,
+    EnhancementStatus,
     NumericTarget,
     PairProfile,
     ProfileMaturity,
@@ -165,7 +172,7 @@ def test_strict_parser_rejects_missing_required_duplicate_unknown_and_future_sch
         SetProfile.from_json(unknown_pair)
 
     unsupported = json.loads((FIXTURE_DIR / "future-schema.json").read_text(encoding="utf-8"))
-    unsupported["schema_version"] = 3
+    unsupported["schema_version"] = SET_PROFILE_SCHEMA_VERSION + 1
     with pytest.raises(SetProfileSchemaError, match="Unsupported set profile schema"):
         SetProfile.from_json(unsupported)
 
@@ -808,3 +815,266 @@ def test_target_evidence_round_trip_preserves_all_fields() -> None:
     for target in targets:
         restored = type(target).from_json(target.to_json())
         assert restored == target
+
+
+_REMOVED = object()
+
+
+def _enhanced_payload() -> dict[str, object]:
+    return json.loads((FIXTURE_DIR / "enhanced.json").read_text(encoding="utf-8"))
+
+
+def _apply(
+    payload: dict[str, object],
+    *operations: tuple[tuple[object, ...], object],
+) -> dict[str, object]:
+    for path, value in operations:
+        target: object = payload
+        for key in path[:-1]:
+            target = target[key]  # type: ignore[index]
+        if callable(value):
+            value = value(target[path[-1]])  # type: ignore[operator]
+        if value is _REMOVED:
+            del target[path[-1]]  # type: ignore[index]
+        else:
+            target[path[-1]] = value  # type: ignore[index]
+    return payload
+
+
+def _runs_with_unreferenced_copy(runs: object) -> object:
+    first = runs[0]  # type: ignore[index]
+    return [first, {**first, "run_id": "run-2"}]  # type: ignore[operator]
+
+
+def test_enhanced_profile_round_trip_preserves_enhancement_content_and_provenance() -> None:
+    profile = load_set_profile(
+        FIXTURE_DIR / "enhanced.json",
+        expected_set_code="TST",
+        expected_format="QuickDraft",
+    )
+
+    assert profile.schema_version == 3
+    assert profile.enhancement_status is EnhancementStatus.ENHANCED
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    assert enhancement.card_data == EnhancementCardData(
+        "scryfall-default-cards",
+        "e97753089bb1b800165c1e84a8ada89b18b082dad70a0b7f84eb744c303d332b",
+        3,
+    )
+    assert [pin.card_id for pin in enhancement.cards] == [101, 102, 103]
+    assert enhancement.artifact_sha256 == "e43b831bd69c7c8c73a32fe348ef887712ee67493c7b7b64d4612e2128709a87"
+    assert (
+        enhancement.runs[0].prompt_sha256
+        == "f580e1722c8ceaf5602bacfd653f477192f481468eaf48177bc1f636455fefb2"
+    )
+    assert enhancement.review.state == "confirmed"
+    assert enhancement.confidence == 0.72
+    assert profile.confidence == 0.6
+    assert SetProfile.from_json(profile.to_json()).to_bytes() == profile.to_bytes()
+
+
+def test_explicitly_unenhanced_schema_three_profile_round_trips() -> None:
+    profile = load_set_profile(
+        FIXTURE_DIR / "unenhanced.json",
+        expected_set_code="TST",
+        expected_format="QuickDraft",
+    )
+
+    assert profile.schema_version == 3
+    assert profile.enhancement is None
+    assert profile.enhancement_status is EnhancementStatus.NOT_ENHANCED
+    serialized = profile.to_json()
+    assert serialized["enhancement_status"] == "not-enhanced"
+    assert "enhancement" not in serialized
+    assert SetProfile.from_json(serialized).to_bytes() == profile.to_bytes()
+
+
+def test_schema_one_and_two_fixtures_load_as_not_enhanced_without_fabricating_metadata() -> None:
+    early = load_set_profile(FIXTURE_DIR / "early.json")
+    profiles = (
+        load_set_profile(FIXTURE_DIR / "mature.json"),
+        early,
+        load_set_profile(FIXTURE_DIR / "metadata-only.json"),
+        load_set_profile(FIXTURE_DIR / "semantic-only.json"),
+        load_set_profile(Path(__file__).parents[1] / "draftomen" / "baseline_profiles" / "hob-quickdraft.json"),
+        replace(early, schema_version=2),
+    )
+
+    for profile in profiles:
+        assert profile.enhancement is None
+        assert profile.enhancement_status is EnhancementStatus.NOT_ENHANCED
+        serialized = profile.to_json()
+        assert "enhancement" not in serialized
+        assert "enhancement_status" not in serialized
+        assert SetProfile.from_json(serialized).to_bytes() == profile.to_bytes()
+
+
+def test_semantic_relationships_and_empirical_synergy_remain_separate_fields() -> None:
+    profile = load_set_profile(
+        FIXTURE_DIR / "enhanced.json",
+        expected_set_code="TST",
+        expected_format="QuickDraft",
+    )
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    relationship = enhancement.relationships[0]
+    assert isinstance(relationship, CardRelationship)
+
+    serialized = profile.to_json()
+    assert "synergy" not in serialized["enhancement"]  # type: ignore[operator]
+    assert serialized["enhancement"]["relationships"][0]["mechanism"] == "token-go-wide-payoff"  # type: ignore[index]
+
+    empirical = CardPairSynergy(first_card="oracle_id:a", second_card="oracle_id:b", value=0.4)
+    early = load_set_profile(FIXTURE_DIR / "early.json")
+    empirical_profile = replace(early, pairs=(replace(early.pairs[0], synergy=(empirical,)),))
+    assert empirical_profile.to_json()["pair_profiles"][0]["synergy"] == [  # type: ignore[index]
+        {"first_card": "oracle_id:a", "second_card": "oracle_id:b", "value": 0.4}
+    ]
+    assert isinstance(empirical_profile.pairs[0].synergy[0], CardPairSynergy)
+
+    with pytest.raises(SetProfileSchemaError, match="must contain the expected target objects"):
+        replace(empirical_profile.pairs[0], synergy=(relationship,))
+    with pytest.raises(SetProfileSchemaError, match="enhancement.relationships must contain CardRelationship"):
+        replace(enhancement, relationships=(empirical,))
+
+
+def test_profile_fingerprint_includes_enhancement_content_and_provenance() -> None:
+    profile = load_set_profile(
+        FIXTURE_DIR / "enhanced.json",
+        expected_set_code="TST",
+        expected_format="QuickDraft",
+    )
+    fingerprint = profile.fingerprint
+    assert SetProfile.from_json(profile.to_json()).fingerprint == fingerprint
+
+    for operations in (
+        ((("enhancement", "confidence"), 0.5),),
+        ((("enhancement", "artifact_sha256"), "0" * 64),),
+        ((("enhancement", "relationships", 0, "claim"), "changed claim"),),
+    ):
+        payload = _enhanced_payload()
+        _apply(payload, *operations)
+        assert SetProfile.from_json(payload).fingerprint != fingerprint
+
+
+_ENHANCEMENT_REJECTION_CASES: tuple[tuple[str, tuple[tuple[tuple[object, ...], object], ...], str], ...] = (
+    ("missing-status", ((("enhancement_status",), _REMOVED),), "Missing required field enhancement_status"),
+    ("unknown-status", ((("enhancement_status",), "unenhanced"),), "Unsupported enhancement status"),
+    (
+        "status-not-enhanced-with-data",
+        ((("enhancement_status",), "not-enhanced"),),
+        "exactly when enhancement data is present",
+    ),
+    (
+        "missing-enhancement-with-enhanced-status",
+        ((("enhancement",), _REMOVED),),
+        "exactly when enhancement data is present",
+    ),
+    (
+        "future-artifact-schema",
+        ((("enhancement", "artifact_schema_version"), SEMANTIC_ENRICHMENT_SCHEMA_VERSION + 1),),
+        "Unsupported semantic enrichment schema",
+    ),
+    (
+        "pending-review",
+        ((("enhancement", "review"), {"state": "pending", "reviewer_id": None, "reviewed_at": None}),),
+        "confirmed enrichment review",
+    ),
+    (
+        "cancelled-review",
+        (
+            (
+                ("enhancement", "review"),
+                {"state": "cancelled", "reviewer_id": "local-review", "reviewed_at": "2026-08-27T10:10:00+00:00"},
+            ),
+        ),
+        "confirmed enrichment review",
+    ),
+    ("set-code-mismatch", ((("enhancement", "set_code"), "other"),), "enhancement.set_code must match set_code"),
+    (
+        "no-confirmed-findings",
+        ((("enhancement", "mechanics"), []), (("enhancement", "relationships"), [])),
+        "at least one confirmed semantic relationship or mechanic finding",
+    ),
+    ("card-count-mismatch", ((("enhancement", "card_data", "card_count"), 4),), "cover the declared card data exactly"),
+    ("empty-cards-with-declared-count", ((("enhancement", "cards"), []),), "enhancement.cards must not be empty"),
+    (
+        "unpinned-participants",
+        (
+            (("enhancement", "relationships", 0, "participants"), [102, 999]),
+            (
+                ("enhancement", "relationships", 0, "oracle_evidence"),
+                [
+                    {"card_id": 102, "face_index": None, "quote": "Create a 1/1 red Goblin creature token."},
+                    {"card_id": 999, "face_index": None, "quote": "Unpinned card quote."},
+                ],
+            ),
+        ),
+        "pinned card data",
+    ),
+    (
+        "unpinned-oracle-evidence",
+        ((("enhancement", "relationships", 0, "oracle_evidence", 0, "card_id"), 999),),
+        "Oracle evidence for exactly their participants",
+    ),
+    (
+        "rejected-relationship",
+        ((("enhancement", "relationships", 0, "review"), {"status": "rejected", "reason": "no support"}),),
+        "accepted findings",
+    ),
+    (
+        "rejected-mechanic",
+        ((("enhancement", "mechanics", 0, "review"), {"status": "rejected", "reason": "no support"}),),
+        "enhancement.mechanics must contain accepted findings",
+    ),
+    ("wrong-mechanic-category", ((("enhancement", "mechanics", 0, "category"), "archetype"),), "mechanic category"),
+    ("missing-run-reference", ((("enhancement", "mechanics", 0, "run_id"), "run-missing"),), "recorded model run"),
+    (
+        "unrecorded-guide-source",
+        ((("enhancement", "mechanics", 0, "evidence"), [{"guide_id": "other-guide", "quote": "x"}]),),
+        "recorded guide source",
+    ),
+    (
+        "duplicate-finding-id",
+        ((("enhancement", "mechanics", 0, "finding_id"), "relationship-token-go-wide"),),
+        "globally unique",
+    ),
+    (
+        "unreferenced-run",
+        ((("enhancement", "runs"), _runs_with_unreferenced_copy),),
+        "referenced by an included finding",
+    ),
+    ("unbounded-confidence", ((("enhancement", "confidence"), 1.5),), "enhancement.confidence"),
+    ("malformed-artifact-digest", ((("enhancement", "artifact_sha256"), "not-a-digest"),), "SHA-256 digest"),
+    (
+        "empty-cards-and-zero-count",
+        ((("enhancement", "cards"), []), (("enhancement", "card_data", "card_count"), 0)),
+        "card_count must be a positive integer",
+    ),
+    ("schema-two-cannot-declare-enhancement", ((("schema_version",), 2),), "cannot declare enhancement data"),
+    ("schema-one-cannot-declare-enhancement", ((("schema_version",), 1),), "cannot declare enhancement data"),
+)
+
+
+@pytest.mark.parametrize(
+    ("operations", "expected"),
+    [row[1:] for row in _ENHANCEMENT_REJECTION_CASES],
+    ids=[row[0] for row in _ENHANCEMENT_REJECTION_CASES],
+)
+def test_enhancement_rejects_malformed_unconfirmed_mismatched_and_incompatible_data(
+    operations: tuple[tuple[tuple[object, ...], object], ...],
+    expected: str,
+) -> None:
+    payload = _enhanced_payload()
+    _apply(payload, *operations)
+    with pytest.raises(SetProfileSchemaError, match=expected):
+        SetProfile.from_json(payload)
+
+
+def test_generic_profiles_reject_enhancement_data() -> None:
+    enhancement = load_set_profile(FIXTURE_DIR / "enhanced.json").enhancement
+    generic = SetProfile.generic(set_code="TST", event_format="quickdraft")
+
+    with pytest.raises(SetProfileSchemaError, match="generic profiles cannot contain enhancement data"):
+        replace(generic, schema_version=3, enhancement=enhancement)

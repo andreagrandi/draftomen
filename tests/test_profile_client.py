@@ -26,6 +26,7 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.set_profile import (
     AggregateEvidence,
     CardRating,
+    EnhancementStatus,
     RateEstimate,
     SET_PROFILE_SCHEMA_VERSION,
     ProfileMaturity,
@@ -119,6 +120,17 @@ def _schema_two_profile(
         ),
         schema_version=2,
     )
+
+
+def _enhanced_profile(
+    *,
+    profile_version: str = "3.0-enhanced",
+    generated_at: str = "2026-08-31T02:00:00+00:00",
+) -> SetProfile:
+    value = json.loads((FIXTURE_DIR / "enhanced.json").read_text(encoding="utf-8"))
+    value["profile_version"] = profile_version
+    value["generated_at"] = generated_at
+    return SetProfile.from_json(value)
 
 
 def _bundled_profile() -> SetProfile:
@@ -393,6 +405,62 @@ def test_refresh_schema_mismatch_preserves_last_good_schema_two_profile(tmp_path
     loaded = client.load_cached("TST", "QuickDraft")
 
     assert rejected.outcome is ProfileRefreshOutcome.ARTIFACT_INVALID
+    assert rejected.profile == installed_profile
+    assert loaded.profile == installed_profile
+    assert client.profile_path("TST", "QuickDraft").read_bytes() == installed_profile.to_bytes()
+
+
+def test_refresh_installs_and_loads_schema_three_enhanced_profile(tmp_path: Path) -> None:
+    profile = _enhanced_profile()
+    artifact, packed = _artifact(profile)
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for({MANIFEST_URL: _manifest(artifact), ARTIFACT_URL: packed}),
+    )
+
+    refreshed = client.refresh("TST", "QuickDraft", force=True)
+    loaded = client.load_cached("TST", "QuickDraft")
+
+    assert refreshed.outcome is ProfileRefreshOutcome.UPDATED
+    assert refreshed.profile == profile
+    assert loaded.profile == profile
+    assert loaded.profile.schema_version == 3
+    assert loaded.profile.enhancement_status is EnhancementStatus.ENHANCED
+    enhancement = loaded.profile.enhancement
+    assert enhancement is not None
+    assert enhancement.artifact_sha256 == "e43b831bd69c7c8c73a32fe348ef887712ee67493c7b7b64d4612e2128709a87"
+    assert enhancement.card_data.card_count == 3
+    assert enhancement.review.state == "confirmed"
+    assert client.profile_path("TST", "QuickDraft").read_bytes() == profile.to_bytes()
+
+
+def test_unsupported_manifest_schema_version_keeps_cached_profile(tmp_path: Path) -> None:
+    installed_profile = _schema_two_profile()
+    installed_artifact, installed_packed = _artifact(installed_profile)
+    payloads = {
+        MANIFEST_URL: _manifest(installed_artifact),
+        ARTIFACT_URL: installed_packed,
+    }
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for(payloads),
+        manifest_ttl_seconds=0,
+    )
+    installed = client.refresh("TST", "QuickDraft", force=True)
+    assert installed.outcome is ProfileRefreshOutcome.UPDATED
+
+    future_artifact, future_packed = _artifact(_enhanced_profile())
+    manifest_payload = json.loads(_manifest(future_artifact).decode("utf-8"))
+    manifest_payload["artifacts"][0]["set_profile_schema_version"] = SET_PROFILE_SCHEMA_VERSION + 1
+    payloads[MANIFEST_URL] = json.dumps(manifest_payload).encode("utf-8")
+    payloads[ARTIFACT_URL] = future_packed
+
+    rejected = client.refresh("TST", "QuickDraft", force=True)
+    loaded = client.load_cached("TST", "QuickDraft")
+
+    assert rejected.outcome is ProfileRefreshOutcome.MANIFEST_INVALID
     assert rejected.profile == installed_profile
     assert loaded.profile == installed_profile
     assert client.profile_path("TST", "QuickDraft").read_bytes() == installed_profile.to_bytes()

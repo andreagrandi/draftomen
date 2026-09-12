@@ -1,0 +1,80 @@
+{
+  "confidence": 0.6,
+  "enhancement": {
+    "artifact_schema_version": 1,
+    "artifact_sha256": "e43b831bd69c7c8c73a32fe348ef887712ee67493c7b7b64d4612e2128709a87",
+    "card_data": {
+      "card_count": 3,
+      "sha256": "e97753089bb1b800165c1e84a8ada89b18b082dad70a0b7f84eb744c303d332b",
+      "source": "scryfall-default-cards"
+    },
+    "cards": [
+      {"card_id": 101, "collector_number": "101", "oracle_id": "tst-oracle-101", "sha256": "389a3f02d525108cf8475dc6f4b6d83a75dfe9e4af52b0d43174ddcbaa63de31"},
+      {"card_id": 102, "collector_number": "102", "oracle_id": "tst-oracle-102", "sha256": "ac2b642c0123b70537dcf3069917f09332846713430521895d8331670fa1d55c"},
+      {"card_id": 103, "collector_number": "103", "oracle_id": "tst-oracle-103", "sha256": "2aa001ba6432899aad74aba044113b4efd5ad392b0327565aaa6e00377291561"}
+    ],
+    "confidence": 0.72,
+    "created_at": "2026-08-27T10:06:00+00:00",
+    "guides": [
+      {"guide_id": "tst-guide", "retrieved_at": "2026-08-27T09:00:00+00:00", "sha256": "6c21ab78c3b59d6c5ebde500b43b11e8ea2ee6196c7bdfe5a2150cef33ae803e", "url": "https://draftsim.example.test/tst-limited-guide/"}
+    ],
+    "mechanics": [
+      {
+        "card_ids": [101],
+        "category": "mechanic",
+        "claim": "Amass rewards an attacking token board.",
+        "evidence": [{"guide_id": "tst-guide", "quote": "Amass rewards an attacking token board."}],
+        "finding_id": "mechanic-amass",
+        "name": "Amass",
+        "review": {"reason": null, "status": "accepted"},
+        "run_id": "run-1"
+      }
+    ],
+    "relationships": [
+      {
+        "claim": "A token maker pairs with a go-wide payoff.",
+        "finding_id": "relationship-token-go-wide",
+        "guide_evidence": [{"guide_id": "tst-guide", "quote": "Amass rewards an attacking token board."}],
+        "mechanism": "token-go-wide-payoff",
+        "oracle_evidence": [
+          {"card_id": 102, "face_index": null, "quote": "Create a 1/1 red Goblin creature token."},
+          {"card_id": 103, "face_index": null, "quote": "Whenever a creature you control attacks, it gets +1/+0 until end of turn."}
+        ],
+        "participants": [102, 103],
+        "prerequisites": ["a creature token is created"],
+        "review": {"reason": null, "status": "accepted"},
+        "run_id": "run-1"
+      }
+    ],
+    "review": {"reviewed_at": "2026-08-27T10:10:00+00:00", "reviewer_id": "local-review", "state": "confirmed"},
+    "runs": [
+      {
+        "completed_at": "2026-08-27T10:05:00+00:00",
+        "cost_usd": "0.31",
+        "input_tokens": 1200,
+        "model": "example/model",
+        "output_tokens": 400,
+        "prompt_id": "set-relationship-analysis",
+        "prompt_sha256": "f580e1722c8ceaf5602bacfd653f477192f481468eaf48177bc1f636455fefb2",
+        "provider": "openrouter",
+        "reasoning": {"effort": "medium", "enabled": true, "exclude": null, "max_tokens": 4096},
+        "reasoning_tokens": 120,
+        "response_schema_id": "set-relationship-analysis-response",
+        "response_schema_sha256": "93f8bf500b51b7fecd5c65f646d63d5c25248dec4a8457f74887d146d51bf144",
+        "run_id": "run-1",
+        "started_at": "2026-08-27T10:00:00+00:00"
+      }
+    ],
+    "set_code": "tst",
+    "set_source_id": "tst-card-data-v1",
+    "set_source_sha256": "f8aa7f97c6f3a3505b8b791fdd5bb8482f5178e5523fe9e916c0919a028eb78b"
+  },
+  "enhancement_status": "enhanced",
+  "format": "quickdraft",
+  "generated_at": "2026-08-29T04:00:00+00:00",
+  "maturity": "metadata-only",
+  "profile_version": "3.0-enhanced",
+  "schema_version": 3,
+  "set_code": "tst",
+  "source": {"artifact": "fixture-enhanced", "provider": "fixture", "revision": "1"}
+}
