@@ -23,6 +23,13 @@
   durable prefix, and reduces every workflow failure to one bounded, path-free
   `enrich-set failed:` line with exit code 1 — retaining the reviewed artifact path when
   confirmation failed after publication of the review. (#504)
+- Serve the reviewed LCI QuickDraft enrichment from the production profile tree:
+  `website/public/profiles/objects/` gains the schema-3 enriched object and
+  `website/public/profiles/manifest.json` now lists it for `lci`/`quickdraft`, so
+  clients fetch the enriched profile from the default manifest URL they already
+  use instead of an opt-in development tree. The published object is
+  byte-identical to the reviewed artifact and keeps its enrichment provenance
+  digest.
 - Run one set-enrichment analysis as a resumable, UI-neutral workflow through
   `analyze_set_enrichment`, and publish its reviewed outcome through
   `finalize_set_enrichment`, instead of leaving the extraction engine, the
