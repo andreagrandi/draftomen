@@ -40,6 +40,7 @@ from draftomen.set_profile import SetProfile
 
 SET_CODE = "TST"
 GUIDE_URL = "https://draftsim.com/guides/tst"
+SECOND_GUIDE_URL = "https://draftsim.com/guides/tst-second"
 GUIDE_TEXT = "Token Maker and Wide Payoff reward going wide."
 GUIDE_QUOTE = "reward going wide"
 MODEL = "vendor/model"
@@ -547,6 +548,36 @@ def _message(name: str) -> str:
 
 def _profile_marker(output_dir: Path) -> Path:
     return output_dir / "tst-quickdraft" / "generation.json"
+
+
+def _profile_snapshot(output_dir: Path) -> dict[str, bytes]:
+    profile_root = output_dir / "tst-quickdraft"
+    return {
+        str(path.relative_to(profile_root)): path.read_bytes()
+        for path in sorted(profile_root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _create_metadata_profile(tmp_path: Path, *, output_dir: Path) -> Path:
+    result = _run(tmp_path, output_dir=output_dir, completion=_Completion())
+    assert result.artifact_path is not None
+    pending_path = result.artifact_path
+    assert pending_path.exists()
+    review = workflow.finalize_set_enrichment(
+        analysis=result,
+        decision=workflow.EnrichmentReviewDecision.CONFIRM,
+        reviewer_id="operator",
+        reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
+    )
+    assert review.publication is not None
+    assert _profile_marker(output_dir).exists()
+    return output_dir
+
+
+def _second_work_dir(output_dir: Path) -> Path:
+    guide_key = hashlib.sha256(SECOND_GUIDE_URL.encode("utf-8")).hexdigest()[:16]
+    return output_dir / "enrichment-runs" / "tst" / guide_key / "work"
 
 
 def _assert_under(root: Path, path: Path) -> None:
@@ -1183,6 +1214,119 @@ def test_provider_failure_preserves_durable_prefix_without_publication(tmp_path:
     assert len(tuple((run_dir / "work" / "results").glob("*.json"))) == 1
     assert tuple((run_dir / "artifacts").glob("*.json")) == ()
     assert not _profile_marker(result_root).exists()
+
+
+def test_profile_tree_is_preserved_after_explicit_cancel(tmp_path: Path) -> None:
+    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
+    profile_before = _profile_snapshot(output_dir)
+    result = _run(
+        tmp_path,
+        output_dir=output_dir,
+        completion=_Completion(),
+        guide_url=SECOND_GUIDE_URL,
+    )
+    assert result.artifact_path is not None
+    pending_path = result.artifact_path
+    assert pending_path.exists()
+    review = workflow.finalize_set_enrichment(
+        analysis=result,
+        decision=workflow.EnrichmentReviewDecision.CANCEL,
+        reviewer_id="operator",
+        reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
+    )
+
+    assert review.artifact.review.state == "cancelled"
+    assert review.publication is None
+    assert review.artifact_path != pending_path
+    assert pending_path.exists()
+    assert review.artifact_path.exists()
+    assert tuple((_second_work_dir(output_dir) / "results").glob("*.json"))
+    assert _profile_snapshot(output_dir) == profile_before
+
+
+def test_profile_tree_is_preserved_after_cooperative_analysis_cancellation(
+    tmp_path: Path,
+) -> None:
+    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
+    profile_before = _profile_snapshot(output_dir)
+    cancellation = {"requested": False}
+
+    def observe(event: EnrichmentProgress) -> None:
+        if event.phase is EnrichmentPhase.CARD_CAPABILITIES and event.cards_completed == 1:
+            cancellation["requested"] = True
+
+    result = _run(
+        tmp_path,
+        output_dir=output_dir,
+        completion=_Completion(),
+        observer=observe,
+        is_cancelled=lambda: cancellation["requested"],
+        guide_url=SECOND_GUIDE_URL,
+    )
+
+    assert result.run.outcome is EnrichmentOutcome.CANCELLED
+    assert result.artifact is None
+    assert tuple((_second_work_dir(output_dir) / "results").glob("*.json"))
+    assert _profile_snapshot(output_dir) == profile_before
+
+
+def test_profile_tree_is_preserved_after_keyboard_interrupt(tmp_path: Path) -> None:
+    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
+    profile_before = _profile_snapshot(output_dir)
+    with pytest.raises(KeyboardInterrupt):
+        _run(
+            tmp_path,
+            output_dir=output_dir,
+            completion=_Completion(interrupt_after=1),
+            guide_url=SECOND_GUIDE_URL,
+        )
+
+    assert tuple((_second_work_dir(output_dir) / "results").glob("*.json"))
+    assert _profile_snapshot(output_dir) == profile_before
+
+
+def test_profile_tree_is_preserved_after_provider_failure(tmp_path: Path) -> None:
+    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
+    profile_before = _profile_snapshot(output_dir)
+    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
+        _run(
+            tmp_path,
+            output_dir=output_dir,
+            completion=_Completion(fail_after=1),
+            guide_url=SECOND_GUIDE_URL,
+        )
+
+    assert str(raised.value) == workflow.ANALYSIS_ERROR
+    assert tuple((_second_work_dir(output_dir) / "results").glob("*.json"))
+    assert _profile_snapshot(output_dir) == profile_before
+
+
+def test_non_publishable_confirm_preserves_profile_tree_and_review_artifact(
+    tmp_path: Path,
+) -> None:
+    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
+    profile_before = _profile_snapshot(output_dir)
+    result = _run(
+        tmp_path,
+        output_dir=output_dir,
+        completion=_Completion(guide_category="strategy", relationship_mode="uncertain"),
+        guide_url=SECOND_GUIDE_URL,
+    )
+
+    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
+        workflow.finalize_set_enrichment(
+            analysis=result,
+            decision=workflow.EnrichmentReviewDecision.CONFIRM,
+            reviewer_id="operator",
+            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
+        )
+
+    assert str(raised.value) == workflow.NO_PUBLISHABLE_ERROR
+    assert raised.value.review_result is not None
+    review = raised.value.review_result
+    assert review.artifact.review.state == "confirmed"
+    assert review.artifact_path.exists()
+    assert _profile_snapshot(output_dir) == profile_before
 
 
 def test_review_guards_reject_an_incomplete_analysis_and_invalid_review_input(

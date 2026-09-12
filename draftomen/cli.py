@@ -107,6 +107,21 @@ from draftomen.seventeen import (
     refresh_17lands_structure_targets,
     seventeen_lands_structure_targets_cache_path,
 )
+from draftomen.semantic_enrichment_records import FindingStatus
+from draftomen.set_enrichment import (
+    EnrichmentOutcome,
+    EnrichmentPhase,
+    EnrichmentProgress,
+)
+from draftomen.set_enrichment_workflow import (
+    EnrichmentReviewDecision,
+    INCOMPLETE_ANALYSIS_ERROR,
+    PROFILE_PUBLICATION_ERROR,
+    SetEnrichmentWorkflowError,
+    SetEnrichmentWorkflowResult,
+    analyze_set_enrichment,
+    finalize_set_enrichment,
+)
 from draftomen.tui import run_tui_watch
 from draftomen.watch import run_plain_watch
 
@@ -879,7 +894,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Profile schema version to embed (default: 1.0).",
     )
     batch_parser.set_defaults(handler=handle_generate_profile_refresh_batch)
+    enrich_set_parser = subparsers.add_parser(
+        name="enrich-set",
+        help="Interactively enrich one set profile from a draft guide.",
+        description=(
+            "Freeze one draft guide, analyze a set against it, review the results, and "
+            "publish the confirmed enrichment as a local QuickDraft profile."
+        ),
+    )
+    enrich_set_parser.add_argument("set", metavar="SET", help="Exact set code (case-insensitive).")
+    enrich_set_parser.add_argument(
+        "--guide-url", metavar="URL", required=True, help="Draft guide URL to freeze."
+    )
+    enrich_set_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        metavar="PATH",
+        required=True,
+        help="Caller-selected set-enrichment output directory.",
+    )
+    enrich_set_parser.set_defaults(handler=handle_enrich_set)
     return parser
+
 
 
 def _parse_generated_at(value: str) -> datetime:
@@ -1711,6 +1747,342 @@ def handle_refresh_structure_targets(args: argparse.Namespace) -> int:
         f"{len(targets.targets)} pair structure targets "
         f"from {targets.total_decks} trophy decks at {cache_path}."
     )
+    return 0
+
+
+def _print_enrichment_progress(progress: EnrichmentProgress) -> None:
+    """Print one enrichment progress event with verbatim accounting.
+    Use stderr so stdout remains the review transcript.
+    """
+
+    if progress.phase is EnrichmentPhase.GUIDES:
+        label = "guide analysis"
+        completed = progress.guides_completed
+        total = progress.guides_total
+        percent = progress.guides_percent
+    elif progress.phase is EnrichmentPhase.CARD_CAPABILITIES:
+        label = "card analysis"
+        completed = progress.cards_completed
+        total = progress.cards_total
+        percent = progress.cards_percent
+    else:
+        label = "candidate validation"
+        completed = progress.relationships_completed
+        total = progress.relationships_total
+        percent = progress.relationships_percent
+
+    accounting = progress.accounting
+    projected = (
+        "unknown"
+        if accounting.projected_final_cost_usd is None
+        else accounting.projected_final_cost_usd
+    )
+    print(
+        "enrich-set progress: "
+        f"{label} {completed}/{total} ({percent:.1f}%) "
+        f"input_tokens={accounting.input_tokens} "
+        f"cached_input_tokens={accounting.cached_input_tokens} "
+        f"output_tokens={accounting.output_tokens} "
+        f"reasoning_tokens={accounting.reasoning_tokens} "
+        f"executed_work={accounting.executed_work} "
+        f"reused_work={accounting.reused_work} "
+        f"work_without_cost={accounting.work_without_cost} "
+        f"actual_cost_usd={accounting.running_cost_usd} "
+        f"projected_final_cost_usd={projected}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _format_enrichment_review(analysis: SetEnrichmentWorkflowResult) -> str:
+    """Format one complete pending enrichment artifact for terminal review.
+    Keep the report typed, deterministic, and free of raw model payloads.
+    """
+
+    artifact = analysis.artifact
+    artifact_path = analysis.artifact_path
+    if (
+        artifact is None
+        or artifact_path is None
+        or artifact.review.state != "pending"
+    ):
+        raise SetEnrichmentWorkflowError(INCOMPLETE_ANALYSIS_ERROR)
+
+    card_names = {card.grp_id: card.name for card in analysis.sources.cards}
+
+    def card_name(card_id: int) -> str:
+        return card_names.get(card_id, f"card {card_id}")
+
+    lines = [
+        "Draft Omen set enrichment review",
+        f"Set: {analysis.set_code.upper()}",
+        (
+            "Findings: "
+            f"accepted={analysis.counts.accepted} "
+            f"uncertain={analysis.counts.uncertain} "
+            f"rejected={analysis.counts.rejected} "
+            f"failed={analysis.counts.failed}"
+        ),
+        "Mechanics",
+    ]
+    mechanics = [
+        f"- [{claim.review.status.value}] {claim.name}: {claim.claim}"
+        for claim in artifact.guide_claims
+        if claim.category == "mechanic"
+    ]
+    lines.extend(mechanics or ["none"])
+
+    lines.append("Card mechanic support")
+    mechanic_support: dict[str, list[int]] = {}
+    for fact in artifact.oracle_facts:
+        counts = mechanic_support.setdefault(fact.kind, [0, 0])
+        if fact.review.status is FindingStatus.ACCEPTED:
+            counts[0] += 1
+        elif fact.review.status is FindingStatus.UNCERTAIN:
+            counts[1] += 1
+    lines.extend(
+        [
+            f"- {kind}: accepted={counts[0]} uncertain={counts[1]}"
+            for kind, counts in sorted(mechanic_support.items())
+        ]
+        or ["none"]
+    )
+
+    lines.append("Format, colors, and archetypes")
+    format_claims = [
+        (
+            f"- [{claim.review.status.value}] {claim.category} "
+            f"{claim.name}: {claim.claim}"
+        )
+        for claim in artifact.guide_claims
+        if claim.category in {"format_finding", "archetype"}
+        or (claim.category == "strategy" and not claim.card_ids)
+    ]
+    lines.extend(format_claims or ["none"])
+
+    lines.append("Named synergies")
+    named_synergies = [
+        (
+            f"- [{claim.review.status.value}] "
+            f"{'+'.join(card_name(card_id) for card_id in claim.card_ids)} "
+            f"({claim.name}): {claim.claim}"
+        )
+        for claim in artifact.guide_claims
+        if claim.category == "strategy" and claim.card_ids
+    ]
+    lines.extend(named_synergies or ["none"])
+
+    lines.append("Inferred synergies")
+    inferred_synergies = [
+        (
+            f"- [{relationship.review.status.value}] "
+            f"{'+'.join(card_name(card_id) for card_id in relationship.participants)} "
+            f"({relationship.mechanism}): {relationship.claim}"
+        )
+        for relationship in artifact.relationships
+    ]
+    lines.extend(inferred_synergies or ["none"])
+
+    lines.append("Uncertainty")
+    uncertainty_reasons: dict[str, int] = {}
+    for finding in (
+        *artifact.guide_claims,
+        *artifact.oracle_facts,
+        *artifact.relationships,
+    ):
+        if (
+            finding.review.status is FindingStatus.UNCERTAIN
+            and finding.review.reason is not None
+        ):
+            uncertainty_reasons[finding.review.reason] = (
+                uncertainty_reasons.get(finding.review.reason, 0) + 1
+            )
+    lines.extend(
+        [
+            f"- {count}x {reason}"
+            for reason, count in sorted(uncertainty_reasons.items())
+        ]
+        or ["none"]
+    )
+
+    lines.append("Validation failures")
+    validation_failures = [
+        f"- {finding.source_kind} {finding.summary}: {finding.reason}"
+        for finding in artifact.rejected_findings
+    ]
+    validation_failures.extend(
+        f"- guide {guide_id}: {result.malformed_reason}"
+        for guide_id, result in zip(analysis.run.guide_ids, analysis.run.guide_results)
+        if result.malformed_reason is not None
+    )
+    validation_failures.extend(
+        f"- card {card_id}: {result.malformed_reason}"
+        for card_id, result in zip(analysis.run.card_ids, analysis.run.card_results)
+        if result.malformed_reason is not None
+    )
+    validation_failures.extend(
+        f"- relationship {index}: {result.malformed_reason}"
+        for index, result in enumerate(analysis.run.relationship_results, start=1)
+        if result.malformed_reason is not None
+    )
+    lines.extend(validation_failures or ["none"])
+
+    lines.append("Provenance")
+    lines.append(
+        f"Source: set={artifact.set_code} sha256={analysis.run.set_source_sha256}"
+    )
+    lines.extend(
+        f"Guide: {guide.url} sha256={guide.sha256}" for guide in artifact.guides
+    )
+    lines.extend(
+        (
+            f"Model: provider={provider} model={model} reasoning={effort}"
+        )
+        for provider, model, effort in sorted(
+            {
+                (
+                    model_run.provider,
+                    model_run.model,
+                    model_run.reasoning.effort or "none",
+                )
+                for model_run in artifact.runs
+            }
+        )
+    )
+    lines.extend(
+        f"Prompt: {prompt_id} schema={schema_id}"
+        for prompt_id, schema_id in sorted(
+            {
+                (model_run.prompt_id, model_run.response_schema_id)
+                for model_run in artifact.runs
+            }
+        )
+    )
+
+    lines.extend(
+        [
+            "Paths",
+            f"Run: {analysis.run_dir}",
+            f"Work: {analysis.work_dir}",
+            f"Card data: {analysis.card_database_path}",
+            f"Pending enrichment: {artifact_path}",
+        ]
+    )
+
+    accounting = analysis.run.progress.accounting
+    projected = (
+        "unknown"
+        if accounting.projected_final_cost_usd is None
+        else accounting.projected_final_cost_usd
+    )
+    lines.append(
+        "Final accounting: "
+        f"input_tokens={accounting.input_tokens} "
+        f"cached_input_tokens={accounting.cached_input_tokens} "
+        f"output_tokens={accounting.output_tokens} "
+        f"reasoning_tokens={accounting.reasoning_tokens} "
+        f"executed_work={accounting.executed_work} "
+        f"reused_work={accounting.reused_work} "
+        f"work_without_cost={accounting.work_without_cost} "
+        f"actual_cost_usd={accounting.running_cost_usd} "
+        f"projected_final_cost_usd={projected} "
+        f"final_cost_usd={accounting.running_cost_usd}"
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _prompt_enrichment_decision() -> EnrichmentReviewDecision:
+    """Read one fail-closed review decision from the terminal.
+    Unknown input never crosses the publication boundary.
+    """
+
+    try:
+        decision = input("Decision [Confirm/Cancel] (default Cancel): ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return EnrichmentReviewDecision.CANCEL
+    if decision == "Confirm":
+        return EnrichmentReviewDecision.CONFIRM
+    if not decision.strip() or decision == "Cancel":
+        return EnrichmentReviewDecision.CANCEL
+    print("Invalid decision; cancelling.", file=sys.stderr)
+    return EnrichmentReviewDecision.CANCEL
+
+
+def handle_enrich_set(args: argparse.Namespace) -> int:
+    """Handle interactive set enrichment and its review boundary.
+    The UI adapter delegates source, work, accounting, and publication to the workflow.
+    """
+
+    try:
+        analysis = analyze_set_enrichment(
+            set_code=args.set,
+            guide_url=args.guide_url,
+            output_dir=args.output_dir,
+            observer=_print_enrichment_progress,
+        )
+    except KeyboardInterrupt:
+        print(
+            f"enrich-set cancelled: resumable work preserved under {args.output_dir}",
+            file=sys.stderr,
+        )
+        return 130
+    except SetEnrichmentWorkflowError as error:
+        print(f"enrich-set failed: {error}", file=sys.stderr)
+        return 1
+
+    if analysis.run.outcome is EnrichmentOutcome.CANCELLED:
+        print(
+            f"enrich-set cancelled: resumable work preserved under {analysis.output_dir}",
+            file=sys.stderr,
+        )
+        return 130
+
+    try:
+        print(_format_enrichment_review(analysis), end="")
+    except SetEnrichmentWorkflowError as error:
+        print(f"enrich-set failed: {error}", file=sys.stderr)
+        return 1
+
+    decision = _prompt_enrichment_decision()
+    try:
+        review = finalize_set_enrichment(
+            analysis=analysis,
+            decision=decision,
+            reviewer_id="draftomen-tui",
+            reviewed_at=datetime.now(tz=UTC),
+        )
+    except SetEnrichmentWorkflowError as error:
+        if (
+            decision is EnrichmentReviewDecision.CONFIRM
+            and error.review_result is not None
+        ):
+            print("decision=Confirm")
+            print(f"enrichment_artifact={error.review_result.artifact_path}")
+            print("profile=not-published")
+        print(f"enrich-set failed: {error}", file=sys.stderr)
+        return 1
+
+    if decision is EnrichmentReviewDecision.CANCEL:
+        print("decision=Cancel")
+        print(f"enrichment_artifact={review.artifact_path}")
+        print("profile=not-published")
+        return 0
+
+    if review.publication is None:
+        print("decision=Confirm")
+        print(f"enrichment_artifact={review.artifact_path}")
+        print("profile=not-published")
+        print(f"enrich-set failed: {PROFILE_PUBLICATION_ERROR}", file=sys.stderr)
+        return 1
+
+    publication = review.publication
+    print("decision=Confirm")
+    print(f"enrichment_artifact={review.artifact_path}")
+    print(f"profile={publication.artifact_path}")
+    print(f"generation_report={publication.manifest_path}")
+    print(f"profile_sha256={publication.generation.report.profile_sha256}")
+    print(f"gzip_sha256={publication.generation.report.gzip_sha256}")
     return 0
 
 
