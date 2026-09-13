@@ -39,6 +39,7 @@ from draftomen.ranking import RankingMode
 from draftomen.session import (
     CardImageFetchResult,
     CardImageRequest,
+    ChangeAiEnhancedSuggestions,
     ChangeContextualScoring,
     ChangeRanking,
     ChangeSplashPreference,
@@ -540,6 +541,10 @@ class SessionAdapter(QObject):
     @Slot(bool)
     def setContextualScoringEnabled(self, enabled: bool) -> None:
         self._dispatch(command=ChangeContextualScoring(enabled=enabled))
+
+    @Slot(bool)
+    def setAiEnhancedSuggestionsEnabled(self, enabled: bool) -> None:
+        self._dispatch(command=ChangeAiEnhancedSuggestions(enabled=enabled))
 
     @Slot()
     def requestRatings(self) -> None:

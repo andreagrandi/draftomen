@@ -5683,6 +5683,197 @@ with TemporaryDirectory() as preferences_dir:
     assert "TypeError" not in completed.stderr
 
 
+def test_qml_enhancement_availability_control_and_status_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtGui import QAccessible, QColor, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_mock import MockSessionAdapter
+from draftomen.session import ChangeAiEnhancedSuggestions
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+
+OFFLINE_SENTENCE = (
+    " Uses enhancement prepared offline in the active set profile; "
+    "no AI model runs during the live draft."
+)
+
+
+class RecordingProvider(MockSessionAdapter):
+    def __init__(self) -> None:
+        self.commands = []
+        super().__init__(session=MockLiveSession(scenario="ready"))
+
+    def _dispatch(self, *, command) -> None:
+        self.commands.append(command)
+        super()._dispatch(command=command)
+
+
+provider = RecordingProvider()
+
+with TemporaryDirectory() as preferences_dir:
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", "monospace")
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "0.0")
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "settings")
+    context.setContextProperty("initialWindowWidth", 900)
+    context.setContextProperty("initialWindowHeight", 760)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+
+    switch = root.findChild(QObject, "settingsAiEnhancedSuggestionsSwitch")
+    assert switch is not None
+    settings_message = root.findChild(
+        QObject, "settingsAiEnhancedSuggestionsMessage"
+    )
+    assert settings_message is not None
+    status_message = root.findChild(QObject, "statusEnhancementMessage")
+    assert status_message is not None
+
+    def assert_availability(
+        *,
+        status,
+        message,
+        color,
+        switch_enabled,
+        switch_checked,
+    ) -> None:
+        combined = message + OFFLINE_SENTENCE
+        assert provider.state["enhancement_availability"]["status"] == status
+        assert settings_message.property("text") == combined
+        settings_accessible = QAccessible.queryAccessibleInterface(settings_message)
+        assert settings_accessible is not None
+        assert settings_accessible.text(QAccessible.Text.Name) == combined
+        assert settings_accessible.text(QAccessible.Text.Description) == combined
+        switch_accessible = QAccessible.queryAccessibleInterface(switch)
+        assert switch_accessible is not None
+        assert switch_accessible.text(QAccessible.Text.Name) == (
+            "AI-enhanced suggestions"
+        )
+        assert switch_accessible.text(QAccessible.Text.Description) == combined
+        assert status_message.property("text") == message
+        assert QColor(status_message.property("color")) == QColor(color)
+        status_accessible = QAccessible.queryAccessibleInterface(status_message)
+        assert status_accessible is not None
+        assert status_accessible.text(QAccessible.Text.Name) == message
+        assert status_accessible.text(QAccessible.Text.Description) == combined
+        assert switch.property("enabled") is switch_enabled
+        assert switch.property("checked") is switch_checked
+
+    def press_space() -> None:
+        switch.forceActiveFocus()
+        QTest.keyClick(root, Qt.Key_Space)
+        application.processEvents()
+
+    assert_availability(
+        status="available",
+        message="AI-enhanced suggestions available for OTJ.",
+        color="#a78bfa",
+        switch_enabled=True,
+        switch_checked=True,
+    )
+    startup_commands = list(provider.commands)
+    assert not any(
+        isinstance(command, ChangeAiEnhancedSuggestions)
+        for command in startup_commands
+    )
+
+    press_space()
+    enhancement_commands = [
+        command for command in provider.commands
+        if isinstance(command, ChangeAiEnhancedSuggestions)
+    ]
+    assert [command.enabled for command in enhancement_commands] == [False]
+    assert len(provider.commands) == len(startup_commands) + 1
+    assert_availability(
+        status="disabled",
+        message="AI-enhanced suggestions disabled for OTJ.",
+        color="#c8c2b8",
+        switch_enabled=True,
+        switch_checked=False,
+    )
+
+    press_space()
+    enhancement_commands = [
+        command for command in provider.commands
+        if isinstance(command, ChangeAiEnhancedSuggestions)
+    ]
+    assert [command.enabled for command in enhancement_commands] == (
+        [False, True]
+    )
+    assert len(provider.commands) == len(startup_commands) + 2
+    assert_availability(
+        status="available",
+        message="AI-enhanced suggestions available for OTJ.",
+        color="#a78bfa",
+        switch_enabled=True,
+        switch_checked=True,
+    )
+
+    for scenario, status, message in (
+        (
+            "not_enhanced",
+            "not-enhanced",
+            "AI-enhanced suggestions unavailable for OTJ: "
+            "profile is not AI-enhanced.",
+        ),
+        (
+            "enhancement_incompatible",
+            "incompatible",
+            "AI-enhanced suggestions unavailable for OTJ: "
+            "profile enhancement is invalid or incompatible.",
+        ),
+        (
+            "empty",
+            "unavailable",
+            "AI-enhanced suggestions unavailable: no active set profile.",
+        ),
+    ):
+        provider.selectScenario(scenario)
+        application.processEvents()
+        assert_availability(
+            status=status,
+            message=message,
+            color="#e7c993",
+            switch_enabled=False,
+            switch_checked=False,
+        )
+        dispatched = len(provider.commands)
+        press_space()
+        assert len(provider.commands) == dispatched
+
+    preferences.shutdown()
+    del root
+    del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
 def test_qml_settings_switches_expose_contrast_states_and_keyboard_toggle() -> None:
     probe = """
 from pathlib import Path
@@ -5848,6 +6039,7 @@ with TemporaryDirectory() as preferences_dir:
         "settingsShowBacktestSwitch",
         "settingsContextualScoringSwitch",
         "settingsCompactDensitySwitch",
+        "settingsAiEnhancedSuggestionsSwitch",
         "settingsSecondaryStatsSwitch",
         "settingsCardPreviewSwitch",
         "settingsDetailedBuildContextSwitch",
@@ -5862,9 +6054,8 @@ with TemporaryDirectory() as preferences_dir:
     unchecked_switches = [
         switch for switch in switches if not switch.property("checked")
     ]
-    assert len(checked_switches) == 6
+    assert len(checked_switches) == 7
     assert len(unchecked_switches) == 2
-
     for switch in switches:
         is_checked = switch.property("checked") is True
         assert switch.property("visualChecked") is is_checked

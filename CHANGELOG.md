@@ -3,6 +3,14 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Expose enhancement availability and control in the desktop interface
+  (#519): the shared `enhancement_availability` snapshot state reaches QML
+  through the existing plain-value translation, Settings gains an
+  `AI-enhanced suggestions` guidance row whose switch dispatches the
+  existing `ChangeAiEnhancedSuggestions` command only when availability
+  permits it, and the status strip gains a compact enhancement label with
+  the same offline/no-live-model copy in its tooltip and accessible
+  description. (#519)
 - Render the shared enhancement availability in `watch --plain` (#518):
   plain-text output gains a `Status:` enhancement line beside the profile
   status that announces `AI enhancement: On for {set}` with the
