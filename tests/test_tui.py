@@ -2245,9 +2245,12 @@ async def _assert_completion_build_view_and_pair_override(tmp_path: Path) -> Non
 
     async with app.run_test(size=(140, 40)) as pilot:
         app.process_lines(lines=_full_fixture_lines())
-        await pilot.pause()
-
         title = app.query_one("#pack-title", Static)
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if str(title.render()).startswith("Build view — pair WU (automatic)"):
+                break
+
         table = app.query_one("#pack-table", DataTable)
         build_scroll = app.query_one("#build-scroll", VerticalScroll)
         pool_summary = app.query_one("#pool-summary", Static)
