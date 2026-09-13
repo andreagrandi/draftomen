@@ -3,6 +3,28 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Calibrate the typed relationship scoring against an offline HOB backtest
+  (#510): the nine pre-calibration `0.5` support factors are settled as
+  code-owned constants — the two HOB-observed token mechanisms keep their
+  deterministic same-card factor and the other seven retain the conservative
+  uniform value because no outcome labels support mechanism-specific strengths —
+  and a new tracked `hob-relationship-scoring` fixture pair plus
+  `scripts/hob_relationship_scoring_smoke.py` prove the effect end to end
+  without network access: one persisted pre-pick draft is scored under the
+  compiled enhanced profile, the otherwise identical enhancement-removed
+  profile, and the all-context-disabled control, exposing exact same-card
+  raw-score deltas of `0.190244` (token-go-wide-payoff) and `0.205793`
+  (token-sacrifice-outlet), a neutral unsupported row, a saturation row
+  whose recommended card is itself the relationship target while the
+  generic synergy term already fills `MAX_SYNERGY_TERM`, so the `0.75`
+  relationship increment is genuinely clipped, byte-identical determinism
+  across repeated controls, unchanged persisted state bytes, and a
+  privacy-safe canonical report that carries only allowlisted evidence. The
+  token-go-wide-payoff target clause is disclosed as a proxy through the
+  report's `relationship_projection_notes`: the closed prerequisite
+  vocabulary cannot express the payoff's other-creatures anthem, so the
+  flash-condition requirement is encoded without the stated Human subtype.
+  (#510)
 - Apply bounded, source-bound typed relationship support to pre-pick draft
   recommendations: a confirmed schema-3 relationship whose typed prerequisite
   projection is satisfied by a drafted card that survives the likely-deck
@@ -531,3 +553,4 @@
 - Renamed the project, Python package, CLI, GUI commands, and release artifacts to Draft Omen and `draftomen`.
 
 - Maintain changelog-backed development updates and stable GitHub release notes.
+

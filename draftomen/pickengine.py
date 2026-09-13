@@ -78,8 +78,10 @@ PAYOFF_PACKAGES: Mapping[Role, str] = {
     Role.POWER_THRESHOLD_PAYOFF: "threshold",
     Role.POWER_N_PAYOFF: "threshold",
 }
-# Code-owned pre-calibration baseline factors for the nine typed relationship
-# mechanisms; #510 may later replace these values with calibrated strengths.
+# HOB backtest evidence observes `token-go-wide-payoff` and
+# `token-sacrifice-outlet`; their deterministic same-card token effects justify
+# retaining `0.5`. The other seven mechanisms keep the same conservative uniform
+# factor because #510 has no outcome labels supporting mechanism-specific values.
 _RELATIONSHIP_SUPPORT_FACTORS: Mapping[str, float] = {
     "discard-recursion-payoff": 0.5,
     "fodder-dies-payoff": 0.5,
