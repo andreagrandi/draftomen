@@ -6,13 +6,39 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import math
+import re
 from enum import StrEnum
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping, TypeAlias
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DECK_BUILDER, SPLASH
 from draftomen.events import EXPECTED_PACK_COUNT, EXPECTED_PICKS_PER_PACK, EXPECTED_TOTAL_PICKS
-from draftomen.semantic_roles import Role, RoleAssignment, resolve_card_roles
+from draftomen.semantic_capability_records import (
+    CapabilityQuantity,
+    CapabilityZone,
+    PrerequisiteKind,
+    QuantityRelation,
+)
+from draftomen.semantic_enrichment import card_source_sha256
+from draftomen.semantic_relationship_records import (
+    RelationshipParticipant,
+    RelationshipPrerequisite,
+    RelationshipPrerequisiteProjection,
+    RelationshipZone,
+    _death_payoff_clause,
+    _declared_zone,
+    _discard_clause,
+    _draw_clause,
+    _fodder_clause,
+    _outlet_clause,
+    _produced_token_clause,
+    _return_clause,
+    _self_mill_clause,
+    _wide_payoff_clause,
+)
+from draftomen.semantic_roles import Role, RoleAssignment, ResolutionResult, resolve_card_roles
+from draftomen.set_enrichment_candidates import ROLE_COMPATIBILITY_RULES
 from draftomen.seventeen import SeventeenLandsData
 from draftomen.splash import (
     COLOR_ORDER,
@@ -132,6 +158,13 @@ PACKAGE_ROLES: Mapping[str, tuple[tuple[Role, ...], tuple[Role, ...]]] = {
 }
 
 
+#
+# Canonical prerequisite text is built only from validated enum values, IDs, and
+# quantities so no free-text claim, quote, or guide text can reach pick evidence.
+_PREREQUISITE_TEXT_PATTERN = re.compile(
+    r"(?:source|target):[a-z_]+/[a-z_]+/[a-z_]+(?:;[a-z_]+=[^\s;]+)*"
+)
+
 class LedgerMode(StrEnum):
     """Identify whether a ledger has pre-pick stage context or is final."""
 
@@ -233,6 +266,119 @@ class RemovalContribution:
 
 
 @dataclass(frozen=True, slots=True)
+class RelationshipSupport:
+    """One exact, source-bound typed relationship satisfied by the projected pool.
+    The source participant is a drafted card that survives the likely-deck
+    projection; the target participant is joined later by exact offered grp_id.
+    """
+
+    finding_id: str
+    mechanism: str
+    source_card_id: int
+    source_card_name: str
+    source_card_count: int
+    source_role: Role
+    source_role_confidence: float
+    target_card_id: int
+    target_card_name: str
+    target_role: Role
+    target_role_confidence: float
+    satisfied_prerequisites: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for field_name in ("finding_id", "mechanism", "source_card_name", "target_card_name"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Relationship support {field_name} must be a non-empty string.")
+        for field_name in ("source_card_id", "source_card_count", "target_card_id"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"Relationship support {field_name} must be a positive integer.")
+        for field_name in ("source_role", "target_role"):
+            if not isinstance(getattr(self, field_name), Role):
+                raise ValueError(f"Relationship support {field_name} must be a Role.")
+        for field_name in ("source_role_confidence", "target_role_confidence"):
+            value = getattr(self, field_name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ValueError(f"Relationship support {field_name} must be bounded from 0 to 1.")
+        prerequisites = self.satisfied_prerequisites
+        if (
+            not isinstance(prerequisites, tuple)
+            or not prerequisites
+            or any(
+                not isinstance(item, str)
+                or _PREREQUISITE_TEXT_PATTERN.fullmatch(item) is None
+                for item in prerequisites
+            )
+        ):
+            raise ValueError(
+                "Relationship support satisfied_prerequisites must contain canonical prerequisite text."
+            )
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "finding_id": self.finding_id,
+            "mechanism": self.mechanism,
+            "source": {
+                "count": self.source_card_count,
+                "grp_id": self.source_card_id,
+                "name": self.source_card_name,
+                "role": self.source_role.value,
+                "role_confidence": self.source_role_confidence,
+            },
+            "target": {
+                "grp_id": self.target_card_id,
+                "name": self.target_card_name,
+                "role": self.target_role.value,
+                "role_confidence": self.target_role_confidence,
+            },
+            "satisfied_prerequisites": list(self.satisfied_prerequisites),
+        }
+
+
+def _participant_identity(
+    participant: RelationshipParticipant,
+    *,
+    set_profile: SetProfile,
+    card_database: CardDatabase,
+    projected: Mapping[int, tuple[CardInfo, int, ResolutionResult]],
+) -> tuple[CardInfo, float] | None:
+    card = card_database.cards.get(participant.card_id)
+    if card is None or card.unknown:
+        return None
+    if card.set_code != set_profile.set_code:
+        return None
+    if card_source_sha256(card) != participant.card_source_sha256:
+        return None
+    if not _face_binding_matches(participant=participant, card=card):
+        return None
+    projected_entry = projected.get(participant.card_id)
+    resolution = (
+        projected_entry[2]
+        if projected_entry is not None
+        else resolve_card_roles(card, profile=set_profile.role_profile)
+    )
+    if resolution.source != "compiled_profile":
+        return None
+    confidence = next(
+        (
+            assignment.confidence
+            for assignment in resolution.assignments
+            if assignment.role == participant.role
+        ),
+        None,
+    )
+    if confidence is None:
+        return None
+    return card, float(confidence)
+
+
+@dataclass(frozen=True, slots=True)
 class PoolRoleLedger:
     """Immutable role ledger for a projected or completed pool.
     Pre-pick ledgers always carry explicit stage context; completed ledgers never do.
@@ -264,6 +410,7 @@ class PoolRoleLedger:
     stage: LedgerStage | None = None
     profile_source: str = "generic"
     profile_fingerprint: str | None = None
+    relationship_support: tuple[RelationshipSupport, ...] = ()
 
     def __post_init__(self) -> None:
         try:
@@ -281,6 +428,8 @@ class PoolRoleLedger:
             raise ValueError("Ledger structural counts must be non-negative.")
         if not 0.0 <= self.urgency <= 1.0:
             raise ValueError("Ledger urgency must be bounded from 0 to 1.")
+        if any(not isinstance(item, RelationshipSupport) for item in self.relationship_support):
+            raise ValueError("Ledger relationship support must contain RelationshipSupport records.")
 
     @property
     def pool_before_pick(self) -> bool:
@@ -405,6 +554,9 @@ class PoolRoleLedger:
                 [name, value] for name, value in self.unsupported_payoff_counts
             ],
             "urgency": self.urgency,
+            "relationship_support": [
+                item.to_json() for item in self.relationship_support
+            ],
             "unique_card_count": self.unique_card_count,
         }
 
@@ -813,6 +965,12 @@ def _evaluate(
         profile_confidence=profile_confidence,
     )
     urgency = _urgency(target_coverage=target_coverage, stage=stage)
+    relationship_support = _relationship_support(
+        projected_cards=resolved,
+        card_database=card_database,
+        set_profile=set_profile,
+        mode=mode,
+    )
     removal_contributions = tuple(
         RemovalContribution(
             kind=kind,
@@ -848,7 +1006,716 @@ def _evaluate(
         stage=stage,
         profile_source=profile_source,
         profile_fingerprint=None if set_profile is None else set_profile.fingerprint,
+        relationship_support=relationship_support,
     )
+
+
+def _relationship_support(
+    *,
+    projected_cards: tuple[tuple[CardInfo, int, ResolutionResult], ...],
+    card_database: CardDatabase,
+    set_profile: SetProfile | None,
+    mode: LedgerMode,
+) -> tuple[RelationshipSupport, ...]:
+    """Project exact, source-bound relationship support for one pre-pick pool.
+    Completed-pool evaluation stays relationship-neutral by construction.
+    """
+
+    if mode is not LedgerMode.PRE_PICK_PROJECTION or set_profile is None:
+        return ()
+    enhancement = set_profile.enhancement
+    if enhancement is None:
+        return ()
+    projected = {
+        card.grp_id: (card, quantity, resolution)
+        for card, quantity, resolution in projected_cards
+    }
+    records: list[RelationshipSupport] = []
+    for relationship in enhancement.relationships:
+        record = _matched_relationship_support(
+            relationship=relationship,
+            set_profile=set_profile,
+            card_database=card_database,
+            projected=projected,
+        )
+        if record is not None:
+            records.append(record)
+    return tuple(
+        sorted(
+            records,
+            key=lambda item: (
+                item.target_card_id,
+                item.mechanism,
+                item.finding_id,
+                item.source_card_id,
+            ),
+        )
+    )
+
+
+def _matched_relationship_support(
+    *,
+    relationship: CardRelationship,
+    set_profile: SetProfile,
+    card_database: CardDatabase,
+    projected: Mapping[int, tuple[CardInfo, int, ResolutionResult]],
+) -> RelationshipSupport | None:
+    projection = relationship.prerequisite_projection
+    if projection is None:
+        return None
+    link = next(
+        (item for item in ROLE_COMPATIBILITY_RULES if item.mechanism == relationship.mechanism),
+        None,
+    )
+    if link is None:
+        return None
+    if projection.source.role is not link.enabler or projection.target.role is not link.payoff:
+        return None
+    source_identity = _participant_identity(
+        projection.source,
+        set_profile=set_profile,
+        card_database=card_database,
+        projected=projected,
+    )
+    if source_identity is None or projection.source.card_id not in projected:
+        return None
+    target_identity = _participant_identity(
+        projection.target,
+        set_profile=set_profile,
+        card_database=card_database,
+        projected=projected,
+    )
+    if target_identity is None:
+        return None
+    source_card, source_card_count, _ = projected[projection.source.card_id]
+    satisfied = _matched_prerequisites(
+        mechanism=relationship.mechanism,
+        source=projection.source,
+        target=projection.target,
+        source_count=source_card_count,
+    )
+    if satisfied is None:
+        return None
+    source_card, source_confidence = source_identity
+    target_card, target_confidence = target_identity
+    return RelationshipSupport(
+        finding_id=relationship.finding_id,
+        mechanism=relationship.mechanism,
+        source_card_id=projection.source.card_id,
+        source_card_name=source_card.name,
+        source_card_count=source_card_count,
+        source_role=projection.source.role,
+        source_role_confidence=source_confidence,
+        target_card_id=projection.target.card_id,
+        target_card_name=target_card.name,
+        target_role=projection.target.role,
+        target_role_confidence=target_confidence,
+        satisfied_prerequisites=satisfied,
+    )
+
+
+
+
+def _face_binding_matches(
+    *,
+    participant: RelationshipParticipant,
+    card: CardInfo,
+) -> bool:
+    if participant.face_index is None:
+        if participant.face_name is None:
+            return True
+        return any(face.name == participant.face_name for face in card.faces)
+    index = participant.face_index
+    if index < 0 or index >= len(card.faces):
+        return False
+    face = card.faces[index]
+    return participant.face_name is None or face.name == participant.face_name
+
+
+def _matched_prerequisites(
+    *,
+    mechanism: str,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    matcher = _MECHANISM_MATCHERS.get(mechanism)
+    if matcher is None:
+        return None
+    return matcher(source=source, target=target, source_count=source_count)
+
+
+def _supported_object_token_identity(
+    clause: RelationshipPrerequisite,
+    participant: RelationshipParticipant,
+) -> str | None:
+    """Return the proven token identity of one clause's supported object."""
+
+    if clause.operation == "create" and clause.object_kind == "token":
+        return "token"
+    if clause.required_card_id == participant.card_id:
+        return "nontoken"
+    if clause.token_restriction == "unrestricted":
+        return None
+    return clause.token_restriction
+
+
+def _type_qualifiers_agree(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+) -> bool:
+    if target.type_operator == "all_of":
+        return source.type_operator == "all_of" and set(target.card_types) <= set(source.card_types)
+    if target.type_operator == "any_of":
+        if source.type_operator == "unrestricted":
+            return False
+        return bool(set(target.card_types) & set(source.card_types))
+    return True
+
+
+def _token_qualifiers_agree(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+    source_participant: RelationshipParticipant,
+) -> bool:
+    object_token = _supported_object_token_identity(source, source_participant)
+    if target.token_restriction == "nontoken" and object_token != "nontoken":
+        return False
+    if target.token_restriction == "token" and object_token != "token":
+        return False
+    return True
+
+
+def _color_qualifiers_agree(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+) -> bool:
+    if target.color_operator == "exact":
+        return source.color_operator == "exact" and set(source.colors) == set(target.colors)
+    if target.color_operator == "all_of":
+        if source.color_operator not in ("exact", "all_of"):
+            return False
+        return set(target.colors) <= set(source.colors)
+    if target.color_operator == "any_of":
+        if source.color_operator == "unrestricted":
+            return False
+        return bool(set(target.colors) & set(source.colors))
+    return True
+
+
+def _party_qualifiers_agree(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+) -> bool:
+    if target.controller in ("you", "opponent") and source.controller != target.controller:
+        return False
+    if target.owner in ("you", "opponent") and source.owner != target.owner:
+        return False
+    return True
+
+
+def _timing_qualifiers_agree(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+) -> bool:
+    target_timing = target.timing
+    if target_timing.window == "unrestricted" and target_timing.turn == "any":
+        return True
+    source_timing = source.timing
+    if target_timing.turn != "any" and source_timing.turn != target_timing.turn:
+        return False
+    if target_timing.window != "unrestricted" and source_timing.window != target_timing.window:
+        return False
+    return True
+
+
+def _quantity_qualifiers_agree(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+    source_count: int,
+) -> bool:
+    """Prove one fixed target threshold from a fixed, uncapped source supply.
+
+    An unknown or upper-bounded source amount proves nothing, and a supply that a
+    per-turn cap shortens is no longer exact, so every such case withholds.
+    """
+
+    target_quantity = target.quantity
+    if target_quantity is None:
+        return True
+    if target_quantity.relation is QuantityRelation.VARIABLE:
+        return False
+    source_quantity = source.quantity
+    if source_quantity is None or source_quantity.relation is QuantityRelation.VARIABLE:
+        return False
+    if source_quantity.relation is QuantityRelation.AT_MOST:
+        return False
+    supply = source_quantity.value * max(1, source_count)
+    caps = tuple(
+        limit
+        for limit in (target.timing.max_per_turn, source.timing.max_per_turn)
+        if limit is not None
+    )
+    if caps:
+        limit = min(caps)
+        if source_quantity.relation is QuantityRelation.EXACTLY and supply > limit:
+            return False
+        supply = min(supply, limit)
+    required = target_quantity.value
+    if target_quantity.relation is QuantityRelation.EXACTLY:
+        return source_quantity.relation is QuantityRelation.EXACTLY and supply == required
+    if target_quantity.relation is QuantityRelation.AT_LEAST:
+        return supply >= required
+    return supply <= required
+
+
+def _battlefield_zone(controller: str) -> RelationshipZone:
+    """Return the normalized battlefield zone of one declared controller."""
+
+    return RelationshipZone(
+        zone=CapabilityZone.BATTLEFIELD,
+        player=controller if controller in ("you", "opponent") else "any",
+    )
+
+
+def _target_origin_zone(target: RelationshipPrerequisite) -> RelationshipZone | None:
+    """Return where one target requirement's supported object must reside."""
+
+    if target.source_zone is not None:
+        return target.source_zone
+    if target.object_kind == "permanent" and target.operation in (
+        "die",
+        "sacrifice",
+        "control",
+        "count",
+    ):
+        return _battlefield_zone(target.controller)
+    return None
+
+
+def _source_location_zone(
+    source: RelationshipPrerequisite,
+    participant: RelationshipParticipant,
+) -> RelationshipZone | None:
+    """Return where one source anchor leaves or holds its supported object."""
+
+    if source.required_card_id == participant.card_id:
+        return _battlefield_zone(source.controller)
+    return source.destination_zone
+
+
+def _zone_qualifiers_agree(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+    source_participant: RelationshipParticipant,
+) -> bool:
+    """Compare declared object zones, treating an unbound player as unrestricted."""
+
+    target_origin = _target_origin_zone(target)
+    if target_origin is None:
+        return True
+    source_location = _source_location_zone(source, source_participant)
+    if source_location is None or source_location.zone is not target_origin.zone:
+        return False
+    if "any" in (source_location.player, target_origin.player):
+        return True
+    return source_location.player == target_origin.player
+
+
+def _object_satisfies_target(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+    source_participant: RelationshipParticipant,
+    target_participant: RelationshipParticipant,
+    source_count: int,
+) -> bool:
+    """Check one source-supplied object against one target requirement clause."""
+
+    if not _type_qualifiers_agree(source=source, target=target):
+        return False
+    if not _token_qualifiers_agree(source=source, target=target, source_participant=source_participant):
+        return False
+    if target.subtype is not None and source.subtype != target.subtype:
+        return False
+    if not _color_qualifiers_agree(source=source, target=target):
+        return False
+    if not _party_qualifiers_agree(source=source, target=target):
+        return False
+    if not _timing_qualifiers_agree(source=source, target=target):
+        return False
+    if not _quantity_qualifiers_agree(source=source, target=target, source_count=source_count):
+        return False
+    if not _zone_qualifiers_agree(
+        source=source,
+        target=target,
+        source_participant=source_participant,
+    ):
+        return False
+    required_card_id = target.required_card_id
+    if required_card_id is not None:
+        if source.required_card_id != required_card_id:
+            return False
+        if required_card_id not in (source_participant.card_id, target_participant.card_id):
+            return False
+    return True
+
+
+def _prerequisite_text(role: str, clause: RelationshipPrerequisite) -> str:
+    parts = [f"{role}:{clause.kind.value}/{clause.operation}/{clause.object_kind}"]
+    if clause.type_operator != "unrestricted":
+        parts.append(f"types={clause.type_operator}:{','.join(clause.card_types)}")
+    if clause.token_restriction != "unrestricted":
+        parts.append(f"token={clause.token_restriction}")
+    if clause.subtype is not None:
+        parts.append(f"subtype={clause.subtype}")
+    if clause.color_operator != "unrestricted":
+        parts.append(f"color={clause.color_operator}:{','.join(clause.colors)}")
+    if clause.controller not in ("any", "not_applicable"):
+        parts.append(f"controller={clause.controller}")
+    if clause.owner not in ("any", "not_applicable"):
+        parts.append(f"owner={clause.owner}")
+    if clause.quantity is not None:
+        value = (
+            "variable"
+            if clause.quantity.relation is QuantityRelation.VARIABLE
+            else str(clause.quantity.value)
+        )
+        parts.append(f"qty={clause.quantity.relation.value}/{value}")
+    if clause.source_zone is not None or clause.destination_zone is not None:
+        source_zone = (
+            f"{clause.source_zone.zone.value}/{clause.source_zone.player}"
+            if clause.source_zone is not None
+            else "none"
+        )
+        destination_zone = (
+            f"{clause.destination_zone.zone.value}/{clause.destination_zone.player}"
+            if clause.destination_zone is not None
+            else "none"
+        )
+        parts.append(f"zones={source_zone}->{destination_zone}")
+    if (
+        clause.timing.window != "unrestricted"
+        or clause.timing.turn != "any"
+        or clause.timing.max_per_turn is not None
+    ):
+        limit = str(clause.timing.max_per_turn) if clause.timing.max_per_turn is not None else "none"
+        parts.append(f"timing={clause.timing.window}/{clause.timing.turn}/{limit}")
+    if clause.exclusion != "none":
+        parts.append(f"exclusion={clause.exclusion}")
+    if clause.required_card_id is not None:
+        parts.append(f"required={clause.required_card_id}")
+    return ";".join(parts)
+
+
+def _return_from_graveyard_clause(clause: RelationshipPrerequisite) -> bool:
+    return _return_clause(clause) and _declared_zone(
+        clause.source_zone,
+        CapabilityZone.GRAVEYARD,
+        None,
+    )
+
+
+def _typed_graveyard_payoff_clause(clause: RelationshipPrerequisite) -> bool:
+    """Return whether one clause counts a graveyard it declares in typed fields."""
+
+    if clause.kind not in (PrerequisiteKind.CONDITION, PrerequisiteKind.THRESHOLD):
+        return False
+    if clause.operation != "count":
+        return False
+    return _declared_zone(
+        clause.source_zone,
+        CapabilityZone.GRAVEYARD,
+        None,
+    ) or _declared_zone(
+        clause.destination_zone,
+        CapabilityZone.GRAVEYARD,
+        None,
+    )
+
+
+def _fodder_reaches_graveyard_destination(
+    anchor: RelationshipPrerequisite,
+    requirement: RelationshipPrerequisite,
+) -> bool:
+    """Require one fodder transition to reach the target's declared graveyard."""
+
+    destination = requirement.destination_zone
+    if destination is None or destination.zone is not CapabilityZone.GRAVEYARD:
+        return True
+    source_destination = anchor.destination_zone
+    if source_destination is None or source_destination.zone is not CapabilityZone.GRAVEYARD:
+        return False
+    return (
+        source_destination.player == destination.player
+        or "any" in (source_destination.player, destination.player)
+    )
+
+
+def _matched_prerequisite_texts(
+    *,
+    requirements: tuple[RelationshipPrerequisite, ...],
+    anchors: tuple[RelationshipPrerequisite, ...],
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+    required_source_clauses: tuple[RelationshipPrerequisite, ...] = (),
+    pair_gate: Callable[[RelationshipPrerequisite, RelationshipPrerequisite], bool] | None = None,
+) -> tuple[str, ...] | None:
+    """Prove every target requirement with one compatible source anchor.
+
+    Anchors are capability-shaped, so a source clause that proves no requirement is
+    unused rather than disqualifying. Every matched pair contributes canonical
+    prerequisite text, sorted and deduplicated for deterministic output.
+    """
+
+    if not requirements or not anchors:
+        return None
+    texts = {_prerequisite_text("source", clause) for clause in required_source_clauses}
+    for requirement in requirements:
+        for anchor in anchors:
+            if pair_gate is not None and not pair_gate(anchor, requirement):
+                continue
+            if _object_satisfies_target(
+                source=anchor,
+                target=requirement,
+                source_participant=source,
+                target_participant=target,
+                source_count=source_count,
+            ):
+                texts.add(_prerequisite_text("source", anchor))
+                texts.add(_prerequisite_text("target", requirement))
+                break
+        else:
+            return None
+    return tuple(sorted(texts))
+
+
+def _self_death_clause(
+    clause: RelationshipPrerequisite,
+    participant: RelationshipParticipant,
+) -> bool:
+    return (
+        clause.kind in (PrerequisiteKind.TRIGGER, PrerequisiteKind.CONDITION)
+        and clause.operation == "die"
+        and clause.required_card_id == participant.card_id
+        and "creature" in clause.card_types
+    )
+
+
+def _graveyard_feeder_clause(
+    clause: RelationshipPrerequisite,
+    participant: RelationshipParticipant,
+) -> bool:
+    """Return whether one clause independently puts a fixed object into the graveyard."""
+
+    if _self_mill_clause(clause) or _discard_clause(clause):
+        return True
+    if _fodder_clause(clause=clause, participant=participant) and clause.operation == "sacrifice":
+        return _declared_zone(clause.destination_zone, CapabilityZone.GRAVEYARD, None)
+    return _self_death_clause(clause, participant)
+
+
+def _match_discard_recursion_payoff(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause for clause in target.prerequisites if _return_from_graveyard_clause(clause)
+        ),
+        anchors=tuple(clause for clause in source.prerequisites if _discard_clause(clause)),
+        source=source,
+        target=target,
+        source_count=source_count,
+    )
+
+
+def _match_fodder_dies_payoff(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause
+            for clause in target.prerequisites
+            if _death_payoff_clause(clause=clause, participant=target)
+        ),
+        anchors=tuple(
+            clause
+            for clause in source.prerequisites
+            if _fodder_clause(clause=clause, participant=source)
+            and clause.operation == "sacrifice"
+            and _declared_zone(clause.destination_zone, CapabilityZone.GRAVEYARD, None)
+        ),
+        source=source,
+        target=target,
+        source_count=source_count,
+        pair_gate=_fodder_reaches_graveyard_destination,
+    )
+
+
+def _match_fodder_sacrifice_outlet(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause
+            for clause in target.prerequisites
+            if _outlet_clause(clause=clause, participant=target)
+        ),
+        anchors=tuple(
+            clause
+            for clause in source.prerequisites
+            if _fodder_clause(clause=clause, participant=source)
+            and clause.operation == "sacrifice"
+        ),
+        source=source,
+        target=target,
+        source_count=source_count,
+        pair_gate=_fodder_reaches_graveyard_destination,
+    )
+
+
+def _match_loot_recursion_payoff(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    draws = tuple(clause for clause in source.prerequisites if _draw_clause(clause))
+    if not draws:
+        return None
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause for clause in target.prerequisites if _return_from_graveyard_clause(clause)
+        ),
+        anchors=tuple(clause for clause in source.prerequisites if _discard_clause(clause)),
+        source=source,
+        target=target,
+        source_count=source_count,
+        required_source_clauses=(draws[0],),
+    )
+
+
+def _match_mill_graveyard_payoff(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause for clause in target.prerequisites if _typed_graveyard_payoff_clause(clause)
+        ),
+        anchors=tuple(clause for clause in source.prerequisites if _self_mill_clause(clause)),
+        source=source,
+        target=target,
+        source_count=source_count,
+    )
+
+
+def _match_recursion_graveyard_payoff(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    if not any(_return_clause(clause) for clause in source.prerequisites):
+        return None
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause for clause in target.prerequisites if _typed_graveyard_payoff_clause(clause)
+        ),
+        anchors=tuple(
+            clause for clause in source.prerequisites if _graveyard_feeder_clause(clause, source)
+        ),
+        source=source,
+        target=target,
+        source_count=source_count,
+    )
+
+
+def _match_token_death_payoff(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause
+            for clause in target.prerequisites
+            if _death_payoff_clause(clause=clause, participant=target)
+        ),
+        anchors=tuple(clause for clause in source.prerequisites if _produced_token_clause(clause)),
+        source=source,
+        target=target,
+        source_count=source_count,
+    )
+
+
+def _match_token_go_wide_payoff(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause for clause in target.prerequisites if _wide_payoff_clause(clause)
+        ),
+        anchors=tuple(clause for clause in source.prerequisites if _produced_token_clause(clause)),
+        source=source,
+        target=target,
+        source_count=source_count,
+    )
+
+
+def _match_token_sacrifice_outlet(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> tuple[str, ...] | None:
+    return _matched_prerequisite_texts(
+        requirements=tuple(
+            clause
+            for clause in target.prerequisites
+            if _outlet_clause(clause=clause, participant=target)
+        ),
+        anchors=tuple(clause for clause in source.prerequisites if _produced_token_clause(clause)),
+        source=source,
+        target=target,
+        source_count=source_count,
+    )
+
+
+_MECHANISM_MATCHERS: Mapping[str, Callable[..., tuple[str, ...] | None]] = {
+    "discard-recursion-payoff": _match_discard_recursion_payoff,
+    "fodder-dies-payoff": _match_fodder_dies_payoff,
+    "fodder-sacrifice-outlet": _match_fodder_sacrifice_outlet,
+    "loot-recursion-payoff": _match_loot_recursion_payoff,
+    "mill-graveyard-payoff": _match_mill_graveyard_payoff,
+    "recursion-graveyard-payoff": _match_recursion_graveyard_payoff,
+    "token-death-payoff": _match_token_death_payoff,
+    "token-go-wide-payoff": _match_token_go_wide_payoff,
+    "token-sacrifice-outlet": _match_token_sacrifice_outlet,
+}
 
 
 def _resolve_pair(

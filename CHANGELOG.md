@@ -3,6 +3,21 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Apply bounded, source-bound typed relationship support to pre-pick draft
+  recommendations: a confirmed schema-3 relationship whose typed prerequisite
+  projection is satisfied by a drafted card that survives the likely-deck
+  projection may now add one bounded synergy increment to its exact offered
+  target card. `draftomen.pool_ledger` gains an immutable `RelationshipSupport`
+  record, a `relationship_support` ledger field serialized for audit, and a
+  fail-closed matcher that dispatches the nine approved mechanisms over the
+  typed clauses only (exact card identities, compiled role profiles, canonical
+  prerequisite strings, no claim/quote/guide/run text). `draftomen.pickengine`
+  folds the matched signal into the existing synergy term under the current
+  `MAX_SYNERGY_TERM` cap with one uniform pre-calibration factor of `0.5` per
+  mechanism, renders "Confirmed relationship support" evidence in the detailed
+  rationale, and selects a single maximum instead of stacking findings, copies
+  or quantities. Completed-pool evaluation stays relationship-neutral and
+  historical replay/calibration remains #510 work. (#509)
 - Establish one shared typed relationship prerequisite contract in the new
   `draftomen.semantic_relationship_records` module: an accepted relationship may carry an
   optional directional `prerequisite_projection` whose atomic clauses bind each controlling

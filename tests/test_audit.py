@@ -27,18 +27,80 @@ from draftomen.pickengine import (
     render_pick_rationale_detailed,
 )
 from draftomen.pool import DraftState
+from draftomen.semantic_capability_records import (
+    CapabilityQuantity,
+    CapabilityZone,
+    PrerequisiteKind,
+    QuantityRelation,
+)
+from draftomen.semantic_enrichment import (
+    SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
+    card_source_sha256,
+)
+from draftomen.semantic_enrichment_records import (
+    ArtifactReview,
+    CardSourcePin,
+    FindingReview,
+    FindingStatus,
+    ModelRun,
+    OracleEvidence,
+    ReasoningConfig,
+)
+from draftomen.semantic_relationship_records import (
+    CardRelationship,
+    RelationshipParticipant,
+    RelationshipPrerequisite,
+    RelationshipPrerequisiteProjection,
+    RelationshipTiming,
+    RelationshipZone,
+)
+from draftomen.semantic_roles import (
+    CompiledRoleProfile,
+    ProfileCard,
+    Role,
+    RoleAssignment,
+)
 from draftomen.set_profile import (
+    EnhancementCardData,
     PairProfile,
     ProfileMaturity,
     SampleSummary,
     SetProfile,
+    SetProfileEnhancement,
     SourceMetadata,
+    dump_set_profile,
+    load_scoring_profile,
 )
 
 ACCOUNT_ID = "account-a"
 DRAFT_ID = "draft-a"
 EVENT_NAME = "QuickDraft_ABC_20260727"
 SET_CODE = "ABC"
+
+RELATIONSHIP_SET_CODE = "tst"
+RELATIONSHIP_SOURCE_ID = 901
+RELATIONSHIP_TARGET_ID = 902
+RELATIONSHIP_MECHANISM = "token-go-wide-payoff"
+RELATIONSHIP_RUN_ID = "run-audit-relationship"
+RELATIONSHIP_FINDING_ID = (
+    "relationship:token-go-wide-payoff:901:capability-audit-enabler"
+    ":902:capability-audit-payoff"
+)
+RELATIONSHIP_SOURCE_NAME = "Audit Enabler"
+RELATIONSHIP_TARGET_NAME = "Audit Payoff"
+RELATIONSHIP_SOURCE_TEXT = "Create two 1/1 white Soldier creature tokens."
+RELATIONSHIP_TARGET_TEXT = "Creatures you control get +1/+1."
+RELATIONSHIP_SOURCE_PREREQUISITE = (
+    "source:condition/create/token;types=all_of:creature;token=token;subtype=soldier;"
+    "color=exact:W;controller=you;qty=exactly/2;zones=none->battlefield/you"
+)
+RELATIONSHIP_TARGET_PREREQUISITE = (
+    "target:condition/control/permanent;types=all_of:creature;controller=you"
+)
+SENTINEL_CLAIM = "RELATIONSHIP-CLAIM-SENTINEL"
+SENTINEL_LEGACY_PREREQUISITE = "RELATIONSHIP-LEGACY-PREREQUISITE-SENTINEL"
+SENTINEL_MODEL_RUN = "RELATIONSHIP-MODEL-RUN-SENTINEL"
+SENTINEL_ORACLE_QUOTE = "RELATIONSHIP-ORACLE-QUOTE-SENTINEL is not part of the quoted ability."
 
 
 def test_audit_records_complete_decision_and_choice_without_duplicates(
@@ -405,6 +467,152 @@ def test_audit_context_provenance_omits_pool_but_preserves_profile_and_evidence(
         assert recommendation[field] == expected
 
 
+def test_audit_persists_confirmed_relationship_support_evidence(
+    tmp_path: Path,
+) -> None:
+    profile = _relationship_profile(tmp_path)
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    relationship = enhancement.relationships[0]
+    assert relationship.claim == SENTINEL_CLAIM
+    assert relationship.prerequisites == (SENTINEL_LEGACY_PREREQUISITE,)
+    assert enhancement.runs[0].provider == SENTINEL_MODEL_RUN
+    database = _relationship_card_database()
+    engine = PickEngine(set_profile=profile)
+    scored_pack = engine.score_pack(
+        offered_grp_ids=(RELATIONSHIP_TARGET_ID,),
+        card_database=database,
+        pool_grp_ids=(RELATIONSHIP_SOURCE_ID,),
+        pick_index=1,
+    )
+    scored_target = next(
+        card
+        for card in scored_pack.cards
+        if card.card.grp_id == RELATIONSHIP_TARGET_ID
+    )
+    evidence = (
+        f"relationship {RELATIONSHIP_FINDING_ID} ({RELATIONSHIP_MECHANISM}) "
+        f"for {RELATIONSHIP_TARGET_NAME} [{RELATIONSHIP_TARGET_ID}]: "
+        f"drafted {RELATIONSHIP_SOURCE_NAME} [{RELATIONSHIP_SOURCE_ID}] "
+        f"satisfies {RELATIONSHIP_SOURCE_PREREQUISITE}; "
+        f"{RELATIONSHIP_TARGET_PREREQUISITE}"
+    )
+    assert scored_target.contextual_breakdown.synergy > 0.0
+    assert evidence in scored_target.contextual_evidence
+
+    # The same offered target keeps no relationship support once its drafted
+    # source is absent from the pre-pick pool.
+    control_pack = engine.score_pack(
+        offered_grp_ids=(RELATIONSHIP_TARGET_ID,),
+        card_database=database,
+        pick_index=1,
+    )
+    assert control_pack.role_ledger is not None
+    assert control_pack.role_ledger.relationship_support == ()
+    assert all(
+        not item.startswith("relationship ")
+        for item in control_pack.cards[0].contextual_evidence
+    )
+
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.record_decision(
+        state=_draft_state(),
+        event=_pack_event(
+            offered_grp_ids=(RELATIONSHIP_TARGET_ID,),
+            pool_grp_ids=(RELATIONSHIP_SOURCE_ID,),
+        ),
+        scored_pack=scored_pack,
+        config=engine.config,
+        ratings_data=engine.ratings_data,
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert [record["record_type"] for record in records] == ["decision_evaluated"]
+    decision = records[0]
+    assert decision["pool_before_pick"] == [RELATIONSHIP_SOURCE_ID]
+    assert decision["role_ledger"]["relationship_support"] == [
+        {
+            "finding_id": RELATIONSHIP_FINDING_ID,
+            "mechanism": RELATIONSHIP_MECHANISM,
+            "source": {
+                "count": 1,
+                "grp_id": RELATIONSHIP_SOURCE_ID,
+                "name": RELATIONSHIP_SOURCE_NAME,
+                "role": Role.TOKEN_MAKER.value,
+                "role_confidence": 0.9,
+            },
+            "target": {
+                "grp_id": RELATIONSHIP_TARGET_ID,
+                "name": RELATIONSHIP_TARGET_NAME,
+                "role": Role.GO_WIDE_PAYOFF.value,
+                "role_confidence": 0.8,
+            },
+            "satisfied_prerequisites": [
+                RELATIONSHIP_SOURCE_PREREQUISITE,
+                RELATIONSHIP_TARGET_PREREQUISITE,
+            ],
+        }
+    ]
+
+    candidate = next(
+        candidate
+        for candidate in decision["candidates"]
+        if candidate["grp_id"] == RELATIONSHIP_TARGET_ID
+    )
+    assert candidate["scoring"]["contextual_evidence"] == list(
+        scored_target.contextual_evidence
+    )
+    assert evidence in candidate["scoring"]["contextual_evidence"]
+    assert candidate["scoring"]["contextual_breakdown"]["synergy"] == (
+        scored_target.contextual_breakdown.synergy
+    )
+    assert candidate["concise_explanation"] == render_pick_rationale_concise(
+        scored_card=scored_target
+    )
+    assert candidate["explanation"] == render_pick_rationale_detailed(
+        scored_card=scored_target
+    )
+    assert (
+        f"Confirmed relationship support: {evidence} "
+        f"({scored_target.contextual_breakdown.synergy:+.2f} DO points)."
+        in candidate["explanation"]
+    )
+
+    recommendation = decision["recommendation"]
+    assert recommendation["grp_id"] == RELATIONSHIP_TARGET_ID
+    assert recommendation["contextual_evidence"] == (
+        candidate["scoring"]["contextual_evidence"]
+    )
+    assert recommendation["concise_explanation"] == candidate["concise_explanation"]
+    assert recommendation["explanation"] == candidate["explanation"]
+
+    # Raw claim, legacy prerequisite, and model-run prose never reach the record.
+    serialized = json.dumps(decision)
+    for sentinel in (SENTINEL_CLAIM, SENTINEL_LEGACY_PREREQUISITE, SENTINEL_MODEL_RUN):
+        assert sentinel not in serialized
+
+    # The offered card's Oracle text stays in candidate metadata and out of
+    # every relationship-derived ledger, evidence, rationale, or explanation field.
+    assert SENTINEL_ORACLE_QUOTE in candidate["metadata"]["oracle_text"]
+    relationship_fields = (
+        decision["role_ledger"]["relationship_support"],
+        candidate["scoring"]["contextual_evidence"],
+        candidate["rationale"],
+        candidate["concise_explanation"],
+        candidate["explanation"],
+        recommendation["contextual_evidence"],
+        recommendation["rationale"],
+        recommendation["concise_explanation"],
+        recommendation["explanation"],
+    )
+    for field in relationship_fields:
+        assert SENTINEL_ORACLE_QUOTE not in json.dumps(field)
+
+
 def test_restart_does_not_re_evaluate_a_pick_with_a_recorded_choice(
     tmp_path: Path,
 ) -> None:
@@ -634,13 +842,17 @@ def _completed_state() -> DraftState:
     )
 
 
-def _pack_event(*, pool_grp_ids: tuple[int, ...] = ()) -> PackOfferedEvent:
+def _pack_event(
+    *,
+    offered_grp_ids: tuple[int, ...] = (101, 102),
+    pool_grp_ids: tuple[int, ...] = (),
+) -> PackOfferedEvent:
     return PackOfferedEvent(
         event_name=EVENT_NAME,
         set_code=SET_CODE,
         pack_number=0,
         pick_number=0,
-        offered_grp_ids=(101, 102),
+        offered_grp_ids=offered_grp_ids,
         pool_grp_ids=pool_grp_ids,
         account_id=ACCOUNT_ID,
     )
@@ -698,3 +910,266 @@ def _fixed_clock() -> datetime:
 
 def _later_clock() -> datetime:
     return datetime(2026, 7, 27, 11, 30, tzinfo=UTC)
+
+
+def _relationship_card_database() -> CardDatabase:
+    """Return the exact frozen cards of the confirmed relationship fixture."""
+    return CardDatabase(
+        cards={
+            RELATIONSHIP_SOURCE_ID: CardInfo(
+                grp_id=RELATIONSHIP_SOURCE_ID,
+                name=RELATIONSHIP_SOURCE_NAME,
+                colors=("W",),
+                mana_value=2.0,
+                rarity="uncommon",
+                types=("Creature",),
+                oracle_text=RELATIONSHIP_SOURCE_TEXT,
+                set_code=RELATIONSHIP_SET_CODE,
+            ),
+            RELATIONSHIP_TARGET_ID: CardInfo(
+                grp_id=RELATIONSHIP_TARGET_ID,
+                name=RELATIONSHIP_TARGET_NAME,
+                colors=("W",),
+                mana_value=4.0,
+                rarity="rare",
+                types=("Creature",),
+                oracle_text=f"{RELATIONSHIP_TARGET_TEXT}\n{SENTINEL_ORACLE_QUOTE}",
+                set_code=RELATIONSHIP_SET_CODE,
+            ),
+        }
+    )
+
+
+def _relationship_token_clause() -> RelationshipPrerequisite:
+    """Build the enabler's typed creature-token output clause."""
+    return RelationshipPrerequisite(
+        kind=PrerequisiteKind.CONDITION,
+        subject="output",
+        operation="create",
+        object_kind="token",
+        card_types=("creature",),
+        type_operator="all_of",
+        token_restriction="token",
+        exclusion="none",
+        subtype="soldier",
+        color_operator="exact",
+        colors=("W",),
+        controller="you",
+        owner="not_applicable",
+        quantity=CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY),
+        source_zone=None,
+        destination_zone=RelationshipZone(
+            zone=CapabilityZone.BATTLEFIELD,
+            player="you",
+        ),
+        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
+        required_card_id=None,
+        evidence=OracleEvidence(
+            card_id=RELATIONSHIP_SOURCE_ID,
+            face_index=None,
+            quote=RELATIONSHIP_SOURCE_TEXT,
+        ),
+        operation_quote="Create",
+        operation_occurrence=0,
+        object_quote="two 1/1 white Soldier creature tokens",
+        object_occurrence=0,
+        capability_prerequisite_indices=(),
+    )
+
+
+def _relationship_wide_payoff_clause() -> RelationshipPrerequisite:
+    """Build the payoff's typed creature-control clause."""
+    return RelationshipPrerequisite(
+        kind=PrerequisiteKind.CONDITION,
+        subject="participant",
+        operation="control",
+        object_kind="permanent",
+        card_types=("creature",),
+        type_operator="all_of",
+        token_restriction="unrestricted",
+        exclusion="none",
+        subtype=None,
+        color_operator="unrestricted",
+        colors=(),
+        controller="you",
+        owner="not_applicable",
+        quantity=None,
+        source_zone=None,
+        destination_zone=None,
+        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
+        required_card_id=None,
+        evidence=OracleEvidence(
+            card_id=RELATIONSHIP_TARGET_ID,
+            face_index=None,
+            quote=RELATIONSHIP_TARGET_TEXT,
+        ),
+        operation_quote="control",
+        operation_occurrence=0,
+        object_quote="Creatures you control",
+        object_occurrence=0,
+        capability_prerequisite_indices=(),
+    )
+
+
+def _relationship_record() -> CardRelationship:
+    """Build the accepted directional relationship of the fixture pair."""
+    source, target = _relationship_participants()
+    return CardRelationship(
+        finding_id=RELATIONSHIP_FINDING_ID,
+        mechanism=RELATIONSHIP_MECHANISM,
+        participants=(RELATIONSHIP_SOURCE_ID, RELATIONSHIP_TARGET_ID),
+        claim=SENTINEL_CLAIM,
+        prerequisites=(SENTINEL_LEGACY_PREREQUISITE,),
+        oracle_evidence=(
+            OracleEvidence(
+                card_id=RELATIONSHIP_SOURCE_ID,
+                face_index=None,
+                quote=RELATIONSHIP_SOURCE_TEXT,
+            ),
+            OracleEvidence(
+                card_id=RELATIONSHIP_TARGET_ID,
+                face_index=None,
+                quote=RELATIONSHIP_TARGET_TEXT,
+            ),
+        ),
+        guide_evidence=(),
+        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+        run_id=RELATIONSHIP_RUN_ID,
+        prerequisite_projection=RelationshipPrerequisiteProjection(
+            source=source,
+            target=target,
+        ),
+    )
+
+
+def _relationship_participants() -> tuple[RelationshipParticipant, RelationshipParticipant]:
+    """Build both pinned participants of the confirmed relationship."""
+    database = _relationship_card_database()
+    source_card = database.cards[RELATIONSHIP_SOURCE_ID]
+    target_card = database.cards[RELATIONSHIP_TARGET_ID]
+    source = RelationshipParticipant(
+        card_id=RELATIONSHIP_SOURCE_ID,
+        capability_id="capability-audit-enabler",
+        card_name=RELATIONSHIP_SOURCE_NAME,
+        face_index=None,
+        face_name=None,
+        card_source_sha256=card_source_sha256(source_card),
+        role=Role.TOKEN_MAKER,
+        capability_prerequisites=(),
+        prerequisites=(_relationship_token_clause(),),
+    )
+    target = RelationshipParticipant(
+        card_id=RELATIONSHIP_TARGET_ID,
+        capability_id="capability-audit-payoff",
+        card_name=RELATIONSHIP_TARGET_NAME,
+        face_index=None,
+        face_name=None,
+        card_source_sha256=card_source_sha256(target_card),
+        role=Role.GO_WIDE_PAYOFF,
+        capability_prerequisites=(),
+        prerequisites=(_relationship_wide_payoff_clause(),),
+    )
+    return source, target
+
+
+def _relationship_set_profile() -> SetProfile:
+    """Build one confirmed schema-three profile carrying the typed relationship."""
+    database = _relationship_card_database()
+    return SetProfile(
+        set_code=RELATIONSHIP_SET_CODE,
+        event_format="quickdraft",
+        profile_version="relationship-audit-test",
+        generated_at="1970-01-01T00:00:00+00:00",
+        source=SourceMetadata(provider="test"),
+        maturity=ProfileMaturity.MATURE,
+        samples=SampleSummary(total=1, by_pair=(("WU", 1),)),
+        confidence=1.0,
+        pairs=(PairProfile(pair="WU"),),
+        role_profile=CompiledRoleProfile(
+            set_code=RELATIONSHIP_SET_CODE,
+            cards=(
+                ProfileCard(
+                    key=f"arena_id:{RELATIONSHIP_SOURCE_ID}",
+                    card_name=RELATIONSHIP_SOURCE_NAME,
+                    assignments=(RoleAssignment(Role.TOKEN_MAKER, confidence=0.9),),
+                ),
+                ProfileCard(
+                    key=f"arena_id:{RELATIONSHIP_TARGET_ID}",
+                    card_name=RELATIONSHIP_TARGET_NAME,
+                    assignments=(
+                        RoleAssignment(Role.GO_WIDE_PAYOFF, confidence=0.8),
+                    ),
+                ),
+            ),
+        ),
+        schema_version=3,
+        enhancement=SetProfileEnhancement(
+            artifact_schema_version=SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
+            artifact_sha256="a" * 64,
+            set_code=RELATIONSHIP_SET_CODE,
+            set_source_id="audit-relationship-source",
+            set_source_sha256="b" * 64,
+            created_at="2026-07-27T09:00:00+00:00",
+            card_data=EnhancementCardData(
+                source="audit-relationship-source",
+                sha256="b" * 64,
+                card_count=2,
+            ),
+            cards=tuple(
+                CardSourcePin(
+                    card_id=card.grp_id,
+                    oracle_id=None,
+                    collector_number=None,
+                    sha256=card_source_sha256(card),
+                )
+                for card in database.cards.values()
+            ),
+            guides=(),
+            runs=(
+                ModelRun(
+                    run_id=RELATIONSHIP_RUN_ID,
+                    provider=SENTINEL_MODEL_RUN,
+                    model="audit-model",
+                    reasoning=ReasoningConfig(
+                        enabled=None,
+                        effort=None,
+                        max_tokens=None,
+                        exclude=None,
+                    ),
+                    prompt_id="prompt-audit-relationship",
+                    prompt_sha256="c" * 64,
+                    response_schema_id="schema-audit-relationship",
+                    response_schema_sha256="d" * 64,
+                    started_at="2026-07-27T08:00:00+00:00",
+                    completed_at="2026-07-27T08:05:00+00:00",
+                    input_tokens=None,
+                    output_tokens=None,
+                    reasoning_tokens=None,
+                    cost_usd=None,
+                ),
+            ),
+            mechanics=(),
+            relationships=(_relationship_record(),),
+            review=ArtifactReview(
+                state="confirmed",
+                reviewer_id="reviewer-a",
+                reviewed_at="2026-07-27T09:30:00+00:00",
+            ),
+            confidence=0.9,
+        ),
+    )
+
+
+def _relationship_profile(tmp_path: Path) -> SetProfile:
+    """Dump the fixture profile and reload it through the public loader."""
+    path = dump_set_profile(
+        _relationship_set_profile(),
+        tmp_path / f"{RELATIONSHIP_SET_CODE}-quickdraft.json",
+    )
+    profile = load_scoring_profile(
+        RELATIONSHIP_SET_CODE,
+        "quickdraft",
+        profile_path=path,
+    )
+    assert profile is not None
+    return profile

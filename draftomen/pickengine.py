@@ -20,6 +20,7 @@ from draftomen.pool_ledger import (
     PACKAGE_ROLES,
     PoolRoleLedger,
     PRE_PICK_PROJECTION,
+    RelationshipSupport,
     TargetCoverage,
     project_pool_role_ledger,
 )
@@ -76,6 +77,19 @@ PAYOFF_PACKAGES: Mapping[Role, str] = {
     Role.EQUIPMENT_PAYOFF: "equipment",
     Role.POWER_THRESHOLD_PAYOFF: "threshold",
     Role.POWER_N_PAYOFF: "threshold",
+}
+# Code-owned pre-calibration baseline factors for the nine typed relationship
+# mechanisms; #510 may later replace these values with calibrated strengths.
+_RELATIONSHIP_SUPPORT_FACTORS: Mapping[str, float] = {
+    "discard-recursion-payoff": 0.5,
+    "fodder-dies-payoff": 0.5,
+    "fodder-sacrifice-outlet": 0.5,
+    "loot-recursion-payoff": 0.5,
+    "mill-graveyard-payoff": 0.5,
+    "recursion-graveyard-payoff": 0.5,
+    "token-death-payoff": 0.5,
+    "token-go-wide-payoff": 0.5,
+    "token-sacrifice-outlet": 0.5,
 }
 _TERM_BOUNDS: Mapping[str, tuple[float, float]] = {
     "role": (0.0, MAX_ROLE_TERM),
@@ -642,12 +656,20 @@ def _detailed_reason(*, reason: PickReason) -> str:
             if descriptions
             else "Helps fill a missing role in your deck"
         )
+    elif reason.kind == "synergy":
+        evidence = next(
+            (item for item in reason.preserved_evidence if item.startswith("relationship ")),
+            None,
+        )
+        if evidence is not None:
+            stem = f"Confirmed relationship support: {evidence}"
+        else:
+            stem = "Works with support already in your deck"
     else:
         stem = {
             "urgency": (
                 "Filling a missing role matters more at this stage of the draft"
             ),
-            "synergy": "Works with support already in your deck",
             "redundancy": "Overlaps with roles your deck already covers",
             "unsupported_payoff": "Needs support your deck does not yet have",
             "fixing": "Helps your deck produce the colors it needs",
@@ -1254,13 +1276,6 @@ def _contextual_score_for_card(
         lower=0.0,
         upper=MAX_URGENCY_TERM,
     )
-
-    synergy_term, synergy_evidence = _semantic_synergy_term(
-        assignments=assignments,
-        ledger=ledger,
-        stage_scale=stage_scale,
-        evidence_weight=evidence_weight,
-    )
     redundancy_term, redundancy_evidence = _redundancy_term(
         candidates=redundancy_candidates,
         stage_scale=stage_scale,
@@ -1279,7 +1294,29 @@ def _contextual_score_for_card(
         stage_scale=stage_scale,
         evidence_weight=evidence_weight,
     )
-
+    generic_synergy_term, generic_synergy_evidence = _semantic_synergy_term(
+        assignments=assignments,
+        ledger=ledger,
+        stage_scale=stage_scale,
+        evidence_weight=evidence_weight,
+    )
+    relationship_term, relationship_evidence = _relationship_synergy_term(
+        card=card,
+        ledger=ledger,
+        stage_scale=stage_scale,
+        evidence_weight=evidence_weight,
+    )
+    synergy_term = _bounded_term(
+        value=generic_synergy_term + relationship_term,
+        lower=0.0,
+        upper=MAX_SYNERGY_TERM,
+    )
+    effective_relationship_increment = synergy_term - generic_synergy_term
+    synergy_evidence = (
+        relationship_evidence
+        if effective_relationship_increment > 0.0
+        else generic_synergy_evidence
+    )
     breakdown = ContextualScoreBreakdown(
         role=role_term,
         urgency=urgency_term,
@@ -1394,6 +1431,48 @@ def _semantic_synergy_term(
         return 0.0, ()
     value, evidence = max(candidates, key=lambda item: (item[0], item[1]))
     return _bounded_term(value=value, lower=0.0, upper=MAX_SYNERGY_TERM), (evidence,)
+
+
+def _relationship_synergy_term(
+    *,
+    card: CardInfo,
+    ledger: PoolRoleLedger,
+    stage_scale: float,
+    evidence_weight: float,
+) -> tuple[float, tuple[str, ...]]:
+    """Compute the typed relationship share of the bounded synergy term.
+    One qualifying relationship is selected by deterministic maximum; supports
+    never stack across findings, copies, or quantities.
+    """
+
+    candidates: list[tuple[float, str]] = []
+    for support in ledger.relationship_support:
+        if support.target_card_id != card.grp_id:
+            continue
+        factor = _RELATIONSHIP_SUPPORT_FACTORS.get(support.mechanism)
+        if factor is None:
+            continue
+        value = (
+            MAX_SYNERGY_TERM
+            * factor
+            * min(support.source_role_confidence, support.target_role_confidence)
+            * stage_scale
+            * evidence_weight
+        )
+        candidates.append((value, _relationship_evidence(support=support)))
+    if not candidates:
+        return 0.0, ()
+    value, evidence = max(candidates, key=lambda item: (item[0], item[1]))
+    return value, (evidence,)
+
+
+def _relationship_evidence(*, support: RelationshipSupport) -> str:
+    return (
+        f"relationship {support.finding_id} ({support.mechanism}) "
+        f"for {support.target_card_name} [{support.target_card_id}]: "
+        f"drafted {support.source_card_name} [{support.source_card_id}] "
+        f"satisfies {'; '.join(support.satisfied_prerequisites)}"
+    )
 
 
 def _redundancy_term(
