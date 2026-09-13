@@ -3,6 +3,14 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Render the shared enhancement availability in `watch --plain` (#518):
+  plain-text output gains a `Status:` enhancement line beside the profile
+  status that announces `AI enhancement: On for {set}` with the
+  profile-backed offline copy when the active set can use enhanced
+  suggestions and republishes the session's own set-specific message
+  verbatim for `not-enhanced`, `incompatible`, `unavailable` and `disabled`
+  states; unchanged statuses are not repeated across polls and the
+  announcement resets when the active set disappears. (#518)
 - Render the shared enhancement availability in the Textual interface (#517):
   the status bar gains an `AI enhancement` label that shows the exact
   `On`/`Off` profile-backed offline copy for the `available` and `disabled`
