@@ -1561,7 +1561,10 @@ async def _assert_accountless_live_path_completes(tmp_path: Path) -> None:
 
     async with app.run_test(size=(140, 40)) as pilot:
         app.process_lines(lines=accountless_lines)
-        await pilot.pause()
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.session.snapshot.build is not None:
+                break
 
         snapshot = app.session.snapshot
         assert snapshot.status.phase == ApplicationPhase.DRAFT_COMPLETE
@@ -2136,9 +2139,12 @@ async def _assert_build_keybinding_opens_build_view(tmp_path: Path) -> None:
         await pilot.pause()
 
         await pilot.press("b")
-        await pilot.pause()
-
         title = app.query_one("#pack-title", Static)
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.session.snapshot.build is not None:
+                break
+
         assert str(title.render()).startswith("Build view — pair")
         assert app.session.snapshot.build is not None
         assert app.build_view_text.startswith("[bold]Suggested deck[/bold]\n\n")
