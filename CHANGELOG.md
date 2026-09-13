@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Skip end-of-pack handshake picks in `backtest` (#432 follow-up): Arena
+  sends a one-card `BotDraftDraftPick` request with `PickNumber` 14 after
+  the last pick of each pack, and persisted drafts carrying those records
+  crashed backtest with a ledger stage error; such picks are now reported
+  as skipped rows with an explicit reason instead of aborting the report,
+  and the skipped-picks footnote names the new reason. (#432)
 - Expose enhancement availability and control in the desktop interface
   (#519): the shared `enhancement_availability` snapshot state reaches QML
   through the existing plain-value translation, Settings gains an

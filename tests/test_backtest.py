@@ -16,6 +16,7 @@ from draftomen.backtest import (
     generate_backtest_report,
     load_persisted_backtest_state,
 )
+from draftomen.events import EXPECTED_PICKS_PER_PACK
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cli import main
 from draftomen.pickengine import (
@@ -342,6 +343,63 @@ def test_backtest_cli_skips_missing_offered_history_without_mutating_state(
     assert "Ranking: DO Score" in captured.out
     assert "skipped: missing offered-card history" in captured.out
     assert "Summary: no comparable picks; 1 skipped." in captured.out
+    assert captured.err == ""
+    assert state_path.read_text(encoding="utf-8") == before
+
+
+def test_backtest_cli_skips_end_of_pack_handshake_picks_without_mutating_state(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app_dir = tmp_path / "app"
+    bulk_file = _write_bulk_file(directory=tmp_path)
+    state = _draft_state(
+        picks=(
+            DraftPick(
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(3, 4),
+                pool_before_pick=(),
+                chosen_grp_id=3,
+            ),
+            DraftPick(
+                pack_number=0,
+                pick_number=EXPECTED_PICKS_PER_PACK,
+                offered_grp_ids=(4,),
+                pool_before_pick=(3,),
+                chosen_grp_id=4,
+            ),
+        ),
+        pool_grp_ids=(3, 4),
+    )
+    save_draft_state(state=state, app_dir=app_dir)
+    state_path = draft_state_path(
+        account_id=state.account_id,
+        draft_id=state.draft_id,
+        app_dir=app_dir,
+    )
+    before = state_path.read_text(encoding="utf-8")
+
+    exit_code = main(
+        argv=[
+            "backtest",
+            "--account",
+            state.account_id,
+            "--draft-id",
+            state.draft_id,
+            "--bulk-file",
+            str(bulk_file),
+            "--app-dir",
+            str(app_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Picks: 2 chosen, 1 compared, 1 skipped" in captured.out
+    assert "skipped: pick outside expected draft shape" in captured.out
+    assert "Summary: " in captured.out
     assert captured.err == ""
     assert state_path.read_text(encoding="utf-8") == before
 

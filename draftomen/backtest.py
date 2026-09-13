@@ -9,7 +9,11 @@ from os import PathLike
 from typing import TypeAlias
 
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.events import EXPECTED_PICKS_PER_PACK, EXPECTED_TOTAL_PICKS
+from draftomen.events import (
+    EXPECTED_PACK_COUNT,
+    EXPECTED_PICKS_PER_PACK,
+    EXPECTED_TOTAL_PICKS,
+)
 from draftomen.pickengine import PickEngine, PickScoringContext, ScoredCard
 from draftomen.pool import DraftPick, DraftState, list_draft_states
 from draftomen.pool_ledger import PoolRoleLedger
@@ -246,6 +250,16 @@ def _score_pick(
             offered_count=len(pick.offered_grp_ids),
         )
 
+    if not (
+        0 <= pick.pack_number < EXPECTED_PACK_COUNT
+        and 0 <= pick.pick_number < EXPECTED_PICKS_PER_PACK
+    ):
+        return _skipped_result(
+            pick=pick,
+            actual=actual,
+            reason="pick outside expected draft shape",
+        )
+
     global_pick_index = _draft_pick_index(pick=pick)
     scored_pack = pick_engine.score_pack(
         offered_grp_ids=pick.offered_grp_ids,
@@ -400,7 +414,8 @@ def _format_summary(*, report: BacktestReport) -> list[str]:
     if report.skipped_rows:
         lines.append(
             "Skipped picks were not scored when saved offered-card or "
-            "pool-before-pick history was missing."
+            "pool-before-pick history was missing or the pick fell "
+            "outside the expected draft shape."
         )
 
     return lines
