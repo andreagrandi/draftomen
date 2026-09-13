@@ -33,6 +33,7 @@ from draftomen.set_profile import (
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
 
 from draftomen.watch import PlainLogWatcher
+from tests.test_pickengine import _relationship_database
 
 FIXTURE_LOG_PATH = Path(__file__).parent / "fixtures" / "quick-draft-msh-player.log"
 SCRYFALL_BULK_SAMPLE_PATH = (
@@ -1359,6 +1360,123 @@ def test_plain_watch_account_switch_announces_and_separates_state(
     assert first_state.completed is True
     assert second_state.completed is True
 
+def test_plain_watch_announces_active_enhancement_once(tmp_path: Path) -> None:
+    app_dir = tmp_path / "app"
+    dump_set_profile(
+        _relationship_enhanced_profile(),
+        set_profile_path(
+            set_code="TST",
+            event_format=QUICK_DRAFT_FORMAT,
+            app_dir=app_dir,
+        ),
+    )
+    watcher = PlainLogWatcher(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_relationship_database(),
+        poll_interval=0.01,
+    )
+
+    output = watcher.process_lines(
+        lines=[
+            _pack_line(
+                event_name="QuickDraft_TST_20260829",
+                pack_number=0,
+                pick_number=0,
+                draft_pack=(601, 602),
+                picked_cards=(),
+            )
+        ]
+    )
+    lines = output.splitlines()
+    enhancement_line = (
+        "Status: AI enhancement: On for TST — "
+        "profile-backed, prepared offline; no live AI"
+    )
+    assert enhancement_line in lines
+    profile_index = next(
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("Status: Profile: mature")
+    )
+    assert lines[profile_index + 1] == enhancement_line
+    assert watcher.process_lines(lines=[]) == ""
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_suffix"),
+    [
+        ("not-enhanced", "profile is not AI-enhanced."),
+        ("incompatible", "profile enhancement is invalid or incompatible."),
+        ("unavailable", "no usable set profile."),
+    ],
+)
+def test_plain_watch_publishes_unavailable_enhancement_state(
+    tmp_path: Path,
+    scenario: str,
+    expected_suffix: str,
+) -> None:
+    app_dir = tmp_path / "app"
+    if scenario != "unavailable":
+        profile = _relationship_enhanced_profile()
+        if scenario == "not-enhanced":
+            profile = replace(profile, enhancement=None)
+        dump_set_profile(
+            profile,
+            set_profile_path(
+                set_code="TST",
+                event_format=QUICK_DRAFT_FORMAT,
+                app_dir=app_dir,
+            ),
+        )
+    database = _relationship_database()
+    draft_pack: tuple[int, ...] = (601, 602)
+    if scenario == "incompatible":
+        database = replace(
+            database,
+            cards={
+                grp_id: card
+                for grp_id, card in database.cards.items()
+                if grp_id != 602
+            },
+        )
+        draft_pack = (601,)
+    watcher = PlainLogWatcher(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=database,
+        poll_interval=0.01,
+    )
+
+    output = watcher.process_lines(
+        lines=[
+            _pack_line(
+                event_name="QuickDraft_TST_20260829",
+                pack_number=0,
+                pick_number=0,
+                draft_pack=draft_pack,
+                picked_cards=(),
+            )
+        ]
+    )
+
+    message = watcher.session.snapshot.enhancement_availability.message
+    assert message == (
+        f"AI-enhanced suggestions unavailable for TST: {expected_suffix}"
+    )
+    assert f"Status: {message}" in output
+    assert "AI enhancement: On" not in output
+
+
+def _relationship_enhanced_profile() -> SetProfile:
+    """Build the compatible enhanced relationship fixture profile."""
+
+    from tests.test_pickengine import (
+        _relationship_profile,
+        _token_sacrifice_relationship,
+    )
+
+    return _relationship_profile(relationships=(_token_sacrifice_relationship(),))
 
 def _fixture_card_database() -> CardDatabase:
     database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
