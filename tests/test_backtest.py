@@ -754,6 +754,81 @@ def test_hob_relationship_scoring_context_disabled_controls() -> None:
     assert enhanced.rows[1].contextual_evidence
 
 
+def test_hob_relationship_scoring_gate_empties_ledger_support_and_terms() -> None:
+    database, profile, state = _hob_relationship_fixtures()
+    enhanced = generate_backtest_report(
+        state=state, card_database=database, set_profile=profile
+    )
+    gated = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        enhanced_relationships_enabled=False,
+    )
+
+    assert all(
+        row.role_ledger.relationship_support == () for row in gated.rows
+    )
+    assert enhanced.rows[1].role_ledger.relationship_support
+    for index in (1, 2):
+        enhanced_recommended = enhanced.rows[index].recommended
+        gated_recommended = gated.rows[index].recommended
+        assert enhanced_recommended is not None
+        assert gated_recommended is not None
+        assert (
+            gated_recommended.contextual_breakdown.synergy
+            < enhanced_recommended.contextual_breakdown.synergy
+        )
+    assert gated.rows[1].contextual_evidence
+    context_disabled = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        contextual_adjustments_enabled=False,
+    )
+    assert context_disabled.rows[1].role_ledger.relationship_support
+
+
+def test_hob_relationship_scoring_gate_overrides_a_supplied_default_engine() -> None:
+    database, profile, state = _hob_relationship_fixtures()
+    supplied_engine = PickEngine(set_profile=profile)
+    enhanced = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=profile,
+    )
+    gated = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        pick_engine=supplied_engine,
+        enhanced_relationships_enabled=False,
+    )
+    constructed_gated = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        enhanced_relationships_enabled=False,
+    )
+
+    assert supplied_engine.enhanced_relationships_enabled is True
+    assert supplied_engine.set_profile is profile
+    assert all(row.role_ledger.relationship_support == () for row in gated.rows)
+    assert enhanced.rows[1].role_ledger.relationship_support
+    assert _hob_report_projections(gated) == _hob_report_projections(constructed_gated)
+    for index in (1, 2):
+        gated_recommended = gated.rows[index].recommended
+        enhanced_recommended = enhanced.rows[index].recommended
+        assert gated_recommended is not None
+        assert enhanced_recommended is not None
+        assert (
+            gated_recommended.contextual_breakdown.synergy
+            < enhanced_recommended.contextual_breakdown.synergy
+        )
+    assert _HOB_R1_FINDING_ID not in "\n".join(gated.rows[1].contextual_evidence)
+    assert supplied_engine.enhanced_relationships_enabled is True
+
+
 def test_hob_relationship_scoring_persists_state_bytes() -> None:
     database, profile, state = _hob_relationship_fixtures()
     with tempfile.TemporaryDirectory() as temp_dir:

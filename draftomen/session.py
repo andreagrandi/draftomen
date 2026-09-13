@@ -65,7 +65,7 @@ from draftomen.pool import (
     list_account_profiles,
     list_draft_states,
 )
-from draftomen.pool_ledger import PoolRoleLedger
+from draftomen.pool_ledger import PoolRoleLedger, relationship_enhancement_is_compatible
 from draftomen.profile_client import (
     ProfileClient,
     ProfileRefreshOutcome,
@@ -325,6 +325,33 @@ class ContextualEvidenceState:
     message: str = "Contextual · unavailable (no usable evidence)"
 
 
+class EnhancementAvailabilityStatus(str, Enum):
+    """Classify AI-enhanced relationship suggestion availability."""
+
+    AVAILABLE = "available"
+    NOT_ENHANCED = "not-enhanced"
+    INCOMPATIBLE = "incompatible"
+    UNAVAILABLE = "unavailable"
+    DISABLED = "disabled"
+
+
+@dataclass(frozen=True, slots=True)
+class EnhancementAvailabilityState:
+    """Describe whether the active set can use confirmed AI-assisted evidence."""
+
+    status: EnhancementAvailabilityStatus = EnhancementAvailabilityStatus.UNAVAILABLE
+    set_code: str | None = None
+    enabled: bool = False
+    message: str = "AI-enhanced suggestions unavailable: no active set profile."
+
+    def __post_init__(self) -> None:
+        if self.enabled != (self.status is EnhancementAvailabilityStatus.AVAILABLE):
+            raise ValueError(
+                "EnhancementAvailabilityState.enabled must be true exactly for "
+                "the available status."
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class ProfileRefreshRequest:
     """Identify one adapter-owned asynchronous profile refresh."""
@@ -558,6 +585,9 @@ class LiveSessionSnapshot:
     contextual_evidence: ContextualEvidenceState = field(
         default_factory=ContextualEvidenceState
     )
+    enhancement_availability: EnhancementAvailabilityState = field(
+        default_factory=EnhancementAvailabilityState
+    )
     recommendations: RecommendationState = field(default_factory=RecommendationState)
     pool: PoolState = field(default_factory=PoolState)
     card_image: CardImageState = field(default_factory=CardImageState)
@@ -653,6 +683,82 @@ def _contextual_evidence_for_profile(
         message=f"Contextual · semantic + {descriptions}",
     )
 
+
+def _enhancement_availability_for_context(
+    *,
+    profile: SetProfile | None,
+    set_code: str | None,
+    card_database: CardDatabase | None,
+    refresh_outcome: str | None,
+    preference_enabled: bool,
+) -> EnhancementAvailabilityState:
+    """Classify AI-enhanced suggestion availability for one session context."""
+
+    if profile is None or profile.maturity is ProfileMaturity.GENERIC:
+        display_set = (
+            set_code
+            if set_code is not None
+            else (None if profile is None else profile.set_code.upper())
+        )
+        if display_set is None:
+            return EnhancementAvailabilityState()
+        if refresh_outcome == ProfileRefreshOutcome.ARTIFACT_INVALID.value:
+            return EnhancementAvailabilityState(
+                status=EnhancementAvailabilityStatus.INCOMPATIBLE,
+                set_code=display_set,
+                message=(
+                    f"AI-enhanced suggestions unavailable for {display_set}: "
+                    "profile enhancement is invalid or incompatible."
+                ),
+            )
+        return EnhancementAvailabilityState(
+            set_code=display_set,
+            message=(
+                f"AI-enhanced suggestions unavailable for {display_set}: "
+                "no usable set profile."
+            ),
+        )
+
+    display_set = set_code if set_code is not None else profile.set_code.upper()
+    if profile.enhancement is None:
+        return EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
+            set_code=display_set,
+            message=(
+                f"AI-enhanced suggestions unavailable for {display_set}: "
+                "profile is not AI-enhanced."
+            ),
+        )
+    compatible = (
+        card_database is not None
+        and relationship_enhancement_is_compatible(
+            set_profile=profile,
+            card_database=card_database,
+        )
+    )
+    if not compatible:
+        return EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.INCOMPATIBLE,
+            set_code=display_set,
+            message=(
+                f"AI-enhanced suggestions unavailable for {display_set}: "
+                "profile enhancement is invalid or incompatible."
+            ),
+        )
+    if not preference_enabled:
+        return EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.DISABLED,
+            set_code=display_set,
+            message=f"AI-enhanced suggestions disabled for {display_set}.",
+        )
+    return EnhancementAvailabilityState(
+        status=EnhancementAvailabilityStatus.AVAILABLE,
+        set_code=display_set,
+        enabled=True,
+        message=f"AI-enhanced suggestions available for {display_set}.",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LiveSessionEvent:
     """Publish one consumed domain event with its resulting session state.
@@ -682,11 +788,20 @@ class ChooseRecommendation:
     grp_id: int
 
 
+
 @dataclass(frozen=True, slots=True)
 class FocusBuildCard:
     """Request that one current build spell or bench card receive image focus."""
 
     grp_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeAiEnhancedSuggestions:
+    """Request whether AI-enhanced relationship suggestions are enabled."""
+
+    enabled: bool
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -767,6 +882,7 @@ LiveSessionCommand: TypeAlias = (
     | ChangeRanking
     | ChangeSplashPreference
     | ChangeContextualScoring
+    | ChangeAiEnhancedSuggestions
     | RequestRatingsDownload
     | RequestBuild
     | RequestBacktest
@@ -795,6 +911,7 @@ class LiveSession:
         card_image_service: CardImageService | None = None,
         splash_enabled: bool = SPLASH.enabled_by_default,
         contextual_adjustments_enabled: bool = True,
+        ai_enhanced_suggestions_enabled: bool = True,
         set_profile: SetProfile | None = None,
         profile_client: ProfileClient | None = None,
     ) -> None:
@@ -820,6 +937,7 @@ class LiveSession:
         self._ranking_mode = validate_ranking_mode(ranking_mode=ranking_mode)
         self._splash_enabled = splash_enabled
         self._contextual_adjustments_enabled = contextual_adjustments_enabled
+        self._ai_enhanced_suggestions_enabled = ai_enhanced_suggestions_enabled
         self._card_database = card_database
         self._set_card_data_loader = set_card_data_loader
         self._card_database_set_code: str | None = None
@@ -833,6 +951,14 @@ class LiveSession:
         self._contextual_evidence_cached_profile: SetProfile | None = None
         self._contextual_evidence_cached_enabled: bool | None = None
         self._contextual_evidence_cached_state: ContextualEvidenceState | None = None
+        self._enhancement_availability_cached: tuple[
+            SetProfile | None,
+            str | None,
+            CardDatabase | None,
+            bool,
+            str | None,
+            EnhancementAvailabilityState,
+        ] | None = None
         self._set_profiles_by_set: dict[str, SetProfile | None] = {}
         self._set_profile_states_by_set: dict[str, SetProfileState] = {}
         self._profile_refresh_lifecycle_identity: _ProfileLifecycleIdentity | None = None
@@ -891,6 +1017,7 @@ class LiveSession:
         self._snapshot = LiveSessionSnapshot(
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
             contextual_evidence=self._current_contextual_evidence_locked(),
+            enhancement_availability=self._current_enhancement_availability_locked(),
             status=_waiting_for_draft_status(setup_guidance=not initial_log_readable),
             accounts=self._known_accounts(),
             card_data=card_data,
@@ -1013,6 +1140,9 @@ class LiveSession:
                 )
             )
             if profile_changed:
+                capability_enabled = (
+                    self._current_enhancement_availability_locked().enabled
+                )
                 profile_state, ratings_state, authority_changed = (
                     self._adopt_profile_locked(
                         profile=profile,
@@ -1033,6 +1163,13 @@ class LiveSession:
                             phase=DataLoadPhase.READY,
                         ),
                     )
+                    if (
+                        capability_enabled
+                        != self._current_enhancement_availability_locked().enabled
+                    ):
+                        candidate_snapshot = self._retire_backtest_state_locked(
+                            snapshot=candidate_snapshot,
+                        )
                     transition_generation = self._transition_generation
                     if self._score_current_pack_locked(
                         snapshot=candidate_snapshot
@@ -1473,6 +1610,9 @@ class LiveSession:
         if isinstance(command, ChangeContextualScoring):
             self._change_contextual_scoring(enabled=command.enabled)
             return self.snapshot
+        if isinstance(command, ChangeAiEnhancedSuggestions):
+            self._change_ai_enhanced_suggestions(enabled=command.enabled)
+            return self.snapshot
 
         if isinstance(command, ChooseRecommendation):
             self._choose_recommendation(grp_id=command.grp_id)
@@ -1713,6 +1853,9 @@ class LiveSession:
             ranking_mode = self._ranking_mode
             splash_enabled = self._splash_enabled
             contextual_adjustments_enabled = self._contextual_adjustments_enabled
+            enhanced_relationships_enabled = (
+                self._current_enhancement_availability_locked().enabled
+            )
             self._publish(
                 snapshot=replace(
                     self.snapshot,
@@ -1729,6 +1872,7 @@ class LiveSession:
             backtest = self._backtest_result(
                 command=command,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
+                enhanced_relationships_enabled=enhanced_relationships_enabled,
             )
         except Exception as error:
             session_error = SessionError(
@@ -1746,6 +1890,7 @@ class LiveSession:
                     ranking_mode=ranking_mode,
                     splash_enabled=splash_enabled,
                     contextual_adjustments_enabled=contextual_adjustments_enabled,
+                    enhanced_relationships_enabled=enhanced_relationships_enabled,
                 ):
                     return
                 self._publish(
@@ -1768,6 +1913,7 @@ class LiveSession:
                 ranking_mode=ranking_mode,
                 splash_enabled=splash_enabled,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
+                enhanced_relationships_enabled=enhanced_relationships_enabled,
             ):
                 return
             self._publish(
@@ -1792,6 +1938,7 @@ class LiveSession:
         ranking_mode: RankingMode,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        enhanced_relationships_enabled: bool,
     ) -> bool:
         return (
             generation == self._backtest_request_generation
@@ -1801,6 +1948,8 @@ class LiveSession:
             and splash_enabled == self._splash_enabled
             and contextual_adjustments_enabled
             == self._contextual_adjustments_enabled
+            and enhanced_relationships_enabled
+            == self._current_enhancement_availability_locked().enabled
         )
 
     def _progress_after_operation(
@@ -1825,11 +1974,41 @@ class LiveSession:
             if error.operation not in {OperationKind.BUILD, OperationKind.BACKTEST}
         )
 
+    def _retire_backtest_state_locked(
+        self,
+        *,
+        snapshot: LiveSessionSnapshot,
+    ) -> LiveSessionSnapshot:
+        """Retire published and in-flight backtest state for one snapshot.
+
+        Callers hold ``_state_lock`` and use this when an authoritative change
+        makes an earlier backtest result or request incompatible with the
+        current scoring context.  The retired progress and errors travel with
+        the returned snapshot so callers publish them atomically.
+        """
+
+        self._backtest_request_generation += 1
+        self._last_backtest_request = None
+        progress = snapshot.progress
+        if progress is not None and progress.operation is OperationKind.BACKTEST:
+            progress = None
+        return replace(
+            snapshot,
+            progress=progress,
+            errors=tuple(
+                error
+                for error in snapshot.errors
+                if error.operation is not OperationKind.BACKTEST
+            ),
+            backtest=None,
+        )
+
     def _backtest_result(
         self,
         *,
         command: RequestBacktest,
         contextual_adjustments_enabled: bool,
+        enhanced_relationships_enabled: bool,
     ) -> BacktestResult:
         if self._card_database is None:
             raise ValueError("Card metadata is not ready.")
@@ -1847,6 +2026,7 @@ class LiveSession:
             ranking_mode=self._ranking_mode,
             splash_enabled=self._splash_enabled,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
+            enhanced_relationships_enabled=enhanced_relationships_enabled,
             set_profile=self._set_profile,
         )
         return _backtest_result(report=report)
@@ -2199,6 +2379,9 @@ class LiveSession:
             ratings_data=ratings_data,
             splash_enabled=self._splash_enabled,
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+            enhanced_relationships_enabled=(
+                self._current_enhancement_availability_locked().enabled
+            ),
             set_profile=self._set_profile,
         )
         global_pick_index = _draft_pick_index(event=event)
@@ -2846,6 +3029,28 @@ class LiveSession:
                 record_audit=False,
             )
 
+    def _change_ai_enhanced_suggestions(self, *, enabled: bool) -> None:
+        with self._state_lock:
+            if enabled == self._ai_enhanced_suggestions_enabled:
+                return
+
+            self._ai_enhanced_suggestions_enabled = enabled
+            candidate_snapshot = self._retire_backtest_state_locked(
+                snapshot=self.snapshot,
+            )
+            transition_generation = self._transition_generation
+            if self._score_current_pack_locked(
+                snapshot=candidate_snapshot,
+                prepare_image_requests=False,
+                record_audit=False,
+            ):
+                return
+
+            if self._transition_generation != transition_generation:
+                return
+
+            self._publish(snapshot=candidate_snapshot)
+
     def _dismiss_error(self, *, error_id: str) -> None:
         with self._state_lock:
             if not any(error.error_id == error_id for error in self.snapshot.errors):
@@ -3239,17 +3444,29 @@ class LiveSession:
         normalized_set_code = None if set_code is None else set_code.upper()
         if normalized_set_code is None:
             with self._state_lock:
-                self._clear_active_set_code_locked()
-                self._publish(
-                    snapshot=replace(
-                        self.snapshot,
-                        set_profile=SetProfileState(),
-                    )
+                capability_enabled = (
+                    self._current_enhancement_availability_locked().enabled
                 )
+                self._clear_active_set_code_locked()
+                candidate_snapshot = replace(
+                    self.snapshot,
+                    set_profile=SetProfileState(),
+                )
+                if (
+                    capability_enabled
+                    != self._current_enhancement_availability_locked().enabled
+                ):
+                    candidate_snapshot = self._retire_backtest_state_locked(
+                        snapshot=candidate_snapshot,
+                    )
+                self._publish(snapshot=candidate_snapshot)
             return
 
         prepared_profile = self._prepare_set_profile(set_code=normalized_set_code)
         with self._state_lock:
+            capability_enabled = (
+                self._current_enhancement_availability_locked().enabled
+            )
             transitioned, profile_state, ratings_state = (
                 self._activate_set_code_locked(
                     set_code=normalized_set_code,
@@ -3260,21 +3477,27 @@ class LiveSession:
             if transitioned:
                 self._queue_profile_refresh_locked()
             if profile_state is not None or transitioned:
-                self._publish(
-                    snapshot=replace(
-                        self.snapshot,
-                        set_profile=(
-                            self.snapshot.set_profile
-                            if profile_state is None
-                            else profile_state
-                        ),
-                        ratings=(
-                            self.snapshot.ratings
-                            if ratings_state is None
-                            else ratings_state
-                        ),
-                    )
+                candidate_snapshot = replace(
+                    self.snapshot,
+                    set_profile=(
+                        self.snapshot.set_profile
+                        if profile_state is None
+                        else profile_state
+                    ),
+                    ratings=(
+                        self.snapshot.ratings
+                        if ratings_state is None
+                        else ratings_state
+                    ),
                 )
+                if (
+                    capability_enabled
+                    != self._current_enhancement_availability_locked().enabled
+                ):
+                    candidate_snapshot = self._retire_backtest_state_locked(
+                        snapshot=candidate_snapshot,
+                    )
+                self._publish(snapshot=candidate_snapshot)
 
     def _load_local_profile_for_set(
         self,
@@ -4322,6 +4545,46 @@ class LiveSession:
         self._contextual_evidence_cached_state = state
         return state
 
+    def _current_enhancement_availability_locked(self) -> EnhancementAvailabilityState:
+        profile = self._set_profile
+        set_code = self._active_set_code_value
+        database = self._card_database
+        preference = self._ai_enhanced_suggestions_enabled
+        profile_state = (
+            self._set_profile_states_by_set.get(set_code)
+            if set_code is not None
+            else None
+        )
+        refresh_outcome = (
+            None if profile_state is None else profile_state.refresh_outcome
+        )
+        cached = self._enhancement_availability_cached
+        if (
+            cached is not None
+            and cached[0] is profile
+            and cached[1] == set_code
+            and cached[2] is database
+            and cached[3] == preference
+            and cached[4] == refresh_outcome
+        ):
+            return cached[5]
+
+        state = _enhancement_availability_for_context(
+            profile=profile,
+            set_code=set_code,
+            card_database=database,
+            refresh_outcome=refresh_outcome,
+            preference_enabled=preference,
+        )
+        self._enhancement_availability_cached = (
+            profile,
+            set_code,
+            database,
+            preference,
+            refresh_outcome,
+            state,
+        )
+        return state
 
     def _publish(self, snapshot: LiveSessionSnapshot) -> None:
         with self._state_lock:
@@ -4329,6 +4592,7 @@ class LiveSession:
                 snapshot,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
                 contextual_evidence=self._current_contextual_evidence_locked(),
+                enhancement_availability=self._current_enhancement_availability_locked(),
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,
                 errors=self._project_ratings_errors_locked(errors=snapshot.errors),

@@ -62,7 +62,6 @@ from draftomen.profile_client import (
     ProfileRefreshOutcome,
     ProfileRefreshResult,
 )
-from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.session import (
     LOG_SETUP_GUIDANCE,
     AccountIdentity,
@@ -81,6 +80,9 @@ from draftomen.session import (
     CardView,
     ChangeRanking,
     ChangeContextualScoring,
+    ChangeAiEnhancedSuggestions,
+    EnhancementAvailabilityState,
+    EnhancementAvailabilityStatus,
     ChangeSplashPreference,
     ChooseAccount,
     ChooseRecommendation,
@@ -89,7 +91,6 @@ from draftomen.session import (
     DraftIdentity,
     FocusBuildCard,
     LiveSession,
-    LiveSessionCommand,
     LiveSessionEvent,
     LiveSessionSnapshot,
     OperationKind,
@@ -101,6 +102,7 @@ from draftomen.session import (
     RecommendationState,
     RequestBacktest,
     RequestBuild,
+    ProfileRefreshRequest,
     RequestRatingsDownload,
     RetryError,
     SessionError,
@@ -117,6 +119,7 @@ from draftomen.set_profile import (
     load_set_profile,
     set_profile_path,
 )
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
 from draftomen.splash import SplashState
 
@@ -1130,6 +1133,525 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     assert disabled.build is baseline_build
 
     assert len(events) == event_count
+
+
+def _relationship_session_profile() -> SetProfile:
+    """Build one compatible enhanced profile over the session fixture cards."""
+    from tests.test_pickengine import (
+        _relationship_profile,
+        _token_sacrifice_relationship,
+    )
+
+    return _relationship_profile(relationships=(_token_sacrifice_relationship(),))
+
+
+def _relationship_session_database() -> CardDatabase:
+    from tests.test_pickengine import _relationship_database
+
+    return _relationship_database()
+
+
+def _save_relationship_backtest_draft(*, app_dir: Path) -> None:
+    """Persist one relationship-fixture draft whose second pick scores support."""
+    save_draft_state(
+        state=replace(
+            _draft_state(
+                account_id="account-1",
+                screen_name="Player",
+                draft_id="draft-1",
+                updated_at="2026-08-23T10:00:00+00:00",
+                pool_grp_ids=(602,),
+            ),
+            picks=(
+                DraftPick(
+                    pack_number=0,
+                    pick_number=0,
+                    offered_grp_ids=(601,),
+                    pool_before_pick=(),
+                    chosen_grp_id=601,
+                ),
+                DraftPick(
+                    pack_number=0,
+                    pick_number=1,
+                    offered_grp_ids=(602,),
+                    pool_before_pick=(601,),
+                    chosen_grp_id=602,
+                ),
+            ),
+        ),
+        app_dir=app_dir,
+    )
+
+
+def test_live_session_default_snapshot_reports_unavailable_enhancement(
+    tmp_path: Path,
+) -> None:
+    session = LiveSession(log_path=tmp_path / "Player.log", app_dir=tmp_path / "app")
+
+    assert session.snapshot.enhancement_availability == EnhancementAvailabilityState()
+
+
+def test_live_session_classifies_enhancement_availability_statuses(
+    tmp_path: Path,
+) -> None:
+    enhanced = _relationship_session_profile()
+    unenhanced = replace(_relationship_session_profile(), enhancement=None)
+    database = _relationship_session_database()
+    generic = SetProfile.generic(
+        set_code="TST",
+        event_format=QUICK_DRAFT_FORMAT,
+    )
+
+    available = LiveSession(
+        log_path=tmp_path / "one.log",
+        app_dir=tmp_path / "app",
+        card_database=database,
+        set_profile=enhanced,
+    )
+    assert available.snapshot.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.AVAILABLE,
+            set_code="TST",
+            enabled=True,
+            message="AI-enhanced suggestions available for TST.",
+        )
+    )
+
+    not_enhanced = LiveSession(
+        log_path=tmp_path / "two.log",
+        app_dir=tmp_path / "app",
+        card_database=database,
+        set_profile=unenhanced,
+    )
+    assert not_enhanced.snapshot.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
+            set_code="TST",
+            message=(
+                "AI-enhanced suggestions unavailable for TST: "
+                "profile is not AI-enhanced."
+            ),
+        )
+    )
+
+    incompatible = LiveSession(
+        log_path=tmp_path / "three.log",
+        app_dir=tmp_path / "app",
+        card_database=CardDatabase(cards={}),
+        set_profile=enhanced,
+    )
+    assert incompatible.snapshot.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.INCOMPATIBLE,
+            set_code="TST",
+            message=(
+                "AI-enhanced suggestions unavailable for TST: "
+                "profile enhancement is invalid or incompatible."
+            ),
+        )
+    )
+
+    unavailable = LiveSession(
+        log_path=tmp_path / "four.log",
+        app_dir=tmp_path / "app",
+        card_database=database,
+        set_profile=generic,
+    )
+    assert unavailable.snapshot.enhancement_availability == (
+        EnhancementAvailabilityState(
+            set_code="TST",
+            message=(
+                "AI-enhanced suggestions unavailable for TST: "
+                "no usable set profile."
+            ),
+        )
+    )
+
+    no_profile = LiveSession(
+        log_path=tmp_path / "five.log",
+        app_dir=tmp_path / "app",
+        card_database=database,
+    )
+    assert no_profile.snapshot.enhancement_availability == (
+        EnhancementAvailabilityState()
+    )
+
+
+def test_live_session_enhancement_preference_survives_profile_change(
+    tmp_path: Path,
+) -> None:
+    enhanced = _relationship_session_profile()
+    unenhanced = replace(_relationship_session_profile(), enhancement=None)
+    database = _relationship_session_database()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=database,
+        set_profile=enhanced,
+    )
+
+    disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
+    assert disabled.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.DISABLED,
+            set_code="TST",
+            message="AI-enhanced suggestions disabled for TST.",
+        )
+    )
+
+    session._set_profile = unenhanced
+    rejected = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
+    assert rejected.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
+            set_code="TST",
+            message=(
+                "AI-enhanced suggestions unavailable for TST: "
+                "profile is not AI-enhanced."
+            ),
+        )
+    )
+
+    session._set_profile = enhanced
+    re_disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
+    assert re_disabled.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.DISABLED,
+            set_code="TST",
+            message="AI-enhanced suggestions disabled for TST.",
+        )
+    )
+    restored = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
+    assert restored.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.AVAILABLE,
+            set_code="TST",
+            enabled=True,
+            message="AI-enhanced suggestions available for TST.",
+        )
+    )
+
+
+def test_live_session_enable_command_reports_incompatible_enhancement(
+    tmp_path: Path,
+) -> None:
+    profile = _relationship_session_profile()
+    database = _relationship_session_database()
+    stale_database = replace(
+        database,
+        cards={
+            **database.cards,
+            601: replace(
+                database.cards[601],
+                oracle_text="Pinned source text no longer matches this database.",
+            ),
+        },
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=stale_database,
+        set_profile=profile,
+    )
+    session._consume_event(
+        event=PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            offered_grp_ids=(602,),
+            pool_grp_ids=(601,),
+            account_id=None,
+        ),
+        state=None,
+    )
+    assert session.snapshot.enhancement_availability.status is (
+        EnhancementAvailabilityStatus.INCOMPATIBLE
+    )
+
+    disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
+    assert disabled.enhancement_availability.status is (
+        EnhancementAvailabilityStatus.INCOMPATIBLE
+    )
+
+    enabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
+
+    assert enabled.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.INCOMPATIBLE,
+            set_code="TST",
+            message=(
+                "AI-enhanced suggestions unavailable for TST: "
+                "profile enhancement is invalid or incompatible."
+            ),
+        )
+    )
+    assert enabled.enhancement_availability.enabled is False
+    assert enabled.current_scored_pack is not None
+    assert enabled.current_scored_pack.role_ledger.relationship_support == ()
+
+
+def test_live_session_enhancement_toggle_rescoring_controls_relationships(
+    tmp_path: Path,
+) -> None:
+    from tests.test_pickengine import _token_sacrifice_relationship
+
+    profile = _relationship_session_profile()
+    database = _relationship_session_database()
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=database,
+        set_profile=profile,
+    )
+    source = database.cards[601]
+    target = database.cards[602]
+    package_payoff = database.cards[605]
+    session._consume_event(
+        event=PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            offered_grp_ids=(target.grp_id, package_payoff.grp_id),
+            pool_grp_ids=(source.grp_id,),
+            account_id=None,
+        ),
+        state=None,
+    )
+
+    enabled = session.snapshot
+    enabled_pack = enabled.current_scored_pack
+    assert enabled.enhancement_availability.enabled is True
+    assert enabled_pack is not None
+    assert [
+        support.mechanism
+        for support in enabled_pack.role_ledger.relationship_support
+    ] == [_token_sacrifice_relationship().mechanism]
+    enabled_cards = {card.card.grp_id: card for card in enabled_pack.cards}
+    assert enabled_cards[target.grp_id].contextual_evidence
+    assert enabled_cards[package_payoff.grp_id].contextual_evidence
+    enabled_scores = {
+        card.card.grp_id: card.raw_score for card in enabled_pack.cards
+    }
+
+    disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
+    assert disabled.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.DISABLED,
+            set_code="TST",
+            message="AI-enhanced suggestions disabled for TST.",
+        )
+    )
+    assert enabled.contextual_evidence != ContextualEvidenceState()
+    assert disabled.contextual_evidence == enabled.contextual_evidence
+    disabled_pack = disabled.current_scored_pack
+    assert disabled_pack is not None
+    assert disabled_pack.role_ledger.relationship_support == ()
+    disabled_cards = {card.card.grp_id: card for card in disabled_pack.cards}
+    assert disabled_cards[target.grp_id].contextual_evidence == ()
+    assert disabled_cards[package_payoff.grp_id].contextual_evidence == (
+        enabled_cards[package_payoff.grp_id].contextual_evidence
+    )
+    assert disabled_cards[package_payoff.grp_id].raw_score == (
+        enabled_cards[package_payoff.grp_id].raw_score
+    )
+    disabled_scores = {
+        card.card.grp_id: card.raw_score for card in disabled_pack.cards
+    }
+    assert disabled_scores[target.grp_id] < enabled_scores[target.grp_id]
+
+    restored = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
+
+    assert restored.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.AVAILABLE,
+            set_code="TST",
+            enabled=True,
+            message="AI-enhanced suggestions available for TST.",
+        )
+    )
+    assert restored.contextual_evidence == enabled.contextual_evidence
+    restored_pack = restored.current_scored_pack
+    assert restored_pack is not None
+    assert [
+        support.mechanism
+        for support in restored_pack.role_ledger.relationship_support
+    ] == [_token_sacrifice_relationship().mechanism]
+    restored_cards = {card.card.grp_id: card for card in restored_pack.cards}
+    assert restored_cards[target.grp_id].contextual_evidence == (
+        enabled_cards[target.grp_id].contextual_evidence
+    )
+    assert {
+        card.card.grp_id: card.raw_score for card in restored_pack.cards
+    } == enabled_scores
+
+
+def test_live_session_enhancement_toggle_retires_backtest_error_without_metadata(
+    tmp_path: Path,
+) -> None:
+    published: list[LiveSessionSnapshot] = []
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=_ProfileClientStub({"TST": None}),
+        snapshot_publisher=published.append,
+    )
+    session._consume_event(
+        event=PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            offered_grp_ids=(104894,),
+            pool_grp_ids=(),
+            account_id=None,
+        ),
+        state=None,
+    )
+    assert session.snapshot.current_pack_event is not None
+    assert session.snapshot.card_data.phase is not DataLoadPhase.READY
+
+    failed = session.dispatch(
+        command=RequestBacktest(account_id="account-1", draft_id="draft-1")
+    )
+
+    assert failed.backtest is None
+    assert failed.errors[-1].operation is OperationKind.BACKTEST
+    assert failed.errors[-1].code == "backtest_failed"
+
+    toggled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
+
+    assert toggled.errors == ()
+    assert toggled.backtest is None
+    assert toggled.enhancement_availability == (
+        EnhancementAvailabilityState(
+            set_code="TST",
+            message=(
+                "AI-enhanced suggestions unavailable for TST: "
+                "no usable set profile."
+            ),
+        )
+    )
+    assert toggled.enhancement_availability.enabled is False
+    assert published[-1] is toggled
+
+
+def test_live_session_profile_refresh_replacement_retires_enhanced_backtest(
+    tmp_path: Path,
+) -> None:
+    enhanced = _relationship_session_profile()
+    unenhanced = replace(_relationship_session_profile(), enhancement=None)
+    database = _relationship_session_database()
+    app_dir = tmp_path / "app"
+    _save_relationship_backtest_draft(app_dir=app_dir)
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=database,
+        profile_client=_ProfileClientStub({"TST": enhanced}),
+    )
+    source = database.cards[601]
+    target = database.cards[602]
+    session._consume_event(
+        event=PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            offered_grp_ids=(target.grp_id,),
+            pool_grp_ids=(source.grp_id,),
+            account_id=None,
+        ),
+        state=None,
+    )
+    assert session.snapshot.current_scored_pack is not None
+    assert session.snapshot.current_scored_pack.role_ledger.relationship_support
+    assert session.snapshot.enhancement_availability.enabled is True
+    compared = session.dispatch(
+        command=RequestBacktest(account_id="account-1", draft_id="draft-1")
+    )
+    assert compared.backtest is not None
+    assert compared.backtest.compared_count == 2
+    request = session.profile_refresh_request()
+    assert request is not None
+    published: list[LiveSessionSnapshot] = []
+    session._snapshot_publisher = published.append
+
+    session.complete_profile_refresh(
+        request=request,
+        result=ProfileRefreshResult(
+            profile=unenhanced,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+
+    assert len(published) == 1
+    replacement = published[0]
+    assert replacement.backtest is None
+    assert replacement.progress is None
+    assert replacement.enhancement_availability == (
+        EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
+            set_code="TST",
+            message=(
+                "AI-enhanced suggestions unavailable for TST: "
+                "profile is not AI-enhanced."
+            ),
+        )
+    )
+    assert replacement.set_profile.profile_version == unenhanced.profile_version
+    assert replacement.current_scored_pack is not None
+    assert replacement.current_scored_pack.role_ledger.relationship_support == ()
+
+
+def test_live_session_profile_refresh_same_capability_keeps_backtest(
+    tmp_path: Path,
+) -> None:
+    enhanced = _relationship_session_profile()
+    bumped = replace(enhanced, profile_version="relationship-509-bump")
+    database = _relationship_session_database()
+    app_dir = tmp_path / "app"
+    _save_relationship_backtest_draft(app_dir=app_dir)
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=database,
+        profile_client=_ProfileClientStub({"TST": enhanced}),
+    )
+    session._consume_event(
+        event=PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            offered_grp_ids=(602,),
+            pool_grp_ids=(601,),
+            account_id=None,
+        ),
+        state=None,
+    )
+    compared = session.dispatch(
+        command=RequestBacktest(account_id="account-1", draft_id="draft-1")
+    )
+    assert compared.backtest is not None
+    request = session.profile_refresh_request()
+    assert request is not None
+
+    session.complete_profile_refresh(
+        request=request,
+        result=ProfileRefreshResult(
+            profile=bumped,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+
+    adopted = session.snapshot
+    assert adopted.set_profile.profile_version == bumped.profile_version
+    assert adopted.enhancement_availability.enabled is True
+    assert adopted.backtest == compared.backtest
+    assert adopted.current_scored_pack is not None
+    assert adopted.current_scored_pack.role_ledger.relationship_support
 
 
 def test_live_session_contextual_mode_toggle_without_pack_publishes_only_mode(

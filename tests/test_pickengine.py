@@ -4212,6 +4212,54 @@ def test_relationship_support_adds_only_a_bounded_synergy_increment() -> None:
     assert supported_card.contextual_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
 
 
+def test_disabled_relationship_gate_clears_supplied_context_support_and_term() -> None:
+    database = _relationship_database()
+    profile = _relationship_profile(relationships=(_token_sacrifice_relationship(),))
+    ledger = _relationship_ledger(
+        database=database,
+        profile=profile,
+        pool_grp_ids=(601,),
+    )
+    context = PickScoringContext(set_profile=profile, role_ledger=ledger)
+    assert ledger.relationship_support
+
+    def scored_pack(*, enhanced_relationships_enabled: bool) -> ScoredPack:
+        return PickEngine(
+            scoring_context=context,
+            enhanced_relationships_enabled=enhanced_relationships_enabled,
+        ).score_pack(
+            offered_grp_ids=(602,),
+            card_database=database,
+            pool_grp_ids=(601,),
+        )
+
+    enabled = scored_pack(enhanced_relationships_enabled=True)
+    disabled = scored_pack(enhanced_relationships_enabled=False)
+
+    relationship_term = MAX_SYNERGY_TERM * 0.5 * 0.15
+    assert enabled.role_ledger is context.role_ledger
+    assert enabled.cards[0].contextual_breakdown.synergy == pytest.approx(
+        relationship_term
+    )
+    assert enabled.cards[0].contextual_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
+
+    assert disabled.role_ledger is not None
+    assert disabled.role_ledger.relationship_support == ()
+    assert disabled.scoring_context is not None
+    assert disabled.scoring_context.role_ledger == replace(
+        ledger, relationship_support=()
+    )
+    assert disabled.cards[0].contextual_breakdown == replace(
+        enabled.cards[0].contextual_breakdown,
+        synergy=0.0,
+    )
+    assert disabled.cards[0].raw_score == pytest.approx(
+        enabled.cards[0].raw_score - relationship_term
+    )
+    assert disabled.cards[0].contextual_evidence == ()
+    assert context.role_ledger.relationship_support == ledger.relationship_support
+
+
 def test_relationship_synergy_increment_is_multiplicative_in_stage_and_profile_weight() -> None:
     database = _relationship_database()
     control = _relationship_profile(relationships=(_legacy_outlet_relationship(),))

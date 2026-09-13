@@ -3,6 +3,23 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Expose AI-enhanced relationship suggestions as an explicit, user-controlled
+  session capability (#440): a new `enhancement_availability` snapshot field
+  classifies the active set as `available`, `not-enhanced`, `incompatible`,
+  `unavailable` or `disabled` from the set profile's confirmed enhancement,
+  its role compatibility, participant resolvability against the loaded card
+  database and the user preference, so frontends can render why enhanced
+  suggestions are or are not in effect; a new `ChangeAiEnhancedSuggestions`
+  command toggles the preference, re-scores the current pack, invalidates the
+  backtest result and republishes the invariant-owned availability state;
+  `PickEngine`, `project_pool_role_ledger` and `generate_backtest_report` gain
+  an `enhanced_relationships_enabled` gate that removes the typed relationship
+  synergy term and empties ledger `relationship_support` when the capability
+  is off, while the new `relationship_enhancement_is_compatible` predicate
+  fail-closes on profiles without a compiled role profile or with
+  relationships whose participants cannot resolve; and the mock provider adds
+  `not_enhanced` and `enhancement_incompatible` scenarios plus preference
+  handling for deterministic frontend development. (#440)
 - Calibrate the typed relationship scoring against an offline HOB backtest
   (#510): the nine pre-calibration `0.5` support factors are settled as
   code-owned constants — the two HOB-observed token mechanisms keep their
