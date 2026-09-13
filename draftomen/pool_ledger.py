@@ -38,7 +38,7 @@ from draftomen.semantic_relationship_records import (
     _wide_payoff_clause,
 )
 from draftomen.semantic_roles import Role, RoleAssignment, ResolutionResult, resolve_card_roles
-from draftomen.set_enrichment_candidates import ROLE_COMPATIBILITY_RULES
+from draftomen.set_enrichment_candidates import ROLE_COMPATIBILITY_RULES, RoleLink
 from draftomen.seventeen import SeventeenLandsData
 from draftomen.splash import (
     COLOR_ORDER,
@@ -816,6 +816,7 @@ def _evaluate_pool(
     likely_pair: str | None,
     mode: LedgerMode,
     stage: LedgerStage | None,
+    enhanced_relationships_enabled: bool,
 ) -> PoolRoleLedger:
     source_cards = _cards_for_pool(
         pool_grp_ids=pool_grp_ids,
@@ -838,6 +839,7 @@ def _evaluate_pool(
         stage=stage,
         set_profile=set_profile,
         likely_pair=pair,
+        enhanced_relationships_enabled=enhanced_relationships_enabled,
     )
 
 
@@ -852,6 +854,7 @@ def project_pool_role_ledger(
     ratings_data: SeventeenLandsData | None = None,
     set_profile: SetProfile | None = None,
     likely_pair: str | None = None,
+    enhanced_relationships_enabled: bool = True,
 ) -> PoolRoleLedger:
     """Evaluate only an authoritative saved/event pool before the current pick.
     Future offered picks and final-pool state are intentionally not accepted.
@@ -871,6 +874,7 @@ def project_pool_role_ledger(
         likely_pair=likely_pair,
         mode=LedgerMode.PRE_PICK_PROJECTION,
         stage=stage,
+        enhanced_relationships_enabled=enhanced_relationships_enabled,
     )
 
 
@@ -892,6 +896,7 @@ def evaluate_completed_pool_role_ledger(
         likely_pair=likely_pair,
         mode=LedgerMode.COMPLETED_POOL,
         stage=None,
+        enhanced_relationships_enabled=True,
     )
 
 
@@ -905,6 +910,7 @@ def _evaluate(
     stage: LedgerStage | None,
     set_profile: SetProfile | None,
     likely_pair: str | None,
+    enhanced_relationships_enabled: bool,
 ) -> PoolRoleLedger:
     cards = _cards_for_pool(
         pool_grp_ids=pool_grp_ids,
@@ -970,6 +976,7 @@ def _evaluate(
         card_database=card_database,
         set_profile=set_profile,
         mode=mode,
+        enhanced_relationships_enabled=enhanced_relationships_enabled,
     )
     removal_contributions = tuple(
         RemovalContribution(
@@ -1016,12 +1023,17 @@ def _relationship_support(
     card_database: CardDatabase,
     set_profile: SetProfile | None,
     mode: LedgerMode,
+    enhanced_relationships_enabled: bool,
 ) -> tuple[RelationshipSupport, ...]:
     """Project exact, source-bound relationship support for one pre-pick pool.
     Completed-pool evaluation stays relationship-neutral by construction.
     """
 
-    if mode is not LedgerMode.PRE_PICK_PROJECTION or set_profile is None:
+    if (
+        mode is not LedgerMode.PRE_PICK_PROJECTION
+        or set_profile is None
+        or not enhanced_relationships_enabled
+    ):
         return ()
     enhancement = set_profile.enhancement
     if enhancement is None:
@@ -1053,6 +1065,28 @@ def _relationship_support(
     )
 
 
+def _relationship_link(
+    relationship: CardRelationship,
+) -> RoleLink | None:
+    """Return the role-compatibility rule of one relationship mechanism."""
+
+    return next(
+        (item for item in ROLE_COMPATIBILITY_RULES if item.mechanism == relationship.mechanism),
+        None,
+    )
+
+
+def _projection_roles_match_link(
+    *,
+    projection: RelationshipPrerequisiteProjection,
+    link: RoleLink,
+) -> bool:
+    return (
+        projection.source.role is link.enabler
+        and projection.target.role is link.payoff
+    )
+
+
 def _matched_relationship_support(
     *,
     relationship: CardRelationship,
@@ -1063,13 +1097,10 @@ def _matched_relationship_support(
     projection = relationship.prerequisite_projection
     if projection is None:
         return None
-    link = next(
-        (item for item in ROLE_COMPATIBILITY_RULES if item.mechanism == relationship.mechanism),
-        None,
-    )
+    link = _relationship_link(relationship)
     if link is None:
         return None
-    if projection.source.role is not link.enabler or projection.target.role is not link.payoff:
+    if not _projection_roles_match_link(projection=projection, link=link):
         return None
     source_identity = _participant_identity(
         projection.source,
@@ -1111,6 +1142,67 @@ def _matched_relationship_support(
         target_role=projection.target.role,
         target_role_confidence=target_confidence,
         satisfied_prerequisites=satisfied,
+    )
+
+
+def relationship_enhancement_is_compatible(
+    *,
+    set_profile: SetProfile,
+    card_database: CardDatabase,
+) -> bool:
+    """Return whether one profile's confirmed enhancement can affect scoring.
+    Compatibility requires a compiled role profile plus at least one typed
+    relationship whose participants resolve against the current card database.
+    """
+
+    enhancement = set_profile.enhancement
+    if enhancement is None or set_profile.role_profile is None:
+        return False
+    if not set_profile.roles_are_compatible:
+        return False
+    projected: dict[int, tuple[CardInfo, int, ResolutionResult]] = {}
+    for relationship in enhancement.relationships:
+        projection = relationship.prerequisite_projection
+        if projection is None:
+            continue
+        link = _relationship_link(relationship)
+        if link is None or not _projection_roles_match_link(
+            projection=projection,
+            link=link,
+        ):
+            continue
+        if not _participant_resolves(
+            participant=projection.source,
+            set_profile=set_profile,
+            card_database=card_database,
+            projected=projected,
+        ):
+            continue
+        if _participant_resolves(
+            participant=projection.target,
+            set_profile=set_profile,
+            card_database=card_database,
+            projected=projected,
+        ):
+            return True
+    return False
+
+
+def _participant_resolves(
+    *,
+    participant: RelationshipParticipant,
+    set_profile: SetProfile,
+    card_database: CardDatabase,
+    projected: Mapping[int, tuple[CardInfo, int, ResolutionResult]],
+) -> bool:
+    return (
+        _participant_identity(
+            participant,
+            set_profile=set_profile,
+            card_database=card_database,
+            projected=projected,
+        )
+        is not None
     )
 
 

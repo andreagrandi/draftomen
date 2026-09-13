@@ -495,6 +495,26 @@ def _normalize_scoring_context(
     return scoring_context
 
 
+def _without_relationship_support(
+    scoring_context: PickScoringContext | None,
+) -> PickScoringContext | None:
+    """Return an equivalent context whose ledger carries no relationship support.
+
+    The supplied context is never mutated; only a disabled relationship gate
+    reaches this normalizer.
+    """
+
+    if scoring_context is None:
+        return None
+    ledger = scoring_context.role_ledger
+    if not ledger.relationship_support:
+        return scoring_context
+    return PickScoringContext(
+        set_profile=scoring_context.set_profile,
+        role_ledger=replace(ledger, relationship_support=()),
+    )
+
+
 def recommendation_confidence_summary(
     *,
     cards: tuple[ScoredCard, ...],
@@ -851,6 +871,7 @@ class PickEngine:
         config: PickEngineConfig = PICK_ENGINE,
         splash_enabled: bool = SPLASH.enabled_by_default,
         contextual_adjustments_enabled: bool = True,
+        enhanced_relationships_enabled: bool = True,
         set_profile: SetProfile | None = None,
         scoring_context: PickScoringContext | None = None,
     ) -> None:
@@ -859,6 +880,7 @@ class PickEngine:
         self.config = config
         self.splash_enabled = splash_enabled
         self.contextual_adjustments_enabled = contextual_adjustments_enabled
+        self.enhanced_relationships_enabled = enhanced_relationships_enabled
         self.set_profile = _normalize_scoring_profile(set_profile)
         self.scoring_context = scoring_context
         self.normalization = _normalization_from_data(
@@ -947,6 +969,11 @@ class PickEngine:
                 set_profile=active_profile,
                 stage=resolved_stage,
                 likely_pair=commitment.inferred_pair,
+                enhanced_relationships_enabled=self.enhanced_relationships_enabled,
+            )
+        if not self.enhanced_relationships_enabled:
+            active_context = _without_relationship_support(
+                scoring_context=active_context
             )
         if active_context is not None:
             role_ledger = active_context.role_ledger
@@ -963,6 +990,7 @@ class PickEngine:
                 ratings_data=self.ratings_data,
                 set_profile=active_profile,
                 likely_pair=commitment.inferred_pair,
+                enhanced_relationships_enabled=self.enhanced_relationships_enabled,
             )
         require_material_rate_margin = _is_empirical_profile(
             profile=active_profile,
@@ -982,9 +1010,10 @@ class PickEngine:
                 card_database=card_database,
                 commitment=commitment,
                 splash_state=splash_state,
+                contextual_adjustments_enabled=self.contextual_adjustments_enabled,
+                enhanced_relationships_enabled=self.enhanced_relationships_enabled,
                 best_on_color_score=best_on_color_score,
                 scoring_context=active_context,
-                contextual_adjustments_enabled=self.contextual_adjustments_enabled,
                 profile=active_profile,
                 normalization=normalization,
                 profile_lookup=profile_lookup,
@@ -1074,6 +1103,7 @@ class PickEngine:
         best_on_color_score: float | None,
         scoring_context: PickScoringContext | None,
         contextual_adjustments_enabled: bool,
+        enhanced_relationships_enabled: bool,
         profile: SetProfile | None,
         normalization: ScoreNormalization,
         profile_lookup: _ProfileRatingLookup,
@@ -1128,6 +1158,7 @@ class PickEngine:
             contextual_breakdown, contextual_evidence = _contextual_score_for_card(
                 card=card,
                 scoring_context=scoring_context,
+                enhanced_relationships_enabled=enhanced_relationships_enabled,
             )
         else:
             contextual_breakdown = ContextualScoreBreakdown()
@@ -1205,6 +1236,7 @@ def _contextual_score_for_card(
     *,
     card: CardInfo,
     scoring_context: PickScoringContext | None,
+    enhanced_relationships_enabled: bool = True,
 ) -> tuple[ContextualScoreBreakdown, tuple[str, ...]]:
     """Compute bounded contextual terms from one validated pre-pick context."""
 
@@ -1302,11 +1334,15 @@ def _contextual_score_for_card(
         stage_scale=stage_scale,
         evidence_weight=evidence_weight,
     )
-    relationship_term, relationship_evidence = _relationship_synergy_term(
-        card=card,
-        ledger=ledger,
-        stage_scale=stage_scale,
-        evidence_weight=evidence_weight,
+    relationship_term, relationship_evidence = (
+        (0.0, ())
+        if not enhanced_relationships_enabled
+        else _relationship_synergy_term(
+            card=card,
+            ledger=ledger,
+            stage_scale=stage_scale,
+            evidence_weight=evidence_weight,
+        )
     )
     synergy_term = _bounded_term(
         value=generic_synergy_term + relationship_term,
@@ -1732,8 +1768,9 @@ def _build_pick_scoring_context(
     card_database: CardDatabase,
     ratings_data: SeventeenLandsData | None,
     set_profile: SetProfile | None,
-    stage: LedgerStage,
     likely_pair: str | None,
+    stage: LedgerStage,
+    enhanced_relationships_enabled: bool = True,
 ) -> PickScoringContext | None:
     set_profile = _normalize_scoring_profile(set_profile)
     if set_profile is None:
@@ -1748,6 +1785,7 @@ def _build_pick_scoring_context(
         ratings_data=ratings_data,
         set_profile=set_profile,
         likely_pair=likely_pair,
+        enhanced_relationships_enabled=enhanced_relationships_enabled,
     )
     return PickScoringContext(set_profile=set_profile, role_ledger=role_ledger)
 
