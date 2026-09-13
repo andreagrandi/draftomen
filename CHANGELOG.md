@@ -3,6 +3,16 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Render the shared enhancement availability in the Textual interface (#517):
+  the status bar gains an `AI enhancement` label that shows the exact
+  `On`/`Off` profile-backed offline copy for the `available` and `disabled`
+  states and republishes the session's own set-specific message verbatim for
+  `not-enhanced`, `incompatible` and `unavailable` sets, while a new `e`
+  binding named `AI enhance` dispatches the existing
+  `ChangeAiEnhancedSuggestions` preference command only when the shared
+  availability permits it — the footer control stays visibly disabled and
+  non-dispatching for the other three states through Textual's
+  `check_action` gate, refreshed on every session publication. (#517)
 - Expose AI-enhanced relationship suggestions as an explicit, user-controlled
   session capability (#440): a new `enhancement_availability` snapshot field
   classifies the active set as `available`, `not-enhanced`, `incompatible`,
