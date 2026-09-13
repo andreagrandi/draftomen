@@ -50,6 +50,7 @@ from draftomen.session import (
     CardImageRequest,
     CardImageState,
     CardView,
+    ChangeAiEnhancedSuggestions,
     ChangeContextualScoring,
     ChangeRanking,
     ChangeSplashPreference,
@@ -57,6 +58,8 @@ from draftomen.session import (
     ChooseRecommendation,
     DataLoadPhase,
     DismissError,
+    EnhancementAvailabilityState,
+    EnhancementAvailabilityStatus,
     FocusBuildCard,
     LiveSession,
     LiveSessionCommand,
@@ -726,6 +729,29 @@ def test_session_adapter_translates_set_profile_to_plain_qml_values() -> None:
         "message": "Using the cached semantic set profile for OTJ.",
     }
     assert not isinstance(profile_state, SetProfileState)
+
+
+def test_session_adapter_translates_enhancement_availability_to_plain_qml_values() -> None:
+    adapter = SessionAdapter(
+        snapshot=LiveSessionSnapshot(
+            enhancement_availability=EnhancementAvailabilityState(
+                status=EnhancementAvailabilityStatus.AVAILABLE,
+                set_code="OTJ",
+                enabled=True,
+                message="AI-enhanced suggestions available for OTJ.",
+            )
+        )
+    )
+
+    availability = adapter.state["enhancement_availability"]
+    assert availability == {
+        "status": "available",
+        "set_code": "OTJ",
+        "enabled": True,
+        "message": "AI-enhanced suggestions available for OTJ.",
+    }
+    assert not isinstance(availability, EnhancementAvailabilityState)
+    assert not isinstance(availability["status"], EnhancementAvailabilityStatus)
 
 
 def test_recommendation_model_updates_rows_without_reset_churn() -> None:
@@ -1425,6 +1451,7 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
         adapter.changeRanking("win_rate")
         adapter.setSplashEnabled(False)
         adapter.setContextualScoringEnabled(False)
+        adapter.setAiEnhancedSuggestionsEnabled(False)
         adapter.requestRatings()
         adapter.requestBuild("BG")
         build_grp_id = adapter.state["build"]["spells"][0]["card"]["grp_id"]
@@ -1434,16 +1461,16 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
         adapter.retryError("missing-error")
         _process_until(
             application=qcore_application,
-            predicate=lambda: len(session.commands) == 11,
+            predicate=lambda: len(session.commands) == 12,
             description="all queued live session commands",
         )
-
         assert [type(command) for command in session.commands] == [
             ChooseAccount,
             ChooseRecommendation,
             ChangeRanking,
             ChangeSplashPreference,
             ChangeContextualScoring,
+            ChangeAiEnhancedSuggestions,
             RequestRatingsDownload,
             RequestBuild,
             FocusBuildCard,
@@ -1451,6 +1478,7 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
             DismissError,
             RetryError,
         ]
+        assert session.commands[5] == ChangeAiEnhancedSuggestions(enabled=False)
         assert session.dispatch_thread_ids
         assert all(thread_id != gui_thread_id for thread_id in session.dispatch_thread_ids)
     finally:
