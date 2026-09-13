@@ -1,0 +1,91 @@
+{
+  "account_id": "calibration-account",
+  "account_screen_name": "Calibration",
+  "completed": true,
+  "completed_at": "2026-09-12T10:00:00+00:00",
+  "course_id": "calibration",
+  "draft_id": "hob-relationship-scoring",
+  "event_name": "QuickDraft_HOB_20260912",
+  "picks": [
+    {
+      "chosen_grp_id": 103382,
+      "offered_grp_ids": [
+        103382,
+        103526,
+        103525
+      ],
+      "pack_number": 0,
+      "pick_number": 4,
+      "pool_before_pick": [
+        103377,
+        103405,
+        103410,
+        103415
+      ]
+    },
+    {
+      "chosen_grp_id": 103531,
+      "offered_grp_ids": [
+        103531,
+        103526,
+        103525
+      ],
+      "pack_number": 0,
+      "pick_number": 5,
+      "pool_before_pick": [
+        103377,
+        103405,
+        103410,
+        103415,
+        103382
+      ]
+    },
+    {
+      "chosen_grp_id": 103458,
+      "offered_grp_ids": [
+        103458,
+        103530
+      ],
+      "pack_number": 0,
+      "pick_number": 6,
+      "pool_before_pick": [
+        103377,
+        103405,
+        103410,
+        103415,
+        103382,
+        103531
+      ]
+    },
+    {
+      "chosen_grp_id": 103526,
+      "offered_grp_ids": [
+        103526,
+        103525
+      ],
+      "pack_number": 2,
+      "pick_number": 13,
+      "pool_before_pick": [
+        103377,
+        103405,
+        103410,
+        103415,
+        103382
+      ]
+    }
+  ],
+  "pool_grp_ids": [
+    103377,
+    103405,
+    103410,
+    103415,
+    103382,
+    103531,
+    103458,
+    103526
+  ],
+  "schema_version": 1,
+  "set_code": "hob",
+  "started_at": "2026-09-12T09:00:00+00:00",
+  "updated_at": "2026-09-12T09:30:00+00:00"
+}
