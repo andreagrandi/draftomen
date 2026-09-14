@@ -35,6 +35,7 @@ from draftomen.profile_manifest import (
     ProfileManifest,
     ProfileManifestArtifact,
     ProfileManifestError,
+    _timestamp as _manifest_timestamp,
 )
 from draftomen.public_dump import (
     PublicDumpChecksumError,
@@ -51,6 +52,8 @@ if TYPE_CHECKING:
 
 
 PathInput: TypeAlias = str | os.PathLike[str]
+
+PROFILE_BASE_URL = "https://www.draftomen.com/profiles/objects/"
 
 
 class ProfilePublicationError(RuntimeError):
@@ -217,13 +220,7 @@ def build_profile_manifest(
     """Build a deterministic aggregate manifest from validated artifacts."""
 
     try:
-        timestamp = (
-            published_at.astimezone(UTC).isoformat()
-            if isinstance(published_at, datetime)
-            else published_at
-        )
-        if isinstance(published_at, datetime) and published_at.tzinfo is None:
-            raise ProfilePublicationError("published_at must include a timezone.")
+        timestamp = _canonical_published_at(published_at)
         return ProfileManifest(artifacts=tuple(artifacts), published_at=timestamp)
     except ProfilePublicationError:
         raise
@@ -245,6 +242,65 @@ def publish_profile_manifest(path: PathInput, manifest: ProfileManifest) -> Path
     except (ProfileManifestError, OSError, TypeError, ValueError, UnicodeError) as error:
         raise ProfilePublicationError("Could not publish the profile manifest.") from error
     return output
+
+
+def publish_profile_object(path: PathInput, payload: bytes) -> Path:
+    """Atomically publish one immutable content-addressed profile object.
+
+    Identical bytes are reused without rewriting and a conflicting object is
+    rejected without replacement.
+    """
+
+    if not isinstance(payload, bytes):
+        raise ProfilePublicationError("payload must be bytes.")
+    output = _path(value=path, field_name="profile_object_path")
+    try:
+        _reuse_or_publish_artifact(path=output, payload=payload)
+    except ProfilePublicationError:
+        raise
+    except (OSError, TypeError, ValueError, UnicodeError) as error:
+        raise ProfilePublicationError("Could not publish the profile object.") from error
+    return output
+
+
+def merge_profile_manifest_artifacts(
+    manifest: ProfileManifest,
+    artifacts: Iterable[ProfileManifestArtifact],
+    *,
+    published_at: str | datetime,
+) -> ProfileManifest:
+    """Merge replacement artifacts into a manifest by set and format identity.
+
+    Every unrelated entry is retained.  The original manifest is returned
+    unchanged when each supplied artifact already matches its entry.
+    """
+
+    if not isinstance(manifest, ProfileManifest):
+        raise ProfilePublicationError("manifest must be a ProfileManifest.")
+    if not isinstance(published_at, (str, datetime)):
+        raise ProfilePublicationError("published_at must be a string or datetime.")
+    timestamp = _canonical_published_at(published_at)
+    try:
+        supplied = tuple(artifacts)
+    except TypeError as error:
+        raise ProfilePublicationError(
+            "artifacts must be an iterable of profile manifest artifacts."
+        ) from error
+    existing = {_artifact_identity(artifact): artifact for artifact in manifest.artifacts}
+    replacements: dict[tuple[str, str], ProfileManifestArtifact] = {}
+    for artifact in supplied:
+        if not isinstance(artifact, ProfileManifestArtifact):
+            raise ProfilePublicationError(
+                "artifacts must contain only profile manifest artifacts."
+            )
+        identity = _artifact_identity(artifact)
+        if identity in replacements:
+            raise ProfilePublicationError("replacement artifacts contain a duplicate identity.")
+        replacements[identity] = artifact
+    if all(existing.get(identity) == artifact for identity, artifact in replacements.items()):
+        return manifest
+    merged = {**existing, **replacements}
+    return build_profile_manifest(tuple(merged.values()), published_at=timestamp)
 
 
 # Keep the public signature explicit: callers must opt into every input source.
@@ -449,6 +505,23 @@ def _path(*, value: PathInput, field_name: str) -> Path:
     if not str(path):
         raise ProfilePublicationError(f"{field_name} must be a valid local path.")
     return path
+
+
+def _canonical_published_at(published_at: str | datetime) -> str:
+    """Return the canonical manifest timestamp for one publication moment."""
+
+    if isinstance(published_at, datetime):
+        if published_at.tzinfo is None:
+            raise ProfilePublicationError("published_at must include a timezone.")
+        return published_at.astimezone(UTC).isoformat()
+    try:
+        return _manifest_timestamp(published_at, "published_at")
+    except ProfileManifestError as error:
+        raise ProfilePublicationError("Could not build the profile manifest.") from error
+
+
+def _artifact_identity(artifact: ProfileManifestArtifact) -> tuple[str, str]:
+    return artifact.set_code.casefold(), artifact.event_format.casefold()
 
 
 def _verify_metadata_source(*, source: PublicDumpSource) -> None:
@@ -656,13 +729,16 @@ def _atomic_write(*, path: Path, payload: bytes) -> None:
 
 
 __all__ = [
+    "PROFILE_BASE_URL",
     "ProfilePublicationError",
     "ProfilePublicationResult",
     "ValidatedProfileGeneration",
     "build_profile_manifest",
     "generate_local_profile_artifacts",
+    "merge_profile_manifest_artifacts",
     "profile_manifest_artifact_from_publication",
     "publish_profile_manifest",
+    "publish_profile_object",
     "validate_profile_generation",
 ]
 

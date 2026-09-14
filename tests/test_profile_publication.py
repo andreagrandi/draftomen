@@ -837,6 +837,155 @@ def test_manifest_publication_failure_preserves_previous_bytes(
     assert path.read_bytes() == previous
 
 
+def _object_url(digest: str) -> str:
+    return f"{publication.PROFILE_BASE_URL}{digest}.json.gz"
+
+
+def _manifest_artifacts(
+    tmp_path: Path,
+) -> tuple[ProfileManifestArtifact, ProfileManifestArtifact]:
+    result = _publish(tmp_path)
+    artifact = publication.profile_manifest_artifact_from_publication(
+        result,
+        _object_url(result.generation.report.gzip_sha256),
+    )
+    sibling = replace(
+        artifact,
+        set_code="ELD",
+        event_format="PremierDraft",
+        url=_object_url("b" * 64),
+        gzip_sha256="b" * 64,
+        profile_sha256="c" * 64,
+    )
+    return artifact, sibling
+
+
+def test_publish_profile_object_installs_reuses_and_rejects_conflicting_bytes(
+    tmp_path: Path,
+) -> None:
+    object_path = tmp_path / "profiles" / "objects" / f"{'a' * 64}.json.gz"
+    payload = b'{"schema_version":3}\n'
+
+    assert publication.publish_profile_object(object_path, payload) == object_path
+    assert object_path.read_bytes() == payload
+    installed_mtime = object_path.stat().st_mtime_ns
+    assert tuple(path.name for path in object_path.parent.iterdir()) == (object_path.name,)
+
+    assert publication.publish_profile_object(object_path, payload) == object_path
+    assert object_path.read_bytes() == payload
+    assert object_path.stat().st_mtime_ns == installed_mtime
+
+    with pytest.raises(publication.ProfilePublicationError, match="different bytes"):
+        publication.publish_profile_object(object_path, b"conflicting bytes")
+    assert object_path.read_bytes() == payload
+    assert object_path.stat().st_mtime_ns == installed_mtime
+    assert tuple(path.name for path in object_path.parent.iterdir()) == (object_path.name,)
+
+    with pytest.raises(publication.ProfilePublicationError, match="payload must be bytes"):
+        publication.publish_profile_object(object_path, "payload")  # type: ignore[arg-type]
+
+
+def test_merge_replaces_only_supplied_identity_and_keeps_canonical_order(
+    tmp_path: Path,
+) -> None:
+    artifact, sibling = _manifest_artifacts(tmp_path)
+    manifest = publication.build_profile_manifest((sibling, artifact), published_at=GENERATED_AT)
+    replacement = replace(artifact, profile_version="2.0")
+    published_at = GENERATED_AT + timedelta(hours=3)
+
+    merged = publication.merge_profile_manifest_artifacts(
+        manifest,
+        (replacement,),
+        published_at=published_at,
+    )
+
+    assert merged is not manifest
+    assert merged.published_at == published_at.isoformat()
+    assert len(merged.artifacts) == 2
+    assert [item.set_code for item in merged.artifacts] == ["eld", "tst"]
+    assert merged.select(set_code="eld", event_format="premierdraft") == sibling
+    assert merged.select(set_code="tst", event_format="quickdraft") == replacement
+    assert merged.to_bytes() == publication.build_profile_manifest(
+        (replacement, sibling),
+        published_at=published_at,
+    ).to_bytes()
+    assert ProfileManifest.from_bytes(merged.to_bytes()) == merged
+
+
+def test_merge_returns_the_original_manifest_when_nothing_changes(tmp_path: Path) -> None:
+    artifact, sibling = _manifest_artifacts(tmp_path)
+    manifest = publication.build_profile_manifest((artifact, sibling), published_at=GENERATED_AT)
+    before = manifest.to_bytes()
+
+    merged = publication.merge_profile_manifest_artifacts(
+        manifest,
+        (sibling, artifact),
+        published_at=GENERATED_AT + timedelta(days=1),
+    )
+
+    assert merged is manifest
+    assert merged.to_bytes() == before
+    assert merged.published_at == GENERATED_AT.isoformat()
+
+
+def test_merge_validates_published_at_before_the_unchanged_shortcut(tmp_path: Path) -> None:
+    artifact, sibling = _manifest_artifacts(tmp_path)
+    manifest = publication.build_profile_manifest((artifact, sibling), published_at=GENERATED_AT)
+
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="Could not build the profile manifest",
+    ):
+        publication.merge_profile_manifest_artifacts(
+            manifest,
+            (artifact, sibling),
+            published_at="not-a-timestamp",
+        )
+    with pytest.raises(publication.ProfilePublicationError, match="published_at must include"):
+        publication.merge_profile_manifest_artifacts(
+            manifest,
+            (artifact, sibling),
+            published_at=datetime(2026, 9, 1, 0, 0),
+        )
+
+
+def test_merge_rejects_duplicate_identities_and_invalid_arguments(tmp_path: Path) -> None:
+    artifact, sibling = _manifest_artifacts(tmp_path)
+    manifest = publication.build_profile_manifest((artifact, sibling), published_at=GENERATED_AT)
+    replacement = replace(sibling, profile_version="2.0")
+
+    with pytest.raises(publication.ProfilePublicationError, match="duplicate identity"):
+        publication.merge_profile_manifest_artifacts(
+            manifest,
+            (sibling, replacement),
+            published_at=GENERATED_AT,
+        )
+    with pytest.raises(publication.ProfilePublicationError, match="must be a ProfileManifest"):
+        publication.merge_profile_manifest_artifacts(
+            object(),  # type: ignore[arg-type]
+            (replacement,),
+            published_at=GENERATED_AT,
+        )
+    with pytest.raises(publication.ProfilePublicationError, match="only profile manifest artifacts"):
+        publication.merge_profile_manifest_artifacts(
+            manifest,
+            (object(),),  # type: ignore[list-item]
+            published_at=GENERATED_AT,
+        )
+    with pytest.raises(publication.ProfilePublicationError, match="iterable"):
+        publication.merge_profile_manifest_artifacts(
+            manifest,
+            object(),  # type: ignore[arg-type]
+            published_at=GENERATED_AT,
+        )
+    with pytest.raises(publication.ProfilePublicationError, match="published_at"):
+        publication.merge_profile_manifest_artifacts(
+            manifest,
+            (replacement,),
+            published_at=2026,  # type: ignore[arg-type]
+        )
+
+
 def test_enhanced_publication_round_trips_and_validates_artifact_and_report(
     tmp_path: Path,
 ) -> None:

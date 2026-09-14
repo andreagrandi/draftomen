@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -18,7 +19,7 @@ from draftomen.card_data_export import build_card_database_from_scryfall_cards
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS
 from draftomen.pickengine import PickEngine
-from draftomen.profile_client import ProfileClient, ProfileRefreshOutcome
+from draftomen.profile_client import ProfileClient, ProfileNetworkPolicy, ProfileRefreshOutcome
 from draftomen.profile_generation import (
     AGGREGATE_FALLBACK_CONFIDENCE_FACTOR,
     generate_set_profile,
@@ -34,12 +35,17 @@ from draftomen.profile_manifest import (
     ProfileManifestArtifact,
     load_profile_manifest,
 )
-from draftomen.set_profile import SetProfile
+from draftomen.set_profile import EnhancementStatus, ProfileMaturity, SetProfile
 from draftomen.set_card_data import SetCardData
+from draftomen.set_enrichment_workflow import (
+    EnrichmentReviewDecision,
+    finalize_set_enrichment,
+)
 from draftomen.seventeen import (
     CARD_RATINGS_ENDPOINT,
     COLOR_RATINGS_ENDPOINT,
     ColorPairWinRate,
+    QUICK_DRAFT_FORMAT,
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsError,
@@ -47,6 +53,11 @@ from draftomen.seventeen import (
     card_ratings_url,
     color_ratings_url,
     fetch_17lands_format_data,
+)
+
+from tests.test_set_enrichment_workflow import (
+    _Completion as EnrichmentCompletion,
+    _run as run_enrichment_analysis,
 )
 
 NOW = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
@@ -1590,3 +1601,168 @@ def test_lci_fallback_then_exact_refresh_reaches_profile_consumer(
     assert public_draft_calls == []
     assert first_manifest_bytes != first_manifest_path.read_bytes()
     assert first_object_bytes == first_object_path.read_bytes()
+
+
+def test_manually_published_enrichment_survives_refresh_and_reaches_profile_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import draftomen.card_data_export as card_export
+
+    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
+    monkeypatch.setattr(workflow, "_base_bytes", lambda *args, **kwargs: None)
+    root = tmp_path / "checkout"
+    _static(root / "website/public/card-data", set_code="old", set_name="Old Set")
+    inventory, bulk = _source(tmp_path)
+    _manifest(root)
+    profiles = root / "website/public/profiles"
+    manifest_path = profiles / "manifest.json"
+
+    def manifest_entries() -> dict[tuple[str, str], dict[str, Any]]:
+        manifest = json.loads(manifest_path.read_bytes())
+        return {
+            (entry["set_code"], entry["format"]): entry for entry in manifest["artifacts"]
+        }
+
+    seeded_entry = manifest_entries()[("old", "premierdraft")]
+
+    # A manual `enrich-set` Confirm publishes a real schema-three QuickDraft profile.
+    reviewed_at = datetime.now(tz=UTC) + timedelta(minutes=1)
+    analysis = run_enrichment_analysis(tmp_path, completion=EnrichmentCompletion())
+    review = finalize_set_enrichment(
+        analysis=analysis,
+        decision=EnrichmentReviewDecision.CONFIRM,
+        reviewer_id="operator",
+        reviewed_at=reviewed_at,
+        profiles_dir=profiles,
+    )
+
+    assert review.publication is not None
+    assert review.published_object_path is not None
+    assert review.published_manifest_path == manifest_path
+    enrichment_identity = (analysis.set_code, QUICK_DRAFT_FORMAT.casefold())
+    published_manifest = load_profile_manifest(manifest_path)
+    enrichment_artifact = published_manifest.select(
+        set_code=analysis.set_code, event_format=QUICK_DRAFT_FORMAT
+    )
+    assert enrichment_artifact is not None
+    assert enrichment_artifact.maturity is ProfileMaturity.METADATA_ONLY
+    enrichment_entry = manifest_entries()[enrichment_identity]
+    enrichment_object_path = review.published_object_path
+    enrichment_object_bytes = enrichment_object_path.read_bytes()
+
+    # An ordinary Profile Refresh of a different identity must merge its own
+    # identity into this manifest without disturbing the manual publication.
+    refresh_now = reviewed_at + timedelta(hours=1)
+    card_adapter, ratings_adapter, public_adapter, ratings_requests, public_calls = (
+        _fixture_adapters()
+    )
+
+    def fetch_json(url: str, timeout: int) -> dict[str, Any]:
+        del timeout
+        assert url == "https://www.17lands.com/data/filters"
+        return {
+            "formats_by_expansion": {"NEW": ["PremierDraft"]},
+            "live_formats_by_expansion": {},
+        }
+
+    report = workflow.generate_website(
+        base_commit="base",
+        selection_mode="one",
+        selector="new",
+        repo_root=root,
+        bundle_dir=tmp_path / "bundle",
+        cache_dir=tmp_path / "cache",
+        inventory_file=inventory,
+        bulk_file=bulk,
+        fetch_json=fetch_json,
+        clock=lambda: refresh_now,
+        card_metadata_adapter=card_adapter,
+        ratings_adapter=ratings_adapter,
+        public_draft_adapter=public_adapter,
+    )
+
+    assert report["status"] == "success"
+    assert report["profiles"]["manifest_changed"] is True
+    assert report["profiles"]["successful"] == [
+        {"event_format": "PremierDraft", "set_code": "new", "set_name": "New Set"}
+    ]
+    refreshed_entries = manifest_entries()
+    assert refreshed_entries[enrichment_identity] == enrichment_entry
+    assert refreshed_entries[("old", "premierdraft")] == seeded_entry
+    refreshed_manifest = load_profile_manifest(manifest_path)
+    assert (
+        refreshed_manifest.select(set_code=analysis.set_code, event_format=QUICK_DRAFT_FORMAT)
+        == enrichment_artifact
+    )
+    assert enrichment_object_path.read_bytes() == enrichment_object_bytes
+    refreshed_pair = refreshed_manifest.select(set_code="NEW", event_format="PremierDraft")
+    assert refreshed_pair is not None
+    assert (refreshed_pair.set_code, refreshed_pair.event_format) == ("new", "premierdraft")
+    refreshed_object_path = profiles / "objects" / f"{refreshed_pair.gzip_sha256}.json.gz"
+    assert (
+        hashlib.sha256(refreshed_object_path.read_bytes()).hexdigest()
+        == refreshed_pair.gzip_sha256
+    )
+    assert public_calls == []
+    # Profile Refresh acquires ratings for the casefolded format it normalized.
+    assert set(ratings_requests) == {
+        card_ratings_url(set_code="new", event_format="premierdraft"),
+        color_ratings_url(set_code="new", event_format="premierdraft"),
+    }
+
+    # The ordinary consumer downloads the manually published enrichment profile.
+    manifest_url = "https://www.draftomen.com/profiles/manifest.json"
+    consumer_dir = tmp_path / "consumer"
+    client = ProfileClient(
+        consumer_dir,
+        manifest_url=manifest_url,
+        opener=_local_profile_opener(root, manifest_url),
+        clock=lambda: refresh_now,
+        manifest_ttl_seconds=0,
+    )
+    downloaded = client.refresh(analysis.set_code, QUICK_DRAFT_FORMAT, force=True)
+
+    assert downloaded.outcome is ProfileRefreshOutcome.UPDATED
+    assert downloaded.manifest is not None
+    assert (
+        downloaded.manifest.select(set_code=analysis.set_code, event_format=QUICK_DRAFT_FORMAT)
+        == enrichment_artifact
+    )
+    profile = downloaded.profile
+    assert profile.schema_version == 3
+    assert (profile.set_code, profile.event_format) == enrichment_identity
+    assert profile.maturity is ProfileMaturity.METADATA_ONLY
+    assert profile.enhancement_status is EnhancementStatus.ENHANCED
+    assert profile.enhancement is not None
+    assert profile.enhancement.review == review.artifact.review
+    assert profile.enhancement.review.state == "confirmed"
+    assert profile.enhancement.review.reviewer_id == "operator"
+    assert profile.enhancement.artifact_sha256 == review.artifact_path.stem
+    assert (
+        tuple(item.finding_id for item in profile.enhancement.relationships)
+        == review.artifact.confirmed_relationship_ids
+    )
+    published_profile = SetProfile.from_json(json.loads(gzip.decompress(enrichment_object_bytes)))
+    assert profile == published_profile
+
+    # The same application directory serves the enrichment profile offline.
+    offline_calls: list[str] = []
+
+    def failing_opener(request: Any, *, timeout: float) -> Any:
+        del timeout
+        offline_calls.append(request.full_url)
+        raise AssertionError("the offline client must not open a request")
+
+    offline_client = ProfileClient(
+        consumer_dir,
+        manifest_url=manifest_url,
+        network_policy=ProfileNetworkPolicy.OFFLINE,
+        opener=failing_opener,
+        clock=lambda: refresh_now,
+    )
+    cached = offline_client.load_cached(analysis.set_code, QUICK_DRAFT_FORMAT)
+
+    assert cached.source == "local-metadata-only"
+    assert cached.profile == profile
+    assert offline_calls == []

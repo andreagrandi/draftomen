@@ -3,6 +3,17 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Publish the confirmed `enrich-set` result into the production profile tree instead of
+  only its local output directory: Confirm now installs the metadata-only QuickDraft
+  object at `website/public/profiles/objects/<gzip_sha256>.json.gz`, merges its entry
+  into the existing `website/public/profiles/manifest.json` through the shared
+  `publish_profile_object` and `merge_profile_manifest_artifacts` publication
+  primitives, and reports `published_profile_object`, `profile_sha256`,
+  `gzip_sha256` and `profile_manifest`; the content-addressed object is installed
+  before the manifest so the manifest stays authoritative, an identical
+  republication rewrites neither the object nor the manifest, an absent or
+  malformed repository manifest fails closed with `PROFILE_PUBLICATION_ERROR`
+  rather than synthesizing one, and Cancel still publishes no profile. (#532)
 - Cut relationship-validation enrichment cost: candidate validation now
   sends bounded batches of 20 pairs per model call instead of one call per
   pair, a local mechanism-compatibility filter prunes pairs whose oracle

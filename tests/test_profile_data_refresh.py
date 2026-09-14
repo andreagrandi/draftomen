@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 import draftomen.profile_data_refresh as refresh
+import draftomen.profile_publication as publication
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_manifest import (
@@ -789,14 +790,14 @@ def test_execute_manifest_failure_preserves_old_manifest_and_leaves_valid_object
         ratings=ratings,
     )
     object_path = profiles_dir / "objects" / f"{generation.report.gzip_sha256}.json.gz"
-    real_atomic_write = refresh._atomic_write
+    real_atomic_write = publication._atomic_write
 
     def fail_manifest(*, path: Path, payload: bytes) -> None:
         if path.name == "manifest.json":
             raise OSError("manifest write failed")
         real_atomic_write(path=path, payload=payload)
 
-    monkeypatch.setattr(refresh, "_atomic_write", fail_manifest)
+    monkeypatch.setattr(publication, "_atomic_write", fail_manifest)
     monkeypatch.setattr(
         refresh,
         "load_or_refresh_17lands_format_data",

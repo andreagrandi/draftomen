@@ -357,6 +357,19 @@ remote publication:
 4. `publish_profile_manifest(path, manifest)` writes the canonical manifest
    atomically. `load_profile_manifest(path)` and `dump_profile_manifest(...)`
    provide strict local manifest I/O.
+5. `publish_profile_object(path, payload)` installs one immutable
+   content-addressed object at `profiles/objects/<gzip_sha256>.json.gz`.
+   Identical bytes are reused without rewriting; different bytes at that path
+   are rejected as a collision and never overwritten.
+6. `merge_profile_manifest_artifacts(manifest, artifacts, *, published_at)`
+   replaces only the supplied identities, keyed by casefolded
+   `(set_code, event_format)`, and retains every unrelated entry. It returns
+   the original manifest when every supplied artifact already matches.
+
+`enrich-set` Confirm publishes into the current directory's repository profile
+tree through these primitives: the content-addressed object is installed
+before the merged manifest, so the manifest stays authoritative and an
+identical publication rewrites neither file. Cancel publishes nothing.
 
 Both `generate_local_profile_artifacts(...)` and `generate_set_profile(...)`
 accept one optional keyword-only `enrichment`: a confirmed

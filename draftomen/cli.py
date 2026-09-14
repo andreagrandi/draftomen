@@ -899,7 +899,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Interactively enrich one set profile from a draft guide.",
         description=(
             "Freeze one draft guide, analyze a set against it, review the results, and "
-            "publish the confirmed enrichment as a local QuickDraft profile."
+            "publish the confirmed enrichment as a QuickDraft profile under the current "
+            "directory's website/public/profiles tree."
         ),
     )
     enrich_set_parser.add_argument("set", metavar="SET", help="Exact set code (case-insensitive).")
@@ -2069,7 +2070,11 @@ def handle_enrich_set(args: argparse.Namespace) -> int:
         print("profile=not-published")
         return 0
 
-    if review.publication is None:
+    if (
+        review.publication is None
+        or review.published_object_path is None
+        or review.published_manifest_path is None
+    ):
         print("decision=Confirm")
         print(f"enrichment_artifact={review.artifact_path}")
         print("profile=not-published")
@@ -2079,10 +2084,10 @@ def handle_enrich_set(args: argparse.Namespace) -> int:
     publication = review.publication
     print("decision=Confirm")
     print(f"enrichment_artifact={review.artifact_path}")
-    print(f"profile={publication.artifact_path}")
-    print(f"generation_report={publication.manifest_path}")
+    print(f"published_profile_object={review.published_object_path}")
     print(f"profile_sha256={publication.generation.report.profile_sha256}")
     print(f"gzip_sha256={publication.generation.report.gzip_sha256}")
+    print(f"profile_manifest={review.published_manifest_path}")
     return 0
 
 

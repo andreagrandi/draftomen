@@ -28,8 +28,9 @@ from draftomen.profile_client import (
     _decompress_to_file,
     _validate_profile_metadata,
 )
-from draftomen.profile_data_refresh import PROFILE_BASE_URL, SUPPORTED_FORMATS
+from draftomen.profile_data_refresh import SUPPORTED_FORMATS
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact, ProfileManifestError
+from draftomen.profile_publication import PROFILE_BASE_URL
 from draftomen.set_card_data import SetCardData, SetCardDataError
 from draftomen.set_profile import SetProfile, SetProfileError
 

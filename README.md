@@ -130,8 +130,12 @@ under the selected output directory, streams per-phase progress with running
 token and cost accounting, prints a review of accepted, uncertain, rejected,
 and failed findings with source, model, prompt, and path provenance, and
 publishes the metadata-only QuickDraft profile only for an explicit `Confirm`
-at the prompt. Every other input, including an empty line, cancels, publishes
-nothing, and keeps the resumable work for a later run:
+at the prompt. A confirmed publication writes the content-addressed object to
+`website/public/profiles/objects/<gzip_sha256>.json.gz` under the current
+directory and merges its entry into `website/public/profiles/manifest.json`,
+installing the object before the manifest so the manifest stays authoritative.
+Every other input, including an empty line, cancels, publishes nothing, and
+keeps the resumable work for a later run:
 
 ```bash
 draftomen-tui enrich-set LCI \
