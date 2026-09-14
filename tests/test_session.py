@@ -1005,6 +1005,250 @@ def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
     )
 
 
+def test_live_session_without_log_source_processes_typed_persisted_lifecycle(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    published: list[LiveSessionEvent] = []
+    session = LiveSession(
+        log_path=None,
+        app_dir=app_dir,
+        card_database=_fixture_card_database(),
+        event_publisher=published.append,
+    )
+
+    initial = session.snapshot
+    assert session.log_path is None
+    assert session.follower is None
+    assert initial.status == ApplicationStatus(
+        phase=ApplicationPhase.WAITING_FOR_DRAFT,
+        message="Waiting for a Quick Draft.",
+    )
+    assert initial.status.setup_guidance is False
+    assert session.poll_once() is initial
+    assert session.scan_startup_files() is initial
+
+    events = (
+        AccountEvent(client_id="direct-account", screen_name="Direct"),
+        QuickDraftDetectedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            account_id="direct-account",
+        ),
+        DraftStartedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            course_id="direct-draft",
+            account_id="direct-account",
+        ),
+        PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=0,
+            pick_number=0,
+            offered_grp_ids=(104976,),
+            pool_grp_ids=(),
+            account_id="direct-account",
+        ),
+        PickMadeEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=0,
+            pick_number=0,
+            chosen_grp_id=104976,
+            account_id="direct-account",
+        ),
+        PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=0,
+            pick_number=1,
+            offered_grp_ids=(105080,),
+            pool_grp_ids=(104976,),
+            account_id="direct-account",
+        ),
+        DraftCompletedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=0,
+            pick_number=1,
+            picked_grp_ids=(104976,),
+            inferred=False,
+            account_id="direct-account",
+        ),
+    )
+    final = session.process_events(events=events)
+
+    assert [type(item.event) for item in published] == [
+        AccountEvent,
+        QuickDraftDetectedEvent,
+        DraftStartedEvent,
+        PackOfferedEvent,
+        PickMadeEvent,
+        PackOfferedEvent,
+        DraftCompletedEvent,
+    ]
+    assert [item.snapshot.pool.total_cards for item in published] == [0, 0, 0, 0, 1, 1, 1]
+    first_pack = published[3]
+    assert first_pack.scored_pack is not None
+    assert first_pack.snapshot.recommendations.cards
+    second_pack = published[5]
+    assert second_pack.scored_pack is not None
+    assert second_pack.scored_pack.role_ledger.pool_size == 1
+    assert [card.card.grp_id for card in second_pack.scored_pack.cards] == [105080]
+    assert final.status == ApplicationStatus(
+        phase=ApplicationPhase.DRAFT_COMPLETE,
+        message="Draft complete.",
+    )
+    assert final is published[-1].snapshot
+    assert final.draft is not None
+    assert final.draft.draft_id == "direct-draft"
+    assert final.draft.completed is True
+    assert final.pool.total_cards == 1
+    assert final.current_pack_event is None
+    assert final.current_scored_pack is None
+    assert final.recommendations.cards == ()
+    assert session.poll_once() is final
+    assert session.scan_startup_files() is final
+
+    state = load_draft_state(
+        account_id="direct-account",
+        draft_id="direct-draft",
+        app_dir=app_dir,
+    )
+    assert state.completed is True
+    assert state.chosen_pick_count == 1
+    assert len(state.pool_grp_ids) == 1
+    audit_records = load_draft_audit_records(
+        account_id="direct-account",
+        draft_id="direct-draft",
+        app_dir=app_dir,
+    )
+    assert [record["record_type"] for record in audit_records] == [
+        "draft_started",
+        "decision_evaluated",
+        "choice_made",
+        "decision_evaluated",
+        "draft_completed",
+    ]
+
+
+def test_live_session_direct_and_parsed_pack_ingestion_are_equivalent(
+    tmp_path: Path,
+) -> None:
+    profile = _fixture_set_profile()
+    pool_before_pick = _fixture_pool_before_pick(
+        pack_number=CONTEXT_PACK_NUMBER,
+        pick_number=CONTEXT_PICK_NUMBER,
+    )
+    parsed = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app-parsed",
+        card_database=_fixture_card_database(),
+        set_profile=profile,
+    )
+    direct = LiveSession(
+        log_path=None,
+        app_dir=tmp_path / "app-direct",
+        card_database=_fixture_card_database(),
+        set_profile=profile,
+    )
+
+    parsed_snapshot = parsed.process_lines(
+        lines=_profiled_history_lines(pool_before_pick=pool_before_pick)
+    )
+    direct_snapshot = direct.process_events(
+        events=_profiled_history_events(pool_before_pick=pool_before_pick)
+    )
+
+    parsed_pack = parsed_snapshot.current_scored_pack
+    direct_pack = direct_snapshot.current_scored_pack
+    assert parsed_pack is not None
+    assert direct_pack is not None
+    assert parsed_snapshot.current_pack_event == direct_snapshot.current_pack_event
+    _assert_scored_pack_parity(parsed_pack=parsed_pack, direct_pack=direct_pack)
+    assert direct_snapshot.recommendations == parsed_snapshot.recommendations
+
+
+def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
+    tmp_path: Path,
+) -> None:
+    from tests.test_pickengine import _token_sacrifice_relationship
+
+    profile = _relationship_session_profile()
+    app_dir = tmp_path / "app"
+    dump_set_profile(
+        profile,
+        set_profile_path(
+            set_code="TST",
+            event_format=QUICK_DRAFT_FORMAT,
+            app_dir=app_dir,
+        ),
+    )
+    session = LiveSession(
+        log_path=None,
+        app_dir=app_dir,
+        card_database=_relationship_session_database(),
+    )
+
+    snapshot = session.process_events(
+        events=(
+            AccountEvent(client_id="direct-account", screen_name="Direct"),
+            DraftStartedEvent(
+                event_name=CONTEXT_EVENT_NAME,
+                set_code="TST",
+                course_id="direct-draft",
+                account_id="direct-account",
+            ),
+            PackOfferedEvent(
+                event_name=CONTEXT_EVENT_NAME,
+                set_code="TST",
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(601,),
+                pool_grp_ids=(),
+                account_id="direct-account",
+            ),
+            PickMadeEvent(
+                event_name=CONTEXT_EVENT_NAME,
+                set_code="TST",
+                pack_number=0,
+                pick_number=0,
+                chosen_grp_id=601,
+                account_id="direct-account",
+            ),
+            PackOfferedEvent(
+                event_name=CONTEXT_EVENT_NAME,
+                set_code="TST",
+                pack_number=0,
+                pick_number=1,
+                offered_grp_ids=(602, 605),
+                pool_grp_ids=(601,),
+                account_id="direct-account",
+            ),
+        )
+    )
+
+    event = snapshot.current_pack_event
+    scored_pack = snapshot.current_scored_pack
+    assert event is not None
+    assert scored_pack is not None
+    _assert_profile_context(scored_pack=scored_pack, profile=profile, event=event)
+    assert snapshot.set_profile.phase is DataLoadPhase.READY
+    assert snapshot.set_profile.source == "local-mature"
+    assert snapshot.enhancement_availability.enabled is True
+    assert [
+        support.mechanism
+        for support in scored_pack.role_ledger.relationship_support
+    ] == [_token_sacrifice_relationship().mechanism]
+    evidenced_grp_ids = {
+        recommendation.card.grp_id
+        for recommendation in snapshot.recommendations.cards
+        if recommendation.contextual_evidence
+    }
+    assert evidenced_grp_ids == {602, 605}
+
+
 def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     tmp_path: Path,
 ) -> None:
@@ -7772,6 +8016,100 @@ def _profiled_history_lines(*, pool_before_pick: tuple[int, ...]) -> list[str]:
         )
     lines.append(_profiled_pack_line(pool_before_pick=pool_before_pick))
     return lines
+
+
+
+def _profiled_history_events(
+    *,
+    pool_before_pick: tuple[int, ...],
+) -> tuple[DraftEvent, ...]:
+    events: list[DraftEvent] = [
+        AccountEvent(client_id="profiled-account", screen_name="Profiled"),
+        DraftStartedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            course_id="profiled-draft",
+            account_id="profiled-account",
+        ),
+    ]
+    for pick_index, picked_card in enumerate(pool_before_pick):
+        pack_number, pick_number = divmod(pick_index, EXPECTED_PICKS_PER_PACK)
+        events.append(
+            PackOfferedEvent(
+                event_name=CONTEXT_EVENT_NAME,
+                set_code="TST",
+                pack_number=pack_number,
+                pick_number=pick_number,
+                offered_grp_ids=(picked_card,),
+                pool_grp_ids=pool_before_pick[:pick_index],
+                account_id="profiled-account",
+            )
+        )
+        events.append(
+            PickMadeEvent(
+                event_name=CONTEXT_EVENT_NAME,
+                set_code="TST",
+                pack_number=pack_number,
+                pick_number=pick_number,
+                chosen_grp_id=picked_card,
+                account_id="profiled-account",
+            )
+        )
+    events.append(
+        PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=CONTEXT_PACK_NUMBER,
+            pick_number=CONTEXT_PICK_NUMBER,
+            offered_grp_ids=CONTEXT_OFFERED_GRP_IDS,
+            pool_grp_ids=pool_before_pick,
+            account_id="profiled-account",
+        )
+    )
+    return tuple(events)
+
+
+def _assert_scored_pack_parity(
+    *,
+    parsed_pack: ScoredPack,
+    direct_pack: ScoredPack,
+) -> None:
+    assert [card.card.grp_id for card in direct_pack.cards] == [
+        card.card.grp_id for card in parsed_pack.cards
+    ]
+    for parsed_card, direct_card in zip(parsed_pack.cards, direct_pack.cards):
+        assert direct_card.card == parsed_card.card
+        assert direct_card.rating == parsed_card.rating
+        assert direct_card.raw_score == parsed_card.raw_score
+        assert direct_card.score == parsed_card.score
+        assert direct_card.source_label == parsed_card.source_label
+        assert direct_card.color_fit == parsed_card.color_fit
+        assert direct_card.rationale.to_json() == parsed_card.rationale.to_json()
+        assert render_pick_rationale_concise(scored_card=direct_card) == (
+            render_pick_rationale_concise(scored_card=parsed_card)
+        )
+        assert render_pick_rationale_detailed(scored_card=direct_card) == (
+            render_pick_rationale_detailed(scored_card=parsed_card)
+        )
+        assert direct_card.contextual_breakdown == parsed_card.contextual_breakdown
+        assert direct_card.contextual_evidence == parsed_card.contextual_evidence
+        assert direct_card.contextual_pair == parsed_card.contextual_pair
+        assert direct_card.contextual_theme == parsed_card.contextual_theme
+        assert direct_card.contextual_profile_maturity == (
+            parsed_card.contextual_profile_maturity
+        )
+        assert direct_card.contextual_profile_confidence == (
+            parsed_card.contextual_profile_confidence
+        )
+        assert direct_card.splash == parsed_card.splash
+    assert direct_pack.source_summary == parsed_pack.source_summary
+    assert direct_pack.commitment == parsed_pack.commitment
+    assert direct_pack.splash_state == parsed_pack.splash_state
+    assert direct_pack.comparison_summary == parsed_pack.comparison_summary
+    assert direct_pack.role_ledger is not None
+    assert direct_pack.role_ledger == parsed_pack.role_ledger
+    assert direct_pack.scoring_context is not None
+    assert direct_pack.scoring_context.stage == parsed_pack.scoring_context.stage
 
 
 def _profiled_pack_line(*, pool_before_pick: tuple[int, ...]) -> str:
