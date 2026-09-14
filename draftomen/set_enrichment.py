@@ -5,7 +5,7 @@ Every paid completion comes from the caller, and all durable state stays in the 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from functools import partial
@@ -23,8 +23,10 @@ from draftomen.semantic_enrichment import EnrichmentSources, card_source_sha256,
 from draftomen.semantic_enrichment_records import ArtifactReview, FindingStatus
 from draftomen.set_enrichment_candidates import (
     CandidateBounds,
+    CandidatePackage,
     CandidatePackageSet,
     construct_candidate_packages,
+    prune_candidate_packages,
 )
 from draftomen.set_enrichment_extraction import (
     CardCapabilityExtractionResult,
@@ -33,11 +35,12 @@ from draftomen.set_enrichment_extraction import (
     RelationshipValidationResult,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
-    build_relationship_validation_request,
+    build_relationship_validation_batch_request,
     parse_card_capability_extraction_response,
     parse_guide_extraction_response,
-    parse_relationship_validation_response,
-    relationship_source_sha256,
+    parse_relationship_validation_batch_response,
+    relationship_batch_source_sha256,
+    relationship_batch_subject_id,
     relationship_subject_id,
 )
 from draftomen.set_enrichment_work import (
@@ -69,6 +72,26 @@ class EnrichmentOutcome(StrEnum):
 
     COMPLETE = "complete"
     CANCELLED = "cancelled"
+
+
+# One batched validation call resolves a fixed number of constructed candidates, so a resumed run
+# rebuilds byte-identical batch identities from the same package order alone.
+RELATIONSHIP_BATCH_SIZE = 20
+
+
+def partition_relationship_batches(
+    packages: Sequence[CandidatePackage],
+) -> tuple[tuple[CandidatePackage, ...], ...]:
+    """Split constructed candidates into the deterministic batches one run validates."""
+    if isinstance(packages, (str, bytes)) or not isinstance(packages, Sequence):
+        raise SetEnrichmentError("packages must be a sequence of candidate packages.")
+    ordered = tuple(packages)
+    if any(type(package) is not CandidatePackage for package in ordered):
+        raise SetEnrichmentError("packages must contain CandidatePackage records.")
+    return tuple(
+        ordered[start : start + RELATIONSHIP_BATCH_SIZE]
+        for start in range(0, len(ordered), RELATIONSHIP_BATCH_SIZE)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,6 +540,12 @@ def run_set_enrichment(
         """Return the number of constructed candidates known so far."""
         return 0 if packages is None else len(packages.packages)
 
+    def planned_work() -> int:
+        """Return the number of durable work items this run resolves in total."""
+        # Relationship work is batched, so the cost projection extrapolates over batches, not pairs.
+        batches = 0 if packages is None else len(partition_relationship_batches(packages.packages))
+        return len(sources.guides) + len(eligible_cards) + batches
+
     def snapshot(current: EnrichmentPhase) -> EnrichmentProgress:
         """Build one immutable progress event from the work resolved so far."""
         return EnrichmentProgress(
@@ -530,9 +559,7 @@ def run_set_enrichment(
             valid_count=_valid_count(relationship_results),
             uncertain_count=_uncertain_count(guide_results, card_results, relationship_results),
             rejected_count=_rejected_count(guide_results, card_results, relationship_results),
-            accounting=ledger.snapshot(
-                planned_work=len(sources.guides) + len(eligible_cards) + relationships_total()
-            ),
+            accounting=ledger.snapshot(planned_work=planned_work()),
         )
 
     def emit(current: EnrichmentPhase) -> None:
@@ -628,34 +655,39 @@ def run_set_enrichment(
     emit(phase)
     if cancel_requested():
         return finish(EnrichmentOutcome.CANCELLED)
-    packages = construct_candidate_packages(card_results, bounds=bounds)
+    constructed = construct_candidate_packages(card_results, bounds=bounds)
+    cards_by_id = {card.grp_id: card for card in sources.cards}
+    kept, prune_omissions = prune_candidate_packages(constructed.packages, cards=cards_by_id)
+    if prune_omissions:
+        # A locally pruned pair is never sent for validation, so it stops counting as evaluated and
+        # joins the omissions that already account for every unevaluated candidate pair.
+        pruned_pairs = sum(omission.omitted_pairs for omission in prune_omissions)
+        constructed = replace(
+            constructed,
+            packages=kept,
+            omissions=tuple(
+                sorted(
+                    (*constructed.omissions, *prune_omissions),
+                    key=lambda omission: omission.mechanism,
+                )
+            ),
+            evaluated_pairs=constructed.evaluated_pairs - pruned_pairs,
+        )
+    packages = constructed
     emit(phase)
 
     phase = EnrichmentPhase.RELATIONSHIPS
     emit(phase)
     if cancel_requested():
         return finish(EnrichmentOutcome.CANCELLED)
-    for package in packages.packages:
+    for batch_index, batch in enumerate(partition_relationship_batches(packages.packages)):
         if cancel_requested():
             return finish(EnrichmentOutcome.CANCELLED)
-        request = build_relationship_validation_request(
-            sources=sources,
-            mechanism=package.mechanism,
-            source=package.source,
-            target=package.target,
-        )
+        request = build_relationship_validation_batch_request(sources=sources, packages=batch)
         identity = build_work_identity(
             work_kind=WorkKind.RELATIONSHIP,
-            subject_id=relationship_subject_id(
-                mechanism=package.mechanism,
-                source=package.source,
-                target=package.target,
-            ),
-            input_sha256=relationship_source_sha256(
-                mechanism=package.mechanism,
-                source=package.source,
-                target=package.target,
-            ),
+            subject_id=relationship_batch_subject_id(batch_index),
+            input_sha256=relationship_batch_source_sha256(request=request),
             request=request,
             model_config=model_config,
         )
@@ -665,16 +697,15 @@ def run_set_enrichment(
             request=request,
             complete=complete,
             parse=partial(
-                parse_relationship_validation_response,
+                parse_relationship_validation_batch_response,
                 sources=sources,
-                mechanism=package.mechanism,
-                source=package.source,
-                target=package.target,
+                packages=batch,
             ),
             run_id=normalized_run_id,
         )
         ledger.record(identity=identity, response=response, reused=reused)
-        relationship_results.append(result)
+        # Batches are a request-shape detail: every downstream consumer keeps one verdict per pair.
+        relationship_results.extend(result.verdicts)
         emit(phase)
     return finish(EnrichmentOutcome.COMPLETE)
 

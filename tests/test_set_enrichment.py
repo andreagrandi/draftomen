@@ -16,7 +16,6 @@ from draftomen.semantic_capability_records import (
     CapabilityPrerequisite,
     CapabilityQuantity,
     CapabilityZone,
-    CardCapability,
     PrerequisiteKind,
     QuantityRelation,
 )
@@ -33,21 +32,27 @@ from draftomen.set_enrichment import (
     EnrichmentPhase,
     EnrichmentProgress,
     EnrichmentRunResult,
+    partition_relationship_batches,
     run_set_enrichment,
+)
+from draftomen.set_enrichment_candidates import (
+    CandidatePackage,
+    construct_candidate_packages,
 )
 from draftomen.set_enrichment_extraction import (
     CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
     GUIDE_EXTRACTION_PROMPT_ID,
-    RELATIONSHIP_VALIDATION_PROMPT_ID,
+    RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
+    CardCapabilityExtractionResult,
     ExtractionOutcome,
     ExtractionRequest,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
-    build_relationship_validation_request,
+    build_relationship_validation_batch_request,
     parse_card_capability_extraction_response,
     parse_guide_extraction_response,
-    relationship_source_sha256,
-    relationship_subject_id,
+    relationship_batch_source_sha256,
+    relationship_batch_subject_id,
 )
 from draftomen.set_enrichment_work import (
     SetEnrichmentWorkStore,
@@ -113,9 +118,9 @@ CACHED_INPUT_TOKENS = 300
 OUTPUT_TOKENS = 200
 REASONING_TOKENS = 40
 CALL_COST_USD = "0.002"
-TOTAL_COST_USD = "0.016"
+TOTAL_COST_USD = "0.012"
 MIDRUN_PROJECTED_COST_USD = "0.01"
-WORKED_CALLS = 8
+WORKED_CALLS = 6
 RELATIONSHIP_EVIDENCE_QUOTE_REASON = (
     "relationship Oracle evidence quote is not an exact source substring."
 )
@@ -227,41 +232,33 @@ def _card_identity(card_id: int) -> WorkIdentity:
     )
 
 
-def _parsed_capability(card_id: int, finding_id: str) -> CardCapability:
-    """Return one fixture capability exactly as the service parses it."""
-    result = parse_card_capability_extraction_response(
-        content=_capability_content(card_id),
-        sources=_sources(),
-        card_id=card_id,
-        run_id=RUN_ID,
+def _card_results() -> tuple[CardCapabilityExtractionResult, ...]:
+    """Return every parsed card extraction the fixture sources produce, in engine order."""
+    return tuple(
+        parse_card_capability_extraction_response(
+            content=_capability_content(card_id),
+            sources=_sources(),
+            card_id=card_id,
+            run_id=RUN_ID,
+        )
+        for card_id in ELIGIBLE_CARD_IDS
     )
-    return next(
-        capability for capability in result.capabilities if capability.finding_id == finding_id
-    )
+
+
+def _candidate_packages() -> tuple[CandidatePackage, ...]:
+    """Return the candidate packages the fixture capabilities construct, in engine order."""
+    return construct_candidate_packages(_card_results()).packages
 
 
 def _relationship_identity() -> WorkIdentity:
-    """Return the durable identity of the token-to-go-wide candidate the fixture constructs."""
-    source = _parsed_capability(TOKEN_CARD_ID, TOKEN_FINDING_ID)
-    target = _parsed_capability(WIDE_CARD_ID, WIDE_FINDING_ID)
+    """Return the durable identity of the single relationship batch this fixture constructs."""
+    (batch,) = partition_relationship_batches(_candidate_packages())
+    request = build_relationship_validation_batch_request(sources=_sources(), packages=batch)
     return build_work_identity(
         work_kind=WorkKind.RELATIONSHIP,
-        subject_id=relationship_subject_id(
-            mechanism=RELATIONSHIP_MECHANISM,
-            source=source,
-            target=target,
-        ),
-        input_sha256=relationship_source_sha256(
-            mechanism=RELATIONSHIP_MECHANISM,
-            source=source,
-            target=target,
-        ),
-        request=build_relationship_validation_request(
-            sources=_sources(),
-            mechanism=RELATIONSHIP_MECHANISM,
-            source=source,
-            target=target,
-        ),
+        subject_id=relationship_batch_subject_id(0),
+        input_sha256=relationship_batch_source_sha256(request=request),
+        request=request,
         model_config=_model_config(),
     )
 
@@ -399,50 +396,67 @@ def _capability_content(card_id: int) -> str:
     )
 
 
-def _relationship_content(prompt: dict[str, Any], *, foreign_quote: str | None) -> str:
-    """Build one accepted v2 verdict for the single candidate a request describes.
+def _relationship_verdict(pair: dict[str, Any], *, foreign_quote: str | None) -> dict[str, Any]:
+    """Build one accepted v2 verdict for a single pair of a batch request.
     The typed prerequisites stay advisory, so no projection is fabricated.
     """
-    source = prompt["source"]
-    target = prompt["target"]
+    source = pair["source"]
+    target = pair["target"]
     source_quote = source["evidence"][0]["quote"] if foreign_quote is None else foreign_quote
+    return {
+        "index": pair["index"],
+        "schema_version": 2,
+        "verdict": "accepted",
+        "claim": RELATIONSHIP_CLAIM,
+        "reason": None,
+        "evidence": [
+            {
+                "card_id": source["card_id"],
+                "face_index": source["face_index"],
+                "quote": source_quote,
+            },
+            {
+                "card_id": target["card_id"],
+                "face_index": target["face_index"],
+                "quote": target["evidence"][0]["quote"],
+            },
+        ],
+        "prerequisite_status": "uncertain",
+        "source_prerequisites": [],
+        "target_prerequisites": [],
+    }
+
+
+def _relationship_content(prompt: dict[str, Any], *, foreign_quote: str | None) -> str:
+    """Build one accepted verdict per pair the batch request lists."""
     return json.dumps(
         {
-            "schema_version": 2,
-            "verdict": "accepted",
-            "claim": RELATIONSHIP_CLAIM,
-            "reason": None,
-            "evidence": [
-                {
-                    "card_id": source["card_id"],
-                    "face_index": source["face_index"],
-                    "quote": source_quote,
-                },
-                {
-                    "card_id": target["card_id"],
-                    "face_index": target["face_index"],
-                    "quote": target["evidence"][0]["quote"],
-                },
-            ],
-            "prerequisite_status": "uncertain",
-            "source_prerequisites": [],
-            "target_prerequisites": [],
+            "verdicts": [
+                _relationship_verdict(pair, foreign_quote=foreign_quote)
+                for pair in prompt["pairs"]
+            ]
         }
     )
 
 
-def _uncertain_relationship_content() -> str:
-    """Build one uncertain v2 verdict that omits the participant evidence a record requires."""
+def _evidence_less_relationship_content() -> str:
+    """Build one batch response whose verdicts omit the participant evidence a record requires."""
     return json.dumps(
         {
-            "schema_version": 2,
-            "verdict": "uncertain",
-            "claim": RELATIONSHIP_CLAIM,
-            "reason": RELATIONSHIP_UNCERTAIN_REASON,
-            "evidence": [],
-            "prerequisite_status": "uncertain",
-            "source_prerequisites": [],
-            "target_prerequisites": [],
+            "verdicts": [
+                {
+                    "index": index,
+                    "schema_version": 2,
+                    "verdict": "uncertain",
+                    "claim": RELATIONSHIP_CLAIM,
+                    "reason": RELATIONSHIP_UNCERTAIN_REASON,
+                    "evidence": [],
+                    "prerequisite_status": "uncertain",
+                    "source_prerequisites": [],
+                    "target_prerequisites": [],
+                }
+                for index in range(len(_candidate_packages()))
+            ]
         }
     )
 
@@ -452,18 +466,13 @@ def _prompt_payload(request: ExtractionRequest) -> dict[str, Any]:
 
 
 def _prompt_subject(request: ExtractionRequest) -> str:
-    """Return the durable work subject one pinned request describes."""
+    """Return the durable work subject one guide or card request describes."""
     payload = _prompt_payload(request)
     if request.prompt_id == GUIDE_EXTRACTION_PROMPT_ID:
         return payload["guide"]["guide_id"]
     if request.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID:
         return str(payload["card"]["card_id"])
-    source = payload["source"]
-    target = payload["target"]
-    return (
-        f"relationship:{payload['mechanism']}:{source['card_id']}:{source['finding_id']}"
-        f":{target['card_id']}:{target['finding_id']}"
-    )
+    raise AssertionError(f"unexpected prompt {request.prompt_id}.")
 
 
 def _completion_content(request: ExtractionRequest, *, foreign_quote: str | None) -> str:
@@ -485,26 +494,25 @@ class _FakeCompletion:
         behaviours: Sequence[str] = (),
         fail_after: int | None = None,
         foreign_relationship_quote: str | None = None,
-        forbidden_relationship_subject: str | None = None,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.requests: list[ExtractionRequest] = []
         self.behaviours = behaviours
         self.fail_after = fail_after
         self.foreign_relationship_quote = foreign_relationship_quote
-        self.forbidden_relationship_subject = forbidden_relationship_subject
 
     def __call__(self, request: ExtractionRequest) -> OpenRouterResponse:
         """Answer one pinned request, raising once the scripted failure count is reached."""
-        subject = _prompt_subject(request)
+        if request.prompt_id == RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID:
+            # Only the caller knows a batch's index, so the fixture labels the batch each run
+            # requests in order, exactly like the engine's durable subject.
+            subject = relationship_batch_subject_id(
+                len(self.calls_for(RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID))
+            )
+        else:
+            subject = _prompt_subject(request)
         self.calls.append((request.prompt_id, subject))
         self.requests.append(request)
-        if (
-            self.forbidden_relationship_subject is not None
-            and request.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID
-            and subject == self.forbidden_relationship_subject
-        ):
-            raise AssertionError(f"replacement relationship request for {subject}.")
         index = len(self.calls) - 1
         if self.fail_after is not None and index >= self.fail_after:
             raise _CompletionFailure("scripted acquisition failure.")
@@ -604,8 +612,8 @@ def test_full_run_executes_every_phase_and_reports_pending_review(tmp_path: Path
     ]
     assert [event.guides_completed for event in guide_events] == [0, 1]
     assert [event.cards_completed for event in card_events] == [0, 1, 2, 3, 4]
-    assert [event.relationships_completed for event in relationship_events] == [0, 1, 2, 3, 3]
-    assert len(events) == 14
+    assert [event.relationships_completed for event in relationship_events] == [0, 3, 3]
+    assert len(events) == 12
     assert events[-1] == result.progress
     assert result.progress.guides_completed == 1
     assert result.progress.cards_completed == 4
@@ -702,7 +710,7 @@ def test_unvalidated_durable_response_is_reparsed_without_a_request(tmp_path: Pa
 def test_unvalidated_relationship_response_resumes_to_a_malformed_outcome(
     tmp_path: Path,
 ) -> None:
-    """Prove a durable v2 response that omits participant evidence resumes as malformed."""
+    """Prove a durable batch response without participant evidence resumes as malformed."""
     work_root = tmp_path / "work"
     store = _store(work_root)
     identity = _relationship_identity()
@@ -710,7 +718,7 @@ def test_unvalidated_relationship_response_resumes_to_a_malformed_outcome(
     store.record_response(
         identity=identity,
         response=OpenRouterResponse(
-            content=_uncertain_relationship_content(),
+            content=_evidence_less_relationship_content(),
             model=MODEL,
             provider=PROVIDER,
             input_tokens=INPUT_TOKENS,
@@ -722,10 +730,11 @@ def test_unvalidated_relationship_response_resumes_to_a_malformed_outcome(
     )
     assert store.lookup(identity=identity).state is WorkState.UNVALIDATED
 
-    completion = _FakeCompletion(forbidden_relationship_subject=identity.subject_id)
+    completion = _FakeCompletion()
     result = _run(work_root=work_root, completion=completion)
 
     assert result.outcome is EnrichmentOutcome.COMPLETE
+    assert completion.calls_for(RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID) == []
     assert store.lookup(identity=identity).state is WorkState.COMPLETED
     assert result.candidate_packages is not None
     index = next(
@@ -749,31 +758,26 @@ def test_relationship_calls_cover_every_constructed_candidate(tmp_path: Path) ->
     assert result.candidate_packages is not None
     packages = result.candidate_packages.packages
     assert len(packages) == 3
-    expected_subjects = [
-        relationship_subject_id(
-            mechanism=package.mechanism,
-            source=package.source,
-            target=package.target,
-        )
-        for package in packages
-    ]
+    batches = partition_relationship_batches(packages)
     assert [
-        subject for _, subject in completion.calls_for(RELATIONSHIP_VALIDATION_PROMPT_ID)
-    ] == expected_subjects
+        subject for _, subject in completion.calls_for(RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID)
+    ] == [relationship_batch_subject_id(index) for index in range(len(batches))]
 
     relationship_requests = [
         request
         for request in completion.requests
-        if request.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID
+        if request.prompt_id == RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID
     ]
-    assert len(relationship_requests) == len(packages)
-    for request, package in zip(relationship_requests, packages):
+    assert len(relationship_requests) == len(batches)
+    for request, batch in zip(relationship_requests, batches):
         prompt = _prompt_payload(request)
-        assert prompt["mechanism"] == package.mechanism
-        assert prompt["source"]["card_id"] == package.source.card_id
-        assert prompt["source"]["finding_id"] == package.source.finding_id
-        assert prompt["target"]["card_id"] == package.target.card_id
-        assert prompt["target"]["finding_id"] == package.target.finding_id
+        assert [pair["index"] for pair in prompt["pairs"]] == list(range(len(batch)))
+        for pair, package in zip(prompt["pairs"], batch):
+            assert pair["mechanism"] == package.mechanism
+            assert pair["source"]["card_id"] == package.source.card_id
+            assert pair["source"]["finding_id"] == package.source.finding_id
+            assert pair["target"]["card_id"] == package.target.card_id
+            assert pair["target"]["finding_id"] == package.target.finding_id
 
 
 def test_accepted_relationship_preserves_candidate_capability_content(tmp_path: Path) -> None:
@@ -875,8 +879,6 @@ def test_progress_events_expose_counters_percentages_and_costs(tmp_path: Path) -
     assert [event.guides_percent for event in card_events] == [100.0] * 5
     assert [event.relationships_percent for event in relationship_events] == [
         0.0,
-        33.3,
-        66.7,
         100.0,
         100.0,
     ]
@@ -914,7 +916,7 @@ def test_response_without_cost_keeps_running_cost_and_disables_projection(
     assert accounting.executed_work == WORKED_CALLS
     assert accounting.work_without_cost == 1
     assert accounting.input_tokens == INPUT_TOKENS * (WORKED_CALLS - 1)
-    assert accounting.running_cost_usd == "0.014"
+    assert accounting.running_cost_usd == "0.01"
     assert accounting.projected_final_cost_usd is None
 
 

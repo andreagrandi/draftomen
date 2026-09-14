@@ -58,6 +58,7 @@ from draftomen.set_enrichment import (
     EnrichmentProgress,
     EnrichmentRunResult,
     openrouter_completion,
+    partition_relationship_batches,
     run_set_enrichment,
 )
 from draftomen.set_enrichment_candidates import CandidatePackage
@@ -68,9 +69,9 @@ from draftomen.set_enrichment_extraction import (
     RelationshipValidationResult,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
-    build_relationship_validation_request,
-    relationship_source_sha256,
-    relationship_subject_id,
+    build_relationship_validation_batch_request,
+    relationship_batch_source_sha256,
+    relationship_batch_subject_id,
 )
 from draftomen.set_enrichment_work import (
     SetEnrichmentWorkError,
@@ -514,29 +515,20 @@ def _build_work_identities(
         return identities
     if len(run.relationship_results) != len(run.candidate_packages.packages):
         raise _workflow_error(WORK_INCOMPLETE_ERROR)
-    for package, result in zip(run.candidate_packages.packages, run.relationship_results):
-        request = build_relationship_validation_request(
-            sources=sources,
-            mechanism=package.mechanism,
-            source=package.source,
-            target=package.target,
-        )
+    batches = partition_relationship_batches(run.candidate_packages.packages)
+    resolved = 0
+    for batch_index, batch in enumerate(batches):
+        request = build_relationship_validation_batch_request(sources=sources, packages=batch)
         identity = build_work_identity(
             work_kind=WorkKind.RELATIONSHIP,
-            subject_id=relationship_subject_id(
-                mechanism=package.mechanism,
-                source=package.source,
-                target=package.target,
-            ),
-            input_sha256=relationship_source_sha256(
-                mechanism=package.mechanism,
-                source=package.source,
-                target=package.target,
-            ),
+            subject_id=relationship_batch_subject_id(batch_index),
+            input_sha256=relationship_batch_source_sha256(request=request),
             request=request,
             model_config=model_config,
         )
-        identities.append((identity, (package, result)))
+        verdicts = run.relationship_results[resolved : resolved + len(batch)]
+        resolved += len(batch)
+        identities.append((identity, tuple(zip(batch, verdicts))))
     return identities
 
 
@@ -698,38 +690,43 @@ def _mapped_findings(
                     )
                 )
         else:
-            package, result = context
-            if not isinstance(package, CandidatePackage) or not isinstance(
-                result, RelationshipValidationResult
-            ):
+            # A relationship identity resolves one whole batch, so its verdicts stay grouped here
+            # and are re-expanded per pair for the semantic records below.
+            pairs = context
+            if not isinstance(pairs, tuple) or not pairs:
                 raise _workflow_error(ANALYSIS_ERROR)
-            if result.relationship is not None:
-                relationship = result.relationship
-                candidates.append(
-                    CardRelationship(
-                        finding_id=_namespaced(identity, relationship.finding_id),
-                        mechanism=relationship.mechanism,
-                        participants=(relationship.source.card_id, relationship.target.card_id),
-                        claim=relationship.claim,
-                        prerequisites=(package.reason,),
-                        oracle_evidence=relationship.evidence,
-                        guide_evidence=(),
-                        review=relationship.review,
-                        run_id=f"work-{identity.content_sha256}",
-                        prerequisite_projection=relationship.prerequisite_projection,
+            for package, result in pairs:
+                if not isinstance(package, CandidatePackage) or not isinstance(
+                    result, RelationshipValidationResult
+                ):
+                    raise _workflow_error(ANALYSIS_ERROR)
+                if result.relationship is not None:
+                    relationship = result.relationship
+                    candidates.append(
+                        CardRelationship(
+                            finding_id=_namespaced(identity, relationship.finding_id),
+                            mechanism=relationship.mechanism,
+                            participants=(relationship.source.card_id, relationship.target.card_id),
+                            claim=relationship.claim,
+                            prerequisites=(package.reason,),
+                            oracle_evidence=relationship.evidence,
+                            guide_evidence=(),
+                            review=relationship.review,
+                            run_id=f"work-{identity.content_sha256}",
+                            prerequisite_projection=relationship.prerequisite_projection,
+                        )
                     )
-                )
-            if result.rejected is not None:
-                finding = result.rejected
-                rejected.append(
-                    RejectedFinding(
-                        finding_id=_namespaced(identity, finding.finding_id),
-                        source_kind=finding.source_kind,
-                        summary=finding.summary,
-                        reason=finding.reason,
-                        run_id=f"work-{identity.content_sha256}",
+                if result.rejected is not None:
+                    finding = result.rejected
+                    rejected.append(
+                        RejectedFinding(
+                            finding_id=_namespaced(identity, finding.finding_id),
+                            source_kind=finding.source_kind,
+                            summary=finding.summary,
+                            reason=finding.reason,
+                            run_id=f"work-{identity.content_sha256}",
+                        )
                     )
-                )
     return (
         tuple(facts),
         tuple(claims),

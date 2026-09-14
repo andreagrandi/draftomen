@@ -1,15 +1,19 @@
-"""Pure bounded construction of compatible relationship candidates.
+"""Pure bounded construction and local filtering of compatible relationship candidates.
 Index validated capabilities by role, pair declared enabler-to-payoff roles, and bound work.
+Prune constructed pairs whose participants cannot reference their mechanism in their own Oracle
+text, so no paid validation runs on a pair the stored text already rules out.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 import json
+import re
 from typing import Any
 
+from draftomen.carddb import CardInfo
 from draftomen.semantic_capability_records import CardCapability
 from draftomen.semantic_roles import Role
 from draftomen.set_enrichment_extraction import CardCapabilityExtractionResult, ExtractionOutcome
@@ -380,6 +384,120 @@ def construct_candidate_packages(
     )
 
 
+LOCAL_FILTER_OMITTED_REASON = "failed local mechanism compatibility filter"
+
+_TOKEN_TEXT_PATTERN = re.compile(r"\btokens?\b|\bamass\b", re.IGNORECASE)
+_SACRIFICE_TEXT_PATTERN = re.compile(r"sacrific", re.IGNORECASE)
+_DEATH_TEXT_PATTERN = re.compile(r"\bdie[sd]?\b|\bdeath\b", re.IGNORECASE)
+_DISCARD_TEXT_PATTERN = re.compile(r"discard", re.IGNORECASE)
+_GRAVEYARD_TEXT_PATTERN = re.compile(r"graveyard", re.IGNORECASE)
+_MILL_TEXT_PATTERN = re.compile(r"\bmill(?:s|ed)?\b|graveyard", re.IGNORECASE)
+_RECURSION_TEXT_PATTERN = re.compile(
+    r"graveyard|\breturn\b[^\n]{0,120}\b(?:battlefield|your hand)\b",
+    re.IGNORECASE,
+)
+# Going wide pays off through the number of creatures its controller has, whether or not the
+# payoff itself ever mentions a token.
+_WIDTH_TEXT_PATTERN = re.compile(
+    r"creatures you control"
+    r"|creature you control"
+    r"|number of creatures"
+    r"|for each .{0,60}creature"
+    r"|each .{0,30}creature you control"
+    r"|creatures with total power"
+    r"|attacking creatures",
+    re.IGNORECASE,
+)
+
+# A pair survives only when both participants plausibly reference the mechanism's zone or action.
+# The token gates read the token-making participant, because the payoff participants of the token
+# mechanisms are sacrifice outlets, death payoffs, and go-wide payoffs whose own text never has to
+# mention tokens. A mechanism that is absent from this table keeps every pair it declares, since a
+# missing local gate is not evidence that a constructed pair is incompatible.
+_LOCAL_MECHANISM_GATES: Mapping[str, tuple[re.Pattern[str] | None, re.Pattern[str] | None]] = {
+    "discard-recursion-payoff": (_DISCARD_TEXT_PATTERN, _RECURSION_TEXT_PATTERN),
+    "fodder-dies-payoff": (None, _DEATH_TEXT_PATTERN),
+    "fodder-sacrifice-outlet": (None, _SACRIFICE_TEXT_PATTERN),
+    "loot-recursion-payoff": (_DISCARD_TEXT_PATTERN, _RECURSION_TEXT_PATTERN),
+    "mill-graveyard-payoff": (_MILL_TEXT_PATTERN, _GRAVEYARD_TEXT_PATTERN),
+    "token-death-payoff": (_TOKEN_TEXT_PATTERN, _DEATH_TEXT_PATTERN),
+    "token-go-wide-payoff": (_TOKEN_TEXT_PATTERN, _WIDTH_TEXT_PATTERN),
+    "token-sacrifice-outlet": (_TOKEN_TEXT_PATTERN, _SACRIFICE_TEXT_PATTERN),
+}
+
+
+def _participant_oracle_text(capability: CardCapability, card: CardInfo) -> str:
+    """Return the exact frozen Oracle text one participant capability binds to."""
+    face_index = capability.face_index
+    if face_index is None:
+        return card.oracle_text or ""
+    faces = card.faces
+    if 0 <= face_index < len(faces):
+        return faces[face_index].oracle_text or ""
+    return ""
+
+
+def _pair_passes_local_gates(
+    package: CandidatePackage,
+    *,
+    gates: tuple[re.Pattern[str] | None, re.Pattern[str] | None],
+    cards: Mapping[int, CardInfo],
+) -> bool:
+    """Report whether both participants reference the mechanism in their own Oracle text."""
+    source_card = cards.get(package.source.card_id)
+    target_card = cards.get(package.target.card_id)
+    if source_card is None or target_card is None:
+        # Absent metadata is not evidence of incompatibility, so the pair survives.
+        return True
+    source_pattern, target_pattern = gates
+    if source_pattern is not None and not source_pattern.search(
+        _participant_oracle_text(package.source, source_card)
+    ):
+        return False
+    return target_pattern is None or bool(
+        target_pattern.search(_participant_oracle_text(package.target, target_card))
+    )
+
+
+def prune_candidate_packages(
+    packages: tuple[CandidatePackage, ...],
+    *,
+    cards: Mapping[int, CardInfo],
+) -> tuple[tuple[CandidatePackage, ...], tuple[CandidateOmission, ...]]:
+    """Drop candidate pairs that fail local mechanism compatibility gates.
+    Kept packages preserve the caller's order; omissions aggregate per mechanism.
+    """
+    if not isinstance(packages, tuple) or any(
+        type(package) is not CandidatePackage for package in packages
+    ):
+        raise SetEnrichmentCandidatesError(
+            "packages must be a tuple of CandidatePackage records."
+        )
+    if not isinstance(cards, Mapping):
+        raise SetEnrichmentCandidatesError(
+            "cards must be a mapping of card ids to CardInfo records."
+        )
+    kept: list[CandidatePackage] = []
+    omitted: dict[str, int] = {}
+    for package in packages:
+        gates = _LOCAL_MECHANISM_GATES.get(package.mechanism)
+        if gates is None or _pair_passes_local_gates(package, gates=gates, cards=cards):
+            kept.append(package)
+            continue
+        omitted[package.mechanism] = omitted.get(package.mechanism, 0) + 1
+    return (
+        tuple(kept),
+        tuple(
+            CandidateOmission(
+                mechanism=mechanism,
+                omitted_pairs=count,
+                reason=LOCAL_FILTER_OMITTED_REASON,
+            )
+            for mechanism, count in sorted(omitted.items())
+        ),
+    )
+
+
 __all__ = [
     "CANDIDATE_REASON",
     "MAX_EVALUATED_CANDIDATE_PAIRS",
@@ -393,4 +511,6 @@ __all__ = [
     "RoleLink",
     "SetEnrichmentCandidatesError",
     "construct_candidate_packages",
+    "LOCAL_FILTER_OMITTED_REASON",
+    "prune_candidate_packages",
 ]

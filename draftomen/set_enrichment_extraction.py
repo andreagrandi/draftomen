@@ -9,7 +9,7 @@ import hashlib
 import json
 import math
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from draftomen.carddb import CardInfo
 from draftomen.semantic_capability_records import (
@@ -47,6 +47,9 @@ from draftomen.semantic_relationship_records import (
 )
 from draftomen.semantic_roles import Role, role_definition
 
+if TYPE_CHECKING:
+    from draftomen.set_enrichment_candidates import CandidatePackage
+
 
 SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION = 1
 RELATIONSHIP_VALIDATION_CONTRACT_VERSION = 2
@@ -59,6 +62,12 @@ CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME = "draftomen_card_capability_extraction_v
 RELATIONSHIP_VALIDATION_PROMPT_ID = "draftomen-relationship-validation-v2"
 RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID = "draftomen-relationship-validation-response-v2"
 RELATIONSHIP_VALIDATION_SCHEMA_NAME = "draftomen_relationship_validation_v2"
+RELATIONSHIP_BATCH_VALIDATION_CONTRACT_VERSION = 1
+RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID = "draftomen-relationship-validation-batch-v1"
+RELATIONSHIP_BATCH_VALIDATION_RESPONSE_SCHEMA_ID = (
+    "draftomen-relationship-validation-batch-response-v1"
+)
+RELATIONSHIP_BATCH_VALIDATION_SCHEMA_NAME = "draftomen_relationship_validation_batch_v1"
 
 _GUIDE_SYSTEM_PROMPT = (
     "Extract only claims stated in the supplied frozen guide. Return an exact guide quotation "
@@ -114,6 +123,22 @@ _RELATIONSHIP_SYSTEM_PROMPT = (
     "while uncertain and rejected verdicts require a nonblank reason."
 )
 
+_RELATIONSHIP_BATCH_SYSTEM_PROMPT = (
+    "Validate every listed mechanism independently between the two cards its pair names, and "
+    "return exactly one verdict per listed pair, each carrying that pair's index. Accept a "
+    "declared interaction only when both Oracle texts of its own pair support it, and quote short "
+    "substrings copied exactly from the listed Oracle text of each participant of that pair. Never "
+    "rename, re-identify, or introduce another card, never carry a card or a mechanism across "
+    "pairs, and never restate a mechanism other than the declared one. Return every controlling "
+    "cost, trigger, threshold, and condition for both directional capabilities of a pair as typed "
+    "clauses. Distinguish the capability's output from the objects that trigger or pay its costs. "
+    "Quote complete controlling ability text including its restrictions, and report uncertain or "
+    "unsupported whenever the supplied vocabulary cannot express a stated condition or its "
+    "completeness is unknown. Never supply scores, weights, confidence values, or adjustments. "
+    "Return only the pinned JSON object: an accepted verdict carries a null reason, while uncertain "
+    "and rejected verdicts require a nonblank reason."
+)
+
 _MALFORMED_RESPONSE_REASON = "response does not match guide extraction schema version 1."
 _SEMANTIC_REVIEW_REASON = "guide claim requires semantic review beyond exact-source validation."
 
@@ -167,6 +192,9 @@ _CARD_SELECTION_ERROR = "card_id must identify exactly one frozen canonical card
 
 _RELATIONSHIP_MALFORMED_RESPONSE_REASON = (
     "response does not match relationship validation schema version 2."
+)
+_RELATIONSHIP_BATCH_MALFORMED_RESPONSE_REASON = (
+    "response does not match relationship validation batch schema version 1."
 )
 _RELATIONSHIP_EVIDENCE_OWNER_REASON = (
     "relationship Oracle evidence does not belong to a candidate participant."
@@ -265,6 +293,15 @@ _RELATIONSHIP_PROJECTED_KEYS = _RELATIONSHIP_KEYS | {"prerequisite_projection"}
 _RELATIONSHIP_RESULT_KEYS = frozenset(
     {"outcome", "relationship", "rejected", "malformed_reason"}
 )
+
+# A batched response carries one verdict per listed pair. Each verdict is the single-pair verdict
+# shape plus the pair index it answers, and its quotations stay short so twenty verdicts of copied
+# Oracle text remain inside one completion.
+_RELATIONSHIP_BATCH_RESPONSE_KEYS = frozenset({"verdicts"})
+_RELATIONSHIP_BATCH_VERDICT_KEYS = _RELATIONSHIP_RESPONSE_KEYS | {"index"}
+_RELATIONSHIP_BATCH_EVIDENCE_QUOTES = 2
+_RELATIONSHIP_BATCH_EVIDENCE_QUOTE_CHARS = 240
+_RELATIONSHIP_BATCH_RESULT_KEYS = frozenset({"outcome", "verdicts", "malformed_reason"})
 
 _STATUS_VALUES = sorted(status.value for status in FindingStatus)
 _ROLE_VALUES = sorted(member.value for member in Role)
@@ -517,13 +554,16 @@ def _nullable_zone_schema() -> dict[str, Any]:
     return {"type": ["string", "null"], "enum": [*_ZONE_VALUES, None]}
 
 
-def _oracle_evidence_schema() -> dict[str, Any]:
+def _oracle_evidence_schema(*, max_quote_chars: int | None = None) -> dict[str, Any]:
     """Return a fresh strict schema for one Oracle evidence object."""
+    quote: dict[str, Any] = {"type": "string", "minLength": 1}
+    if max_quote_chars is not None:
+        quote["maxLength"] = max_quote_chars
     return _object_schema(
         {
             "card_id": {"type": "integer", "minimum": 1},
             "face_index": {"type": ["integer", "null"], "minimum": 0},
-            "quote": {"type": "string", "minLength": 1},
+            "quote": quote,
         }
     )
 
@@ -617,7 +657,7 @@ def _relationship_timing_schema() -> dict[str, Any]:
     )
 
 
-def _relationship_prerequisite_schema() -> dict[str, Any]:
+def _relationship_prerequisite_schema(*, max_quote_chars: int | None = None) -> dict[str, Any]:
     """Return a fresh strict schema for one typed relationship prerequisite clause."""
     return _object_schema(
         {
@@ -651,7 +691,7 @@ def _relationship_prerequisite_schema() -> dict[str, Any]:
             "destination_zone": _nullable_relationship_zone_schema(),
             "timing": _relationship_timing_schema(),
             "required_card_id": {"type": ["integer", "null"], "minimum": 1},
-            "evidence": _oracle_evidence_schema(),
+            "evidence": _oracle_evidence_schema(max_quote_chars=max_quote_chars),
             "operation_quote": {"type": "string", "minLength": 1},
             "operation_occurrence": {"type": "integer", "minimum": 0},
             "object_quote": {"type": "string", "minLength": 1},
@@ -664,10 +704,22 @@ def _relationship_prerequisite_schema() -> dict[str, Any]:
     )
 
 
-def _relationship_response_schema() -> dict[str, Any]:
-    """Return a fresh strict schema for one relationship validation response."""
+def _relationship_verdict_schema(
+    *,
+    max_quote_chars: int | None = None,
+    max_evidence: int | None = None,
+    extra_properties: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a fresh strict schema for one relationship verdict object."""
+    evidence: dict[str, Any] = {
+        "type": "array",
+        "items": _oracle_evidence_schema(max_quote_chars=max_quote_chars),
+    }
+    if max_evidence is not None:
+        evidence["maxItems"] = max_evidence
     return _object_schema(
         {
+            **extra_properties,
             "schema_version": {
                 "type": "integer",
                 "enum": [RELATIONSHIP_VALIDATION_CONTRACT_VERSION],
@@ -675,18 +727,39 @@ def _relationship_response_schema() -> dict[str, Any]:
             "verdict": {"type": "string", "enum": list(_STATUS_VALUES)},
             "claim": {"type": "string", "minLength": 1},
             "reason": {"type": ["string", "null"]},
-            "evidence": {"type": "array", "items": _oracle_evidence_schema()},
+            "evidence": evidence,
             "prerequisite_status": {
                 "type": "string",
                 "enum": list(_PREREQUISITE_STATUS_VALUES),
             },
             "source_prerequisites": {
                 "type": "array",
-                "items": _relationship_prerequisite_schema(),
+                "items": _relationship_prerequisite_schema(max_quote_chars=max_quote_chars),
             },
             "target_prerequisites": {
                 "type": "array",
-                "items": _relationship_prerequisite_schema(),
+                "items": _relationship_prerequisite_schema(max_quote_chars=max_quote_chars),
+            },
+        }
+    )
+
+
+def _relationship_response_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one relationship validation response."""
+    return _relationship_verdict_schema(extra_properties={})
+
+
+def _relationship_batch_response_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one batched relationship validation response."""
+    return _object_schema(
+        {
+            "verdicts": {
+                "type": "array",
+                "items": _relationship_verdict_schema(
+                    max_quote_chars=_RELATIONSHIP_BATCH_EVIDENCE_QUOTE_CHARS,
+                    max_evidence=_RELATIONSHIP_BATCH_EVIDENCE_QUOTES,
+                    extra_properties={"index": {"type": "integer", "minimum": 0}},
+                ),
             },
         }
     )
@@ -1233,6 +1306,73 @@ class RelationshipValidationResult:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RelationshipBatchValidationResult:
+    """Terminal result of parsing one untrusted batched relationship validation response.
+
+    A batch keeps one verdict per pair it was built from, so a whole-response failure is reported
+    once at batch level while every pair still carries the per-pair currency downstream phases
+    consume. A malformed verdict retains no candidate identity, exactly like a malformed single-pair
+    result.
+    """
+
+    outcome: ExtractionOutcome
+    verdicts: tuple[RelationshipValidationResult, ...]
+    malformed_reason: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, ExtractionOutcome):
+            raise SetEnrichmentExtractionError("outcome must be an ExtractionOutcome.")
+        if not isinstance(self.verdicts, tuple) or not self.verdicts:
+            raise SetEnrichmentExtractionError("verdicts must be a nonempty tuple.")
+        if any(type(item) is not RelationshipValidationResult for item in self.verdicts):
+            raise SetEnrichmentExtractionError(
+                "verdicts must contain RelationshipValidationResult records."
+            )
+        if self.malformed_reason is not None:
+            object.__setattr__(
+                self,
+                "malformed_reason",
+                _exact_text(self.malformed_reason, "malformed_reason"),
+            )
+        if self.outcome is ExtractionOutcome.SUCCESS:
+            if self.malformed_reason is not None:
+                raise SetEnrichmentExtractionError(
+                    "successful batch validation must not retain a malformed reason."
+                )
+            return
+        if self.malformed_reason != _RELATIONSHIP_BATCH_MALFORMED_RESPONSE_REASON:
+            raise SetEnrichmentExtractionError(
+                "malformed batch validation must state the fixed malformed reason."
+            )
+        if any(item.outcome is not ExtractionOutcome.MALFORMED for item in self.verdicts):
+            raise SetEnrichmentExtractionError(
+                "malformed batch validation must retain only malformed verdicts."
+            )
+
+    def to_json(self) -> dict[str, object]:
+        """Return fresh JSON-compatible stored bytes for this result."""
+        return {
+            "outcome": self.outcome.value,
+            "verdicts": [item.to_json() for item in self.verdicts],
+            "malformed_reason": self.malformed_reason,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> RelationshipBatchValidationResult:
+        """Decode validated stored bytes into one exact batched relationship validation result."""
+        _result_keys(value, _RELATIONSHIP_BATCH_RESULT_KEYS, "relationship batch validation result")
+        return cls(
+            outcome=_extraction_outcome(value["outcome"]),
+            verdicts=_nested_records(
+                value["verdicts"],
+                "verdicts",
+                RelationshipValidationResult.from_json,
+            ),
+            malformed_reason=value["malformed_reason"],
+        )
+
+
 def _selected_guide(sources: Any, guide_id: Any) -> GuideSource:
     """Select exactly one frozen guide source by identifier."""
     if not isinstance(sources, EnrichmentSources):
@@ -1403,6 +1543,103 @@ def build_relationship_validation_request(
         response_schema_id=RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID,
         response_schema_name=RELATIONSHIP_VALIDATION_SCHEMA_NAME,
         schema=_relationship_response_schema(),
+    )
+
+
+def relationship_batch_subject_id(batch_index: int) -> str:
+    """Return the stable durable subject of one relationship validation batch."""
+    if isinstance(batch_index, bool) or not isinstance(batch_index, int) or batch_index < 0:
+        raise SetEnrichmentExtractionError("batch_index must be a non-negative integer.")
+    return f"relationship-batch-{batch_index:04d}"
+
+
+def relationship_batch_source_sha256(*, request: ExtractionRequest) -> str:
+    """Hash the exact canonical prompt bytes one relationship validation batch sends."""
+    if not isinstance(request, ExtractionRequest):
+        raise SetEnrichmentExtractionError("request must be an ExtractionRequest.")
+    return hashlib.sha256(request.user_prompt.encode("utf-8")).hexdigest()
+
+
+def _validated_batch_candidates(
+    packages: Sequence[CandidatePackage],
+) -> tuple[tuple[str, CardCapability, CardCapability], ...]:
+    """Require one nonempty ordered sequence of constructed candidate packages."""
+    if isinstance(packages, (str, bytes)) or not isinstance(packages, Sequence):
+        raise SetEnrichmentExtractionError("packages must be a sequence of candidate packages.")
+    candidates: list[tuple[str, CardCapability, CardCapability]] = []
+    identities: set[str] = set()
+    for package in packages:
+        mechanism = _identifier(getattr(package, "mechanism", None), "mechanism")
+        source, target = _validated_participants(
+            getattr(package, "source", None),
+            getattr(package, "target", None),
+        )
+        identity = relationship_subject_id(mechanism=mechanism, source=source, target=target)
+        if identity in identities:
+            raise SetEnrichmentExtractionError(
+                "packages must not repeat a candidate identity."
+            )
+        identities.add(identity)
+        candidates.append((mechanism, source, target))
+    if not candidates:
+        raise SetEnrichmentExtractionError("packages must list at least one candidate.")
+    return tuple(candidates)
+
+
+def _relationship_batch_prompt_pairs(
+    sources: EnrichmentSources,
+    candidates: tuple[tuple[str, CardCapability, CardCapability], ...],
+) -> list[dict[str, Any]]:
+    """Bind every candidate pair to its frozen cards and index in the request order."""
+    pairs: list[dict[str, Any]] = []
+    for index, (mechanism, source, target) in enumerate(candidates):
+        source_card = _selected_card(sources, source.card_id)
+        target_card = _selected_card(sources, target.card_id)
+        _validated_participant_faces(
+            source,
+            target,
+            source_card=source_card,
+            target_card=target_card,
+        )
+        pairs.append(
+            {
+                "index": index,
+                "mechanism": mechanism,
+                "source": _capability_prompt_projection(source),
+                "target": _capability_prompt_projection(target),
+                "source_oracle_text": _participant_oracle_text(source, source_card),
+                "target_oracle_text": _participant_oracle_text(target, target_card),
+                "source_role_definition": role_definition(source.role),
+                "target_role_definition": role_definition(target.role),
+            }
+        )
+    return pairs
+
+
+def build_relationship_validation_batch_request(
+    *,
+    sources: EnrichmentSources,
+    packages: Sequence[CandidatePackage],
+) -> ExtractionRequest:
+    """Build the pinned batched relationship validation request from frozen inputs."""
+    if not isinstance(sources, EnrichmentSources):
+        raise SetEnrichmentExtractionError("sources must be an EnrichmentSources record.")
+    candidates = _validated_batch_candidates(packages)
+    user_prompt = _canonical_bytes(
+        {
+            "contract_version": RELATIONSHIP_BATCH_VALIDATION_CONTRACT_VERSION,
+            "set_code": sources.set_code,
+            "pairs": _relationship_batch_prompt_pairs(sources, candidates),
+        }
+    ).decode("utf-8")
+    return ExtractionRequest(
+        contract_version=RELATIONSHIP_BATCH_VALIDATION_CONTRACT_VERSION,
+        prompt_id=RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
+        system_prompt=_RELATIONSHIP_BATCH_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        response_schema_id=RELATIONSHIP_BATCH_VALIDATION_RESPONSE_SCHEMA_ID,
+        response_schema_name=RELATIONSHIP_BATCH_VALIDATION_SCHEMA_NAME,
+        schema=_relationship_batch_response_schema(),
     )
 
 
@@ -2394,33 +2631,22 @@ def _malformed_relationship_result() -> RelationshipValidationResult:
     )
 
 
-def parse_relationship_validation_response(
+def _relationship_verdict(
     *,
-    content: str,
-    sources: EnrichmentSources,
+    response: _RelationshipResponse,
     mechanism: str,
     source: CardCapability,
     target: CardCapability,
+    source_card: CardInfo,
+    target_card: CardInfo,
     run_id: str,
 ) -> RelationshipValidationResult:
-    """Parse one untrusted relationship validation response against frozen sources."""
-    if not isinstance(sources, EnrichmentSources):
-        raise SetEnrichmentExtractionError("sources must be an EnrichmentSources record.")
-    normalized_mechanism = _identifier(mechanism, "mechanism")
-    source, target = _validated_participants(source, target)
-    source_card = _selected_card(sources, source.card_id)
-    target_card = _selected_card(sources, target.card_id)
-    _validated_participant_faces(source, target, source_card=source_card, target_card=target_card)
-    normalized_run_id = _identifier(run_id, "run_id")
+    """Decode one structurally valid verdict against its bound frozen participants."""
     finding_id = relationship_subject_id(
-        mechanism=normalized_mechanism,
+        mechanism=mechanism,
         source=source,
         target=target,
     )
-    try:
-        response = _relationship_document(_decode_response_document(content))
-    except (_MalformedResponse, SemanticEnrichmentError):
-        return _malformed_relationship_result()
     try:
         try:
             projection = _prerequisite_projection(
@@ -2438,11 +2664,11 @@ def parse_relationship_validation_response(
                     finding_id=finding_id,
                     claim=response.claim,
                     reason=PREREQUISITE_CONTRADICTION_MESSAGE,
-                    run_id=normalized_run_id,
+                    run_id=run_id,
                 )
             projection = None
         declared_claim = _creature_token_death_claim(
-            mechanism=normalized_mechanism,
+            mechanism=mechanism,
             source=source,
             target=target,
         )
@@ -2458,13 +2684,13 @@ def parse_relationship_validation_response(
             return RelationshipValidationResult(
                 outcome=ExtractionOutcome.SUCCESS,
                 relationship=ValidatedRelationship(
-                    mechanism=normalized_mechanism,
+                    mechanism=mechanism,
                     source=source,
                     target=target,
                     claim=declared_claim,
                     evidence=evidence,
                     review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
-                    run_id=normalized_run_id,
+                    run_id=run_id,
                     prerequisite_projection=projection,
                 ),
                 rejected=None,
@@ -2486,27 +2712,27 @@ def parse_relationship_validation_response(
                 finding_id=finding_id,
                 claim=response.claim,
                 reason=rejection_reason,
-                run_id=normalized_run_id,
+                run_id=run_id,
             )
         if status is FindingStatus.REJECTED:
             return _relationship_rejection(
                 finding_id=finding_id,
                 claim=response.claim,
                 reason=response.reason,
-                run_id=normalized_run_id,
+                run_id=run_id,
             )
         if status is FindingStatus.ACCEPTED and projection is not None:
             evidence = _canonical_evidence(evidence + _projection_evidence(projection=projection))
         return RelationshipValidationResult(
             outcome=ExtractionOutcome.SUCCESS,
             relationship=ValidatedRelationship(
-                mechanism=normalized_mechanism,
+                mechanism=mechanism,
                 source=source,
                 target=target,
                 claim=response.claim,
                 evidence=evidence,
                 review=FindingReview(status=status, reason=response.reason),
-                run_id=normalized_run_id,
+                run_id=run_id,
                 prerequisite_projection=(
                     projection if status is FindingStatus.ACCEPTED else None
                 ),
@@ -2516,6 +2742,156 @@ def parse_relationship_validation_response(
         )
     except (SemanticEnrichmentError, SetEnrichmentExtractionError):
         return _malformed_relationship_result()
+
+
+def parse_relationship_validation_response(
+    *,
+    content: str,
+    sources: EnrichmentSources,
+    mechanism: str,
+    source: CardCapability,
+    target: CardCapability,
+    run_id: str,
+) -> RelationshipValidationResult:
+    """Parse one untrusted relationship validation response against frozen sources."""
+    if not isinstance(sources, EnrichmentSources):
+        raise SetEnrichmentExtractionError("sources must be an EnrichmentSources record.")
+    normalized_mechanism = _identifier(mechanism, "mechanism")
+    source, target = _validated_participants(source, target)
+    source_card = _selected_card(sources, source.card_id)
+    target_card = _selected_card(sources, target.card_id)
+    _validated_participant_faces(source, target, source_card=source_card, target_card=target_card)
+    normalized_run_id = _identifier(run_id, "run_id")
+    try:
+        response = _relationship_document(_decode_response_document(content))
+    except (_MalformedResponse, SemanticEnrichmentError):
+        return _malformed_relationship_result()
+    return _relationship_verdict(
+        response=response,
+        mechanism=normalized_mechanism,
+        source=source,
+        target=target,
+        source_card=source_card,
+        target_card=target_card,
+        run_id=normalized_run_id,
+    )
+
+
+def _require_batch_evidence(verdict: _RelationshipResponse) -> None:
+    """Require one batched verdict to keep every quotation inside the pinned batch bounds."""
+    if len(verdict.evidence) > _RELATIONSHIP_BATCH_EVIDENCE_QUOTES:
+        raise _MalformedResponse
+    if any(
+        len(entry["quote"]) > _RELATIONSHIP_BATCH_EVIDENCE_QUOTE_CHARS
+        for entry in verdict.evidence
+    ):
+        raise _MalformedResponse
+    if any(
+        len(clause.evidence.quote) > _RELATIONSHIP_BATCH_EVIDENCE_QUOTE_CHARS
+        for clause in (*verdict.source_prerequisites, *verdict.target_prerequisites)
+    ):
+        raise _MalformedResponse
+
+
+def _relationship_batch_document(
+    document: Any,
+    *,
+    expected: int,
+) -> tuple[_RelationshipResponse, ...]:
+    """Validate one batched response document and order its verdicts by pair index."""
+    if not isinstance(document, Mapping):
+        raise _MalformedResponse
+    _require_keys(document, _RELATIONSHIP_BATCH_RESPONSE_KEYS)
+    entries = document["verdicts"]
+    if not isinstance(entries, list) or len(entries) != expected:
+        raise _MalformedResponse
+    ordered: list[_RelationshipResponse | None] = [None] * expected
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise _MalformedResponse
+        _require_keys(entry, _RELATIONSHIP_BATCH_VERDICT_KEYS)
+        index = entry["index"]
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < expected:
+            raise _MalformedResponse
+        if ordered[index] is not None:
+            raise _MalformedResponse
+        # The verdict body is decoded by the single-pair contract, so a batched pair can never
+        # answer with a shape a single-pair request would reject.
+        verdict = _relationship_document(
+            {key: entry[key] for key in _RELATIONSHIP_RESPONSE_KEYS}
+        )
+        _require_batch_evidence(verdict)
+        ordered[index] = verdict
+    resolved: list[_RelationshipResponse] = []
+    for verdict in ordered:
+        if verdict is None:
+            raise _MalformedResponse
+        resolved.append(verdict)
+    return tuple(resolved)
+
+
+def _malformed_relationship_batch_result(*, count: int) -> RelationshipBatchValidationResult:
+    """Return the fixed all-or-nothing malformed batch outcome for one resolved pair count."""
+    return RelationshipBatchValidationResult(
+        outcome=ExtractionOutcome.MALFORMED,
+        verdicts=tuple(_malformed_relationship_result() for _ in range(count)),
+        malformed_reason=_RELATIONSHIP_BATCH_MALFORMED_RESPONSE_REASON,
+    )
+
+
+def parse_relationship_validation_batch_response(
+    *,
+    content: str,
+    run_id: str,
+    sources: EnrichmentSources,
+    packages: Sequence[CandidatePackage],
+) -> RelationshipBatchValidationResult:
+    """Parse one untrusted batched relationship validation response against frozen sources.
+
+    The response must carry exactly one verdict per listed pair, indexed 0..n-1, and every verdict
+    is decoded with the single-pair contract bound to the pair its index names.
+    """
+    if not isinstance(sources, EnrichmentSources):
+        raise SetEnrichmentExtractionError("sources must be an EnrichmentSources record.")
+    candidates = _validated_batch_candidates(packages)
+    normalized_run_id = _identifier(run_id, "run_id")
+    bound: list[tuple[str, CardCapability, CardCapability, CardInfo, CardInfo]] = []
+    for mechanism, source, target in candidates:
+        source_card = _selected_card(sources, source.card_id)
+        target_card = _selected_card(sources, target.card_id)
+        _validated_participant_faces(
+            source,
+            target,
+            source_card=source_card,
+            target_card=target_card,
+        )
+        bound.append((mechanism, source, target, source_card, target_card))
+    try:
+        verdicts = _relationship_batch_document(
+            _decode_response_document(content),
+            expected=len(bound),
+        )
+    except (_MalformedResponse, SemanticEnrichmentError):
+        return _malformed_relationship_batch_result(count=len(bound))
+    return RelationshipBatchValidationResult(
+        outcome=ExtractionOutcome.SUCCESS,
+        verdicts=tuple(
+            _relationship_verdict(
+                response=response,
+                mechanism=mechanism,
+                source=source,
+                target=target,
+                source_card=source_card,
+                target_card=target_card,
+                run_id=normalized_run_id,
+            )
+            for (mechanism, source, target, source_card, target_card), response in zip(
+                bound,
+                verdicts,
+            )
+        ),
+        malformed_reason=None,
+    )
 
 
 __all__ = [
@@ -2529,20 +2905,29 @@ __all__ = [
     "GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID",
     "GUIDE_EXTRACTION_SCHEMA_NAME",
     "GuideExtractionResult",
+    "RELATIONSHIP_BATCH_VALIDATION_CONTRACT_VERSION",
+    "RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID",
+    "RELATIONSHIP_BATCH_VALIDATION_RESPONSE_SCHEMA_ID",
+    "RELATIONSHIP_BATCH_VALIDATION_SCHEMA_NAME",
     "RELATIONSHIP_VALIDATION_CONTRACT_VERSION",
     "RELATIONSHIP_VALIDATION_PROMPT_ID",
     "RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID",
     "RELATIONSHIP_VALIDATION_SCHEMA_NAME",
+    "RelationshipBatchValidationResult",
     "RelationshipValidationResult",
     "SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION",
     "SetEnrichmentExtractionError",
     "ValidatedRelationship",
     "build_card_capability_extraction_request",
     "build_guide_extraction_request",
+    "build_relationship_validation_batch_request",
     "build_relationship_validation_request",
     "parse_card_capability_extraction_response",
     "parse_guide_extraction_response",
+    "parse_relationship_validation_batch_response",
     "parse_relationship_validation_response",
+    "relationship_batch_source_sha256",
+    "relationship_batch_subject_id",
     "relationship_source_sha256",
     "relationship_subject_id",
 ]

@@ -22,7 +22,7 @@ from draftomen.set_enrichment_extraction import (
     CardCapabilityExtractionResult,
     ExtractionRequest,
     GuideExtractionResult,
-    RelationshipValidationResult,
+    RelationshipBatchValidationResult,
     SetEnrichmentExtractionError,
 )
 
@@ -246,7 +246,7 @@ def _stored_response(value: Any) -> OpenRouterResponse:
 def _stored_result(
     value: Any,
     work_kind: WorkKind,
-) -> GuideExtractionResult | CardCapabilityExtractionResult | RelationshipValidationResult:
+) -> GuideExtractionResult | CardCapabilityExtractionResult | RelationshipBatchValidationResult:
     """Decode one stored validated extraction result for its work kind."""
     if not isinstance(value, Mapping):
         raise _InvalidArtifact
@@ -256,7 +256,7 @@ def _stored_result(
         if work_kind is WorkKind.CARD_CAPABILITY:
             return CardCapabilityExtractionResult.from_json(value)
         if work_kind is WorkKind.RELATIONSHIP:
-            return RelationshipValidationResult.from_json(value)
+            return RelationshipBatchValidationResult.from_json(value)
         raise _InvalidArtifact
     except SetEnrichmentExtractionError as error:
         raise _InvalidArtifact from error
@@ -415,7 +415,7 @@ class WorkRecord:
     responded_at: datetime | None
     completed_at: datetime | None
     response: OpenRouterResponse | None
-    result: GuideExtractionResult | CardCapabilityExtractionResult | RelationshipValidationResult | None
+    result: GuideExtractionResult | CardCapabilityExtractionResult | RelationshipBatchValidationResult | None
     diagnostics: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -512,7 +512,7 @@ def _payload_response(payload: Mapping[str, Any] | None) -> OpenRouterResponse |
 def _payload_result(
     payload: Mapping[str, Any] | None,
     work_kind: WorkKind,
-) -> GuideExtractionResult | CardCapabilityExtractionResult | RelationshipValidationResult | None:
+) -> GuideExtractionResult | CardCapabilityExtractionResult | RelationshipBatchValidationResult | None:
     """Return one verified durable result when that artifact is usable."""
     return None if payload is None else _stored_result(payload["result"], work_kind)
 
@@ -625,7 +625,7 @@ class SetEnrichmentWorkStore:
         *,
         identity: WorkIdentity,
         result: (
-            GuideExtractionResult | CardCapabilityExtractionResult | RelationshipValidationResult
+            GuideExtractionResult | CardCapabilityExtractionResult | RelationshipBatchValidationResult
         ),
     ) -> WorkRecord:
         """Record one durable validated result for the identity."""
@@ -633,7 +633,7 @@ class SetEnrichmentWorkStore:
         expected = {
             WorkKind.GUIDE: GuideExtractionResult,
             WorkKind.CARD_CAPABILITY: CardCapabilityExtractionResult,
-            WorkKind.RELATIONSHIP: RelationshipValidationResult,
+            WorkKind.RELATIONSHIP: RelationshipBatchValidationResult,
         }[identity.work_kind]
         if not isinstance(result, expected):
             raise SetEnrichmentWorkError(
