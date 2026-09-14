@@ -916,7 +916,3 @@ def _error_text(error: object) -> str:
     if isinstance(error, BaseException):
         return str(error) or error.__class__.__name__
     return str(error) or "unknown reason"
-
-
-
-\n
