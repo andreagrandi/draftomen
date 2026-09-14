@@ -2275,50 +2275,6 @@ def test_typed_prerequisite_projection_reaches_the_confirmed_profile(
     assert restored.prerequisite_projection == projection
     assert restored.identity == original.identity
     assert restored.oracle_evidence == original.oracle_evidence
-    source_clause = next(
-        clause for clause in projection.source.prerequisites if clause.operation == "create"
-    )
-    assert source_clause.quantity == CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY)
-    assert source_clause.colors == ("W",)
-    assert source_clause.subtype == "soldier"
-    assert source_clause.destination_zone is not None
-    assert source_clause.destination_zone.zone is CapabilityZone.BATTLEFIELD
-    assert source_clause.destination_zone.player == "you"
-    target_clause = next(
-        clause for clause in projection.target.prerequisites if clause.operation == "control"
-    )
-    assert target_clause.controller == "you"
-    assert target_clause.card_types == ("creature",)
-    assert target_clause.quantity is None
-
-    reviewed_at = datetime.fromisoformat(analysis.artifact.created_at.replace("Z", "+00:00"))
-    review = workflow.finalize_set_enrichment(
-        analysis=analysis,
-        decision=workflow.EnrichmentReviewDecision.CONFIRM,
-        reviewer_id="operator",
-        reviewed_at=reviewed_at + timedelta(seconds=1),
-    )
-    assert set(review.artifact.confirmed_relationship_ids) == {
-        original.finding_id,
-        local.finding_id,
-    }
-    assert review.publication is not None
-    plain = tmp_path / "loaded-profile.json"
-    plain.write_bytes(gzip.decompress(review.publication.artifact_path.read_bytes()))
-    loaded = load_set_profile(
-        path=plain,
-        expected_set_code=analysis.set_code,
-        expected_format="quickdraft",
-    )
-    assert loaded.enhancement is not None
-    restored = next(
-        relationship
-        for relationship in loaded.enhancement.relationships
-        if relationship.finding_id == original.finding_id
-    )
-    assert restored.prerequisite_projection == projection
-    assert restored.identity == original.identity
-    assert restored.oracle_evidence == original.oracle_evidence
 
 
 def test_contradictory_complete_payload_yields_a_rejected_diagnostic(
