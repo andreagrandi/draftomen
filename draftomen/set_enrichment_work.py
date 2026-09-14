@@ -5,12 +5,14 @@ anything outside that directory.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -24,6 +26,7 @@ from draftomen.set_enrichment_extraction import (
     GuideExtractionResult,
     RelationshipBatchValidationResult,
     SetEnrichmentExtractionError,
+    _legacy_relationship_result_is_decodable,
 )
 
 
@@ -31,6 +34,7 @@ SET_ENRICHMENT_WORK_SCHEMA_VERSION = 1
 WORK_ATTEMPT_DIRECTORY = "attempts"
 WORK_RESPONSE_DIRECTORY = "responses"
 WORK_RESULT_DIRECTORY = "results"
+_RESULT_REPLACEMENT_LOCK_NAME = ".result-replacement.lock"
 
 PathInput: TypeAlias = str | os.PathLike[str]
 Clock: TypeAlias = Callable[[], datetime]
@@ -417,6 +421,7 @@ class WorkRecord:
     response: OpenRouterResponse | None
     result: GuideExtractionResult | CardCapabilityExtractionResult | RelationshipBatchValidationResult | None
     diagnostics: tuple[str, ...]
+    legacy_result: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, WorkState):
@@ -434,6 +439,26 @@ class _Stage:
 
     present: bool
     payload: Mapping[str, Any] | None
+    legacy_result: bool = False
+
+
+def _verified_legacy_result_payload(raw: bytes, *, identity: WorkIdentity) -> bool:
+    """Report whether one result artifact is an exact canonical genuine legacy result."""
+    try:
+        parsed = _decode_json(raw)
+        if not isinstance(parsed, dict) or set(parsed) != _STAGE_KEYS[_RESULT_STAGE]:
+            return False
+        version = parsed["schema_version"]
+        if isinstance(version, bool) or version != SET_ENRICHMENT_WORK_SCHEMA_VERSION:
+            return False
+        if WorkIdentity.from_json(parsed["identity"]) != identity:
+            return False
+        _stored_timestamp(parsed["completed_at"])
+        if raw != _canonical_json_bytes(parsed):
+            return False
+    except (_InvalidArtifact, SetEnrichmentWorkError):
+        return False
+    return _legacy_relationship_result_is_decodable(parsed["result"])
 
 
 def _verified_payload(
@@ -467,21 +492,6 @@ def _verified_payload(
     return parsed
 
 
-def _read_stage(path: Path, *, identity: WorkIdentity, stage: str) -> _Stage:
-    """Read one stage artifact, returning a payload only when it is fully usable."""
-    try:
-        if path.is_symlink():
-            return _Stage(present=True, payload=None)
-        if not path.exists():
-            return _Stage(present=False, payload=None)
-        if not path.is_file():
-            return _Stage(present=True, payload=None)
-        raw = path.read_bytes()
-    except OSError as error:
-        raise SetEnrichmentWorkError("Could not read set-enrichment work artifact.") from error
-    return _Stage(present=True, payload=_verified_payload(raw, identity=identity, stage=stage))
-
-
 def _same_stage_content(
     *,
     identity: WorkIdentity,
@@ -497,6 +507,29 @@ def _same_stage_content(
     return _stored_result(existing["result"], identity.work_kind) == _stored_result(
         new["result"], identity.work_kind
     )
+
+
+def _read_stage(path: Path, *, identity: WorkIdentity, stage: str) -> _Stage:
+    """Read one stage artifact, returning a payload only when it is fully usable."""
+    try:
+        if path.is_symlink():
+            return _Stage(present=True, payload=None)
+        if not path.exists():
+            return _Stage(present=False, payload=None)
+        if not path.is_file():
+            return _Stage(present=True, payload=None)
+        raw = path.read_bytes()
+    except OSError as error:
+        raise SetEnrichmentWorkError("Could not read set-enrichment work artifact.") from error
+    payload = _verified_payload(raw, identity=identity, stage=stage)
+    if (
+        payload is None
+        and stage == _RESULT_STAGE
+        and identity.work_kind is WorkKind.RELATIONSHIP
+        and _verified_legacy_result_payload(raw, identity=identity)
+    ):
+        return _Stage(present=True, payload=None, legacy_result=True)
+    return _Stage(present=True, payload=payload)
 
 
 def _payload_timestamp(payload: Mapping[str, Any] | None, field_name: str) -> datetime | None:
@@ -515,6 +548,28 @@ def _payload_result(
 ) -> GuideExtractionResult | CardCapabilityExtractionResult | RelationshipBatchValidationResult | None:
     """Return one verified durable result when that artifact is usable."""
     return None if payload is None else _stored_result(payload["result"], work_kind)
+
+
+@contextmanager
+def _replacement_lock(path: Path) -> Iterator[None]:
+    """Serialize competing result-replacement writers on this host."""
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as error:
+        raise SetEnrichmentWorkError("Could not open set-enrichment work lock.") from error
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as error:
+            raise SetEnrichmentWorkError(
+                "Could not lock set-enrichment work replacement."
+            ) from error
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def _atomic_write_bytes(destination: Path, payload: bytes) -> None:
@@ -648,6 +703,52 @@ class SetEnrichmentWorkStore:
         }
         return self._publish(identity=identity, stage=_RESULT_STAGE, payload=payload)
 
+    def record_revalidated_result(
+        self,
+        *,
+        identity: WorkIdentity,
+        result: RelationshipBatchValidationResult,
+    ) -> WorkRecord:
+        """Replace one exact legacy relationship result with its revalidated current result.
+        The replacement is rejected unless the durable attempt, response, and result artifacts
+        satisfy the exact legacy predicate that lookup uses, so this method never becomes a
+        general overwrite API. Eligibility validation and publication are one lock-protected
+        operation that rechecks the artifacts immediately before replacing them.
+        """
+        self._require_identity(identity)
+        if identity.work_kind is not WorkKind.RELATIONSHIP:
+            raise SetEnrichmentWorkError("revalidated results require relationship work.")
+        if not isinstance(result, RelationshipBatchValidationResult):
+            raise SetEnrichmentWorkError(
+                "result must be a RelationshipBatchValidationResult for relationship work."
+            )
+        self._ensure_owned_directories()
+        path = self.results / f"{identity.content_sha256}.json"
+        with _replacement_lock(self.root / _RESULT_REPLACEMENT_LOCK_NAME):
+            stage = _read_stage(path, identity=identity, stage=_RESULT_STAGE)
+            if not stage.present or stage.payload is not None or not stage.legacy_result:
+                raise SetEnrichmentWorkError(
+                    "revalidated results require an exact durable legacy result artifact."
+                )
+            attempt = _read_stage(
+                self.attempts / f"{identity.content_sha256}.json",
+                identity=identity,
+                stage=_ATTEMPT_STAGE,
+            )
+            if not attempt.present or attempt.payload is None:
+                raise SetEnrichmentWorkError(
+                    "revalidated results require a valid durable attempt artifact."
+                )
+            self._require_durable_response(identity=identity)
+            payload = {
+                "schema_version": SET_ENRICHMENT_WORK_SCHEMA_VERSION,
+                "identity": identity.to_json(),
+                "result": result.to_json(),
+                "completed_at": self._now(),
+            }
+            _atomic_write_bytes(path, _canonical_json_bytes(payload))
+        return self.lookup(identity=identity)
+
     def lookup(self, *, identity: WorkIdentity) -> WorkRecord:
         """Return the durable work record for one identity without writing anything."""
         self._require_identity(identity)
@@ -673,7 +774,14 @@ class SetEnrichmentWorkStore:
             diagnostics.append("attempt-invalid")
         if response.present and response.payload is None:
             diagnostics.append("response-invalid")
-        if result.present and result.payload is None:
+        legacy_result = (
+            result.present
+            and result.payload is None
+            and result.legacy_result
+            and attempt.payload is not None
+            and response.payload is not None
+        )
+        if result.present and result.payload is None and not legacy_result:
             diagnostics.append("result-invalid")
         if result.payload is not None and response.payload is None:
             diagnostics.append("result-without-response")
@@ -703,6 +811,7 @@ class SetEnrichmentWorkStore:
                 _STAGE_TIMESTAMP_FIELDS[_RESULT_STAGE],
             ),
             response=_payload_response(response.payload),
+            legacy_result=legacy_result,
             result=(
                 _payload_result(result.payload, identity.work_kind)
                 if state is WorkState.COMPLETED

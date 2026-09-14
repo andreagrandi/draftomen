@@ -13,8 +13,12 @@ from typing import TYPE_CHECKING, Any
 
 from draftomen.carddb import CardInfo
 from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityCardType,
     CapabilityPrerequisite,
+    CapabilityQualifier,
     CapabilityQuantity,
+    CapabilityTokenRestriction,
     CapabilityZone,
     CardCapability,
     PrerequisiteKind,
@@ -51,14 +55,15 @@ if TYPE_CHECKING:
     from draftomen.set_enrichment_candidates import CandidatePackage
 
 
-SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION = 1
+GUIDE_EXTRACTION_CONTRACT_VERSION = 1
+CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION = 2
 RELATIONSHIP_VALIDATION_CONTRACT_VERSION = 2
 GUIDE_EXTRACTION_PROMPT_ID = "draftomen-guide-extraction-v1"
 GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID = "draftomen-guide-extraction-response-v1"
 GUIDE_EXTRACTION_SCHEMA_NAME = "draftomen_guide_extraction_v1"
-CARD_CAPABILITY_EXTRACTION_PROMPT_ID = "draftomen-card-capability-extraction-v1"
-CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID = "draftomen-card-capability-extraction-response-v1"
-CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME = "draftomen_card_capability_extraction_v1"
+CARD_CAPABILITY_EXTRACTION_PROMPT_ID = "draftomen-card-capability-extraction-v2"
+CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID = "draftomen-card-capability-extraction-response-v2"
+CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME = "draftomen_card_capability_extraction_v2"
 RELATIONSHIP_VALIDATION_PROMPT_ID = "draftomen-relationship-validation-v2"
 RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID = "draftomen-relationship-validation-response-v2"
 RELATIONSHIP_VALIDATION_SCHEMA_NAME = "draftomen_relationship_validation_v2"
@@ -107,6 +112,21 @@ _CARD_CAPABILITY_SYSTEM_PROMPT = (
     "Mark an interpretation uncertain with a nonblank reason whenever any semantic field is "
     "ambiguous, and reject unsupported candidates with a nonblank reason. Never infer another card "
     "or emit cross-card relationships."
+    " Every capability carries exactly one primary action and one zone from the closed "
+    "vocabularies supplied by the response schema, plus a qualifier object describing the object "
+    "that the capability's primary action selects; a qualifier never describes a trigger or cost "
+    "object named by another action in the same quoted ability. Use the zone as the destination "
+    "for movement or creation: draw moves the selected object to hand, discard, mill, die, and "
+    "sacrifice move it to graveyard, create places tokens on the battlefield, and cast places a "
+    "spell on the stack; otherwise use the zone where the selected object is acted on or checked: "
+    "attack, control, and count select objects on the battlefield. When no object has a "
+    "meaningful zone, use the zone from which the ability operates: battlefield for permanent "
+    "abilities and stack for resolving instant and sorcery spells. Use the action other only "
+    "when no listed action fits. Fill the qualifier fields from the Oracle text only when they "
+    "are stated: list the selected object's card types, its token restriction, its subtype, and "
+    "its mana value; when nothing is stated, emit the explicit unrestricted qualifier object "
+    "with an empty card_types list, token_restriction unrestricted, and null subtype and "
+    "mana_value."
 )
 
 _RELATIONSHIP_SYSTEM_PROMPT = (
@@ -150,7 +170,7 @@ _CARD_NAME_REVIEW_REASON = (
 )
 
 _CARD_MALFORMED_RESPONSE_REASON = (
-    "response does not match card capability extraction schema version 1."
+    "response does not match card capability extraction schema version 2."
 )
 _CAPABILITY_SEMANTIC_REVIEW_REASON = (
     "capability requires semantic review beyond exact-source validation."
@@ -244,6 +264,9 @@ _CAPABILITY_KEYS = frozenset(
         "face_index",
         "face_name",
         "role",
+        "action",
+        "zone",
+        "qualifier",
         "quantity",
         "timing",
         "source_zone",
@@ -253,6 +276,7 @@ _CAPABILITY_KEYS = frozenset(
         "review",
     }
 )
+_QUALIFIER_KEYS = frozenset({"card_types", "token_restriction", "subtype", "mana_value"})
 _QUANTITY_KEYS = frozenset({"value", "relation"})
 _PREREQUISITE_KEYS = frozenset(
     {
@@ -309,6 +333,9 @@ _ROLE_DEFINITION_PAIRS: tuple[tuple[str, str], ...] = tuple(
     (member.value, role_definition(member)) for member in sorted(Role, key=lambda member: member.value)
 )
 _ZONE_VALUES = sorted(member.value for member in CapabilityZone)
+_ACTION_VALUES = sorted(member.value for member in CapabilityAction)
+_CARD_TYPE_VALUES = sorted(member.value for member in CapabilityCardType)
+_TOKEN_RESTRICTION_VALUES = sorted(member.value for member in CapabilityTokenRestriction)
 _QUANTITY_RELATION_VALUES = sorted(member.value for member in QuantityRelation)
 _PREREQUISITE_KIND_VALUES = sorted(member.value for member in PrerequisiteKind)
 
@@ -497,7 +524,7 @@ def _guide_response_schema() -> dict[str, Any]:
         {
             "schema_version": {
                 "type": "integer",
-                "const": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+                "const": GUIDE_EXTRACTION_CONTRACT_VERSION,
             },
             "findings": {
                 "type": "array",
@@ -530,6 +557,24 @@ def _guide_response_schema() -> dict[str, Any]:
                     }
                 ),
             },
+        }
+    )
+
+
+def _qualifier_schema() -> dict[str, Any]:
+    """Return a fresh strict schema for one capability qualifier object."""
+    return _object_schema(
+        {
+            "card_types": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(_CARD_TYPE_VALUES)},
+            },
+            "token_restriction": {
+                "type": "string",
+                "enum": list(_TOKEN_RESTRICTION_VALUES),
+            },
+            "subtype": {"type": ["string", "null"], "minLength": 1},
+            "mana_value": _nullable_quantity_schema(),
         }
     )
 
@@ -592,6 +637,9 @@ def _capability_schema() -> dict[str, Any]:
             "face_index": {"type": ["integer", "null"], "minimum": 0},
             "face_name": {"type": ["string", "null"], "minLength": 1},
             "role": {"type": "string", "enum": list(_ROLE_VALUES)},
+            "action": {"type": "string", "enum": list(_ACTION_VALUES)},
+            "zone": {"type": "string", "enum": list(_ZONE_VALUES)},
+            "qualifier": _qualifier_schema(),
             "quantity": _nullable_quantity_schema(),
             "timing": {"type": ["string", "null"], "minLength": 1},
             "source_zone": _nullable_zone_schema(),
@@ -621,7 +669,7 @@ def _card_capability_response_schema() -> dict[str, Any]:
         {
             "schema_version": {
                 "type": "integer",
-                "const": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+                "const": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
             },
             "capabilities": {
                 "type": "array",
@@ -782,8 +830,10 @@ class ExtractionRequest:
         if isinstance(self.contract_version, bool) or not isinstance(self.contract_version, int):
             raise SetEnrichmentExtractionError("contract_version must be an integer.")
         if self.contract_version not in (
-            SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+            GUIDE_EXTRACTION_CONTRACT_VERSION,
+            CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
             RELATIONSHIP_VALIDATION_CONTRACT_VERSION,
+            RELATIONSHIP_BATCH_VALIDATION_CONTRACT_VERSION,
         ):
             raise SetEnrichmentExtractionError("contract_version is not supported.")
         for field_name in ("prompt_id", "response_schema_id", "response_schema_name"):
@@ -829,10 +879,16 @@ def _finding_tuple(
 
 
 def _capability_prompt_projection(capability: CardCapability) -> dict[str, Any]:
-    """Return the semantic capability fields one relationship request carries."""
+    """Return the semantic capability fields one relationship request carries.
+    The v2 card fields are removed so stored relationship prompt bytes stay stable until the
+    relationship request identity is migrated, keeping paid responses reusable.
+    """
     projection: dict[str, Any] = capability.to_json()
     del projection["review"]
     del projection["run_id"]
+    del projection["action"]
+    del projection["zone"]
+    del projection["qualifier"]
     return projection
 
 
@@ -1373,6 +1429,90 @@ class RelationshipBatchValidationResult:
         )
 
 
+_LEGACY_CAPABILITY_KEYS = frozenset(
+    {
+        "finding_id",
+        "card_id",
+        "card_name",
+        "face_index",
+        "face_name",
+        "role",
+        "quantity",
+        "timing",
+        "source_zone",
+        "destination_zone",
+        "prerequisites",
+        "evidence",
+        "review",
+        "run_id",
+    }
+)
+
+
+def _legacy_capability_sentinel(value: Any) -> dict[str, Any] | None:
+    """Return the sentinel-decorated pre-v2 capability object, or None when not legacy.
+    The sentinel v2 fields validate a stored legacy participant under the current decoder and
+    are never returned to any caller.
+    """
+    if not isinstance(value, Mapping) or set(value) != _LEGACY_CAPABILITY_KEYS:
+        return None
+    sentinel = {
+        **value,
+        "action": CapabilityAction.OTHER.value,
+        "zone": CapabilityZone.BATTLEFIELD.value,
+        "qualifier": {
+            "card_types": [],
+            "token_restriction": CapabilityTokenRestriction.UNRESTRICTED.value,
+            "subtype": None,
+            "mana_value": None,
+        },
+    }
+    try:
+        CardCapability.from_json(sentinel)
+    except SemanticEnrichmentError:
+        return None
+    return sentinel
+
+
+def _legacy_relationship_result_is_decodable(value: Any) -> bool:
+    """Report whether one stored result is a genuine legacy relationship batch result.
+    The validator accepts exactly the results whose sole incompatibility with the current
+    decoder is missing v2 capability fields on each embedded participant: every stored
+    `source` and `target` capability object must have exactly the old 14-key shape, and the
+    document decorated with sentinel v2 fields must decode under the current strict decoder.
+    """
+    if not isinstance(value, Mapping) or set(value) != _RELATIONSHIP_BATCH_RESULT_KEYS:
+        return False
+    verdicts = value["verdicts"]
+    if not isinstance(verdicts, list):
+        return False
+    substituted: list[dict[str, Any]] = []
+    for verdict in verdicts:
+        if not isinstance(verdict, Mapping) or set(verdict) != _RELATIONSHIP_RESULT_KEYS:
+            return False
+        relationship = verdict["relationship"]
+        if relationship is None:
+            substituted.append(dict(verdict))
+            continue
+        if not isinstance(relationship, Mapping) or set(relationship) not in (
+            _RELATIONSHIP_KEYS,
+            _RELATIONSHIP_PROJECTED_KEYS,
+        ):
+            return False
+        source = _legacy_capability_sentinel(relationship["source"])
+        target = _legacy_capability_sentinel(relationship["target"])
+        if source is None or target is None:
+            return False
+        substituted.append(
+            {**verdict, "relationship": {**relationship, "source": source, "target": target}}
+        )
+    try:
+        RelationshipBatchValidationResult.from_json({**value, "verdicts": substituted})
+    except SetEnrichmentExtractionError:
+        return False
+    return True
+
+
 def _selected_guide(sources: Any, guide_id: Any) -> GuideSource:
     """Select exactly one frozen guide source by identifier."""
     if not isinstance(sources, EnrichmentSources):
@@ -1395,7 +1535,7 @@ def build_guide_extraction_request(
     selected = _selected_guide(sources, guide_id)
     user_prompt = _canonical_bytes(
         {
-            "contract_version": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+            "contract_version": GUIDE_EXTRACTION_CONTRACT_VERSION,
             "set_code": sources.set_code,
             "guide": {
                 "guide_id": selected.guide_id,
@@ -1406,7 +1546,7 @@ def build_guide_extraction_request(
         }
     ).decode("utf-8")
     return ExtractionRequest(
-        contract_version=SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+        contract_version=GUIDE_EXTRACTION_CONTRACT_VERSION,
         prompt_id=GUIDE_EXTRACTION_PROMPT_ID,
         system_prompt=_GUIDE_SYSTEM_PROMPT,
         user_prompt=user_prompt,
@@ -1454,7 +1594,7 @@ def build_card_capability_extraction_request(
     }
     user_prompt = _canonical_bytes(
         {
-            "contract_version": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+            "contract_version": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
             "set_code": sources.set_code,
             "card_source_sha256": card_source_sha256(selected),
             "card": card,
@@ -1465,7 +1605,7 @@ def build_card_capability_extraction_request(
         }
     ).decode("utf-8")
     return ExtractionRequest(
-        contract_version=SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+        contract_version=CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
         prompt_id=CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
         system_prompt=_CARD_CAPABILITY_SYSTEM_PROMPT,
         user_prompt=user_prompt,
@@ -1807,7 +1947,7 @@ def _response_candidates(document: Any) -> list[Mapping[str, Any]]:
     version = document["schema_version"]
     if isinstance(version, bool) or not isinstance(version, int):
         raise _MalformedResponse
-    if version != SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION:
+    if version != GUIDE_EXTRACTION_CONTRACT_VERSION:
         raise _MalformedResponse
     findings = document["findings"]
     if not isinstance(findings, list):
@@ -1875,6 +2015,26 @@ def _validated_prerequisite(entry: Any) -> Mapping[str, Any]:
     return entry
 
 
+def _validated_qualifier(value: Any) -> Any:
+    """Validate one capability qualifier object structurally before record construction."""
+    if not isinstance(value, Mapping):
+        raise _MalformedResponse
+    _require_keys(value, _QUALIFIER_KEYS)
+    card_types = value["card_types"]
+    if not isinstance(card_types, list):
+        raise _MalformedResponse
+    seen_card_types: set[str] = set()
+    for entry in card_types:
+        card_type = _response_text(entry)
+        if card_type in seen_card_types:
+            raise _MalformedResponse
+        seen_card_types.add(card_type)
+    _response_text(value["token_restriction"])
+    _optional_response_text(value["subtype"])
+    _validated_quantity(value["mana_value"])
+    return value
+
+
 def _validated_capability_candidate(item: Any) -> Mapping[str, Any]:
     """Validate one response capability structurally before any record is built."""
     if not isinstance(item, Mapping):
@@ -1890,6 +2050,9 @@ def _validated_capability_candidate(item: Any) -> Mapping[str, Any]:
         raise _MalformedResponse
     _optional_response_text(item["face_name"])
     _response_text(item["role"])
+    _response_text(item["action"])
+    _response_text(item["zone"])
+    _validated_qualifier(item["qualifier"])
     _validated_quantity(item["quantity"])
     _optional_response_text(item["timing"])
     _optional_response_text(item["source_zone"])
@@ -1936,7 +2099,7 @@ def _card_capability_candidates(document: Any) -> list[Mapping[str, Any]]:
     version = document["schema_version"]
     if isinstance(version, bool) or not isinstance(version, int):
         raise _MalformedResponse
-    if version != SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION:
+    if version != CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION:
         raise _MalformedResponse
     capabilities = document["capabilities"]
     if not isinstance(capabilities, list):
@@ -2145,6 +2308,20 @@ def _decoded_optional_enum(value: str | None, field_name: str, enum_type: type[E
     return _decoded_enum(value, field_name, enum_type)
 
 
+def _decoded_qualifier(value: Mapping[str, Any]) -> CapabilityQualifier:
+    """Build one typed qualifier from a source-valid response entry."""
+    return CapabilityQualifier(
+        card_types=tuple(
+            _decoded_enum(entry, "card_types", CapabilityCardType)
+            for entry in value["card_types"]
+        ),
+        token_restriction=_decoded_enum(
+            value["token_restriction"], "token_restriction", CapabilityTokenRestriction
+        ),
+        subtype=value["subtype"],
+        mana_value=_decoded_quantity(value["mana_value"]),
+    )
+
 def _decoded_quantity(value: Mapping[str, Any] | None) -> CapabilityQuantity | None:
     """Decode one nullable quantity object into an exact record."""
     if value is None:
@@ -2211,6 +2388,9 @@ def _capability_record(
         face_index=face_index,
         face_name=candidate["face_name"],
         role=_decoded_enum(candidate["role"], "role", Role),
+        action=_decoded_enum(candidate["action"], "action", CapabilityAction),
+        zone=_decoded_enum(candidate["zone"], "zone", CapabilityZone),
+        qualifier=_decoded_qualifier(candidate["qualifier"]),
         quantity=_decoded_quantity(candidate["quantity"]),
         timing=candidate["timing"],
         source_zone=_decoded_optional_enum(candidate["source_zone"], "source_zone", CapabilityZone),
@@ -2365,6 +2545,14 @@ def _derived_token_maker_capabilities(
                 face_index=donor.face_index,
                 face_name=donor.face_name,
                 role=Role.TOKEN_MAKER,
+                action=CapabilityAction.CREATE,
+                zone=CapabilityZone.BATTLEFIELD,
+                qualifier=CapabilityQualifier(
+                    card_types=(CapabilityCardType.CREATURE,),
+                    token_restriction=CapabilityTokenRestriction.TOKEN,
+                    subtype=None,
+                    mana_value=None,
+                ),
                 quantity=donor.quantity,
                 timing=donor.timing,
                 source_zone=donor.source_zone,
@@ -2915,7 +3103,8 @@ __all__ = [
     "RELATIONSHIP_VALIDATION_SCHEMA_NAME",
     "RelationshipBatchValidationResult",
     "RelationshipValidationResult",
-    "SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION",
+    "GUIDE_EXTRACTION_CONTRACT_VERSION",
+    "CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION",
     "SetEnrichmentExtractionError",
     "ValidatedRelationship",
     "build_card_capability_extraction_request",

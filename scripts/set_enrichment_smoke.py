@@ -24,7 +24,7 @@ from draftomen.set_enrichment import (
 from draftomen.set_enrichment_extraction import (
     CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
     GUIDE_EXTRACTION_PROMPT_ID,
-    RELATIONSHIP_VALIDATION_PROMPT_ID,
+    RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
     ExtractionRequest,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
@@ -148,6 +148,30 @@ def _guide_content() -> str:
 
 def _capability(*, card_id: int, card_name: str, role: str, quote: str) -> dict[str, Any]:
     """Build one scripted capability bound to its exact Oracle quote."""
+    if role == "token_maker":
+        action, zone = "create", "battlefield"
+        qualifier: dict[str, Any] = {
+            "card_types": ["creature"],
+            "token_restriction": "token",
+            "subtype": None,
+            "mana_value": None,
+        }
+    elif role == "go_wide_payoff":
+        action, zone = "control", "battlefield"
+        qualifier = {
+            "card_types": ["creature"],
+            "token_restriction": "unrestricted",
+            "subtype": None,
+            "mana_value": None,
+        }
+    else:
+        action, zone = "draw", "hand"
+        qualifier = {
+            "card_types": [],
+            "token_restriction": "unrestricted",
+            "subtype": None,
+            "mana_value": None,
+        }
     return {
         "finding_id": f"capability-{card_id}",
         "card_id": card_id,
@@ -155,6 +179,9 @@ def _capability(*, card_id: int, card_name: str, role: str, quote: str) -> dict[
         "face_index": None,
         "face_name": None,
         "role": role,
+        "action": action,
+        "zone": zone,
+        "qualifier": qualifier,
         "quantity": None,
         "timing": None,
         "source_zone": None,
@@ -201,41 +228,45 @@ def _capability_content(card_id: int) -> str:
     """Return the pinned capability response for one canonical card."""
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "capabilities": _capability_candidates(card_id),
         }
     )
 
 
-def _relationship_content(prompt: Mapping[str, Any]) -> str:
-    """Return one accepted advisory v2 verdict quoting both participants' exact Oracle text.
+def _relationship_batch_content(prompt: Mapping[str, Any]) -> str:
+    """Return one accepted advisory v2 verdict per listed pair, quoting each participant.
     The typed prerequisites stay advisory, so no projection is fabricated.
     """
-    source = prompt["source"]
-    target = prompt["target"]
-    return json.dumps(
-        {
-            "schema_version": 2,
-            "verdict": "accepted",
-            "claim": RELATIONSHIP_CLAIM,
-            "reason": None,
-            "evidence": [
-                {
-                    "card_id": source["card_id"],
-                    "face_index": source["face_index"],
-                    "quote": source["evidence"][0]["quote"],
-                },
-                {
-                    "card_id": target["card_id"],
-                    "face_index": target["face_index"],
-                    "quote": target["evidence"][0]["quote"],
-                },
-            ],
-            "prerequisite_status": "uncertain",
-            "source_prerequisites": [],
-            "target_prerequisites": [],
-        }
-    )
+    verdicts: list[dict[str, Any]] = []
+    for pair in prompt["pairs"]:
+        source = pair["source"]
+        target = pair["target"]
+        verdicts.append(
+            {
+                "index": pair["index"],
+                "schema_version": 2,
+                "verdict": "accepted",
+                "claim": RELATIONSHIP_CLAIM,
+                "reason": None,
+                "evidence": [
+                    {
+                        "card_id": source["card_id"],
+                        "face_index": source["face_index"],
+                        "quote": source["evidence"][0]["quote"],
+                    },
+                    {
+                        "card_id": target["card_id"],
+                        "face_index": target["face_index"],
+                        "quote": target["evidence"][0]["quote"],
+                    },
+                ],
+                "prerequisite_status": "uncertain",
+                "source_prerequisites": [],
+                "target_prerequisites": [],
+            }
+        )
+    return json.dumps({"verdicts": verdicts})
 
 
 def _response_content(request: ExtractionRequest) -> str:
@@ -245,8 +276,8 @@ def _response_content(request: ExtractionRequest) -> str:
     payload = json.loads(request.user_prompt)
     if request.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID:
         return _capability_content(payload["card"]["card_id"])
-    if request.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID:
-        return _relationship_content(payload)
+    if request.prompt_id == RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID:
+        return _relationship_batch_content(payload)
     raise LookupError(f"unexpected prompt id {request.prompt_id}")
 
 

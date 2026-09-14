@@ -234,13 +234,31 @@ def _guide_content(*, category: str = "mechanic", counts: bool = False) -> str:
         )
     return json.dumps({"schema_version": 1, "findings": findings})
 
+def _unrestricted_qualifier() -> dict[str, Any]:
+    """Return the explicit unrestricted qualifier object of one card response."""
+    return {"card_types": [], "token_restriction": "unrestricted", "subtype": None, "mana_value": None}
+
+
+def _creature_token_qualifier() -> dict[str, Any]:
+    """Return the token-creature qualifier of a response that creates creature tokens."""
+    return {
+        "card_types": ["creature"],
+        "token_restriction": "token",
+        "subtype": None,
+        "mana_value": None,
+    }
+
+
 def _capability_candidate(
     *,
     finding_id: str,
     card_id: int,
     card_name: str,
     role: str,
+    action: str,
+    zone: str,
     quote: str,
+    qualifier: dict[str, Any] | None = None,
     status: str = "accepted",
     reason: str | None = None,
     quantity: dict[str, Any] | None = None,
@@ -256,6 +274,9 @@ def _capability_candidate(
         "face_index": None,
         "face_name": None,
         "role": role,
+        "action": action,
+        "zone": zone,
+        "qualifier": _unrestricted_qualifier() if qualifier is None else qualifier,
         "quantity": quantity,
         "timing": timing,
         "source_zone": source_zone,
@@ -266,6 +287,16 @@ def _capability_candidate(
             for value in (quote, *evidence_quotes)
         ],
         "review": {"status": status, "reason": reason},
+    }
+
+
+def _token_maker_fields() -> dict[str, Any]:
+    """Return the role-accurate v2 fields of a card that creates creature tokens."""
+    return {
+        "role": "token_maker",
+        "action": "create",
+        "zone": "battlefield",
+        "qualifier": _creature_token_qualifier(),
     }
 
 
@@ -283,13 +314,13 @@ def _capability_content(
                     finding_id="token-capability",
                     card_id=TOKEN_ID,
                     card_name=TOKEN_NAME,
-                    role="token_maker",
                     quote=TOKEN_QUOTE,
                     quantity={"value": 2, "relation": "exactly"},
                     timing="on resolution",
                     source_zone="library",
                     destination_zone="battlefield",
                     evidence_quotes=("two 1/1 white Soldier creature tokens",),
+                    **_token_maker_fields(),
                 )
             ]
         elif duplicate:
@@ -298,15 +329,15 @@ def _capability_content(
                     finding_id="token-a",
                     card_id=TOKEN_ID,
                     card_name=TOKEN_NAME,
-                    role="token_maker",
                     quote=TOKEN_QUOTE,
+                    **_token_maker_fields(),
                 ),
                 _capability_candidate(
                     finding_id="token-b",
                     card_id=TOKEN_ID,
                     card_name=TOKEN_NAME,
-                    role="token_maker",
                     quote=TOKEN_QUOTE,
+                    **_token_maker_fields(),
                 ),
             ]
         elif counts:
@@ -315,26 +346,26 @@ def _capability_content(
                     finding_id="token-accepted",
                     card_id=TOKEN_ID,
                     card_name=TOKEN_NAME,
-                    role="token_maker",
                     quote=TOKEN_QUOTE,
+                    **_token_maker_fields(),
                 ),
                 _capability_candidate(
                     finding_id="token-uncertain",
                     card_id=TOKEN_ID,
                     card_name=TOKEN_NAME,
-                    role="token_maker",
                     quote=TOKEN_QUOTE,
                     status="uncertain",
                     reason="Needs review.",
+                    **_token_maker_fields(),
                 ),
                 _capability_candidate(
                     finding_id="token-rejected",
                     card_id=TOKEN_ID,
                     card_name=TOKEN_NAME,
-                    role="token_maker",
                     quote=TOKEN_QUOTE,
                     status="rejected",
                     reason="Not supported.",
+                    **_token_maker_fields(),
                 ),
             ]
         else:
@@ -343,8 +374,8 @@ def _capability_content(
                     finding_id="token-capability",
                     card_id=TOKEN_ID,
                     card_name=TOKEN_NAME,
-                    role="token_maker",
                     quote=TOKEN_QUOTE,
+                    **_token_maker_fields(),
                 )
             ]
     elif card_id == WIDE_ID:
@@ -354,6 +385,8 @@ def _capability_content(
                 card_id=WIDE_ID,
                 card_name=WIDE_NAME,
                 role="go_wide_payoff",
+                action="control",
+                zone="battlefield",
                 quote=WIDE_QUOTE,
             )
         ]
@@ -364,6 +397,8 @@ def _capability_content(
                     card_id=WIDE_ID,
                     card_name=WIDE_NAME,
                     role="go_wide_payoff",
+                    action="control",
+                    zone="battlefield",
                     quote=WIDE_QUOTE,
                 )
             )
@@ -374,12 +409,14 @@ def _capability_content(
                 card_id=DRAW_ID,
                 card_name=DRAW_NAME,
                 role="draw",
+                action="draw",
+                zone="hand",
                 quote=DRAW_QUOTE,
             )
         ]
     else:
         raise AssertionError(f"unexpected card id {card_id}")
-    return json.dumps({"schema_version": 1, "capabilities": candidates})
+    return json.dumps({"schema_version": 2, "capabilities": candidates})
 
 
 def _relationship_verdict(pair: dict[str, Any], *, status: str) -> dict[str, Any]:
@@ -444,21 +481,23 @@ def _typed_capability_content(payload: dict[str, Any]) -> str:
     """Build the typed token-maker or wide-payoff capability of one fixture card."""
     card = payload["card"]
     if card["card_id"] == TOKEN_ID:
-        finding_id, role = "typed-token-maker", "token_maker"
+        finding_id = "typed-token-maker"
+        fields: dict[str, Any] = _token_maker_fields()
     elif card["card_id"] == WIDE_ID:
-        finding_id, role = "typed-wide-payoff", "go_wide_payoff"
+        finding_id = "typed-wide-payoff"
+        fields = {"role": "go_wide_payoff", "action": "control", "zone": "battlefield"}
     else:
         raise AssertionError(f"unexpected card id {card['card_id']}")
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "capabilities": [
                 _capability_candidate(
                     finding_id=finding_id,
                     card_id=card["card_id"],
                     card_name=card["name"],
-                    role=role,
                     quote=card["oracle_text"],
+                    **fields,
                 )
             ],
         }
@@ -1066,6 +1105,14 @@ def test_provenance_keeps_every_populated_capability_field(tmp_path: Path) -> No
         "face_index": None,
         "face_name": None,
         "role": "token_maker",
+        "action": "create",
+        "zone": "battlefield",
+        "qualifier": {
+            "card_types": ["creature"],
+            "token_restriction": "token",
+            "subtype": None,
+            "mana_value": None,
+        },
         "quantity": {"value": 2, "relation": "exactly"},
         "timing": "on resolution",
         "source_zone": "library",
@@ -1211,6 +1258,32 @@ def test_compatible_rerun_reuses_all_work_with_zero_completion_calls(tmp_path: P
     assert second_completion.calls == []
     assert second.run.progress.accounting.executed_work == 0
     assert second.run.progress.accounting.reused_work > 0
+
+    identities = _durable_identities(second.work_dir)
+    by_kind: dict[WorkKind, list[WorkIdentity]] = {kind: [] for kind in WorkKind}
+    for identity in identities.values():
+        by_kind[identity.work_kind].append(identity)
+    (guide,) = by_kind[WorkKind.GUIDE]
+    assert guide.contract_version == 1
+    assert guide.prompt_id == "draftomen-guide-extraction-v1"
+    assert guide.response_schema_id == "draftomen-guide-extraction-response-v1"
+    assert guide.response_schema_name == "draftomen_guide_extraction_v1"
+    cards = by_kind[WorkKind.CARD_CAPABILITY]
+    assert len(cards) == len(_cards())
+    assert {card.contract_version for card in cards} == {2}
+    assert {card.prompt_id for card in cards} == {"draftomen-card-capability-extraction-v2"}
+    assert {card.response_schema_id for card in cards} == {
+        "draftomen-card-capability-extraction-response-v2"
+    }
+    assert {card.response_schema_name for card in cards} == {
+        "draftomen_card_capability_extraction_v2"
+    }
+    batches = by_kind[WorkKind.RELATIONSHIP]
+    assert batches
+    assert {batch.contract_version for batch in batches} == {1}
+    assert {batch.prompt_id for batch in batches} == {
+        "draftomen-relationship-validation-batch-v1"
+    }
 
 
 def test_cancellation_and_keyboard_interrupt_preserve_durable_prefix_without_publication(

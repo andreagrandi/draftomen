@@ -13,8 +13,12 @@ import pytest
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.openrouter_client import OpenRouterClient
 from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityCardType,
     CapabilityPrerequisite,
+    CapabilityQualifier,
     CapabilityQuantity,
+    CapabilityTokenRestriction,
     CapabilityZone,
     CardCapability,
     PrerequisiteKind,
@@ -34,14 +38,15 @@ from draftomen.semantic_relationship_records import CardRelationship
 from draftomen.semantic_roles import Role, role_definition
 import draftomen.set_enrichment_extraction as extraction_module
 from draftomen.set_enrichment_extraction import (
+    CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
     CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
     CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID,
     CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME,
+    GUIDE_EXTRACTION_CONTRACT_VERSION,
     GUIDE_EXTRACTION_PROMPT_ID,
     GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID,
     GUIDE_EXTRACTION_SCHEMA_NAME,
     RELATIONSHIP_VALIDATION_SCHEMA_NAME,
-    SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
     CardCapabilityExtractionResult,
     ExtractionOutcome,
     ExtractionRequest,
@@ -240,7 +245,7 @@ BACK_TRIGGER_QUOTE = "At the beginning of your upkeep"
 BACK_MILL_QUOTE = "each opponent mills two cards"
 SURROGATE_RELATION = chr(0xD800)
 
-CARD_MALFORMED_REASON = "response does not match card capability extraction schema version 1."
+CARD_MALFORMED_REASON = "response does not match card capability extraction schema version 2."
 CAPABILITY_REVIEW_REASON = "capability requires semantic review beyond exact-source validation."
 CAPABILITY_VOCABULARY_REASON = "capability or condition uses unsupported vocabulary."
 CAPABILITY_CARD_ID_REASON = "capability references a card other than the selected canonical card."
@@ -327,6 +332,11 @@ def _response(findings: list[dict[str, Any]], *, schema_version: int = 1) -> dic
 
 def _content(response: dict[str, Any] | list[Any]) -> str:
     return json.dumps(response)
+
+
+def _without_key(document: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return a copy of one JSON-native document without the named key."""
+    return {name: value for name, value in document.items() if name != key}
 
 
 def _format_finding() -> dict[str, Any]:
@@ -455,7 +465,7 @@ def _cyclic_schema() -> dict[str, Any]:
 
 def _request(**overrides: Any) -> ExtractionRequest:
     fields: dict[str, Any] = {
-        "contract_version": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+        "contract_version": GUIDE_EXTRACTION_CONTRACT_VERSION,
         "prompt_id": GUIDE_EXTRACTION_PROMPT_ID,
         "system_prompt": "Extract only claims stated in the supplied frozen guide.",
         "user_prompt": '{"cards":[],"contract_version":1,"set_code":"tst"}',
@@ -844,6 +854,46 @@ def _prerequisite_entry(**overrides: Any) -> dict[str, Any]:
     return entry
 
 
+def _qualifier(
+    *,
+    card_types: list[str] | None = None,
+    token_restriction: str = "unrestricted",
+    subtype: str | None = None,
+    mana_value: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return one JSON-native capability qualifier object.
+
+    The no-argument call is the explicit unrestricted qualifier the prompt requires when Oracle
+    text states no restriction.
+    """
+    return {
+        "card_types": [] if card_types is None else list(card_types),
+        "token_restriction": token_restriction,
+        "subtype": subtype,
+        "mana_value": mana_value,
+    }
+
+
+def _unrestricted_qualifier_record() -> CapabilityQualifier:
+    """Return the explicit unrestricted typed qualifier record."""
+    return CapabilityQualifier(
+        card_types=(),
+        token_restriction=CapabilityTokenRestriction.UNRESTRICTED,
+        subtype=None,
+        mana_value=None,
+    )
+
+
+def _creature_token_qualifier_record() -> CapabilityQualifier:
+    """Return the typed creature-token qualifier the token-maker derivation emits."""
+    return CapabilityQualifier(
+        card_types=(CapabilityCardType.CREATURE,),
+        token_restriction=CapabilityTokenRestriction.TOKEN,
+        subtype=None,
+        mana_value=None,
+    )
+
+
 def _capability_candidate(**overrides: Any) -> dict[str, Any]:
     candidate: dict[str, Any] = {
         "finding_id": "capability-draw",
@@ -852,6 +902,9 @@ def _capability_candidate(**overrides: Any) -> dict[str, Any]:
         "face_index": 1,
         "face_name": BACK_FACE_NAME,
         "role": "draw",
+        "action": "draw",
+        "zone": "hand",
+        "qualifier": _qualifier(),
         "quantity": None,
         "timing": None,
         "source_zone": None,
@@ -867,7 +920,7 @@ def _capability_candidate(**overrides: Any) -> dict[str, Any]:
 def _capability_response(
     capabilities: list[Any],
     *,
-    schema_version: int = 1,
+    schema_version: int = 2,
 ) -> dict[str, Any]:
     return {"schema_version": schema_version, "capabilities": list(capabilities)}
 
@@ -898,6 +951,9 @@ def _reviewed_capability(
         face_index=1,
         face_name=BACK_FACE_NAME,
         role=Role.DRAW,
+        action=CapabilityAction.OTHER,
+        zone=CapabilityZone.BATTLEFIELD,
+        qualifier=_unrestricted_qualifier_record(),
         quantity=None,
         timing=None,
         source_zone=None,
@@ -923,6 +979,9 @@ def _derived_capability(finding_id: str) -> _DerivedCapability:
         face_index=base.face_index,
         face_name=base.face_name,
         role=base.role,
+        action=base.action,
+        zone=base.zone,
+        qualifier=base.qualifier,
         quantity=base.quantity,
         timing=base.timing,
         source_zone=base.source_zone,
@@ -991,6 +1050,9 @@ def _capability_with_prerequisite(
         face_index=face_index,
         face_name=face_name,
         role=Role.DRAW,
+        action=CapabilityAction.OTHER,
+        zone=CapabilityZone.BATTLEFIELD,
+        qualifier=_unrestricted_qualifier_record(),
         quantity=None,
         timing=None,
         source_zone=None,
@@ -1003,17 +1065,20 @@ def _capability_with_prerequisite(
 
 
 def test_public_surface_pins_contract_values_and_outcomes() -> None:
-    assert isinstance(SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION, int)
-    assert SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION == 1
+    assert isinstance(GUIDE_EXTRACTION_CONTRACT_VERSION, int)
+    assert GUIDE_EXTRACTION_CONTRACT_VERSION == 1
+    assert isinstance(CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION, int)
+    assert CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION == 2
+    assert not hasattr(extraction_module, "SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION")
     assert GUIDE_EXTRACTION_PROMPT_ID == "draftomen-guide-extraction-v1"
     assert GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID == "draftomen-guide-extraction-response-v1"
     assert GUIDE_EXTRACTION_SCHEMA_NAME == "draftomen_guide_extraction_v1"
-    assert CARD_CAPABILITY_EXTRACTION_PROMPT_ID == "draftomen-card-capability-extraction-v1"
+    assert CARD_CAPABILITY_EXTRACTION_PROMPT_ID == "draftomen-card-capability-extraction-v2"
     assert (
         CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID
-        == "draftomen-card-capability-extraction-response-v1"
+        == "draftomen-card-capability-extraction-response-v2"
     )
-    assert CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME == "draftomen_card_capability_extraction_v1"
+    assert CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME == "draftomen_card_capability_extraction_v2"
     assert ExtractionOutcome.SUCCESS.value == "success"
     assert ExtractionOutcome.MALFORMED.value == "malformed"
     assert issubclass(SetEnrichmentExtractionError, ValueError)
@@ -1625,7 +1690,7 @@ def test_request_identity_is_stable_across_equivalent_source_orders() -> None:
     assert reordered.prompt_sha256 == forward.prompt_sha256
     assert reordered.response_schema() == forward.response_schema()
     assert reordered.response_schema_sha256 == forward.response_schema_sha256
-    assert forward.contract_version == SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION
+    assert forward.contract_version == GUIDE_EXTRACTION_CONTRACT_VERSION
     assert forward.prompt_id == GUIDE_EXTRACTION_PROMPT_ID
     assert forward.response_schema_id == GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID
     assert forward.response_schema_name == GUIDE_EXTRACTION_SCHEMA_NAME
@@ -1727,7 +1792,7 @@ def test_generated_schema_is_a_strict_closed_object() -> None:
     assert set(schema["required"]) == set(schema["properties"])
     assert schema["properties"]["schema_version"] == {
         "type": "integer",
-        "const": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+        "const": GUIDE_EXTRACTION_CONTRACT_VERSION,
     }
 
     findings_schema = schema["properties"]["findings"]
@@ -1779,11 +1844,12 @@ def test_generated_schemas_avoid_provider_rejected_keywords() -> None:
     Live probes of the real builders returned, with `strict: true`:
 
     `http=400 Invalid schema for response_format 'draftomen_guide_extraction_v1': In context=
-    ('properties', 'findings'), 'uniqueItems' is not permitted.` and the equivalent failure for
-    `draftomen_card_capability_extraction_v1` on `('properties', 'capabilities')`, while the
-    relationship schema was accepted. The keyword therefore cannot carry uniqueness, and the response
-    validators enforce it instead; this offline test fails without any network call when a schema
-    builder reintroduces a keyword the provider rejects.
+    ('properties', 'findings'), 'uniqueItems' is not permitted.` and the equivalent failure for the
+    card capability schema, named `draftomen_card_capability_extraction_v1` at probe time, on
+    `('properties', 'capabilities')`, while the relationship schema was accepted. The keyword
+    therefore cannot carry uniqueness, and the response validators enforce it instead; this offline
+    test fails without any network call when a schema builder reintroduces a keyword the provider
+    rejects.
     """
     schemas = {
         GUIDE_EXTRACTION_SCHEMA_NAME: extraction_module._guide_response_schema(),
@@ -1810,7 +1876,7 @@ def test_user_prompt_carries_only_frozen_guide_and_card_inputs(
     prompt = json.loads(request.user_prompt)
 
     assert set(prompt) == {"contract_version", "set_code", "guide", "cards"}
-    assert prompt["contract_version"] == SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION
+    assert prompt["contract_version"] == GUIDE_EXTRACTION_CONTRACT_VERSION
     assert prompt["set_code"] == SET_CODE
     assert set(prompt["guide"]) == {"guide_id", "sha256", "text"}
     assert prompt["guide"]["guide_id"] == GUIDE_ID
@@ -1877,7 +1943,8 @@ def test_card_request_carries_one_canonical_card_with_every_indexed_face(
         "card_characteristics",
         "role_definitions",
     }
-    assert prompt["contract_version"] == SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION
+    assert prompt["contract_version"] == CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION
+    assert request.contract_version == CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION
     assert prompt["set_code"] == SET_CODE
     assert prompt["card_source_sha256"] == card_source_sha256(_two_face_card())
     assert request.user_prompt == json.dumps(
@@ -2033,6 +2100,7 @@ def test_role_glossary_changes_the_card_capability_prompt_identity() -> None:
         if key != "role_definitions"
     }
     variant = _request(
+        contract_version=CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
         prompt_id=CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
         system_prompt=request.system_prompt,
         user_prompt=json.dumps(
@@ -2070,6 +2138,9 @@ def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_record
 ) -> None:
     accepted_candidate = _capability_candidate(
         finding_id="capability-draw",
+        action="draw",
+        zone="hand",
+        qualifier=_qualifier(),
         quantity=_quantity(value=None, relation="variable"),
         timing=BACK_TRIGGER_QUOTE,
         source_zone="battlefield",
@@ -2086,6 +2157,9 @@ def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_record
     uncertain_candidate = _capability_candidate(
         finding_id="capability-mill",
         role="self_mill",
+        action="mill",
+        zone="graveyard",
+        qualifier=_qualifier(card_types=["creature"], token_restriction="nontoken"),
         quantity=_quantity(value=2, relation="exactly"),
         timing=BACK_TRIGGER_QUOTE,
         review={"status": "uncertain", "reason": MODEL_UNCERTAINTY_REASON},
@@ -2113,6 +2187,9 @@ def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_record
     assert draw.face_index == 1
     assert draw.face_name == BACK_FACE_NAME
     assert draw.role is Role.DRAW
+    assert draw.action is CapabilityAction.DRAW
+    assert draw.zone is CapabilityZone.HAND
+    assert draw.qualifier == _unrestricted_qualifier_record()
     assert draw.quantity == CapabilityQuantity(value=None, relation=QuantityRelation.VARIABLE)
     assert draw.timing == BACK_TRIGGER_QUOTE
     assert draw.source_zone is CapabilityZone.BATTLEFIELD
@@ -2142,6 +2219,14 @@ def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_record
 
     mill = result.capabilities[1]
     assert mill.role is Role.SELF_MILL
+    assert mill.action is CapabilityAction.MILL
+    assert mill.zone is CapabilityZone.GRAVEYARD
+    assert mill.qualifier == CapabilityQualifier(
+        card_types=(CapabilityCardType.CREATURE,),
+        token_restriction=CapabilityTokenRestriction.NONTOKEN,
+        subtype=None,
+        mana_value=None,
+    )
     assert mill.quantity == CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY)
     assert mill.prerequisites == ()
     assert mill.review == FindingReview(
@@ -2152,6 +2237,7 @@ def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_record
 
     for capability in result.capabilities:
         assert CardCapability.from_json(capability.to_json()) == capability
+        assert CapabilityQualifier.from_json(capability.qualifier.to_json()) == capability.qualifier
         for prerequisite in capability.prerequisites:
             assert CapabilityPrerequisite.from_json(prerequisite.to_json()) == prerequisite
         for evidence in capability.evidence:
@@ -2162,6 +2248,46 @@ def test_model_accepted_and_uncertain_capabilities_parse_as_ordered_typed_record
     assert prerequisite_quantity is not None
     assert CapabilityPrerequisite.from_json(prerequisite.to_json()) == prerequisite
     assert CapabilityQuantity.from_json(prerequisite_quantity.to_json()) == prerequisite_quantity
+
+
+def test_capability_qualifier_parses_typed_card_types_subtype_and_mana_value(
+    capability_sources: EnrichmentSources,
+) -> None:
+    candidate = _capability_candidate(
+        role="go_wide_payoff",
+        action="control",
+        zone="battlefield",
+        qualifier=_qualifier(
+            card_types=["sorcery", "creature"],
+            token_restriction="nontoken",
+            subtype="Dwarf",
+            mana_value=_quantity(value=3, relation="at_most"),
+        ),
+    )
+
+    result = _parse_card(_content(_capability_response([candidate])), capability_sources)
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.rejected_capabilities == ()
+    assert len(result.uncertain_capabilities) == 1
+    capability = result.uncertain_capabilities[0]
+    assert capability.role is Role.GO_WIDE_PAYOFF
+    assert capability.action is CapabilityAction.CONTROL
+    assert capability.zone is CapabilityZone.BATTLEFIELD
+    assert capability.qualifier == CapabilityQualifier(
+        card_types=(CapabilityCardType.CREATURE, CapabilityCardType.SORCERY),
+        token_restriction=CapabilityTokenRestriction.NONTOKEN,
+        subtype="dwarf",
+        mana_value=CapabilityQuantity(value=3, relation=QuantityRelation.AT_MOST),
+    )
+    assert capability.qualifier.to_json() == {
+        "card_types": ["creature", "sorcery"],
+        "token_restriction": "nontoken",
+        "subtype": "dwarf",
+        "mana_value": {"value": 3, "relation": "at_most"},
+    }
+    assert CapabilityQualifier.from_json(capability.qualifier.to_json()) == capability.qualifier
+    assert CardCapability.from_json(capability.to_json()) == capability
 
 
 def test_death_trigger_capability_parses_with_the_death_payoff_role() -> None:
@@ -2293,6 +2419,9 @@ def test_creature_token_ability_keeps_its_role_beside_a_derived_token_maker() ->
         face_index=None,
         face_name=None,
         role="landfall_payoff",
+        action="other",
+        zone="battlefield",
+        qualifier=_qualifier(card_types=["land"]),
         quantity=_quantity(value=1, relation="exactly"),
         timing=DANCING_FROM_DARK_TO_DUSK_TRIGGER_QUOTE,
         source_zone="battlefield",
@@ -2348,6 +2477,9 @@ def test_creature_token_ability_keeps_its_role_beside_a_derived_token_maker() ->
         donor,
         finding_id="capability-landfall-token-maker",
         role=Role.TOKEN_MAKER,
+        action=CapabilityAction.CREATE,
+        zone=CapabilityZone.BATTLEFIELD,
+        qualifier=_creature_token_qualifier_record(),
         review=FindingReview(
             status=FindingStatus.UNCERTAIN,
             reason=TOKEN_MAKER_DERIVATION_REASON,
@@ -2771,6 +2903,36 @@ def test_recorded_token_maker_holding_the_derived_id_fails_no_response() -> None
         ),
         pytest.param(
             TWO_FACE_CARD_ID,
+            {"action": "teleport"},
+            CAPABILITY_VOCABULARY_REASON,
+            id="unsupported-action",
+        ),
+        pytest.param(
+            TWO_FACE_CARD_ID,
+            {"zone": "nowhere"},
+            CAPABILITY_VOCABULARY_REASON,
+            id="unsupported-zone",
+        ),
+        pytest.param(
+            TWO_FACE_CARD_ID,
+            {"qualifier": _qualifier(card_types=["planes"])},
+            CAPABILITY_VOCABULARY_REASON,
+            id="unsupported-qualifier-card-type",
+        ),
+        pytest.param(
+            TWO_FACE_CARD_ID,
+            {"qualifier": _qualifier(token_restriction="legendary")},
+            CAPABILITY_VOCABULARY_REASON,
+            id="unsupported-token-restriction",
+        ),
+        pytest.param(
+            TWO_FACE_CARD_ID,
+            {"qualifier": _qualifier(mana_value=_quantity(value=2, relation="about"))},
+            CAPABILITY_VOCABULARY_REASON,
+            id="unsupported-qualifier-mana-value-relation",
+        ),
+        pytest.param(
+            TWO_FACE_CARD_ID,
             {"source_zone": "nowhere"},
             CAPABILITY_VOCABULARY_REASON,
             id="unsupported-source-zone",
@@ -3008,20 +3170,30 @@ def test_source_valid_capabilities_remain_uncertain_beyond_exact_source_validati
         pytest.param("bad\ud800", id="non-utf8-content"),
         pytest.param(_content([]), id="root-array"),
         pytest.param(
-            '{"schema_version": 1, "schema_version": 1, "capabilities": []}',
+            '{"schema_version": 2, "schema_version": 2, "capabilities": []}',
             id="duplicate-json-keys",
         ),
-        pytest.param(_content(_capability_response([], schema_version=2)), id="wrong-schema-version"),
         pytest.param(
-            _content({"schema_version": "1", "capabilities": []}),
+            _content(_capability_response([], schema_version=3)),
+            id="wrong-schema-version",
+        ),
+        pytest.param(
+            _content(_capability_response([], schema_version=1)),
+            id="legacy-schema-version-1-card-response",
+        ),
+        pytest.param(
+            _content({"schema_version": "2", "capabilities": []}),
             id="non-integer-schema-version",
         ),
-        pytest.param(_content({"schema_version": 1}), id="missing-capabilities-key"),
+        pytest.param(_content({"schema_version": 2}), id="missing-capabilities-key"),
         pytest.param(
-            _content({"schema_version": 1, "capabilities": [], "notes": "extra"}),
+            _content({"schema_version": 2, "capabilities": [], "notes": "extra"}),
             id="extra-root-key",
         ),
-        pytest.param(_content({"schema_version": 1, "capabilities": {}}), id="capabilities-not-a-list"),
+        pytest.param(
+            _content({"schema_version": 2, "capabilities": {}}),
+            id="capabilities-not-a-list",
+        ),
         pytest.param(
             _content(_capability_response(["not-an-object"])),
             id="capability-not-an-object",
@@ -3063,6 +3235,92 @@ def test_source_valid_capabilities_remain_uncertain_beyond_exact_source_validati
         pytest.param(
             _content(_capability_response([_capability_candidate(role="   ")])),
             id="blank-role",
+        ),
+        pytest.param(
+            _content(_capability_response([_without_key(_capability_candidate(), "action")])),
+            id="missing-action",
+        ),
+        pytest.param(
+            _content(_capability_response([_capability_candidate(action="   ")])),
+            id="blank-action",
+        ),
+        pytest.param(
+            _content(_capability_response([_capability_candidate(action=7)])),
+            id="non-string-action",
+        ),
+        pytest.param(
+            _content(_capability_response([_without_key(_capability_candidate(), "zone")])),
+            id="missing-zone",
+        ),
+        pytest.param(
+            _content(_capability_response([_capability_candidate(zone="   ")])),
+            id="blank-zone",
+        ),
+        pytest.param(
+            _content(_capability_response([_capability_candidate(zone=None)])),
+            id="null-zone",
+        ),
+        pytest.param(
+            _content(_capability_response([_without_key(_capability_candidate(), "qualifier")])),
+            id="missing-qualifier",
+        ),
+        pytest.param(
+            _content(_capability_response([_capability_candidate(qualifier="unrestricted")])),
+            id="qualifier-not-an-object",
+        ),
+        pytest.param(
+            _content(
+                _capability_response(
+                    [_capability_candidate(qualifier=_without_key(_qualifier(), "mana_value"))]
+                )
+            ),
+            id="qualifier-missing-a-key",
+        ),
+        pytest.param(
+            _content(
+                _capability_response(
+                    [_capability_candidate(qualifier={**_qualifier(), "exclusion": "none"})]
+                )
+            ),
+            id="qualifier-extra-key",
+        ),
+        pytest.param(
+            _content(
+                _capability_response(
+                    [_capability_candidate(qualifier={**_qualifier(), "card_types": "creature"})]
+                )
+            ),
+            id="qualifier-card-types-not-a-list",
+        ),
+        pytest.param(
+            _content(
+                _capability_response(
+                    [
+                        _capability_candidate(
+                            qualifier=_qualifier(card_types=["creature", "creature"])
+                        )
+                    ]
+                )
+            ),
+            id="duplicate-qualifier-card-types",
+        ),
+        pytest.param(
+            _content(
+                _capability_response(
+                    [_capability_candidate(qualifier=_qualifier(token_restriction="   "))]
+                )
+            ),
+            id="blank-token-restriction",
+        ),
+        pytest.param(
+            _content(
+                _capability_response(
+                    [
+                        _capability_candidate(qualifier=_qualifier(mana_value={"value": None}))
+                    ]
+                )
+            ),
+            id="qualifier-mana-value-missing-keys",
         ),
         pytest.param(
             _content(_capability_response([_capability_candidate(quantity="variable")])),
@@ -3590,7 +3848,7 @@ def test_generated_card_schema_is_a_strict_closed_object(
     assert set(schema["required"]) == set(schema["properties"])
     assert schema["properties"]["schema_version"] == {
         "type": "integer",
-        "const": SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
+        "const": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
     }
 
     capabilities_schema = schema["properties"]["capabilities"]
@@ -3604,6 +3862,9 @@ def test_generated_card_schema_is_a_strict_closed_object(
         "face_index",
         "face_name",
         "role",
+        "action",
+        "zone",
+        "qualifier",
         "quantity",
         "timing",
         "source_zone",
@@ -3627,6 +3888,39 @@ def test_generated_card_schema_is_a_strict_closed_object(
     assert capability_schema["properties"]["role"] == {
         "type": "string",
         "enum": sorted(member.value for member in Role),
+    }
+    assert capability_schema["properties"]["action"] == {
+        "type": "string",
+        "enum": sorted(member.value for member in CapabilityAction),
+    }
+    assert capability_schema["properties"]["zone"] == {
+        "type": "string",
+        "enum": sorted(member.value for member in CapabilityZone),
+    }
+    qualifier_schema = capability_schema["properties"]["qualifier"]
+    assert qualifier_schema["type"] == "object"
+    assert qualifier_schema["additionalProperties"] is False
+    assert set(qualifier_schema["properties"]) == {
+        "card_types",
+        "token_restriction",
+        "subtype",
+        "mana_value",
+    }
+    assert set(qualifier_schema["required"]) == set(qualifier_schema["properties"])
+    assert qualifier_schema["properties"]["card_types"] == {
+        "type": "array",
+        "items": {
+            "type": "string",
+            "enum": sorted(member.value for member in CapabilityCardType),
+        },
+    }
+    assert qualifier_schema["properties"]["token_restriction"] == {
+        "type": "string",
+        "enum": sorted(member.value for member in CapabilityTokenRestriction),
+    }
+    assert qualifier_schema["properties"]["subtype"] == {
+        "type": ["string", "null"],
+        "minLength": 1,
     }
     assert capability_schema["properties"]["quantity"] == {
         "anyOf": [
@@ -3990,11 +4284,6 @@ def test_null_face_prerequisite_evidence_is_compared_exactly() -> None:
     assert CardCapability.from_json(no_face_record.to_json()) == no_face_record
 
 
-def _without_key(document: dict[str, Any], key: str) -> dict[str, Any]:
-    """Return a copy of one JSON-native document without the named key."""
-    return {name: value for name, value in document.items() if name != key}
-
-
 def _guide_result_document() -> dict[str, Any]:
     """Return one JSON-native guide result document with every bucket populated."""
     result = _result(
@@ -4096,6 +4385,35 @@ def test_card_result_round_trips_populated_buckets_through_stored_bytes() -> Non
     assert document["uncertain_capabilities"] == [uncertain.to_json()]
     assert document["rejected_capabilities"] == [rejected.to_json()]
     assert document["malformed_reason"] is None
+
+    stored_capability = document["accepted_capabilities"][0]
+    assert set(stored_capability) == {
+        "finding_id",
+        "card_id",
+        "card_name",
+        "face_index",
+        "face_name",
+        "role",
+        "action",
+        "zone",
+        "qualifier",
+        "quantity",
+        "timing",
+        "source_zone",
+        "destination_zone",
+        "prerequisites",
+        "evidence",
+        "review",
+        "run_id",
+    }
+    assert stored_capability["action"] == "other"
+    assert stored_capability["zone"] == "battlefield"
+    assert stored_capability["qualifier"] == {
+        "card_types": [],
+        "token_restriction": "unrestricted",
+        "subtype": None,
+        "mana_value": None,
+    }
     assert CardCapabilityExtractionResult.from_json(json.loads(json.dumps(document))) == result
 
 

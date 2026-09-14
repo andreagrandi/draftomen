@@ -13,8 +13,12 @@ import pytest
 
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityCardType,
     CapabilityPrerequisite,
+    CapabilityQualifier,
     CapabilityQuantity,
+    CapabilityTokenRestriction,
     CapabilityZone,
     CardCapability,
     PrerequisiteKind,
@@ -47,11 +51,12 @@ from draftomen.semantic_relationship_records import (
 from draftomen.semantic_roles import Role, role_definition
 from draftomen.set_enrichment_candidates import CANDIDATE_REASON, CandidatePackage
 from draftomen.set_enrichment_extraction import (
+    CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
+    GUIDE_EXTRACTION_CONTRACT_VERSION,
     RELATIONSHIP_VALIDATION_CONTRACT_VERSION,
     RELATIONSHIP_VALIDATION_PROMPT_ID,
     RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID,
     RELATIONSHIP_VALIDATION_SCHEMA_NAME,
-    SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION,
     ExtractionOutcome,
     RelationshipValidationResult,
     SetEnrichmentExtractionError,
@@ -128,6 +133,25 @@ PARTICIPANT_FACE_ERROR = "participant face_index must identify a face of its car
 TOKEN_QUANTITY = CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY)
 SCALED_QUANTITY = CapabilityQuantity(value=3, relation=QuantityRelation.AT_LEAST)
 
+UNRESTRICTED_QUALIFIER = CapabilityQualifier(
+    card_types=(),
+    token_restriction=CapabilityTokenRestriction.UNRESTRICTED,
+    subtype=None,
+    mana_value=None,
+)
+TOKEN_CREATURE_QUALIFIER = CapabilityQualifier(
+    card_types=(CapabilityCardType.CREATURE,),
+    token_restriction=CapabilityTokenRestriction.TOKEN,
+    subtype=None,
+    mana_value=None,
+)
+CREATURE_QUALIFIER = CapabilityQualifier(
+    card_types=(CapabilityCardType.CREATURE,),
+    token_restriction=CapabilityTokenRestriction.UNRESTRICTED,
+    subtype=None,
+    mana_value=None,
+)
+
 
 def _card(grp_id: int, name: str, oracle_text: str) -> CardInfo:
     return CardInfo(
@@ -189,6 +213,15 @@ def sources() -> EnrichmentSources:
     return _sources()
 
 
+def _role_semantics(role: Role) -> tuple[CapabilityAction, CapabilityZone, CapabilityQualifier]:
+    """Return the role-accurate v2 action, zone, and qualifier of one capability."""
+    if role is Role.TOKEN_MAKER:
+        return CapabilityAction.CREATE, CapabilityZone.BATTLEFIELD, TOKEN_CREATURE_QUALIFIER
+    if role is Role.GO_WIDE_PAYOFF:
+        return CapabilityAction.CONTROL, CapabilityZone.BATTLEFIELD, CREATURE_QUALIFIER
+    return CapabilityAction.OTHER, CapabilityZone.BATTLEFIELD, UNRESTRICTED_QUALIFIER
+
+
 def _capability(
     *,
     finding_id: str,
@@ -207,6 +240,7 @@ def _capability(
     run_id: str = RUN_ID,
 ) -> CardCapability:
     """Build one real capability record around a single Oracle evidence quote."""
+    action, zone, qualifier = _role_semantics(role)
     return CardCapability(
         finding_id=finding_id,
         card_id=card_id,
@@ -214,6 +248,9 @@ def _capability(
         face_index=face_index,
         face_name=face_name,
         role=role,
+        action=action,
+        zone=zone,
+        qualifier=qualifier,
         quantity=quantity,
         timing=timing,
         source_zone=source_zone,
@@ -464,7 +501,8 @@ def test_relationship_request_identity_is_stable_across_equivalent_inputs(
     assert forward.response_schema_id == RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID
     assert forward.response_schema_name == RELATIONSHIP_VALIDATION_SCHEMA_NAME
     assert RELATIONSHIP_VALIDATION_CONTRACT_VERSION == 2
-    assert SET_ENRICHMENT_EXTRACTION_CONTRACT_VERSION == 1
+    assert GUIDE_EXTRACTION_CONTRACT_VERSION == 1
+    assert CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION == 2
     assert RELATIONSHIP_VALIDATION_PROMPT_ID == "draftomen-relationship-validation-v2"
     assert (
         RELATIONSHIP_VALIDATION_RESPONSE_SCHEMA_ID
@@ -626,8 +664,14 @@ def test_relationship_prompt_carries_only_the_declared_mechanism_and_participant
     assert prompt["target"]["role"] == Role.GO_WIDE_PAYOFF.value
     assert "review" not in prompt["source"]
     assert "run_id" not in prompt["source"]
+    assert "action" not in prompt["source"]
+    assert "zone" not in prompt["source"]
+    assert "qualifier" not in prompt["source"]
     assert "review" not in prompt["target"]
     assert "run_id" not in prompt["target"]
+    assert "action" not in prompt["target"]
+    assert "zone" not in prompt["target"]
+    assert "qualifier" not in prompt["target"]
     assert prompt["source_oracle_text"] == TOKEN_CARD_TEXT
     assert prompt["target_oracle_text"] == WIDE_CARD_TEXT
     assert prompt["source_role_definition"] == role_definition(Role.TOKEN_MAKER)
@@ -815,6 +859,9 @@ def test_accepted_verdict_preserves_the_constructed_candidate(
     assert relationship.source.card_id == TOKEN_ID
     assert relationship.source.card_name == TOKEN_CARD_NAME
     assert relationship.source.role is Role.TOKEN_MAKER
+    assert relationship.source.action is CapabilityAction.CREATE
+    assert relationship.source.zone is CapabilityZone.BATTLEFIELD
+    assert relationship.source.qualifier == TOKEN_CREATURE_QUALIFIER
     assert relationship.source.quantity == TOKEN_QUANTITY
     assert relationship.source.timing == TOKEN_TIMING
     assert relationship.source.source_zone is CapabilityZone.BATTLEFIELD
@@ -822,6 +869,9 @@ def test_accepted_verdict_preserves_the_constructed_candidate(
     assert relationship.source.prerequisites == source.prerequisites
     assert relationship.source.evidence == source.evidence
     assert relationship.target.role is Role.GO_WIDE_PAYOFF
+    assert relationship.target.action is CapabilityAction.CONTROL
+    assert relationship.target.zone is CapabilityZone.BATTLEFIELD
+    assert relationship.target.qualifier == CREATURE_QUALIFIER
     assert relationship.target.prerequisites == ()
     assert relationship.target.evidence == target.evidence
     assert relationship.evidence == (
