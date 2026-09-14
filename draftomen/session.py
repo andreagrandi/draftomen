@@ -35,6 +35,7 @@ from draftomen.deckbuilder import (
 )
 from draftomen.events import (
     EXPECTED_PICKS_PER_PACK,
+    DraftEvent,
     EXPECTED_TOTAL_PICKS,
     AccountEvent,
     DraftCompletedEvent,
@@ -899,7 +900,7 @@ class LiveSession:
     def __init__(
         self,
         *,
-        log_path: PathInput,
+        log_path: PathInput | None = None,
         card_database: CardDatabase | None = None,
         set_card_data_loader: SetCardDataLoader | None = None,
         app_dir: PathInput | None = None,
@@ -920,13 +921,21 @@ class LiveSession:
                 "card_database and set_card_data_loader are mutually exclusive."
             )
 
-        self.log_path = Path(log_path).expanduser().resolve(strict=False)
-        initial_log_readable = is_log_readable(path=self.log_path)
-        self.follower = LogFollower(
-            log_path=self.log_path,
-            app_dir=app_dir,
-            poll_interval=poll_interval,
-            previous_log_path=previous_log_path,
+        if log_path is None:
+            self.log_path = None
+            initial_log_readable = True
+        else:
+            self.log_path = Path(log_path).expanduser().resolve(strict=False)
+            initial_log_readable = is_log_readable(path=self.log_path)
+        self.follower = (
+            None
+            if log_path is None
+            else LogFollower(
+                log_path=self.log_path,
+                app_dir=app_dir,
+                poll_interval=poll_interval,
+                previous_log_path=previous_log_path,
+            )
         )
         self.parser = DraftLogParser()
         self.store = DraftPoolStore(app_dir=app_dir)
@@ -1513,10 +1522,11 @@ class LiveSession:
     def poll_once(self) -> LiveSessionSnapshot:
         """Process one follower polling cycle and return the latest snapshot.
         Frontends decide whether this call runs on a worker or event-loop callback.
+        A source-less session has no follower work and returns the current snapshot.
         """
 
         snapshot = self._refresh_log_setup_status()
-        if snapshot.status.setup_guidance:
+        if snapshot.status.setup_guidance or self.follower is None:
             return snapshot
 
         lines = self.follower.poll()
@@ -1526,8 +1536,12 @@ class LiveSession:
     def _refresh_log_setup_status(self) -> LiveSessionSnapshot:
         """Refresh neutral waiting guidance without overriding draft activity.
         Draft-specific statuses retain their normal event-driven state even if a
-        later poll cannot open the log.
+        later poll cannot open the log.  A source-less session skips the
+        filesystem check entirely and returns the current snapshot.
         """
+
+        if self.log_path is None:
+            return self.snapshot
 
         log_readable = is_log_readable(path=self.log_path)
         with self._state_lock:
@@ -1552,7 +1566,11 @@ class LiveSession:
     ) -> LiveSessionSnapshot:
         """Process startup recovery logs in follower-defined chronological order.
         The follower advances its offset so later polling does not replay current lines.
+        A source-less session has no startup files and returns the current snapshot.
         """
+
+        if self.follower is None:
+            return self.snapshot
 
         self.process_lines(
             lines=self.follower.scan_startup_files(
@@ -1561,6 +1579,28 @@ class LiveSession:
             include_pre_draft_detection=include_pre_draft_detection,
         )
         return self._refresh_log_setup_status()
+
+    def process_events(
+        self,
+        *,
+        events: Iterable[DraftEvent],
+    ) -> LiveSessionSnapshot:
+        """Consume explicit typed draft events and publish each state change.
+        Direct producers own account boundaries and provide complete events;
+        parser login recovery stays in process_lines.
+        """
+
+        for event in events:
+            event = self._event_with_log_account(event=event)
+            state = self._consume_store_event(event=event)
+            if state is not None:
+                self._remember_state(state=state)
+                self._log_account_id = state.account_id
+                if _event_is_missing_account(event=event):
+                    event = replace(event, account_id=state.account_id)
+            self._consume_event(event=event, state=state)
+            self._publish_event(event=event)
+        return self.snapshot
 
     def process_lines(
         self,
@@ -1575,22 +1615,15 @@ class LiveSession:
         for line in lines:
             events = tuple(self.parser.parse_lines(lines=(line,)))
             self._discard_previous_login_account_context()
-            for parsed_event in events:
-                if (
+            remaining_events = tuple(
+                parsed_event
+                for parsed_event in events
+                if not (
                     isinstance(parsed_event, QuickDraftDetectedEvent)
                     and not include_pre_draft_detection
-                ):
-                    continue
-
-                event = self._event_with_log_account(event=parsed_event)
-                state = self._consume_store_event(event=event)
-                if state is not None:
-                    self._remember_state(state=state)
-                    self._log_account_id = state.account_id
-                    if _event_is_missing_account(event=event):
-                        event = replace(event, account_id=state.account_id)
-                self._consume_event(event=event, state=state)
-                self._publish_event(event=event)
+                )
+            )
+            self.process_events(events=remaining_events)
             self._persist_pending_login_name_for_observed_course()
         return self.snapshot
 
