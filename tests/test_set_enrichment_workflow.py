@@ -17,6 +17,7 @@ import gzip
 
 import pytest
 
+import draftomen.set_enrichment as set_enrichment_engine
 import draftomen.set_enrichment_workflow as workflow
 from draftomen.card_data_client import CardDataClient, card_data_cache_path
 from draftomen.carddb import CardDatabase, CardInfo
@@ -25,7 +26,7 @@ from draftomen.openrouter_client import OpenRouterResponse
 from draftomen.profile_publication import ProfilePublicationError
 from draftomen.semantic_capability_records import CapabilityQuantity, CapabilityZone, QuantityRelation
 from draftomen.semantic_enrichment import SemanticEnrichmentArtifact
-from draftomen.semantic_enrichment_records import FindingStatus
+from draftomen.semantic_enrichment_records import FindingStatus, ReasoningConfig
 from draftomen.semantic_relationship_records import (
     PREREQUISITE_CONTRADICTION_MESSAGE,
     RelationshipPrerequisiteProjection,
@@ -37,11 +38,24 @@ from draftomen.set_enrichment import (
     EnrichmentProgress,
     partition_relationship_batches,
 )
-from draftomen.set_enrichment_candidates import CandidateBounds, MAX_PAIR_WORK_OMITTED_REASON
+from draftomen.set_enrichment_candidates import (
+    CANDIDATE_REASON,
+    LOCAL_CONFLICT_REASON_TEMPLATE,
+    LOCAL_PROVE_REASON,
+    ROLE_COMPATIBILITY_RULES,
+    CandidateBounds,
+    CandidatePackage,
+    CandidateResolutionBasis,
+    CandidateResolutionSet,
+    MAX_PAIR_WORK_OMITTED_REASON,
+)
 from draftomen.set_enrichment_extraction import (
+    CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
     CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
     GUIDE_EXTRACTION_PROMPT_ID,
     RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
+    CardCapabilityExtractionResult,
+    ExtractionOutcome,
     ExtractionRequest,
     ValidatedRelationship,
 )
@@ -75,6 +89,16 @@ DRAW_NAME = "Card Draw"
 DRAW_QUOTE = "When this enters the battlefield, draw a card."
 TYPED_PAYOFF_QUOTE = "Creatures you control get +1/+1."
 TYPED_RELATIONSHIP_CLAIM = "The token maker supplies the wide payoff with the creatures it asks for."
+LOCAL_CLAIM = f"{TOKEN_NAME} supports {WIDE_NAME} through token-go-wide-payoff."
+LOCAL_MATCHER_MODEL = "local-pair-matcher-v1"
+LOCAL_MATCHER_PROVIDER = "draftomen"
+# Every declared mechanism resolves locally, so this undeclared one is the only source of a
+# residual model pair and the fixture below re-issues constructed pairs through it.
+RESIDUAL_MECHANISM = "residual-payoff"
+CARD_MALFORMED_REASON = (
+    "response does not match card capability extraction schema version "
+    f"{CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION}."
+)
 
 
 class _Response:
@@ -249,6 +273,26 @@ def _creature_token_qualifier() -> dict[str, Any]:
     }
 
 
+def _creature_selecting_qualifier() -> dict[str, Any]:
+    """Return the creature-selecting qualifier of a payoff the local matcher can prove."""
+    return {
+        "card_types": ["creature"],
+        "token_restriction": "unrestricted",
+        "subtype": None,
+        "mana_value": None,
+    }
+
+
+def _nontoken_creature_qualifier() -> dict[str, Any]:
+    """Return a creature qualifier that contradicts the tokens its enabler produces."""
+    return {
+        "card_types": ["creature"],
+        "token_restriction": "nontoken",
+        "subtype": None,
+        "mana_value": None,
+    }
+
+
 def _capability_candidate(
     *,
     finding_id: str,
@@ -416,7 +460,101 @@ def _capability_content(
         ]
     else:
         raise AssertionError(f"unexpected card id {card_id}")
-    return json.dumps({"schema_version": 2, "capabilities": candidates})
+    return json.dumps(
+        {
+            "schema_version": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
+            "capabilities": candidates,
+        }
+    )
+
+
+def _local_payoff_candidate(*, finding_id: str, qualifier: dict[str, Any]) -> dict[str, Any]:
+    """Build one structured wide-payoff capability of the local-decision fixture."""
+    return _capability_candidate(
+        finding_id=finding_id,
+        card_id=WIDE_ID,
+        card_name=WIDE_NAME,
+        role="go_wide_payoff",
+        action="control",
+        zone="battlefield",
+        quote=TYPED_PAYOFF_QUOTE,
+        qualifier=qualifier,
+    )
+
+
+def _local_cards() -> tuple[CardInfo, ...]:
+    """Return the frozen sources of the local-decision fixture.
+
+    The payoff's text stays inside the closed vocabulary the typed prerequisite clauses quote, so
+    one fixture serves both the local decisions and the typed residual verdicts.
+    """
+    return (
+        _card(card_id=TOKEN_ID, name=TOKEN_NAME, oracle_text=TOKEN_QUOTE),
+        _card(card_id=WIDE_ID, name=WIDE_NAME, oracle_text=TYPED_PAYOFF_QUOTE),
+        _card(card_id=DRAW_ID, name=DRAW_NAME, oracle_text=DRAW_QUOTE),
+    )
+
+
+def _local_capability_content(payload: dict[str, Any], *, conflict: bool = False) -> str:
+    """Build the structured capabilities of the local-decision fixture.
+
+    The enabler states the zone it creates tokens into, so the structured parameters decide every
+    pair on their own: the unrestricted and the creature-selecting payoffs are proven, the payoff
+    restating a token restriction conflicts with the tokens the enabler produces, and a
+    conflicting enabler zone leaves a run whose only pair the same conflict rejects.
+    """
+    card = payload["card"]
+    if card["card_id"] == TOKEN_ID:
+        candidates = [
+            _capability_candidate(
+                finding_id="local-token-maker",
+                card_id=TOKEN_ID,
+                card_name=TOKEN_NAME,
+                quote=TOKEN_QUOTE,
+                destination_zone="graveyard" if conflict else "battlefield",
+                **_token_maker_fields(),
+            )
+        ]
+    elif card["card_id"] == WIDE_ID:
+        candidates = [
+            _local_payoff_candidate(
+                finding_id="local-wide-selected",
+                qualifier=_creature_selecting_qualifier(),
+            )
+        ]
+        if not conflict:
+            candidates.extend(
+                (
+                    _local_payoff_candidate(
+                        finding_id="local-wide-unrestricted",
+                        qualifier=_unrestricted_qualifier(),
+                    ),
+                    _local_payoff_candidate(
+                        finding_id="local-wide-nontoken",
+                        qualifier=_nontoken_creature_qualifier(),
+                    ),
+                )
+            )
+    else:
+        return _capability_content(card["card_id"])
+    return json.dumps(
+        {
+            "schema_version": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
+            "capabilities": candidates,
+        }
+    )
+
+
+def _contract_violating_local_content(payload: dict[str, Any]) -> str:
+    """Build a local fixture card response with the paid-store capability violation.
+
+    The resident paid responses state an accepted capability that also carries a reason, which the
+    strict capability validator rejected item by item. The tolerant per-item parser recovers the
+    rest of that response, so it is exactly the response a resume must reuse without paying again.
+    """
+    document = json.loads(_local_capability_content(payload))
+    document["capabilities"][-1]["review"] = {"status": "accepted", "reason": "Looks correct."}
+    return json.dumps(document)
 
 
 def _relationship_verdict(pair: dict[str, Any], *, status: str) -> dict[str, Any]:
@@ -490,7 +628,7 @@ def _typed_capability_content(payload: dict[str, Any]) -> str:
         raise AssertionError(f"unexpected card id {card['card_id']}")
     return json.dumps(
         {
-            "schema_version": 2,
+            "schema_version": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
             "capabilities": [
                 _capability_candidate(
                     finding_id=finding_id,
@@ -629,8 +767,11 @@ class _Completion:
         counts: bool = False,
         fidelity: bool = False,
         typed: bool = False,
+        local: bool = False,
+        local_conflict: bool = False,
         typed_source_colors: Sequence[str] = ("W",),
         malformed_card_ids: tuple[int, ...] = (),
+        violating_card_ids: tuple[int, ...] = (),
         guide_category: str = "mechanic",
         relationship_mode: str = "accepted",
         relationship_statuses: tuple[str, ...] = (),
@@ -643,8 +784,11 @@ class _Completion:
         self.counts = counts
         self.fidelity = fidelity
         self.typed = typed
+        self.local = local
+        self.local_conflict = local_conflict
         self.typed_source_colors = tuple(typed_source_colors)
         self.malformed_card_ids = malformed_card_ids
+        self.violating_card_ids = violating_card_ids
         self.guide_category = guide_category
         self.relationship_mode = relationship_mode
         self.relationship_statuses = relationship_statuses
@@ -671,8 +815,6 @@ class _Completion:
                 status = (
                     "accepted" if (source_id, target_id) in self.accepted_pairs else "uncertain"
                 )
-            elif self.relationship_mode == "mixed":
-                status = "accepted" if index == 0 else "malformed"
             else:
                 status = self.relationship_mode
             statuses.append(status)
@@ -692,6 +834,11 @@ class _Completion:
         elif request.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID:
             if self.typed:
                 content = _typed_capability_content(payload)
+            elif self.local or self.local_conflict:
+                if payload["card"]["card_id"] in self.violating_card_ids:
+                    content = _contract_violating_local_content(payload)
+                else:
+                    content = _local_capability_content(payload, conflict=self.local_conflict)
             elif payload["card"]["card_id"] in self.malformed_card_ids:
                 content = "{malformed"
             else:
@@ -703,7 +850,7 @@ class _Completion:
                 )
         elif request.prompt_id == RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID:
             pairs = payload["pairs"]
-            if self.typed:
+            if self.typed or self.local:
                 verdicts = [
                     _typed_relationship_verdict(pair, source_colors=self.typed_source_colors)
                     for pair in pairs
@@ -753,6 +900,7 @@ def _run(
     is_cancelled: Callable[[], bool] | None = None,
     clock: Callable[[], datetime] | None = None,
     guide_url: str = GUIDE_URL,
+    run_id: str | None = RUN_ID,
 ) -> workflow.SetEnrichmentWorkflowResult:
     output = tmp_path / "output" if output_dir is None else output_dir
     selected_cards = _cards() if cards is None else tuple(cards)
@@ -777,9 +925,48 @@ def _run(
         is_cancelled=is_cancelled,
         card_data_client=card_client,
         guide_client=guide_client,
-        run_id=RUN_ID,
+        run_id=run_id,
         clock=clock,
     )
+
+
+def _residual_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    residual_only: bool = False,
+) -> None:
+    """Route constructed candidate pairs through the residual model path.
+
+    The role-anchored matcher decides every mechanism declared in ROLE_COMPATIBILITY_RULES, so a
+    mechanism absent from it is the only remaining source of a model package. Each injected pair
+    keeps its constructed participants and is resolved through the real resolver under that
+    mechanism, so the engine routes it through its durable batch exactly like a future rule that
+    declares a mechanism the structured parameters cannot settle.
+
+    `residual_only` re-issues every constructed pair, which leaves a run with no local decision;
+    otherwise the local decisions stay and one residual copy of each pair is added beside them.
+    """
+    real = set_enrichment_engine.resolve_candidate_packages
+    assert RESIDUAL_MECHANISM not in {
+        link.mechanism for link in ROLE_COMPATIBILITY_RULES
+    }
+
+    def resolving(packages: tuple[CandidatePackage, ...]) -> CandidateResolutionSet:
+        honest = real(packages)
+        residual = tuple(
+            real((replace(item.package, mechanism=RESIDUAL_MECHANISM),)).resolutions[0]
+            for item in honest.resolutions
+        )
+        # The injected pairs go residual through the real resolver, because an undeclared
+        # mechanism is exactly what leaves a pair for the model.
+        assert all(item.basis is CandidateResolutionBasis.MODEL for item in residual)
+        resolutions = residual if residual_only else (*honest.resolutions, *residual)
+        return CandidateResolutionSet(
+            resolutions=tuple(sorted(resolutions, key=lambda item: item.identity)),
+            omissions=honest.omissions,
+        )
+
+    monkeypatch.setattr(set_enrichment_engine, "resolve_candidate_packages", resolving)
 
 
 def _typed_prerequisite_analysis(tmp_path: Path) -> workflow.SetEnrichmentWorkflowResult:
@@ -977,27 +1164,376 @@ def test_complete_run_round_trips_pending_artifact_and_maps_durable_requests(tmp
     findings = (
         *result.artifact.guide_claims,
         *result.artifact.oracle_facts,
-        *result.artifact.relationships,
         *result.artifact.rejected_findings,
     )
     assert findings
     assert all(item.finding_id.startswith("work-") and ":" in item.finding_id for item in findings)
-    assert result.run.candidate_packages is not None
-    batches = partition_relationship_batches(result.run.candidate_packages.packages)
-    assert len(result.run.relationship_results) == len(result.run.candidate_packages.packages)
-    assert len(result.artifact.runs) == (
-        len(result.run.guide_results) + len(result.run.card_results) + len(batches)
+    resolutions = result.run.candidate_resolutions
+    assert resolutions is not None
+    # The structured parameters decide the fixture's only declared pair, so the durable store
+    # holds no relationship batch and the artifact keeps no model verdict for it.
+    assert len(resolutions.resolutions) == 1
+    assert len(resolutions.local_accepted) == 1
+    assert resolutions.model_packages == ()
+    assert result.run.relationship_results == ()
+    batches = partition_relationship_batches(resolutions.model_packages)
+    assert batches == ()
+    assert len(result.run.relationship_results) == len(resolutions.model_packages)
+    local_runs = [run for run in result.artifact.runs if run.run_id.startswith("local-")]
+    assert len(local_runs) == (
+        1 if resolutions.local_accepted or resolutions.local_rejected else 0
     )
-    assert all(run.run_id.startswith("work-") for run in result.artifact.runs)
+    assert len(result.artifact.runs) == (
+        len(result.run.guide_results) + len(result.run.card_results) + len(batches) + len(local_runs)
+    )
+    local_ids = {item.run_id for item in local_runs}
+    assert all(
+        run.run_id.startswith("work-")
+        for run in result.artifact.runs
+        if run.run_id not in local_ids
+    )
+    (relationship,) = result.artifact.relationships
+    assert relationship.run_id in local_ids
+    assert relationship.finding_id.startswith(f"{relationship.run_id}:")
+    assert relationship.claim == LOCAL_CLAIM
+    assert relationship.review.status is FindingStatus.ACCEPTED
+    identities = _durable_identities(result.work_dir)
+    assert all(item.work_kind is not WorkKind.RELATIONSHIP for item in identities.values())
+    assert set(identities) == {run.run_id for run in result.artifact.runs} - local_ids
     assert b'"content"' not in result.artifact.to_bytes()
+
+
+def test_local_decisions_publish_with_the_zero_cost_matcher_run(tmp_path: Path) -> None:
+    completion = _Completion(local=True)
+    result = _run(tmp_path, cards=_local_cards(), completion=completion)
+    assert result.artifact is not None
+    assert result.artifact_path is not None
+    run = result.run
+    resolutions = run.candidate_resolutions
+    assert resolutions is not None
+
+    # The payoff that restates a token restriction conflicts, the unrestricted and the
+    # creature-selecting payoffs are proven, so every pair is terminal before any batch work.
+    assert len(resolutions.resolutions) == 3
+    assert len(resolutions.local_accepted) == 2
+    assert len(resolutions.local_rejected) == 1
+    assert resolutions.model_packages == ()
+    assert run.relationship_results == ()
+    assert RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID not in {
+        call.prompt_id for call in completion.calls
+    }
+    assert [
+        item
+        for item in _durable_identities(result.work_dir).values()
+        if item.work_kind is WorkKind.RELATIONSHIP
+    ] == []
+
+    local_runs = [item for item in result.artifact.runs if item.run_id.startswith("local-")]
+    assert len(local_runs) == 1
+    local_run = local_runs[0]
+    assert local_run.provider == LOCAL_MATCHER_PROVIDER
+    assert local_run.model == LOCAL_MATCHER_MODEL
+    assert local_run.prompt_id == "draftomen-local-pair-matcher-v1"
+    assert local_run.response_schema_id == "draftomen-local-pair-resolution-v1"
+    assert local_run.reasoning == ReasoningConfig(
+        enabled=None,
+        effort=None,
+        max_tokens=None,
+        exclude=None,
+    )
+    assert (local_run.input_tokens, local_run.output_tokens, local_run.reasoning_tokens) == (0, 0, 0)
+    assert local_run.cost_usd == "0"
+    assert local_run.started_at == result.artifact.created_at
+    assert local_run.completed_at == result.artifact.created_at
+
+    # Both proven payoffs carry one semantic identity, so the artifact keeps only the lowest
+    # namespaced identifier of the two.
+    proven = tuple(
+        f"{local_run.run_id}"
+        ":relationship:token-go-wide-payoff:1:local-token-maker:2:"
+        f"local-wide-{payoff}"
+        for payoff in ("selected", "unrestricted")
+    )
+    (local_relationship,) = result.artifact.relationships
+    assert local_relationship.finding_id == min(proven)
+    assert local_relationship.run_id == local_run.run_id
+    assert local_relationship.claim == LOCAL_CLAIM
+    assert local_relationship.mechanism == "token-go-wide-payoff"
+    assert local_relationship.participants == (TOKEN_ID, WIDE_ID)
+    assert local_relationship.prerequisites == tuple(sorted({CANDIDATE_REASON, LOCAL_PROVE_REASON}))
+    assert {
+        (item.card_id, item.face_index, item.quote) for item in local_relationship.oracle_evidence
+    } == {(TOKEN_ID, None, TOKEN_QUOTE), (WIDE_ID, None, TYPED_PAYOFF_QUOTE)}
+    assert len(local_relationship.oracle_evidence) == 2
+    assert local_relationship.guide_evidence == ()
+    assert local_relationship.review.status is FindingStatus.ACCEPTED
+    assert local_relationship.review.reason is None
+    assert local_relationship.prerequisite_projection is None
+
+    local_rejection = next(
+        item for item in result.artifact.rejected_findings if item.run_id == local_run.run_id
+    )
+    assert local_rejection.finding_id == (
+        f"{local_run.run_id}"
+        ":relationship:token-go-wide-payoff:1:local-token-maker:2:local-wide-nontoken"
+    )
+    assert local_rejection.source_kind == "relationship"
+    assert local_rejection.summary == LOCAL_CLAIM
+    assert local_rejection.reason == LOCAL_CONFLICT_REASON_TEMPLATE.format(
+        field="token_restriction"
+    )
+
+    accounting = run.progress.accounting
+    paid_runs = [item for item in result.artifact.runs if item.run_id != local_run.run_id]
+    assert len(paid_runs) == accounting.executed_work + accounting.reused_work
+    assert len(result.artifact.runs) == (
+        len(run.guide_results) + len(run.card_results) + len(local_runs)
+    )
+    assert sum(item.input_tokens or 0 for item in paid_runs) == accounting.input_tokens
+    assert sum(item.output_tokens or 0 for item in paid_runs) == accounting.output_tokens
+    assert sum(item.reasoning_tokens or 0 for item in paid_runs) == accounting.reasoning_tokens
+    assert sum(Decimal(item.cost_usd) for item in paid_runs) == Decimal(
+        accounting.running_cost_usd
+    )
+    assert run.progress.relationships_total == 3
+    assert run.progress.relationships_completed == 3
+    assert run.progress.valid_count == 2
+    assert run.progress.rejected_count == 1
+
+    decoded = SemanticEnrichmentArtifact.from_bytes(
+        result.artifact_path.read_bytes(),
+        sources=result.sources,
+    )
+    assert decoded == result.artifact
+
+
+def test_residual_model_pairs_publish_with_batch_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _residual_pairs(monkeypatch)
+    completion = _Completion(local=True)
+    result = _run(tmp_path, cards=_local_cards(), completion=completion)
+    assert result.artifact is not None
+    assert result.artifact_path is not None
+    run = result.run
+    resolutions = run.candidate_resolutions
+    assert resolutions is not None
+
+    assert len(resolutions.resolutions) == 6
+    assert len(resolutions.local_accepted) == 2
+    assert len(resolutions.local_rejected) == 1
+    assert len(resolutions.model_packages) == 3
+
+    batch_calls = [
+        call
+        for call in completion.calls
+        if call.prompt_id == RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID
+    ]
+    assert len(batch_calls) == 1
+    requested = json.loads(batch_calls[0].user_prompt)["pairs"]
+    assert [pair["mechanism"] for pair in requested] == [RESIDUAL_MECHANISM] * 3
+    assert len(run.relationship_results) == len(resolutions.model_packages)
+
+    local_runs = [item for item in result.artifact.runs if item.run_id.startswith("local-")]
+    assert len(local_runs) == 1
+    local_run = local_runs[0]
+    identities = _durable_identities(result.work_dir)
+    model_relationships = [
+        item for item in result.artifact.relationships if item.run_id != local_run.run_id
+    ]
+    assert len(model_relationships) == 3
+    for model_relationship in model_relationships:
+        # Every residual verdict keeps the durable batch request that produced it, never the
+        # zero-cost local run, and the parser's own claim and evidence travel with it.
+        assert model_relationship.run_id in identities
+        assert identities[model_relationship.run_id].work_kind is WorkKind.RELATIONSHIP
+        assert identities[model_relationship.run_id].prompt_id == (
+            RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID
+        )
+        assert identities[model_relationship.run_id].subject_id == "relationship-batch-0000"
+        assert model_relationship.finding_id.startswith(
+            f"{model_relationship.run_id}:relationship:{RESIDUAL_MECHANISM}:"
+        )
+        assert model_relationship.claim == TYPED_RELATIONSHIP_CLAIM
+        assert model_relationship.prerequisites == (CANDIDATE_REASON,)
+        assert model_relationship.mechanism == RESIDUAL_MECHANISM
+        assert model_relationship.review.status is FindingStatus.ACCEPTED
+        assert {
+            (item.card_id, item.face_index, item.quote)
+            for item in model_relationship.oracle_evidence
+        } >= {(TOKEN_ID, None, TOKEN_QUOTE), (WIDE_ID, None, TYPED_PAYOFF_QUOTE)}
+    assert len(
+        [item for item in identities.values() if item.work_kind is WorkKind.RELATIONSHIP]
+    ) == len(batch_calls)
+    assert len(result.artifact.runs) == (
+        len(run.guide_results) + len(run.card_results) + len(batch_calls) + len(local_runs)
+    )
+
+    accounting = run.progress.accounting
+    paid_runs = [item for item in result.artifact.runs if item.run_id != local_run.run_id]
+    assert len(paid_runs) == accounting.executed_work + accounting.reused_work
+    assert sum(item.input_tokens or 0 for item in paid_runs) == accounting.input_tokens
+    assert sum(item.output_tokens or 0 for item in paid_runs) == accounting.output_tokens
+    assert sum(item.reasoning_tokens or 0 for item in paid_runs) == accounting.reasoning_tokens
+    assert sum(Decimal(item.cost_usd) for item in paid_runs) == Decimal(
+        accounting.running_cost_usd
+    )
+
+    decoded = SemanticEnrichmentArtifact.from_bytes(
+        result.artifact_path.read_bytes(),
+        sources=result.sources,
+    )
+    assert decoded == result.artifact
+
+
+def test_local_only_decisions_never_reach_a_paid_batch(tmp_path: Path) -> None:
+    completion = _Completion(local_conflict=True)
+    result = _run(tmp_path, cards=_local_cards(), completion=completion)
+    assert result.artifact is not None
+    run = result.run
+    resolutions = run.candidate_resolutions
+    assert resolutions is not None
+
+    assert len(resolutions.resolutions) == 1
+    assert resolutions.model_packages == ()
+    assert run.relationship_results == ()
+    assert RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID not in {
+        call.prompt_id for call in completion.calls
+    }
+    assert [
+        item
+        for item in _durable_identities(result.work_dir).values()
+        if item.work_kind is WorkKind.RELATIONSHIP
+    ] == []
+
+    local_runs = [item for item in result.artifact.runs if item.run_id.startswith("local-")]
+    assert len(local_runs) == 1
+    assert result.artifact.relationships == ()
+    assert len(result.artifact.runs) == (
+        len(run.guide_results) + len(run.card_results) + len(local_runs)
+    )
+    assert result.counts == workflow.EnrichmentFindingCounts(
+        accepted=0,
+        uncertain=4,
+        rejected=1,
+        failed=0,
+    )
+    assert run.progress.relationships_total == 1
+    assert run.progress.relationships_completed == 1
+    assert run.progress.valid_count == 0
+    assert run.progress.rejected_count == 1
+
+    (rejection,) = result.artifact.rejected_findings
+    assert rejection.run_id == local_runs[0].run_id
+    assert rejection.source_kind == "relationship"
+    assert rejection.summary == LOCAL_CLAIM
+    assert rejection.reason == LOCAL_CONFLICT_REASON_TEMPLATE.format(field="zone")
+
+    accounting = run.progress.accounting
+    paid_runs = [item for item in result.artifact.runs if item.run_id != local_runs[0].run_id]
+    assert len(paid_runs) == accounting.executed_work + accounting.reused_work
+    assert sum(item.input_tokens or 0 for item in paid_runs) == accounting.input_tokens
+    assert sum(item.cost_usd is None for item in paid_runs) == accounting.work_without_cost
+
+
+def test_local_matcher_provenance_is_identical_across_reused_reruns(tmp_path: Path) -> None:
+    first = _run(tmp_path, cards=_local_cards(), completion=_Completion(local=True))
+    second = _run(
+        tmp_path,
+        cards=_local_cards(),
+        completion=_Completion(local=True, interrupt_after=0),
+    )
+
+    assert first.artifact is not None
+    assert second.artifact is not None
+    assert second.artifact_path == first.artifact_path
+    assert second.artifact == first.artifact
+
+
+def test_recovered_malformed_card_republishes_identical_local_provenance(tmp_path: Path) -> None:
+    """Prove a locally recovered paid response publishes the same artifact on every later resume.
+
+    The strict capability validator wrote an all-or-nothing malformed result for the resident paid
+    response that violates the capability contract, and every resume reads that response again.
+    The recovered capabilities feed the local matcher's provenance, so the local run and the
+    artifact it pins must reproduce byte for byte even though each resuming invocation carries its
+    own run id and pays for nothing.
+    """
+    original = _run(
+        tmp_path,
+        cards=_local_cards(),
+        completion=_Completion(local=True, violating_card_ids=(WIDE_ID,)),
+    )
+    assert original.artifact is not None
+    _malform_stored_card_result(original.work_dir, card_id=WIDE_ID)
+    stored = dict(zip(original.run.card_ids, original.run.card_results, strict=True))[WIDE_ID]
+    assert stored.outcome is ExtractionOutcome.SUCCESS
+    assert len(stored.uncertain_capabilities) == 2
+
+    resumes = [
+        _run(
+            tmp_path,
+            cards=_local_cards(),
+            completion=_Completion(local=True, interrupt_after=0),
+            run_id=run_id,
+        )
+        for run_id in ("first-resume", "second-resume")
+    ]
+
+    first_resume, second_resume = resumes
+    assert first_resume.artifact is not None
+    assert second_resume.artifact is not None
+    assert second_resume.artifact_path == first_resume.artifact_path
+    assert second_resume.artifact == first_resume.artifact
+    (first_local,) = [
+        item for item in first_resume.artifact.runs if item.run_id.startswith("local-")
+    ]
+    (second_local,) = [
+        item for item in second_resume.artifact.runs if item.run_id.startswith("local-")
+    ]
+    assert second_local.run_id == first_local.run_id
+    assert second_local.prompt_sha256 == first_local.prompt_sha256
+    assert second_local.response_schema_sha256 == first_local.response_schema_sha256
+    # The recovered capabilities are the ones the strict parser discarded for their own card, and
+    # the local decisions they carry still resolve the same pairs under the same zero-cost run.
+    identities = _durable_identities(original.work_dir)
+    (wide_identity,) = [
+        identity
+        for identity in identities.values()
+        if identity.work_kind is WorkKind.CARD_CAPABILITY
+        and identity.subject_id == str(WIDE_ID)
+    ]
+    recovered_run_id = f"durable-{wide_identity.content_sha256[:16]}"
+    recovered = [
+        dict(zip(resume.run.card_ids, resume.run.card_results, strict=True))[WIDE_ID]
+        for resume in resumes
+    ]
+    assert recovered[0].to_json() == recovered[1].to_json()
+    for resume, result in zip(resumes, recovered, strict=True):
+        assert result.outcome is ExtractionOutcome.SUCCESS
+        assert [item.finding_id for item in result.uncertain_capabilities] == [
+            item.finding_id for item in stored.uncertain_capabilities
+        ]
+        assert [item.finding_id for item in result.rejected_capabilities] == [
+            item.finding_id for item in stored.rejected_capabilities
+        ]
+        assert {item.run_id for item in result.uncertain_capabilities} == {recovered_run_id}
+        assert {item.run_id for item in result.rejected_capabilities} == {recovered_run_id}
+        assert resume.run.progress.relationships_completed == 2
+        assert resume.run.progress.accounting.executed_work == 0
+    assert second_resume.artifact.relationships == first_resume.artifact.relationships
+    assert LOCAL_CLAIM in {item.claim for item in second_resume.artifact.relationships}
 
 
 def test_finding_counts_distinguish_statuses_and_malformed_results_from_omissions(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _residual_pairs(monkeypatch, residual_only=True)
     result = _run(
         tmp_path,
-        completion=_Completion(counts=True, relationship_mode="mixed"),
+        completion=_Completion(counts=True, relationship_statuses=("accepted", "malformed")),
     )
 
     assert result.counts == workflow.EnrichmentFindingCounts(
@@ -1013,7 +1549,11 @@ def test_finding_counts_distinguish_statuses_and_malformed_results_from_omission
     ] == ["success", "malformed"]
 
 
-def test_finding_counts_are_exact_for_known_verdicts(tmp_path: Path) -> None:
+def test_finding_counts_are_exact_for_known_verdicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _residual_pairs(monkeypatch, residual_only=True)
     result = _run(
         tmp_path,
         completion=_Completion(
@@ -1129,10 +1669,15 @@ def test_known_costs_reconcile_as_exact_decimals(tmp_path: Path) -> None:
     completion = _Completion()
     result = _run(tmp_path, completion=completion)
     assert result.artifact is not None
-    assert len(completion.calls) == 5
+    # The structured matcher decides the fixture's pair without a request, so only the guide and
+    # the three eligible cards are paid work and the artifact carries one zero-cost local run.
+    assert len(completion.calls) == 4
     assert len(result.artifact.runs) == 5
+    local_runs = [run for run in result.artifact.runs if run.run_id.startswith("local-")]
+    assert len(local_runs) == 1
+    assert local_runs[0].cost_usd == "0"
 
-    expected = Decimal("0.010")
+    expected = Decimal("0.008")
     artifact_total = sum(
         (Decimal(run.cost_usd) for run in result.artifact.runs if run.cost_usd is not None),
         Decimal(0),
@@ -1145,7 +1690,9 @@ def test_known_costs_reconcile_as_exact_decimals(tmp_path: Path) -> None:
 
 def test_colliding_capabilities_prefer_accepted_relationship_and_rerun_is_identical(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _residual_pairs(monkeypatch, residual_only=True)
     completion = _Completion(
         duplicate=True,
         relationship_mode="accepted-pair",
@@ -1164,7 +1711,7 @@ def test_colliding_capabilities_prefer_accepted_relationship_and_rerun_is_identi
     selected = first.artifact.relationships[0]
     assert selected.review.status is FindingStatus.ACCEPTED
     assert selected.prerequisite_projection is None
-    assert selected.finding_id.endswith(":relationship:token-go-wide-payoff:1:token-b:2:wide-b")
+    assert selected.finding_id.endswith(f":relationship:{RESIDUAL_MECHANISM}:1:token-b:2:wide-b")
     assert first.artifact_path is not None
     first_bytes = first.artifact_path.read_bytes()
 
@@ -1190,14 +1737,23 @@ def test_reasoning_provenance_timestamps_tokens_and_unknown_cost_reconcile(
     )
     assert result.artifact is not None
     runs = result.artifact.runs
+    paid_runs = [run for run in runs if run.run_id.startswith("work-")]
+    local_runs = [run for run in runs if run.run_id.startswith("local-")]
+    assert len(local_runs) == 1
+    assert local_runs[0].reasoning == ReasoningConfig(
+        enabled=None,
+        effort=None,
+        max_tokens=None,
+        exclude=None,
+    )
     assert all(
         run.reasoning.enabled is None
         and run.reasoning.effort == MODEL_CONFIG.reasoning_effort
         and run.reasoning.max_tokens is None
         and run.reasoning.exclude is None
-        for run in runs
+        for run in paid_runs
     )
-    assert any(run.provider == "openrouter" and run.cost_usd is None for run in runs)
+    assert any(run.provider == "openrouter" and run.cost_usd is None for run in paid_runs)
     assert all(
         datetime.fromisoformat(run.started_at.replace("Z", "+00:00")).utcoffset() == timedelta(0)
         and datetime.fromisoformat(run.completed_at.replace("Z", "+00:00")).utcoffset()
@@ -1209,38 +1765,37 @@ def test_reasoning_provenance_timestamps_tokens_and_unknown_cost_reconcile(
         == timedelta(0)
     )
     accounting = result.run.progress.accounting
-    assert sum(run.input_tokens or 0 for run in runs) == accounting.input_tokens
-    assert sum(run.output_tokens or 0 for run in runs) == accounting.output_tokens
-    assert sum(run.reasoning_tokens or 0 for run in runs) == accounting.reasoning_tokens
+    assert sum(run.input_tokens or 0 for run in paid_runs) == accounting.input_tokens
+    assert sum(run.output_tokens or 0 for run in paid_runs) == accounting.output_tokens
+    assert sum(run.reasoning_tokens or 0 for run in paid_runs) == accounting.reasoning_tokens
     assert accounting.work_without_cost == 1
     assert accounting.projected_final_cost_usd is None
 
     identities = _durable_identities(result.work_dir)
-    assert set(identities) == {run.run_id for run in runs}
-    assert {run.model for run in runs} == {MODEL}
+    assert set(identities) == {run.run_id for run in paid_runs}
+    assert {run.model for run in paid_runs} == {MODEL}
     assert {identity.model_config.max_tokens for identity in identities.values()} == {
         MODEL_CONFIG.max_tokens
     }
     assert {identity.model_config.reasoning_effort for identity in identities.values()} == {
         MODEL_CONFIG.reasoning_effort
     }
-    assert {run.prompt_id for run in runs} == {
+    assert {run.prompt_id for run in paid_runs} == {
         GUIDE_EXTRACTION_PROMPT_ID,
         CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
-        RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
     }
     assert len(
         {
             run.prompt_sha256
-            for run in runs
+            for run in paid_runs
             if run.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID
         }
     ) == 3
-    for prompt_id in {run.prompt_id for run in runs}:
-        family = [run for run in runs if run.prompt_id == prompt_id]
+    for prompt_id in {run.prompt_id for run in paid_runs}:
+        family = [run for run in paid_runs if run.prompt_id == prompt_id]
         assert len({run.response_schema_id for run in family}) == 1
         assert len({run.response_schema_sha256 for run in family}) == 1
-    for run in runs:
+    for run in paid_runs:
         identity = identities[run.run_id]
         assert run.prompt_id == identity.prompt_id
         assert run.prompt_sha256 == identity.prompt_sha256
@@ -1270,7 +1825,9 @@ def test_compatible_rerun_reuses_all_work_with_zero_completion_calls(tmp_path: P
     assert guide.response_schema_name == "draftomen_guide_extraction_v1"
     cards = by_kind[WorkKind.CARD_CAPABILITY]
     assert len(cards) == len(_cards())
-    assert {card.contract_version for card in cards} == {2}
+    assert {card.contract_version for card in cards} == {
+        CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION
+    }
     assert {card.prompt_id for card in cards} == {"draftomen-card-capability-extraction-v2"}
     assert {card.response_schema_id for card in cards} == {
         "draftomen-card-capability-extraction-response-v2"
@@ -1278,12 +1835,10 @@ def test_compatible_rerun_reuses_all_work_with_zero_completion_calls(tmp_path: P
     assert {card.response_schema_name for card in cards} == {
         "draftomen_card_capability_extraction_v2"
     }
-    batches = by_kind[WorkKind.RELATIONSHIP]
-    assert batches
-    assert {batch.contract_version for batch in batches} == {1}
-    assert {batch.prompt_id for batch in batches} == {
-        "draftomen-relationship-validation-batch-v1"
-    }
+    # Every constructed pair is proven from the stored capability parameters, so the zero-model
+    # reality leaves the store without a single relationship batch identity.
+    assert by_kind[WorkKind.RELATIONSHIP] == []
+    assert any(run.run_id.startswith("local-") for run in second.artifact.runs)
 
 
 def test_cancellation_and_keyboard_interrupt_preserve_durable_prefix_without_publication(
@@ -1378,12 +1933,26 @@ def test_confirm_selects_all_accepted_relationships_and_publishes_metadata_profi
     assert publication.manifest_path == _profile_marker(result.output_dir)
 
 
-def test_typed_prerequisite_projection_reaches_the_confirmed_profile(tmp_path: Path) -> None:
+def test_typed_prerequisite_projection_reaches_the_confirmed_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _residual_pairs(monkeypatch)
     analysis = _typed_prerequisite_analysis(tmp_path)
     assert analysis.artifact is not None
     assert analysis.artifact.review.state == "pending"
-    assert len(analysis.artifact.relationships) == 1
-    original = analysis.artifact.relationships[0]
+    # The typed pair carries one locally proven relationship beside the residual one the model
+    # validated with complete typed prerequisites.
+    assert len(analysis.artifact.relationships) == 2
+    original = next(
+        item for item in analysis.artifact.relationships if item.prerequisite_projection is not None
+    )
+    local = next(
+        item for item in analysis.artifact.relationships if item.prerequisite_projection is None
+    )
+    assert local.run_id.startswith("local-")
+    assert original.mechanism == RESIDUAL_MECHANISM
+    assert original.run_id.startswith("work-")
     projection = original.prerequisite_projection
     assert projection is not None
     assert projection.source.card_id == TOKEN_ID
@@ -1420,7 +1989,54 @@ def test_typed_prerequisite_projection_reaches_the_confirmed_profile(tmp_path: P
         reviewer_id="operator",
         reviewed_at=reviewed_at + timedelta(seconds=1),
     )
-    assert review.artifact.confirmed_relationship_ids == (original.finding_id,)
+    assert set(review.artifact.confirmed_relationship_ids) == {
+        original.finding_id,
+        local.finding_id,
+    }
+    assert review.publication is not None
+    plain = tmp_path / "loaded-profile.json"
+    plain.write_bytes(gzip.decompress(review.publication.artifact_path.read_bytes()))
+    loaded = load_set_profile(
+        path=plain,
+        expected_set_code=analysis.set_code,
+        expected_format="quickdraft",
+    )
+    assert loaded.enhancement is not None
+    restored = next(
+        relationship
+        for relationship in loaded.enhancement.relationships
+        if relationship.finding_id == original.finding_id
+    )
+    assert restored.prerequisite_projection == projection
+    assert restored.identity == original.identity
+    assert restored.oracle_evidence == original.oracle_evidence
+    source_clause = next(
+        clause for clause in projection.source.prerequisites if clause.operation == "create"
+    )
+    assert source_clause.quantity == CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY)
+    assert source_clause.colors == ("W",)
+    assert source_clause.subtype == "soldier"
+    assert source_clause.destination_zone is not None
+    assert source_clause.destination_zone.zone is CapabilityZone.BATTLEFIELD
+    assert source_clause.destination_zone.player == "you"
+    target_clause = next(
+        clause for clause in projection.target.prerequisites if clause.operation == "control"
+    )
+    assert target_clause.controller == "you"
+    assert target_clause.card_types == ("creature",)
+    assert target_clause.quantity is None
+
+    reviewed_at = datetime.fromisoformat(analysis.artifact.created_at.replace("Z", "+00:00"))
+    review = workflow.finalize_set_enrichment(
+        analysis=analysis,
+        decision=workflow.EnrichmentReviewDecision.CONFIRM,
+        reviewer_id="operator",
+        reviewed_at=reviewed_at + timedelta(seconds=1),
+    )
+    assert set(review.artifact.confirmed_relationship_ids) == {
+        original.finding_id,
+        local.finding_id,
+    }
     assert review.publication is not None
     plain = tmp_path / "loaded-profile.json"
     plain.write_bytes(gzip.decompress(review.publication.artifact_path.read_bytes()))
@@ -1440,7 +2056,11 @@ def test_typed_prerequisite_projection_reaches_the_confirmed_profile(tmp_path: P
     assert restored.oracle_evidence == original.oracle_evidence
 
 
-def test_contradictory_complete_payload_yields_a_rejected_diagnostic(tmp_path: Path) -> None:
+def test_contradictory_complete_payload_yields_a_rejected_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _residual_pairs(monkeypatch, residual_only=True)
     result = _run(
         tmp_path,
         cards=_typed_cards(),
@@ -1478,10 +2098,14 @@ def test_contradictory_complete_payload_yields_a_rejected_diagnostic(tmp_path: P
     assert raised.value.review_result.publication is None
 
 
-def test_reversed_direction_never_collapses_during_relationship_grouping(tmp_path: Path) -> None:
+def test_reversed_direction_never_collapses_during_relationship_grouping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _residual_pairs(monkeypatch, residual_only=True)
     analysis = _typed_prerequisite_analysis(tmp_path)
     assert analysis.artifact is not None
-    original = analysis.artifact.relationships[0]
+    (original,) = analysis.artifact.relationships
     projection = original.prerequisite_projection
     assert projection is not None
     reversed_relationship = replace(
@@ -1504,9 +2128,12 @@ def test_reversed_direction_never_collapses_during_relationship_grouping(tmp_pat
 def test_no_publishable_confirmation_keeps_review_artifact_and_marker_bytes(
     tmp_path: Path,
 ) -> None:
+    # The guide states no mechanic and the only constructed pair is rejected locally by the
+    # structured parameters, so the confirmed review has nothing publishable to project.
     result = _run(
         tmp_path,
-        completion=_Completion(guide_category="strategy", relationship_mode="uncertain"),
+        cards=_local_cards(),
+        completion=_Completion(guide_category="strategy", local_conflict=True),
     )
     marker = _profile_marker(result.output_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -1567,6 +2194,43 @@ def _durable_identities(work_dir: Path) -> dict[str, WorkIdentity]:
     return identities
 
 
+def _malform_stored_card_result(work_dir: Path, *, card_id: int) -> None:
+    """Rewrite one stored card result into the all-or-nothing artifact of the strict parser.
+
+    The tolerant parser now recovers that response, so the paid bytes beside it are what a resume
+    reads again without issuing a request or rewriting anything in the store.
+    """
+    for path in sorted((work_dir / "results").glob("*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        identity = WorkIdentity.from_json(payload["identity"])
+        if (
+            identity.work_kind is not WorkKind.CARD_CAPABILITY
+            or identity.subject_id != str(card_id)
+        ):
+            continue
+        payload["result"] = CardCapabilityExtractionResult(
+            outcome=ExtractionOutcome.MALFORMED,
+            accepted_capabilities=(),
+            uncertain_capabilities=(),
+            rejected_capabilities=(),
+            malformed_reason=CARD_MALFORMED_REASON,
+        ).to_json()
+        path.write_bytes(
+            (
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+        return
+    raise AssertionError(f"no stored card result for card {card_id}")
+
+
 def _namespaced_relationship_ids(work_dir: Path) -> set[str]:
     """Return every namespaced relationship id the durable work would produce."""
     identifiers: set[str] = set()
@@ -1586,7 +2250,9 @@ def _namespaced_relationship_ids(work_dir: Path) -> set[str]:
 
 def test_colliding_accepted_relationships_retain_the_lowest_namespaced_identifier(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _residual_pairs(monkeypatch, residual_only=True)
     result = _run(
         tmp_path,
         completion=_Completion(
@@ -1606,7 +2272,7 @@ def test_colliding_accepted_relationships_retain_the_lowest_namespaced_identifie
     assert {
         (item.mechanism, tuple(sorted((item.source.card_id, item.target.card_id))))
         for item in accepted
-    } == {("token-go-wide-payoff", (TOKEN_ID, WIDE_ID))}
+    } == {(RESIDUAL_MECHANISM, (TOKEN_ID, WIDE_ID))}
 
     colliding = {
         identifier
@@ -1729,7 +2395,8 @@ def test_non_publishable_confirm_preserves_profile_tree_and_review_artifact(
     result = _run(
         tmp_path,
         output_dir=output_dir,
-        completion=_Completion(guide_category="strategy", relationship_mode="uncertain"),
+        cards=_local_cards(),
+        completion=_Completion(guide_category="strategy", local_conflict=True),
         guide_url=SECOND_GUIDE_URL,
     )
 
@@ -2094,11 +2761,15 @@ def test_completed_prefix_is_reused_after_a_failed_run(tmp_path: Path) -> None:
 
 def test_confirm_selection_matrix_covers_mechanic_only_relationship_only_and_uncertain(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A locally rejected pair is terminal before any batch, so the confirmed review publishes
+    # nothing even though the run completed and kept its own rejection diagnostic.
     uncertain_guide = _run(
         tmp_path,
         output_dir=tmp_path / "uncertain-guide",
-        completion=_Completion(guide_category="strategy", relationship_mode="uncertain"),
+        cards=_local_cards(),
+        completion=_Completion(guide_category="strategy", local_conflict=True),
     )
     with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
         workflow.finalize_set_enrichment(
@@ -2109,6 +2780,10 @@ def test_confirm_selection_matrix_covers_mechanic_only_relationship_only_and_unc
         )
     assert str(raised.value) == workflow.NO_PUBLISHABLE_ERROR
     assert raised.value.review_result is not None
+    assert raised.value.review_result.artifact.relationships == ()
+    assert LOCAL_CONFLICT_REASON_TEMPLATE.format(field="zone") in {
+        finding.reason for finding in raised.value.review_result.artifact.rejected_findings
+    }
     assert raised.value.review_result.artifact.review.state == "confirmed"
     assert raised.value.review_result.artifact_path.exists()
     assert not _profile_marker(uncertain_guide.output_dir).exists()
@@ -2132,7 +2807,12 @@ def test_confirm_selection_matrix_covers_mechanic_only_relationship_only_and_unc
     )
     assert relationship_review.publication is not None
     assert relationship_review.artifact.confirmed_relationship_ids
+    assert all(
+        identifier.startswith("local-")
+        for identifier in relationship_review.artifact.confirmed_relationship_ids
+    )
 
+    _residual_pairs(monkeypatch, residual_only=True)
     mixed = _run(
         tmp_path,
         output_dir=tmp_path / "mixed",

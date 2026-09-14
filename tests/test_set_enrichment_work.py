@@ -264,7 +264,7 @@ def _unrestricted_qualifier() -> CapabilityQualifier:
 def _capability_content() -> str:
     return json.dumps(
         {
-            "schema_version": 2,
+            "schema_version": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
             "capabilities": [
                 {
                     "finding_id": "capability-draw",
@@ -740,7 +740,7 @@ def test_identity_is_content_addressed_from_pinned_request_and_model_config() ->
     assert card_identity.response_schema_id == CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID
     assert card_identity.response_schema_name == "draftomen_card_capability_extraction_v2"
     assert card_identity.response_schema_name == CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME
-    assert card_request.contract_version == 2
+    assert card_request.contract_version == CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION
 
     assert _identity(input_sha256="A" * 64).input_sha256 == "a" * 64
 
