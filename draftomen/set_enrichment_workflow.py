@@ -48,6 +48,7 @@ from draftomen.semantic_enrichment import (
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
     CardSourcePin,
+    FindingReview,
     FindingStatus,
     GuideClaim,
     GuideSourcePin,
@@ -67,7 +68,14 @@ from draftomen.set_enrichment import (
     partition_relationship_batches,
     run_set_enrichment,
 )
-from draftomen.set_enrichment_candidates import CandidatePackage
+from draftomen.set_enrichment_candidates import (
+    LOCAL_PROVE_REASON,
+    CandidatePackage,
+    CandidateResolution,
+    CandidateResolutionBasis,
+    CandidateResolutionSet,
+    CandidateResolutionVerdict,
+)
 from draftomen.set_enrichment_extraction import (
     CardCapabilityExtractionResult,
     ExtractionOutcome,
@@ -78,6 +86,7 @@ from draftomen.set_enrichment_extraction import (
     build_relationship_validation_batch_request,
     relationship_batch_source_sha256,
     relationship_batch_subject_id,
+    relationship_subject_id,
 )
 from draftomen.set_enrichment_work import (
     SetEnrichmentWorkError,
@@ -191,6 +200,14 @@ _GUIDE_KEYS = frozenset(
         "retrieved_at",
     }
 )
+
+# The structured local matcher is a decision surface of its own, so it publishes one zero-cost run
+# instead of borrowing the identity of a paid request that never produced these verdicts.
+_LOCAL_MATCHER_PROVIDER = "draftomen"
+_LOCAL_MATCHER_MODEL = "local-pair-matcher-v1"
+_LOCAL_MATCHER_PROMPT_ID = "draftomen-local-pair-matcher-v1"
+_LOCAL_MATCHER_RESPONSE_SCHEMA_ID = "draftomen-local-pair-resolution-v1"
+_LOCAL_MATCHER_CONTRACT_VERSION = 1
 
 
 def _workflow_error(
@@ -517,13 +534,18 @@ def _build_work_identities(
             model_config=model_config,
         )
         identities.append((identity, result))
-    if run.candidate_packages is None:
+    resolutions = run.candidate_resolutions
+    if resolutions is None:
         if run.relationship_results:
             raise _workflow_error(WORK_INCOMPLETE_ERROR)
+        if run.candidate_packages is not None:
+            # A complete run resolves every constructed package before any relationship work.
+            raise _workflow_error(WORK_INCOMPLETE_ERROR)
         return identities
-    if len(run.relationship_results) != len(run.candidate_packages.packages):
+    packages = resolutions.model_packages
+    if len(run.relationship_results) != len(packages):
         raise _workflow_error(WORK_INCOMPLETE_ERROR)
-    batches = partition_relationship_batches(run.candidate_packages.packages)
+    batches = partition_relationship_batches(packages)
     resolved = 0
     for batch_index, batch in enumerate(batches):
         request = build_relationship_validation_batch_request(sources=sources, packages=batch)
@@ -609,6 +631,85 @@ def _namespaced(identity: WorkIdentity, finding_id: str) -> str:
     return f"work-{identity.content_sha256}:{finding_id}"
 
 
+def _canonical_payload(value: Any) -> bytes:
+    """Encode one provenance payload as its compact canonical JSON bytes."""
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _local_claim(package: CandidatePackage) -> str:
+    """Return the deterministic claim one locally decided pair publishes."""
+    return (
+        f"{package.source.card_name} supports {package.target.card_name}"
+        f" through {package.mechanism}."
+    )
+
+
+def _local_namespaced(run_id: str, finding_id: str) -> str:
+    """Namespace one local matcher finding under the local run that decided it."""
+    return f"{run_id}:{finding_id}"
+
+
+def _local_matcher_run(
+    *,
+    resolutions: CandidateResolutionSet | None,
+    created_at: str,
+) -> ModelRun | None:
+    """Build the one zero-cost run that records this artifact's local decisions, or None.
+
+    The run's identifiers pin the exact matcher contract, the ordered input packages, and the
+    ordered resolutions, so the same decisions always publish the same provenance.
+    """
+    if not isinstance(resolutions, CandidateResolutionSet):
+        raise _workflow_error(ANALYSIS_ERROR)
+    if not resolutions.local_accepted and not resolutions.local_rejected:
+        return None
+    packages = [resolution.package.to_json() for resolution in resolutions.resolutions]
+    outcomes = [resolution.to_json() for resolution in resolutions.resolutions]
+    prompt_sha256 = hashlib.sha256(
+        _canonical_payload(
+            {"contract_version": _LOCAL_MATCHER_CONTRACT_VERSION, "packages": packages}
+        )
+    ).hexdigest()
+    response_schema_sha256 = hashlib.sha256(
+        _canonical_payload(
+            {"contract_version": _LOCAL_MATCHER_CONTRACT_VERSION, "resolutions": outcomes}
+        )
+    ).hexdigest()
+    decision_sha256 = hashlib.sha256(
+        _canonical_payload(
+            {
+                "contract_version": _LOCAL_MATCHER_CONTRACT_VERSION,
+                "packages": packages,
+                "resolutions": outcomes,
+            }
+        )
+    ).hexdigest()
+    try:
+        return ModelRun(
+            run_id=f"local-{decision_sha256[:16]}",
+            provider=_LOCAL_MATCHER_PROVIDER,
+            model=_LOCAL_MATCHER_MODEL,
+            reasoning=ReasoningConfig(enabled=None, effort=None, max_tokens=None, exclude=None),
+            prompt_id=_LOCAL_MATCHER_PROMPT_ID,
+            prompt_sha256=prompt_sha256,
+            response_schema_id=_LOCAL_MATCHER_RESPONSE_SCHEMA_ID,
+            response_schema_sha256=response_schema_sha256,
+            started_at=created_at,
+            completed_at=created_at,
+            input_tokens=0,
+            output_tokens=0,
+            reasoning_tokens=0,
+            cost_usd="0",
+        )
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise _workflow_error(ANALYSIS_ERROR, error) from error
+
+
 def _capability_claim(capability: CardCapability) -> str:
     """Serialize only the validated structured fields of one capability."""
     value = capability.to_json()
@@ -640,12 +741,19 @@ def _capability_claim(capability: CardCapability) -> str:
 def _mapped_findings(
     *,
     identities: list[tuple[WorkIdentity, Any]],
+    resolutions: CandidateResolutionSet | None,
+    local_run_id: str | None,
 ) -> tuple[tuple[OracleFact, ...], tuple[GuideClaim, ...], tuple[CardRelationship, ...], tuple[RejectedFinding, ...]]:
-    """Map extraction findings into source-bound semantic records."""
+    """Map extraction findings into source-bound semantic records.
+
+    Local and residual model outcomes merge in canonical candidate order, so every pair keeps the
+    provenance of the run that actually decided it.
+    """
     facts: list[OracleFact] = []
     claims: list[GuideClaim] = []
     candidates: list[CardRelationship] = []
     rejected: list[RejectedFinding] = []
+    verdicts: dict[tuple[str, int, str, int, str], tuple[WorkIdentity, RelationshipValidationResult]] = {}
     for identity, context in identities:
         if identity.work_kind is WorkKind.GUIDE:
             result = context
@@ -702,7 +810,7 @@ def _mapped_findings(
                 )
         else:
             # A relationship identity resolves one whole batch, so its verdicts stay grouped here
-            # and are re-expanded per pair for the semantic records below.
+            # and are re-expanded per pair once the canonical resolutions bind them to their pair.
             pairs = context
             if not isinstance(pairs, tuple) or not pairs:
                 raise _workflow_error(ANALYSIS_ERROR)
@@ -711,33 +819,87 @@ def _mapped_findings(
                     result, RelationshipValidationResult
                 ):
                     raise _workflow_error(ANALYSIS_ERROR)
-                if result.relationship is not None:
-                    relationship = result.relationship
-                    candidates.append(
-                        CardRelationship(
-                            finding_id=_namespaced(identity, relationship.finding_id),
-                            mechanism=relationship.mechanism,
-                            participants=(relationship.source.card_id, relationship.target.card_id),
-                            claim=relationship.claim,
-                            prerequisites=(package.reason,),
-                            oracle_evidence=relationship.evidence,
-                            guide_evidence=(),
-                            review=relationship.review,
-                            run_id=f"work-{identity.content_sha256}",
-                            prerequisite_projection=relationship.prerequisite_projection,
-                        )
+                verdicts[package.identity] = (identity, result)
+    if resolutions is None:
+        if verdicts:
+            raise _workflow_error(ANALYSIS_ERROR)
+        return tuple(facts), tuple(claims), (), tuple(rejected)
+    if not isinstance(resolutions, CandidateResolutionSet):
+        raise _workflow_error(ANALYSIS_ERROR)
+    if len(verdicts) != len(resolutions.model_packages):
+        raise _workflow_error(ANALYSIS_ERROR)
+    if local_run_id is not None and not isinstance(local_run_id, str):
+        raise _workflow_error(ANALYSIS_ERROR)
+    for resolution in resolutions.resolutions:
+        if not isinstance(resolution, CandidateResolution):
+            raise _workflow_error(ANALYSIS_ERROR)
+        package = resolution.package
+        subject_id = relationship_subject_id(
+            mechanism=package.mechanism,
+            source=package.source,
+            target=package.target,
+        )
+        if resolution.basis is CandidateResolutionBasis.LOCAL:
+            if local_run_id is None:
+                raise _workflow_error(ANALYSIS_ERROR)
+            claim = _local_claim(package)
+            finding_id = _local_namespaced(local_run_id, subject_id)
+            if resolution.verdict is CandidateResolutionVerdict.ACCEPTED:
+                candidates.append(
+                    CardRelationship(
+                        finding_id=finding_id,
+                        mechanism=package.mechanism,
+                        participants=(package.source.card_id, package.target.card_id),
+                        claim=claim,
+                        prerequisites=(package.reason, LOCAL_PROVE_REASON),
+                        oracle_evidence=package.source.evidence + package.target.evidence,
+                        guide_evidence=(),
+                        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+                        run_id=local_run_id,
                     )
-                if result.rejected is not None:
-                    finding = result.rejected
-                    rejected.append(
-                        RejectedFinding(
-                            finding_id=_namespaced(identity, finding.finding_id),
-                            source_kind=finding.source_kind,
-                            summary=finding.summary,
-                            reason=finding.reason,
-                            run_id=f"work-{identity.content_sha256}",
-                        )
+                )
+            else:
+                rejected.append(
+                    RejectedFinding(
+                        finding_id=finding_id,
+                        source_kind="relationship",
+                        summary=claim,
+                        reason=resolution.reason,
+                        run_id=local_run_id,
                     )
+                )
+            continue
+        entry = verdicts.get(resolution.identity)
+        if entry is None:
+            raise _workflow_error(ANALYSIS_ERROR)
+        identity, result = entry
+        if result.relationship is not None:
+            relationship = result.relationship
+            candidates.append(
+                CardRelationship(
+                    finding_id=_namespaced(identity, relationship.finding_id),
+                    mechanism=relationship.mechanism,
+                    participants=(relationship.source.card_id, relationship.target.card_id),
+                    claim=relationship.claim,
+                    prerequisites=(package.reason,),
+                    oracle_evidence=relationship.evidence,
+                    guide_evidence=(),
+                    review=relationship.review,
+                    run_id=f"work-{identity.content_sha256}",
+                    prerequisite_projection=relationship.prerequisite_projection,
+                )
+            )
+        if result.rejected is not None:
+            finding = result.rejected
+            rejected.append(
+                RejectedFinding(
+                    finding_id=_namespaced(identity, finding.finding_id),
+                    source_kind=finding.source_kind,
+                    summary=finding.summary,
+                    reason=finding.reason,
+                    run_id=f"work-{identity.content_sha256}",
+                )
+            )
     return (
         tuple(facts),
         tuple(claims),
@@ -762,6 +924,7 @@ def _project_relationships(candidates: tuple[CardRelationship, ...]) -> tuple[Ca
 
 def _counts(run: EnrichmentRunResult) -> EnrichmentFindingCounts:
     """Count original extraction results without counting candidate omissions."""
+    resolutions = run.candidate_resolutions
     accepted = sum(len(item.accepted_findings) for item in run.guide_results)
     accepted += sum(len(item.accepted_capabilities) for item in run.card_results)
     accepted += sum(
@@ -769,6 +932,8 @@ def _counts(run: EnrichmentRunResult) -> EnrichmentFindingCounts:
         for item in run.relationship_results
         if item.relationship is not None and item.relationship.review.status is FindingStatus.ACCEPTED
     )
+    if resolutions is not None:
+        accepted += len(resolutions.local_accepted)
     uncertain = sum(len(item.uncertain_findings) for item in run.guide_results)
     uncertain += sum(len(item.uncertain_capabilities) for item in run.card_results)
     uncertain += sum(
@@ -779,6 +944,8 @@ def _counts(run: EnrichmentRunResult) -> EnrichmentFindingCounts:
     rejected = sum(len(item.rejected_findings) for item in run.guide_results)
     rejected += sum(len(item.rejected_capabilities) for item in run.card_results)
     rejected += sum(1 for item in run.relationship_results if item.rejected is not None)
+    if resolutions is not None:
+        rejected += len(resolutions.local_rejected)
     failed = sum(
         1 for item in (*run.guide_results, *run.card_results, *run.relationship_results)
         if item.outcome is ExtractionOutcome.MALFORMED
@@ -1017,8 +1184,6 @@ def analyze_set_enrichment(
             identities=identities,
             model_config=model_config,
         )
-        facts, claims, candidate_relationships, rejected = _mapped_findings(identities=identities)
-        relationships = _project_relationships(candidate_relationships)
         completions = [
             datetime.fromisoformat(model_run.completed_at.replace("Z", "+00:00"))
             for model_run in model_runs
@@ -1028,10 +1193,20 @@ def analyze_set_enrichment(
         ):
             raise _workflow_error(WORK_INCOMPLETE_ERROR)
         created_at = max(completions).astimezone(UTC).isoformat()
+        local_run = _local_matcher_run(
+            resolutions=run.candidate_resolutions,
+            created_at=created_at,
+        )
+        facts, claims, candidate_relationships, rejected = _mapped_findings(
+            identities=identities,
+            resolutions=run.candidate_resolutions,
+            local_run_id=None if local_run is None else local_run.run_id,
+        )
+        relationships = _project_relationships(candidate_relationships)
         artifact = _artifact_from_parts(
             sources=sources,
             created_at=created_at,
-            runs=model_runs,
+            runs=model_runs if local_run is None else (*model_runs, local_run),
             facts=facts,
             claims=claims,
             relationships=relationships,

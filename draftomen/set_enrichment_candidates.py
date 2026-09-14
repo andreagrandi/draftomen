@@ -1,7 +1,12 @@
-"""Pure bounded construction and local filtering of compatible relationship candidates.
-Index validated capabilities by role, pair declared enabler-to-payoff roles, and bound work.
-Prune constructed pairs whose participants cannot reference their mechanism in their own Oracle
-text, so no paid validation runs on a pair the stored text already rules out.
+"""Pure bounded construction and role-anchored local resolution of relationship candidates.
+Index validated capabilities by role, pair declared enabler-to-payoff roles, and bound work. Resolve
+every constructed pair locally: the declared role pair proves the mechanism, the structured action,
+zone, and qualifier parameters decide the pair they can settle, and only a pair those parameters
+leave open reaches paid validation. A package whose mechanism is declared in
+`ROLE_COMPATIBILITY_RULES` must carry exactly that rule's declared role pair, and the resolver
+raises `SetEnrichmentCandidatesError` for any other declared-mechanism package, because a declared
+mechanism with unrelated participants proves nothing. No Oracle-text pattern is matched anywhere in
+this module.
 """
 
 from __future__ import annotations
@@ -10,11 +15,18 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 import json
-import re
-from typing import Any
+from typing import Any, TypeAlias
 
-from draftomen.carddb import CardInfo
-from draftomen.semantic_capability_records import CardCapability
+from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityCardType,
+    CapabilityQualifier,
+    CapabilityQuantity,
+    CapabilityTokenRestriction,
+    CapabilityZone,
+    CardCapability,
+    QuantityRelation,
+)
 from draftomen.semantic_roles import Role
 from draftomen.set_enrichment_extraction import CardCapabilityExtractionResult, ExtractionOutcome
 
@@ -113,8 +125,7 @@ ROLE_COMPATIBILITY_RULES: tuple[RoleLink, ...] = (
     RoleLink(mechanism="recursion-graveyard-payoff", enabler=Role.RECURSION, payoff=Role.GRAVEYARD_PAYOFF),
     # `token-death-payoff` declares that a creature token dying satisfies a payoff that rewards
     # creatures dying: the enabler's own text need not show the token dying, and a payoff that
-    # restricts its reward to nontoken creatures is not declared. The verdict for a constructed
-    # pair of this mechanism is decided in `parse_relationship_validation_response` (#496).
+    # restricts its reward to nontoken creatures is not declared.
     RoleLink(mechanism="token-death-payoff", enabler=Role.TOKEN_MAKER, payoff=Role.DEATH_PAYOFF),
     RoleLink(mechanism="token-go-wide-payoff", enabler=Role.TOKEN_MAKER, payoff=Role.GO_WIDE_PAYOFF),
     RoleLink(mechanism="token-sacrifice-outlet", enabler=Role.TOKEN_MAKER, payoff=Role.SACRIFICE_OUTLET),
@@ -125,6 +136,15 @@ for _link in ROLE_COMPATIBILITY_RULES:
         raise SetEnrichmentCandidatesError(
             "role compatibility rules must contain RoleLink records."
         )
+
+_ROLE_LINKS: Mapping[str, RoleLink] = {
+    link.mechanism: link for link in ROLE_COMPATIBILITY_RULES
+}
+
+if len(_ROLE_LINKS) != len(ROLE_COMPATIBILITY_RULES):
+    raise SetEnrichmentCandidatesError(
+        "role compatibility rules must declare distinct mechanisms."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,122 +404,672 @@ def construct_candidate_packages(
     )
 
 
-LOCAL_FILTER_OMITTED_REASON = "failed local mechanism compatibility filter"
-
-_TOKEN_TEXT_PATTERN = re.compile(r"\btokens?\b|\bamass\b", re.IGNORECASE)
-_SACRIFICE_TEXT_PATTERN = re.compile(r"sacrific", re.IGNORECASE)
-_DEATH_TEXT_PATTERN = re.compile(r"\bdie[sd]?\b|\bdeath\b", re.IGNORECASE)
-_DISCARD_TEXT_PATTERN = re.compile(r"discard", re.IGNORECASE)
-_GRAVEYARD_TEXT_PATTERN = re.compile(r"graveyard", re.IGNORECASE)
-_MILL_TEXT_PATTERN = re.compile(r"\bmill(?:s|ed)?\b|graveyard", re.IGNORECASE)
-_RECURSION_TEXT_PATTERN = re.compile(
-    r"graveyard|\breturn\b[^\n]{0,120}\b(?:battlefield|your hand)\b",
-    re.IGNORECASE,
-)
-# Going wide pays off through the number of creatures its controller has, whether or not the
-# payoff itself ever mentions a token.
-_WIDTH_TEXT_PATTERN = re.compile(
-    r"creatures you control"
-    r"|creature you control"
-    r"|number of creatures"
-    r"|for each .{0,60}creature"
-    r"|each .{0,30}creature you control"
-    r"|creatures with total power"
-    r"|attacking creatures",
-    re.IGNORECASE,
-)
-
-# A pair survives only when both participants plausibly reference the mechanism's zone or action.
-# The token gates read the token-making participant, because the payoff participants of the token
-# mechanisms are sacrifice outlets, death payoffs, and go-wide payoffs whose own text never has to
-# mention tokens. A mechanism that is absent from this table keeps every pair it declares, since a
-# missing local gate is not evidence that a constructed pair is incompatible.
-_LOCAL_MECHANISM_GATES: Mapping[str, tuple[re.Pattern[str] | None, re.Pattern[str] | None]] = {
-    "discard-recursion-payoff": (_DISCARD_TEXT_PATTERN, _RECURSION_TEXT_PATTERN),
-    "fodder-dies-payoff": (None, _DEATH_TEXT_PATTERN),
-    "fodder-sacrifice-outlet": (None, _SACRIFICE_TEXT_PATTERN),
-    "loot-recursion-payoff": (_DISCARD_TEXT_PATTERN, _RECURSION_TEXT_PATTERN),
-    "mill-graveyard-payoff": (_MILL_TEXT_PATTERN, _GRAVEYARD_TEXT_PATTERN),
-    "token-death-payoff": (_TOKEN_TEXT_PATTERN, _DEATH_TEXT_PATTERN),
-    "token-go-wide-payoff": (_TOKEN_TEXT_PATTERN, _WIDTH_TEXT_PATTERN),
-    "token-sacrifice-outlet": (_TOKEN_TEXT_PATTERN, _SACRIFICE_TEXT_PATTERN),
-}
+LOCAL_PROVE_REASON = "structured capability parameters prove compatibility"
+LOCAL_CONFLICT_REASON_TEMPLATE = "structured capability parameters conflict: {field}"
+LOCAL_UNRESOLVED_REASON = "structured capability parameters do not fully determine compatibility"
 
 
-def _participant_oracle_text(capability: CardCapability, card: CardInfo) -> str:
-    """Return the exact frozen Oracle text one participant capability binds to."""
-    face_index = capability.face_index
-    if face_index is None:
-        return card.oracle_text or ""
-    faces = card.faces
-    if 0 <= face_index < len(faces):
-        return faces[face_index].oracle_text or ""
-    return ""
+class CandidateResolutionBasis(StrEnum):
+    """Origin of one per-pair candidate resolution."""
+
+    LOCAL = "local"
+    MODEL = "model"
 
 
-def _pair_passes_local_gates(
-    package: CandidatePackage,
-    *,
-    gates: tuple[re.Pattern[str] | None, re.Pattern[str] | None],
-    cards: Mapping[int, CardInfo],
-) -> bool:
-    """Report whether both participants reference the mechanism in their own Oracle text."""
-    source_card = cards.get(package.source.card_id)
-    target_card = cards.get(package.target.card_id)
-    if source_card is None or target_card is None:
-        # Absent metadata is not evidence of incompatibility, so the pair survives.
-        return True
-    source_pattern, target_pattern = gates
-    if source_pattern is not None and not source_pattern.search(
-        _participant_oracle_text(package.source, source_card)
-    ):
-        return False
-    return target_pattern is None or bool(
-        target_pattern.search(_participant_oracle_text(package.target, target_card))
-    )
+class CandidateResolutionVerdict(StrEnum):
+    """Terminal verdict of one per-pair candidate resolution."""
+
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    UNRESOLVED = "unresolved"
 
 
-def prune_candidate_packages(
-    packages: tuple[CandidatePackage, ...],
-    *,
-    cards: Mapping[int, CardInfo],
-) -> tuple[tuple[CandidatePackage, ...], tuple[CandidateOmission, ...]]:
-    """Drop candidate pairs that fail local mechanism compatibility gates.
-    Kept packages preserve the caller's order; omissions aggregate per mechanism.
+@dataclass(frozen=True, slots=True)
+class CandidateResolution:
+    """One canonical local resolution of a constructed candidate package."""
+
+    package: CandidatePackage
+    basis: CandidateResolutionBasis
+    verdict: CandidateResolutionVerdict
+    reason: str
+
+    def __post_init__(self) -> None:
+        if type(self.package) is not CandidatePackage:
+            raise SetEnrichmentCandidatesError("package must be a CandidatePackage.")
+        if not isinstance(self.basis, CandidateResolutionBasis):
+            raise SetEnrichmentCandidatesError("basis must be a CandidateResolutionBasis.")
+        if not isinstance(self.verdict, CandidateResolutionVerdict):
+            raise SetEnrichmentCandidatesError("verdict must be a CandidateResolutionVerdict.")
+        if self.basis is CandidateResolutionBasis.LOCAL:
+            if self.verdict is CandidateResolutionVerdict.UNRESOLVED:
+                raise SetEnrichmentCandidatesError(
+                    "local resolutions must be accepted or rejected."
+                )
+        elif self.verdict is not CandidateResolutionVerdict.UNRESOLVED:
+            raise SetEnrichmentCandidatesError("model resolutions must be unresolved.")
+        object.__setattr__(self, "reason", _identifier(self.reason, "reason"))
+
+    @property
+    def identity(self) -> tuple[str, int, str, int, str]:
+        """Return the stable duplicate identity of the resolved candidate package."""
+        return self.package.identity
+
+    def to_json(self) -> dict[str, object]:
+        """Return a fresh JSON-compatible candidate resolution object."""
+        return {
+            "package": self.package.to_json(),
+            "basis": self.basis.value,
+            "verdict": self.verdict.value,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateResolutionSet:
+    """Terminal result of one pure resolution of a canonically ordered package set.
+    Every supplied package carries exactly one resolution; locally rejected and locally accepted
+    packages are terminal, while unresolved packages still need model validation.
     """
-    if not isinstance(packages, tuple) or any(
-        type(package) is not CandidatePackage for package in packages
-    ):
-        raise SetEnrichmentCandidatesError(
-            "packages must be a tuple of CandidatePackage records."
+
+    resolutions: tuple[CandidateResolution, ...]
+    omissions: tuple[CandidateOmission, ...]
+
+    def __post_init__(self) -> None:
+        _record_tuple(
+            self.resolutions,
+            field_name="resolutions",
+            expected_type=CandidateResolution,
+            key=lambda item: item.identity,
         )
-    if not isinstance(cards, Mapping):
-        raise SetEnrichmentCandidatesError(
-            "cards must be a mapping of card ids to CardInfo records."
+        _record_tuple(
+            self.omissions,
+            field_name="omissions",
+            expected_type=CandidateOmission,
+            key=lambda item: item.mechanism,
         )
-    kept: list[CandidatePackage] = []
-    omitted: dict[str, int] = {}
-    for package in packages:
-        gates = _LOCAL_MECHANISM_GATES.get(package.mechanism)
-        if gates is None or _pair_passes_local_gates(package, gates=gates, cards=cards):
-            kept.append(package)
-            continue
-        omitted[package.mechanism] = omitted.get(package.mechanism, 0) + 1
+
+    @property
+    def model_packages(self) -> tuple[CandidatePackage, ...]:
+        """Return the packages awaiting model validation, in canonical order."""
+        return tuple(
+            item.package
+            for item in self.resolutions
+            if item.basis is CandidateResolutionBasis.MODEL
+        )
+
+    @property
+    def local_accepted(self) -> tuple[CandidatePackage, ...]:
+        """Return the packages the structured parameters prove compatible, in canonical order."""
+        return self._local_packages(CandidateResolutionVerdict.ACCEPTED)
+
+    @property
+    def local_rejected(self) -> tuple[CandidatePackage, ...]:
+        """Return the packages the structured parameters prove incompatible, in canonical order."""
+        return self._local_packages(CandidateResolutionVerdict.REJECTED)
+
+    def _local_packages(
+        self,
+        verdict: CandidateResolutionVerdict,
+    ) -> tuple[CandidatePackage, ...]:
+        """Return the locally decided packages carrying one verdict, in canonical order."""
+        return tuple(
+            item.package
+            for item in self.resolutions
+            if item.basis is CandidateResolutionBasis.LOCAL and item.verdict is verdict
+        )
+
+    def to_json(self) -> dict[str, object]:
+        """Return a fresh JSON-compatible candidate resolution set object."""
+        return {
+            "resolutions": [item.to_json() for item in self.resolutions],
+            "omissions": [item.to_json() for item in self.omissions],
+        }
+
+
+# One structured comparison verdict with its reason, or None when the compared values are
+# compatible. A routed mechanism reads its participants' fields, and reports an unresolved verdict
+# only when those fields cannot settle the pair.
+_CheckOutcome: TypeAlias = tuple[CandidateResolutionVerdict, str] | None
+
+# The structured fields one comparison can decide. Both participants of a pair report into the same
+# fields, so every comparison is ordered by one global precedence instead of by the order a route
+# happens to inspect its participants.
+_ACTION_FIELD = "action"
+_ZONE_FIELD = "zone"
+_CARD_TYPES_FIELD = "card_types"
+_TOKEN_RESTRICTION_FIELD = "token_restriction"
+_SUBTYPE_FIELD = "subtype"
+_MANA_VALUE_FIELD = "mana_value"
+
+# The global field precedence: every route field (`action`, `zone`, including each participant's
+# source and destination zone) precedes every qualifier field, and the qualifier fields keep their
+# directional order. An earlier field decides the pair before a later field is examined.
+_FIELD_PRECEDENCE: tuple[str, ...] = (
+    _ACTION_FIELD,
+    _ZONE_FIELD,
+    _CARD_TYPES_FIELD,
+    _TOKEN_RESTRICTION_FIELD,
+    _SUBTYPE_FIELD,
+    _MANA_VALUE_FIELD,
+)
+
+# One comparison tagged with the field it decides, or None when the compared values are compatible.
+_FieldCheck: TypeAlias = tuple[str, _CheckOutcome]
+_RouteChecker: TypeAlias = Callable[[CardCapability, CardCapability], tuple[_FieldCheck, ...]]
+
+# The one verdict a comparison the stored parameters cannot settle reports, shared by the fields
+# that report it and by a mechanism no route declares.
+_UNRESOLVED_OUTCOME: _CheckOutcome = (
+    CandidateResolutionVerdict.UNRESOLVED,
+    LOCAL_UNRESOLVED_REASON,
+)
+
+
+def _compatible(field_name: str) -> _FieldCheck:
+    """Return the outcome of one field comparison the stored parameters do not contradict."""
+    return (field_name, None)
+
+
+def _unresolved(field_name: str) -> _FieldCheck:
+    """Return the outcome of one field comparison the stored parameters cannot settle."""
+    return (field_name, _UNRESOLVED_OUTCOME)
+
+
+def _conflict(field_name: str) -> _FieldCheck:
+    """Return the outcome of one conflicting structured field."""
     return (
-        tuple(kept),
-        tuple(
-            CandidateOmission(
-                mechanism=mechanism,
-                omitted_pairs=count,
-                reason=LOCAL_FILTER_OMITTED_REASON,
-            )
-            for mechanism, count in sorted(omitted.items())
+        field_name,
+        (
+            CandidateResolutionVerdict.REJECTED,
+            LOCAL_CONFLICT_REASON_TEMPLATE.format(field=field_name),
         ),
     )
 
 
+def _check_action(capability: CardCapability, *expected: CapabilityAction) -> _FieldCheck:
+    """Compare one participant action against the actions a route accepts.
+
+    The declared role pair already proves the mechanism, so an unclassified action never
+    contradicts the route; only an action the closed vocabulary states explicitly is a conflict.
+    """
+    if capability.action in expected or capability.action is CapabilityAction.OTHER:
+        return _compatible(_ACTION_FIELD)
+    return _conflict(_ACTION_FIELD)
+
+
+def _check_zone(zone: CapabilityZone | None, expected: CapabilityZone) -> _FieldCheck:
+    """Compare one participant zone against the zone an operated mechanism requires."""
+    if zone is None or zone is expected:
+        return _compatible(_ZONE_FIELD)
+    return _conflict(_ZONE_FIELD)
+
+
+def _check_required_card_type(
+    qualifier: CapabilityQualifier,
+    required: CapabilityCardType,
+) -> _FieldCheck:
+    """Require one participant qualifier to name a card type the mechanism needs.
+
+    An unstated card type list leaves the requirement to the mechanism's declared role; only an
+    explicit list the required type is missing from contradicts it.
+    """
+    if not qualifier.card_types or required in qualifier.card_types:
+        return _compatible(_CARD_TYPES_FIELD)
+    return _conflict(_CARD_TYPES_FIELD)
+
+
+def _check_not_nontoken(qualifier: CapabilityQualifier) -> _FieldCheck:
+    """Reject one participant that explicitly restricts the objects it acts on to nontokens."""
+    if qualifier.token_restriction is CapabilityTokenRestriction.NONTOKEN:
+        return _conflict(_TOKEN_RESTRICTION_FIELD)
+    return _compatible(_TOKEN_RESTRICTION_FIELD)
+
+
+def _check_card_types(
+    source: CapabilityQualifier,
+    target: CapabilityQualifier,
+    *,
+    implied_types: tuple[CapabilityCardType, ...] = (),
+) -> _FieldCheck:
+    """Compare the supplied card types against the card types the target selects.
+
+    An unrestricted target accepts any supplied object. An unstated supply is read as the types the
+    mechanism's role implies for the object its enabler supplies, and a route whose role implies
+    none supplies an unrestricted object; only a disjoint comparison contradicts the pair.
+    """
+    if not target.card_types:
+        return _compatible(_CARD_TYPES_FIELD)
+    supplied = set(source.card_types) if source.card_types else set(implied_types)
+    if not supplied or supplied & set(target.card_types):
+        return _compatible(_CARD_TYPES_FIELD)
+    return _conflict(_CARD_TYPES_FIELD)
+
+
+def _check_token_restriction(
+    source: CapabilityQualifier,
+    target: CapabilityQualifier,
+    *,
+    implied_restriction: CapabilityTokenRestriction = CapabilityTokenRestriction.UNRESTRICTED,
+) -> _FieldCheck:
+    """Compare the supplied token restriction against the restriction the target selects.
+
+    An unrestricted target accepts either restriction, and an unstated supply is read as the
+    restriction the mechanism's role implies for the object its enabler supplies.
+    """
+    if target.token_restriction is CapabilityTokenRestriction.UNRESTRICTED:
+        return _compatible(_TOKEN_RESTRICTION_FIELD)
+    supplied = (
+        implied_restriction
+        if source.token_restriction is CapabilityTokenRestriction.UNRESTRICTED
+        else source.token_restriction
+    )
+    if (
+        supplied is CapabilityTokenRestriction.UNRESTRICTED
+        or supplied is target.token_restriction
+    ):
+        return _compatible(_TOKEN_RESTRICTION_FIELD)
+    return _conflict(_TOKEN_RESTRICTION_FIELD)
+
+
+def _check_subtype(source: CapabilityQualifier, target: CapabilityQualifier) -> _FieldCheck:
+    """Compare the supplied subtype against the subtype the target selects.
+
+    An unstated subtype never contradicts a selection, because the mechanism's role already states
+    that the enabler supplies the object the payoff selects.
+    """
+    if target.subtype is None or source.subtype is None:
+        return _compatible(_SUBTYPE_FIELD)
+    if source.subtype == target.subtype:
+        return _compatible(_SUBTYPE_FIELD)
+    return _conflict(_SUBTYPE_FIELD)
+
+
+def _mana_value_interval(quantity: CapabilityQuantity) -> tuple[int, int | None] | None:
+    """Convert one stated quantity into an inclusive mana-value interval, or None when unknown."""
+    value = quantity.value
+    if value is None:
+        # A variable quantity states no bound of its own.
+        return None
+    if quantity.relation is QuantityRelation.EXACTLY:
+        return (value, value)
+    if quantity.relation is QuantityRelation.AT_LEAST:
+        return (value, None)
+    if quantity.relation is QuantityRelation.AT_MOST:
+        # A mana value is never below zero, so an upper bound also bounds the interval from below.
+        return (1, value)
+    return None
+
+
+def _check_mana_value(source: CapabilityQualifier, target: CapabilityQualifier) -> _FieldCheck:
+    """Compare the supplied mana values against the mana value the target selects.
+
+    Only a disjoint comparison contradicts the pair: an unstated supplied value, or one the stated
+    intervals cannot place against the constraint, leaves the requirement to the mechanism's role.
+    """
+    constraint = target.mana_value
+    if constraint is None or source.mana_value is None:
+        return _compatible(_MANA_VALUE_FIELD)
+    produced_interval = _mana_value_interval(source.mana_value)
+    constraint_interval = _mana_value_interval(constraint)
+    if produced_interval is None or constraint_interval is None:
+        return _compatible(_MANA_VALUE_FIELD)
+    low, high = produced_interval
+    constraint_low, constraint_high = constraint_interval
+    if (constraint_high is not None and low > constraint_high) or (
+        high is not None and high < constraint_low
+    ):
+        return _conflict(_MANA_VALUE_FIELD)
+    return _compatible(_MANA_VALUE_FIELD)
+
+
+def _check_qualifiers(
+    source: CapabilityQualifier,
+    target: CapabilityQualifier,
+    *,
+    implied_types: tuple[CapabilityCardType, ...] = (),
+    implied_restriction: CapabilityTokenRestriction = CapabilityTokenRestriction.UNRESTRICTED,
+) -> tuple[_FieldCheck, ...]:
+    """Return the supplied-object comparisons of one pair, each tagged with its own field."""
+    return (
+        _check_card_types(source, target, implied_types=implied_types),
+        _check_token_restriction(source, target, implied_restriction=implied_restriction),
+        _check_subtype(source, target),
+        _check_mana_value(source, target),
+    )
+
+
+def _check_token_qualifiers(
+    source: CapabilityQualifier,
+    target: CapabilityQualifier,
+    *,
+    target_selects_creatures: bool,
+) -> tuple[_FieldCheck, ...]:
+    """Return the qualifier comparisons of one token pair, each tagged with its own field.
+
+    A token maker's declared role states that it supplies creature tokens, so an unstated card type
+    list or token restriction on that side is read as that object, and a payoff that excludes tokens
+    contradicts the supply itself.
+    """
+    checks: list[_FieldCheck] = [
+        _check_required_card_type(source, CapabilityCardType.CREATURE),
+        _check_not_nontoken(source),
+    ]
+    if target_selects_creatures:
+        checks.append(_check_required_card_type(target, CapabilityCardType.CREATURE))
+    checks.extend(
+        _check_qualifiers(
+            source,
+            target,
+            implied_types=(CapabilityCardType.CREATURE,),
+            implied_restriction=CapabilityTokenRestriction.TOKEN,
+        )
+    )
+    return tuple(checks)
+
+
+def _check_fodder_token_contradiction(
+    source: CapabilityQualifier,
+    target: CapabilityQualifier,
+) -> _FieldCheck:
+    """Reject a sacrifice fodder whose stated kind contradicts the kind the payoff selects.
+
+    A sacrifice fodder's declared role states that it supplies its own creature body; when both
+    participants state a token restriction, those explicit values settle the pair, so a nontoken
+    fodder feeding a payoff that rewards nontokens only is exactly as compatible as a token fodder
+    feeding a payoff that rewards tokens only.
+    """
+    if (
+        source.token_restriction is CapabilityTokenRestriction.UNRESTRICTED
+        or target.token_restriction is CapabilityTokenRestriction.UNRESTRICTED
+        or source.token_restriction is target.token_restriction
+    ):
+        return _compatible(_TOKEN_RESTRICTION_FIELD)
+    return _conflict(_TOKEN_RESTRICTION_FIELD)
+
+
+def _check_fodder_qualifiers(
+    source: CapabilityQualifier,
+    target: CapabilityQualifier,
+) -> tuple[_FieldCheck, ...]:
+    """Return the qualifier comparisons of one sacrifice-fodder pair, tagged by their fields.
+
+    A sacrifice fodder's declared role states that it supplies its own creature body, so an unstated
+    card type list on that side is read as a creature, and the remaining comparisons run
+    directionally from that supplied body to the objects the payoff selects.
+    """
+    return (
+        _check_required_card_type(source, CapabilityCardType.CREATURE),
+        _check_card_types(source, target, implied_types=(CapabilityCardType.CREATURE,)),
+        _check_fodder_token_contradiction(source, target),
+        _check_subtype(source, target),
+        _check_mana_value(source, target),
+    )
+
+
+def _check_discard_recursion(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Return the ordered comparisons of one discard-recursion pair, shared by loot recursion."""
+    return (
+        _check_action(source, CapabilityAction.DISCARD),
+        _check_zone(source.destination_zone, CapabilityZone.GRAVEYARD),
+        _check_action(target, CapabilityAction.RETURN),
+        _check_zone(target.source_zone, CapabilityZone.GRAVEYARD),
+        # The discarded card must satisfy the card the payoff returns from the graveyard.
+        *_check_qualifiers(source.qualifier, target.qualifier),
+    )
+
+
+def _check_mill_graveyard_payoff(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Return the ordered comparisons of one mill-graveyard pair.
+
+    Only the milling enabler is checked: the payoff's own action and zone describe the reward it
+    grants from the graveyard it observes, never the mechanism itself.
+    """
+    return (
+        _check_action(source, CapabilityAction.MILL),
+        _check_zone(source.destination_zone, CapabilityZone.GRAVEYARD),
+        *_check_qualifiers(source.qualifier, target.qualifier),
+    )
+
+
+def _check_recursion_graveyard_payoff(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Return the ordered comparisons of one recursion-graveyard pair.
+
+    The declared roles carry this mechanism: a recursion enabler moves cards out of a graveyard and
+    a graveyard payoff rewards what a graveyard holds, so only the enabler's graveyard origin is
+    checked and the payoff that states no contradiction is accepted on its role. The two
+    capabilities never act on the same object, so no supplied-object comparison applies.
+    """
+    return (
+        _check_action(source, CapabilityAction.RETURN, CapabilityAction.CAST),
+        _check_zone(source.source_zone, CapabilityZone.GRAVEYARD),
+    )
+
+
+def _check_token_death_payoff(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Return the ordered comparisons of one token-death pair.
+
+    The payoff's own zone describes where its reward lands, so only the objects it rewards dying
+    and the zone they died from are checked.
+    """
+    return (
+        _check_action(source, CapabilityAction.CREATE),
+        _check_zone(source.destination_zone, CapabilityZone.BATTLEFIELD),
+        _check_action(target, CapabilityAction.DIE),
+        _check_zone(target.source_zone, CapabilityZone.BATTLEFIELD),
+        *_check_token_qualifiers(
+            source.qualifier,
+            target.qualifier,
+            target_selects_creatures=False,
+        ),
+    )
+
+
+def _check_token_go_wide_payoff(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Return the ordered comparisons of one token-go-wide pair."""
+    return (
+        _check_action(source, CapabilityAction.CREATE),
+        _check_zone(source.destination_zone, CapabilityZone.BATTLEFIELD),
+        _check_action(target, CapabilityAction.CONTROL, CapabilityAction.COUNT),
+        _check_zone(target.zone, CapabilityZone.BATTLEFIELD),
+        *_check_token_qualifiers(
+            source.qualifier,
+            target.qualifier,
+            target_selects_creatures=True,
+        ),
+    )
+
+
+def _check_token_sacrifice_outlet(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Return the ordered comparisons of one token-sacrifice pair."""
+    return (
+        _check_action(source, CapabilityAction.CREATE),
+        _check_zone(source.destination_zone, CapabilityZone.BATTLEFIELD),
+        _check_action(target, CapabilityAction.SACRIFICE),
+        _check_zone(target.zone, CapabilityZone.GRAVEYARD),
+        _check_zone(target.source_zone, CapabilityZone.BATTLEFIELD),
+        *_check_token_qualifiers(
+            source.qualifier,
+            target.qualifier,
+            target_selects_creatures=True,
+        ),
+    )
+
+
+def _check_fodder_dies_payoff(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Return the ordered comparisons of one sacrificed-fodder death pair.
+
+    The payoff's own zone describes where its reward lands, so only the objects it rewards dying
+    and the zone they died from are checked. The fodder role supplies its own creature body, never a
+    token or a nontoken in particular, so the payoff's stated kind is compared with the fodder's
+    stated kind instead of excluding any payoff that turns out to reward nontokens only.
+    """
+    return (
+        _check_action(source, CapabilityAction.SACRIFICE),
+        _check_zone(source.destination_zone, CapabilityZone.GRAVEYARD),
+        _check_zone(source.source_zone, CapabilityZone.BATTLEFIELD),
+        _check_action(target, CapabilityAction.DIE),
+        _check_zone(target.source_zone, CapabilityZone.BATTLEFIELD),
+        *_check_fodder_qualifiers(source.qualifier, target.qualifier),
+    )
+
+
+def _check_fodder_sacrifice_outlet(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Return the ordered comparisons of one fodder-sacrifice pair.
+
+    Both participants sacrifice the fodder's own creature body, so the same directional qualifier
+    comparisons apply as for a death payoff.
+    """
+    return (
+        _check_action(source, CapabilityAction.SACRIFICE),
+        _check_zone(source.destination_zone, CapabilityZone.GRAVEYARD),
+        _check_zone(source.source_zone, CapabilityZone.BATTLEFIELD),
+        _check_action(target, CapabilityAction.SACRIFICE),
+        _check_zone(target.destination_zone, CapabilityZone.GRAVEYARD),
+        _check_zone(target.source_zone, CapabilityZone.BATTLEFIELD),
+        *_check_fodder_qualifiers(source.qualifier, target.qualifier),
+    )
+
+
+# Every declared mechanism is routed: the declared role pair proves the mechanism and the route
+# reads the structured fields. A mechanism absent here is undeclared and stays unresolved for the
+# model.
+_MECHANISM_ROUTES: Mapping[str, _RouteChecker] = {
+    "discard-recursion-payoff": _check_discard_recursion,
+    "fodder-dies-payoff": _check_fodder_dies_payoff,
+    "fodder-sacrifice-outlet": _check_fodder_sacrifice_outlet,
+    "loot-recursion-payoff": _check_discard_recursion,
+    "mill-graveyard-payoff": _check_mill_graveyard_payoff,
+    "recursion-graveyard-payoff": _check_recursion_graveyard_payoff,
+    "token-death-payoff": _check_token_death_payoff,
+    "token-go-wide-payoff": _check_token_go_wide_payoff,
+    "token-sacrifice-outlet": _check_token_sacrifice_outlet,
+}
+
+if not set(_MECHANISM_ROUTES).issubset({link.mechanism for link in ROLE_COMPATIBILITY_RULES}):
+    raise SetEnrichmentCandidatesError("mechanism routes must describe declared mechanisms.")
+
+
+def _decide(checks: tuple[_FieldCheck, ...]) -> _CheckOutcome:
+    """Return the outcome of the first structured field the global precedence settles.
+
+    Both participants report into one set of fields, so the reported reason never depends on which
+    participant a route inspects first: an explicit conflict on one participant outranks a
+    missing-evidence signal on the other within the same field, a comparison an earlier field cannot
+    settle leaves the pair unresolved even when a later field conflicts, and an explicit conflict on
+    an earlier field outranks any later field.
+    """
+    for field_name in _FIELD_PRECEDENCE:
+        conflict: _CheckOutcome = None
+        unresolved: _CheckOutcome = None
+        for checked_field, outcome in checks:
+            if outcome is None or checked_field != field_name:
+                continue
+            if outcome[0] is CandidateResolutionVerdict.REJECTED:
+                conflict = outcome
+                break
+            if unresolved is None:
+                unresolved = outcome
+        if conflict is not None:
+            return conflict
+        if unresolved is not None:
+            return unresolved
+    return None
+
+
+def _require_declared_roles(package: CandidatePackage) -> None:
+    """Require a declared mechanism's package to carry exactly that rule's declared role pair.
+
+    A mechanism no rule declares is the supported residual path: it constructs packages whose
+    mechanism has no role rule and stays unresolved for the model whatever roles it carries.
+    """
+    link = _ROLE_LINKS.get(package.mechanism)
+    if link is not None and (
+        package.source.role is not link.enabler or package.target.role is not link.payoff
+    ):
+        raise SetEnrichmentCandidatesError(
+            f"{package.mechanism} requires {link.enabler.value} as its source role "
+            f"and {link.payoff.value} as its target role."
+        )
+
+
+def _resolution(package: CandidatePackage, outcome: _CheckOutcome) -> CandidateResolution:
+    """Return the canonical resolution one comparison outcome yields for one package."""
+    if outcome is None:
+        return CandidateResolution(
+            package=package,
+            basis=CandidateResolutionBasis.LOCAL,
+            verdict=CandidateResolutionVerdict.ACCEPTED,
+            reason=LOCAL_PROVE_REASON,
+        )
+    verdict, reason = outcome
+    return CandidateResolution(
+        package=package,
+        basis=(
+            CandidateResolutionBasis.LOCAL
+            if verdict is CandidateResolutionVerdict.REJECTED
+            else CandidateResolutionBasis.MODEL
+        ),
+        verdict=verdict,
+        reason=reason,
+    )
+
+
+def resolve_candidate_packages(
+    packages: tuple[CandidatePackage, ...],
+) -> CandidateResolutionSet:
+    """Resolve every constructed candidate package from its structured capability parameters.
+    The returned set holds one resolution per supplied package, in canonical package order. A
+    package whose mechanism is declared must carry that rule's declared role pair, so a declared
+    mechanism with unrelated participants is rejected as invalid candidate input.
+    """
+    _record_tuple(
+        packages,
+        field_name="packages",
+        expected_type=CandidatePackage,
+        key=lambda item: item.identity,
+    )
+    resolutions: list[CandidateResolution] = []
+    for package in packages:
+        _require_declared_roles(package)
+        checker = _MECHANISM_ROUTES.get(package.mechanism)
+        outcome = (
+            _UNRESOLVED_OUTCOME
+            if checker is None
+            else _decide(checker(package.source, package.target))
+        )
+        resolutions.append(_resolution(package, outcome))
+    return CandidateResolutionSet(resolutions=tuple(resolutions), omissions=())
+
+
 __all__ = [
     "CANDIDATE_REASON",
+    "LOCAL_CONFLICT_REASON_TEMPLATE",
+    "LOCAL_PROVE_REASON",
+    "LOCAL_UNRESOLVED_REASON",
     "MAX_EVALUATED_CANDIDATE_PAIRS",
     "MAX_PAIR_WORK_OMITTED_REASON",
     "ROLE_COMPATIBILITY_RULES",
@@ -508,9 +1078,12 @@ __all__ = [
     "CandidateOutcome",
     "CandidatePackage",
     "CandidatePackageSet",
+    "CandidateResolution",
+    "CandidateResolutionBasis",
+    "CandidateResolutionSet",
+    "CandidateResolutionVerdict",
     "RoleLink",
     "SetEnrichmentCandidatesError",
     "construct_candidate_packages",
-    "LOCAL_FILTER_OMITTED_REASON",
-    "prune_candidate_packages",
+    "resolve_candidate_packages",
 ]

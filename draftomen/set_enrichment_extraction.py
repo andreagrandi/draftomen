@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import InitVar, dataclass, field
 from enum import Enum, StrEnum
 import hashlib
@@ -176,6 +176,10 @@ _CAPABILITY_SEMANTIC_REVIEW_REASON = (
     "capability requires semantic review beyond exact-source validation."
 )
 _CAPABILITY_VOCABULARY_REASON = "capability or condition uses unsupported vocabulary."
+_CAPABILITY_CONTRACT_REASON = (
+    "capability object does not match the card capability extraction contract."
+)
+_UNCLASSIFIED_CAPABILITY_SUMMARY = "unclassified capability"
 _CAPABILITY_CARD_ID_REASON = "capability references a card other than the selected canonical card."
 _CAPABILITY_CARD_NAME_REASON = "capability card name does not match the selected canonical card."
 _CAPABILITY_FACE_REASON = "capability face identity does not match the selected canonical card."
@@ -2091,8 +2095,17 @@ def _validated_capability_candidate(item: Any) -> Mapping[str, Any]:
     return item
 
 
-def _card_capability_candidates(document: Any) -> list[Mapping[str, Any]]:
-    """Validate the whole response document before retaining any capability."""
+def _card_capability_candidates(
+    document: Any,
+) -> tuple[list[Mapping[str, Any]], list[tuple[int, Any]]]:
+    """Validate one response document and retain every capability it can still carry.
+
+    A document-level violation rejects the whole response, and so does a finding_id two valid
+    capabilities repeat, because the response then cannot say which capability each identity
+    names. One capability that violates the pinned capability contract is instead retained as
+    its document position and raw item so the parse can publish a diagnostic while the
+    remaining capabilities stay usable.
+    """
     if not isinstance(document, Mapping):
         raise _MalformedResponse
     _require_keys(document, _CARD_RESPONSE_KEYS)
@@ -2105,15 +2118,20 @@ def _card_capability_candidates(document: Any) -> list[Mapping[str, Any]]:
     if not isinstance(capabilities, list):
         raise _MalformedResponse
     candidates: list[Mapping[str, Any]] = []
+    poisoned: list[tuple[int, Any]] = []
     identities: set[str] = set()
-    for item in capabilities:
-        candidate = _validated_capability_candidate(item)
+    for index, item in enumerate(capabilities):
+        try:
+            candidate = _validated_capability_candidate(item)
+        except _MalformedResponse:
+            poisoned.append((index, item))
+            continue
         finding_id = candidate["finding_id"].strip()
         if finding_id in identities:
             raise _MalformedResponse
         identities.add(finding_id)
         candidates.append(candidate)
-    return candidates
+    return candidates, poisoned
 
 
 def _validated_relationship_evidence(entry: Any) -> Mapping[str, Any]:
@@ -2356,19 +2374,59 @@ def _decoded_prerequisite(entry: Mapping[str, Any]) -> CapabilityPrerequisite:
 
 
 def _capability_rejected(
-    candidate: Mapping[str, Any],
     *,
+    finding_id: str,
+    summary: str,
     reason: str,
     run_id: str,
 ) -> RejectedFinding:
     """Build one card capability diagnostic that preserves the candidate identity."""
     return RejectedFinding(
-        finding_id=candidate["finding_id"],
+        finding_id=finding_id,
         source_kind="oracle",
-        summary=candidate["role"],
+        summary=summary,
         reason=reason,
         run_id=run_id,
     )
+
+
+def _poisoned_capability_summary(item: Any) -> str:
+    """Return the role one contract-violating item states, else the fixed fallback summary."""
+    role = item.get("role") if isinstance(item, Mapping) else None
+    if isinstance(role, str) and role.strip() and role.isprintable():
+        return role
+    return _UNCLASSIFIED_CAPABILITY_SUMMARY
+
+
+def _poisoned_capability_rejections(
+    poisoned: Sequence[tuple[int, Any]],
+    *,
+    taken: Collection[str],
+    card_id: int,
+    run_id: str,
+) -> list[RejectedFinding]:
+    """Publish one rejection per capability that violates the extraction contract.
+
+    A poisoned item may be wrong in any field, so its identity is synthesized from the selected
+    canonical card and its document position, normalized until it repeats no finding id already
+    retained for that card.
+    """
+    rejections: list[RejectedFinding] = []
+    identities = set(taken)
+    for index, item in poisoned:
+        finding_id = f"{card_id}-rejected-{index}"
+        while finding_id in identities:
+            finding_id = f"{finding_id}-x"
+        identities.add(finding_id)
+        rejections.append(
+            _capability_rejected(
+                finding_id=finding_id,
+                summary=_poisoned_capability_summary(item),
+                reason=_CAPABILITY_CONTRACT_REASON,
+                run_id=run_id,
+            )
+        )
+    return rejections
 
 
 def _capability_record(
@@ -2461,17 +2519,36 @@ def _classify_capabilities(
     for candidate in candidates:
         source_reason, face_index = _capability_source_reason(candidate, projection)
         if source_reason is not None:
-            rejected.append(_capability_rejected(candidate, reason=source_reason, run_id=run_id))
+            rejected.append(
+                _capability_rejected(
+                    finding_id=candidate["finding_id"],
+                    summary=candidate["role"],
+                    reason=source_reason,
+                    run_id=run_id,
+                )
+            )
             continue
         model_reason = candidate["review"]["reason"]
         if candidate["review"]["status"] == FindingStatus.REJECTED.value:
-            rejected.append(_capability_rejected(candidate, reason=model_reason, run_id=run_id))
+            rejected.append(
+                _capability_rejected(
+                    finding_id=candidate["finding_id"],
+                    summary=candidate["role"],
+                    reason=model_reason,
+                    run_id=run_id,
+                )
+            )
             continue
         try:
             capability = _capability_record(candidate, face_index=face_index, run_id=run_id)
         except SemanticEnrichmentError:
             rejected.append(
-                _capability_rejected(candidate, reason=_CAPABILITY_VOCABULARY_REASON, run_id=run_id)
+                _capability_rejected(
+                    finding_id=candidate["finding_id"],
+                    summary=candidate["role"],
+                    reason=_CAPABILITY_VOCABULARY_REASON,
+                    run_id=run_id,
+                )
             )
             continue
         uncertain.append(capability)
@@ -2742,7 +2819,7 @@ def parse_guide_extraction_response(
 
 
 def _malformed_card_result() -> CardCapabilityExtractionResult:
-    """Return the fixed all-or-nothing malformed card outcome."""
+    """Return the fixed malformed card outcome."""
     return CardCapabilityExtractionResult(
         outcome=ExtractionOutcome.MALFORMED,
         accepted_capabilities=(),
@@ -2761,12 +2838,14 @@ def parse_card_capability_extraction_response(
 ) -> CardCapabilityExtractionResult:
     """Parse one untrusted card capability response against frozen sources.
     A quoted ability that creates a creature token also yields a derived token maker capability.
+    One capability that violates the pinned capability contract is published as an oracle
+    rejection while every other capability the response carries stays usable.
     """
     selected = _selected_card(sources, card_id)
     normalized_run_id = _identifier(run_id, "run_id")
     projection: Mapping[str, Any] = card_source_projection(selected)
     try:
-        candidates = _card_capability_candidates(_decode_response_document(content))
+        candidates, poisoned = _card_capability_candidates(_decode_response_document(content))
     except (_MalformedResponse, SemanticEnrichmentError):
         return _malformed_card_result()
     try:
@@ -2778,6 +2857,14 @@ def parse_card_capability_extraction_response(
     except SemanticEnrichmentError:
         return _malformed_card_result()
     uncertain.extend(_derived_token_maker_capabilities(uncertain))
+    rejected.extend(
+        _poisoned_capability_rejections(
+            poisoned,
+            taken={candidate["finding_id"].strip() for candidate in candidates},
+            card_id=card_id,
+            run_id=normalized_run_id,
+        )
+    )
     return CardCapabilityExtractionResult(
         outcome=ExtractionOutcome.SUCCESS,
         accepted_capabilities=(),

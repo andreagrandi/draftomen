@@ -5,7 +5,7 @@ Every paid completion comes from the caller, and all durable state stays in the 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from functools import partial
@@ -25,11 +25,13 @@ from draftomen.set_enrichment_candidates import (
     CandidateBounds,
     CandidatePackage,
     CandidatePackageSet,
+    CandidateResolutionSet,
     construct_candidate_packages,
-    prune_candidate_packages,
+    resolve_candidate_packages,
 )
 from draftomen.set_enrichment_extraction import (
     CardCapabilityExtractionResult,
+    ExtractionOutcome,
     ExtractionRequest,
     GuideExtractionResult,
     RelationshipValidationResult,
@@ -74,15 +76,15 @@ class EnrichmentOutcome(StrEnum):
     CANCELLED = "cancelled"
 
 
-# One batched validation call resolves a fixed number of constructed candidates, so a resumed run
-# rebuilds byte-identical batch identities from the same package order alone.
+# One batched validation call resolves a fixed number of residual candidates, so a resumed run
+# rebuilds byte-identical batch identities from the same residual package order alone.
 RELATIONSHIP_BATCH_SIZE = 20
 
 
 def partition_relationship_batches(
     packages: Sequence[CandidatePackage],
 ) -> tuple[tuple[CandidatePackage, ...], ...]:
-    """Split constructed candidates into the deterministic batches one run validates."""
+    """Split the residual candidates one run still has to validate into deterministic batches."""
     if isinstance(packages, (str, bytes)) or not isinstance(packages, Sequence):
         raise SetEnrichmentError("packages must be a sequence of candidate packages.")
     ordered = tuple(packages)
@@ -158,6 +160,7 @@ class EnrichmentRunResult:
     card_results: tuple[CardCapabilityExtractionResult, ...]
     ineligible_card_ids: tuple[int, ...]
     candidate_packages: CandidatePackageSet | None
+    candidate_resolutions: CandidateResolutionSet | None
     relationship_results: tuple[RelationshipValidationResult, ...]
     progress: EnrichmentProgress
 
@@ -172,6 +175,16 @@ class EnrichmentRunResult:
             self.candidate_packages, CandidatePackageSet
         ):
             raise SetEnrichmentError("candidate_packages must be a CandidatePackageSet or None.")
+        if self.candidate_resolutions is not None and not isinstance(
+            self.candidate_resolutions, CandidateResolutionSet
+        ):
+            raise SetEnrichmentError(
+                "candidate_resolutions must be a CandidateResolutionSet or None."
+            )
+        if self.candidate_resolutions is not None and self.candidate_packages is None:
+            raise SetEnrichmentError(
+                "candidate resolutions require constructed candidate packages."
+            )
         object.__setattr__(self, "run_id", _identifier(self.run_id, "run_id"))
         object.__setattr__(self, "set_code", _identifier(self.set_code, "set_code").casefold())
         object.__setattr__(
@@ -212,8 +225,12 @@ class EnrichmentRunResult:
         if self.outcome is EnrichmentOutcome.COMPLETE:
             if self.candidate_packages is None:
                 raise SetEnrichmentError("complete runs must construct candidate packages.")
-            if len(self.relationship_results) != len(self.candidate_packages.packages):
-                raise SetEnrichmentError("complete runs must resolve every constructed candidate.")
+            if self.candidate_resolutions is None:
+                raise SetEnrichmentError(
+                    "complete runs must resolve the constructed candidate packages."
+                )
+            if len(self.relationship_results) != len(self.candidate_resolutions.model_packages):
+                raise SetEnrichmentError("complete runs must validate every residual candidate.")
 
     @property
     def complete(self) -> bool:
@@ -221,16 +238,18 @@ class EnrichmentRunResult:
         return self.outcome is EnrichmentOutcome.COMPLETE
 
     def _require_relationship_prefix(self) -> None:
-        """Require every retained relationship result to follow the constructed candidates."""
-        if self.candidate_packages is None:
+        """Require every retained relationship result to follow the residual candidate packages."""
+        if self.candidate_resolutions is None:
             if self.relationship_results:
                 raise SetEnrichmentError(
-                    "relationship results require constructed candidate packages."
+                    "relationship results require resolved candidate packages."
                 )
             return
-        packages = self.candidate_packages.packages
+        packages = self.candidate_resolutions.model_packages
         if len(self.relationship_results) > len(packages):
-            raise SetEnrichmentError("relationship results must follow constructed candidates.")
+            raise SetEnrichmentError(
+                "relationship results must follow residual candidate packages."
+            )
         for item, package in zip(self.relationship_results, packages):
             expected = relationship_subject_id(
                 mechanism=package.mechanism,
@@ -240,7 +259,7 @@ class EnrichmentRunResult:
             identity = _relationship_finding_id(item)
             if identity is not None and identity != expected:
                 raise SetEnrichmentError(
-                    "relationship results must match their constructed candidate."
+                    "relationship results must match their residual candidate package."
                 )
 
 
@@ -297,6 +316,15 @@ def _run_id(value: Any) -> str:
     return _identifier(value, "run_id")
 
 
+def _recovery_run_id(identity: WorkIdentity) -> str:
+    """Derive the invocation-independent run identifier of one locally recovered result.
+    The run identifier is part of every record a parse publishes, so recovering a durable result
+    must not stamp the invocation that happened to observe it: the durable content hash names the
+    work itself, and every resume re-parses the same retained bytes into the same result.
+    """
+    return _identifier(f"durable-{identity.content_sha256[:16]}", "run_id")
+
+
 def _percentage(completed: int, total: int) -> float:
     """Return one rounded percentage that never divides by zero."""
     return 0.0 if total == 0 else round(completed * 100.0 / total, 1)
@@ -337,9 +365,13 @@ def _relationship_finding_id(result: RelationshipValidationResult) -> str | None
     return None
 
 
-def _valid_count(relationships: Sequence[RelationshipValidationResult]) -> int:
-    """Count accepted relationships."""
-    return sum(
+def _valid_count(
+    resolutions: CandidateResolutionSet | None,
+    relationships: Sequence[RelationshipValidationResult],
+) -> int:
+    """Count accepted relationships, including every pair the structured parameters prove."""
+    local = 0 if resolutions is None else len(resolutions.local_accepted)
+    return local + sum(
         1
         for item in relationships
         if item.relationship is not None
@@ -368,12 +400,14 @@ def _uncertain_count(
 def _rejected_count(
     guides: Sequence[GuideExtractionResult],
     cards: Sequence[CardCapabilityExtractionResult],
+    resolutions: CandidateResolutionSet | None,
     relationships: Sequence[RelationshipValidationResult],
 ) -> int:
     """Count rejected diagnostics across every retained result."""
     return (
         sum(len(result.rejected_findings) for result in guides)
         + sum(len(result.rejected_capabilities) for result in cards)
+        + (0 if resolutions is None else len(resolutions.local_rejected))
         + sum(1 for item in relationships if item.rejected is not None)
     )
 
@@ -460,8 +494,11 @@ def _resolve_work(
     run_id: str,
 ) -> tuple[_ResultT, OpenRouterResponse, bool]:
     """Resolve one work identity from durable state or one paid completion call.
-    Completed and unvalidated records are reused without a request; a missing or incomplete
-    record records its durable attempt before the paid call, so a failure stays resumable.
+    Completed and unvalidated records are reused without a request; a completed card record
+    whose stored result is malformed is re-parsed from the response it retains, which repairs a
+    paid response the older all-or-nothing parser could not read without paying for it again.
+    A missing or incomplete record records its durable attempt before the paid call, so a
+    failure stays resumable.
     """
     record = store.lookup(identity=identity)
     if record.state is WorkState.CORRUPT:
@@ -474,6 +511,26 @@ def _resolve_work(
         result = record.result
         if result is None:
             raise SetEnrichmentError("durable set-enrichment work is missing its result.")
+        if (
+            identity.work_kind is WorkKind.CARD_CAPABILITY
+            and isinstance(result, CardCapabilityExtractionResult)
+            and result.outcome is ExtractionOutcome.MALFORMED
+            and record.response is not None
+        ):
+            # A malformed card result is the all-or-nothing artifact of the parser that wrote it,
+            # and a later tolerant parser can read the retained response differently. Re-parsing
+            # here issues no request and changes no durable byte: the outcome is a pure function
+            # of the retained content, the frozen sources, and the card identity, so every resume
+            # recomputes the same result and the store keeps the paid response it already owns.
+            # The recovery stamps the stable durable run identifier rather than the invocation's,
+            # because the recovered records are the ones a resume must reproduce byte for byte.
+            response = record.response
+            reparsed = parse(content=response.content, run_id=_recovery_run_id(identity))
+            if (
+                isinstance(reparsed, CardCapabilityExtractionResult)
+                and reparsed.outcome is ExtractionOutcome.SUCCESS
+            ):
+                return reparsed, response, True
         return cast(_ResultT, result), _durable_response(record), True
     if record.state is WorkState.UNVALIDATED:
         response = _durable_response(record)
@@ -535,6 +592,7 @@ def run_set_enrichment(
     card_results: list[CardCapabilityExtractionResult] = []
     relationship_results: list[RelationshipValidationResult] = []
     packages: CandidatePackageSet | None = None
+    resolutions: CandidateResolutionSet | None = None
     ledger = _RunAccounting()
     phase = EnrichmentPhase.GUIDES
 
@@ -542,14 +600,24 @@ def run_set_enrichment(
         """Report whether the caller asked this run to stop."""
         return is_cancelled is not None and bool(is_cancelled())
 
+    def local_decisions() -> int:
+        """Return the pairs the structured capability parameters already decided."""
+        if resolutions is None:
+            return 0
+        return len(resolutions.local_accepted) + len(resolutions.local_rejected)
+
+    def residual_packages() -> tuple[CandidatePackage, ...]:
+        """Return the pairs still awaiting model validation, empty until resolutions exist."""
+        return () if resolutions is None else resolutions.model_packages
+
     def relationships_total() -> int:
-        """Return the number of constructed candidates known so far."""
-        return 0 if packages is None else len(packages.packages)
+        """Return the number of resolved candidate packages known so far."""
+        return 0 if resolutions is None else len(resolutions.resolutions)
 
     def planned_work() -> int:
         """Return the number of durable work items this run resolves in total."""
-        # Relationship work is batched, so the cost projection extrapolates over batches, not pairs.
-        batches = 0 if packages is None else len(partition_relationship_batches(packages.packages))
+        # Only residual pairs are batched, so the cost projection extrapolates over model batches.
+        batches = len(partition_relationship_batches(residual_packages()))
         return len(sources.guides) + len(eligible_cards) + batches
 
     def snapshot(current: EnrichmentPhase) -> EnrichmentProgress:
@@ -560,11 +628,17 @@ def run_set_enrichment(
             guides_total=len(sources.guides),
             cards_completed=len(card_results),
             cards_total=len(eligible_cards),
-            relationships_completed=len(relationship_results),
+            # A local decision is already terminal, so it counts as resolved before any call.
+            relationships_completed=local_decisions() + len(relationship_results),
             relationships_total=relationships_total(),
-            valid_count=_valid_count(relationship_results),
+            valid_count=_valid_count(resolutions, relationship_results),
             uncertain_count=_uncertain_count(guide_results, card_results, relationship_results),
-            rejected_count=_rejected_count(guide_results, card_results, relationship_results),
+            rejected_count=_rejected_count(
+                guide_results,
+                card_results,
+                resolutions,
+                relationship_results,
+            ),
             accounting=ledger.snapshot(planned_work=planned_work()),
         )
 
@@ -590,6 +664,7 @@ def run_set_enrichment(
             card_results=tuple(card_results),
             ineligible_card_ids=ineligible_card_ids,
             candidate_packages=packages,
+            candidate_resolutions=resolutions,
             relationship_results=tuple(relationship_results),
             progress=progress,
         )
@@ -662,23 +737,9 @@ def run_set_enrichment(
     if cancel_requested():
         return finish(EnrichmentOutcome.CANCELLED)
     constructed = construct_candidate_packages(card_results, bounds=bounds)
-    cards_by_id = {card.grp_id: card for card in sources.cards}
-    kept, prune_omissions = prune_candidate_packages(constructed.packages, cards=cards_by_id)
-    if prune_omissions:
-        # A locally pruned pair is never sent for validation, so it stops counting as evaluated and
-        # joins the omissions that already account for every unevaluated candidate pair.
-        pruned_pairs = sum(omission.omitted_pairs for omission in prune_omissions)
-        constructed = replace(
-            constructed,
-            packages=kept,
-            omissions=tuple(
-                sorted(
-                    (*constructed.omissions, *prune_omissions),
-                    key=lambda omission: omission.mechanism,
-                )
-            ),
-            evaluated_pairs=constructed.evaluated_pairs - pruned_pairs,
-        )
+    # Local structured resolution decides every pair the stored capability parameters settle, so
+    # only the residual pairs below ever reach a paid validation batch.
+    resolutions = resolve_candidate_packages(constructed.packages)
     packages = constructed
     emit(phase)
 
@@ -686,7 +747,7 @@ def run_set_enrichment(
     emit(phase)
     if cancel_requested():
         return finish(EnrichmentOutcome.CANCELLED)
-    for batch_index, batch in enumerate(partition_relationship_batches(packages.packages)):
+    for batch_index, batch in enumerate(partition_relationship_batches(residual_packages())):
         if cancel_requested():
             return finish(EnrichmentOutcome.CANCELLED)
         request = build_relationship_validation_batch_request(sources=sources, packages=batch)

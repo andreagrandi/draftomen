@@ -14,6 +14,31 @@
   republication rewrites neither the object nor the manifest, an absent or
   malformed repository manifest fails closed with `PROFILE_PUBLICATION_ERROR`
   rather than synthesizing one, and Cancel still publishes no profile. (#532)
+- Resolve relationship candidates with a role-anchored local matcher (#527):
+  the Oracle-text regex pruning is gone, and each constructed candidate now
+  carries one deterministic verdict over the v2 capability `action`, `zone`,
+  and `qualifier` fields — every declared mechanism
+  (`token-go-wide-payoff`, `token-death-payoff`,
+  `token-sacrifice-outlet`, `discard-recursion-payoff`,
+  `loot-recursion-payoff`, and `mill-graveyard-payoff`) decides locally,
+  an explicit structured-field conflict vetoes the pair, and a field the
+  parameters do not settle leaves it for the model; only residual pairs
+  reach the 20-pair validation batches, so the HOB corpus pays for zero
+  model validation batches while every pair keeps a truthful `local` or
+  `model` basis and the published artifact records the zero-cost
+  `local-pair-matcher-v1` run beside the paid work it did not replace.
+- Tolerate per-item card extraction violations and recover them locally
+  (#527): a card response that violates one item of the capability contract
+  now keeps its other items instead of discarding the whole response, and a
+  stored all-or-nothing malformed card result is re-parsed from the paid
+  response it retains under an invocation-independent run identifier, so a
+  resume repairs the record with no additional model call, no store write,
+  and byte-identical provenance across reruns.
+- Report pair resolution and validation budget in the HOB harness (#527):
+  the report gains `candidates.resolution` with the local and residual pair
+  counts, the local share, and the planned relationship validation batch
+  count, and a complete unlimited full-source run now fails acceptance
+  below 80% local resolution or above 60 relationship validation batches.
 - Cut relationship-validation enrichment cost: candidate validation now
   sends bounded batches of 20 pairs per model call instead of one call per
   pair, a local mechanism-compatibility filter prunes pairs whose oracle
