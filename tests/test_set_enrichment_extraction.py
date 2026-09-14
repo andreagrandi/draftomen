@@ -245,9 +245,16 @@ BACK_TRIGGER_QUOTE = "At the beginning of your upkeep"
 BACK_MILL_QUOTE = "each opponent mills two cards"
 SURROGATE_RELATION = chr(0xD800)
 
-CARD_MALFORMED_REASON = "response does not match card capability extraction schema version 2."
+CARD_MALFORMED_REASON = (
+    "response does not match card capability extraction schema version "
+    f"{CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION}."
+)
 CAPABILITY_REVIEW_REASON = "capability requires semantic review beyond exact-source validation."
 CAPABILITY_VOCABULARY_REASON = "capability or condition uses unsupported vocabulary."
+CAPABILITY_CONTRACT_REASON = (
+    "capability object does not match the card capability extraction contract."
+)
+UNCLASSIFIED_CAPABILITY_SUMMARY = "unclassified capability"
 CAPABILITY_CARD_ID_REASON = "capability references a card other than the selected canonical card."
 CAPABILITY_CARD_NAME_REASON = "capability card name does not match the selected canonical card."
 CAPABILITY_FACE_REASON = "capability face identity does not match the selected canonical card."
@@ -920,7 +927,7 @@ def _capability_candidate(**overrides: Any) -> dict[str, Any]:
 def _capability_response(
     capabilities: list[Any],
     *,
-    schema_version: int = 2,
+    schema_version: int = CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
 ) -> dict[str, Any]:
     return {"schema_version": schema_version, "capabilities": list(capabilities)}
 
@@ -1760,7 +1767,7 @@ def test_request_snapshot_is_isolated_from_caller_and_reader_mutation() -> None:
 @pytest.mark.parametrize(
     "overrides",
     (
-        pytest.param({"contract_version": 3}, id="unsupported-contract-version"),
+        pytest.param({"contract_version": 4}, id="unsupported-contract-version"),
         pytest.param({"contract_version": True}, id="boolean-contract-version"),
         pytest.param({"prompt_id": "   "}, id="blank-prompt-id"),
         pytest.param({"system_prompt": "   "}, id="blank-system-prompt"),
@@ -3164,36 +3171,6 @@ def test_source_valid_capabilities_remain_uncertain_beyond_exact_source_validati
 @pytest.mark.parametrize(
     "content",
     (
-        pytest.param(None, id="non-string-content"),
-        pytest.param("", id="blank-content"),
-        pytest.param("not json", id="invalid-json"),
-        pytest.param("bad\ud800", id="non-utf8-content"),
-        pytest.param(_content([]), id="root-array"),
-        pytest.param(
-            '{"schema_version": 2, "schema_version": 2, "capabilities": []}',
-            id="duplicate-json-keys",
-        ),
-        pytest.param(
-            _content(_capability_response([], schema_version=3)),
-            id="wrong-schema-version",
-        ),
-        pytest.param(
-            _content(_capability_response([], schema_version=1)),
-            id="legacy-schema-version-1-card-response",
-        ),
-        pytest.param(
-            _content({"schema_version": "2", "capabilities": []}),
-            id="non-integer-schema-version",
-        ),
-        pytest.param(_content({"schema_version": 2}), id="missing-capabilities-key"),
-        pytest.param(
-            _content({"schema_version": 2, "capabilities": [], "notes": "extra"}),
-            id="extra-root-key",
-        ),
-        pytest.param(
-            _content({"schema_version": 2, "capabilities": {}}),
-            id="capabilities-not-a-list",
-        ),
         pytest.param(
             _content(_capability_response(["not-an-object"])),
             id="capability-not-an-object",
@@ -3474,6 +3451,109 @@ def test_source_valid_capabilities_remain_uncertain_beyond_exact_source_validati
             _content(_capability_response([_capability_candidate(timing="   ")])),
             id="blank-timing",
         ),
+    ),
+)
+def test_capability_contract_violations_reject_one_capability_and_keep_the_rest(
+    capability_sources: EnrichmentSources,
+    content: str,
+) -> None:
+    """Prove one capability that violates the contract cannot poison its whole response."""
+    result = _parse_card(content, capability_sources)
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.malformed_reason is None
+    assert result.accepted_capabilities == ()
+    assert result.uncertain_capabilities == ()
+    assert result.capabilities == ()
+    assert len(result.rejected_capabilities) == 1
+    rejected = result.rejected_capabilities[0]
+    assert rejected.finding_id == f"{TWO_FACE_CARD_ID}-rejected-0"
+    assert rejected.source_kind == "oracle"
+    assert rejected.reason == CAPABILITY_CONTRACT_REASON
+    assert rejected.run_id == RUN_ID
+    item = json.loads(content)["capabilities"][0]
+    role = item.get("role") if isinstance(item, dict) else None
+    if isinstance(role, str) and role.strip() and role.isprintable():
+        assert rejected.summary == role
+    else:
+        assert rejected.summary == UNCLASSIFIED_CAPABILITY_SUMMARY
+
+
+def test_capability_contract_violations_keep_every_valid_capability_of_their_response(
+    capability_sources: EnrichmentSources,
+) -> None:
+    """Prove valid capabilities and their one response survive several contract violations."""
+    retained = _capability_candidate(finding_id="capability-retained")
+    accepted_with_a_reason = _capability_candidate(
+        review={"status": "accepted", "reason": "Looks correct."},
+    )
+    nested_quantity = _capability_candidate(
+        finding_id="capability-nested-quantity",
+        prerequisites=[_prerequisite_entry(quantity={"value": None, "relation": "exactly"})],
+    )
+
+    result = _parse_card(
+        _content(
+            _capability_response([accepted_with_a_reason, retained, nested_quantity])
+        ),
+        capability_sources,
+    )
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.malformed_reason is None
+    assert result.accepted_capabilities == ()
+    assert [capability.finding_id for capability in result.uncertain_capabilities] == [
+        "capability-retained"
+    ]
+    assert [finding.finding_id for finding in result.rejected_capabilities] == [
+        f"{TWO_FACE_CARD_ID}-rejected-0",
+        f"{TWO_FACE_CARD_ID}-rejected-2",
+    ]
+    assert [finding.summary for finding in result.rejected_capabilities] == ["draw", "draw"]
+    assert {finding.reason for finding in result.rejected_capabilities} == {
+        CAPABILITY_CONTRACT_REASON
+    }
+    assert {finding.run_id for finding in result.rejected_capabilities} == {RUN_ID}
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        pytest.param(None, id="non-string-content"),
+        pytest.param("", id="blank-content"),
+        pytest.param("not json", id="invalid-json"),
+        pytest.param("bad\ud800", id="non-utf8-content"),
+        pytest.param(_content([]), id="root-array"),
+        pytest.param(
+            '{"schema_version": 2, "schema_version": 2, "capabilities": []}',
+            id="duplicate-json-keys",
+        ),
+        pytest.param(
+            _content(
+                _capability_response(
+                    [],
+                    schema_version=CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION + 1,
+                )
+            ),
+            id="wrong-schema-version",
+        ),
+        pytest.param(
+            _content(_capability_response([], schema_version=1)),
+            id="legacy-schema-version-1-card-response",
+        ),
+        pytest.param(
+            _content({"schema_version": "2", "capabilities": []}),
+            id="non-integer-schema-version",
+        ),
+        pytest.param(_content({"schema_version": 2}), id="missing-capabilities-key"),
+        pytest.param(
+            _content({"schema_version": 2, "capabilities": [], "notes": "extra"}),
+            id="extra-root-key",
+        ),
+        pytest.param(
+            _content({"schema_version": 2, "capabilities": {}}),
+            id="capabilities-not-a-list",
+        ),
         pytest.param(
             _content(_capability_response([_capability_candidate(), _capability_candidate()])),
             id="duplicate-finding-id",
@@ -3481,10 +3561,16 @@ def test_source_valid_capabilities_remain_uncertain_beyond_exact_source_validati
         pytest.param('{"schema_version": NaN, "capabilities": []}', id="non-finite-json-constant"),
     ),
 )
-def test_card_structural_defects_are_malformed_whole_responses(
+def test_document_structural_defects_are_malformed_whole_responses(
     capability_sources: EnrichmentSources,
     content: str | None,
 ) -> None:
+    """Prove a document-level defect still rejects the whole response.
+
+    Only document-level defects remain all-or-nothing: one capability that violates the pinned
+    contract is published as a rejection instead, and a finding_id two valid capabilities repeat
+    stays document-level because the response cannot say which capability each identity names.
+    """
     result = _parse_card(content, capability_sources)
 
     assert result.outcome is ExtractionOutcome.MALFORMED
@@ -4125,34 +4211,62 @@ def test_card_trusted_argument_failures_raise_with_pinned_messages(
             ],
             id="surrogate-prerequisite-quantity-relation",
         ),
-        pytest.param(
-            [
-                _capability_candidate(),
-                _capability_candidate(
-                    finding_id="capability-surrogate",
-                    quantity=_quantity(relation=SURROGATE_RELATION),
-                ),
-            ],
-            id="valid-capability-beside-a-surrogate-capability",
-        ),
     ),
 )
-def test_lone_surrogate_quantity_relations_are_malformed_whole_responses(
+def test_lone_surrogate_quantity_relations_reject_one_capability_and_keep_the_rest(
     capability_sources: EnrichmentSources,
     capabilities: list[dict[str, Any]],
 ) -> None:
+    """Prove a quantity a strict parser cannot encode rejects its capability alone."""
     content = _content(_capability_response(capabilities))
 
     assert r"\ud800" in content
 
     result = _parse_card(content, capability_sources)
 
-    assert result.outcome is ExtractionOutcome.MALFORMED
-    assert result.malformed_reason == CARD_MALFORMED_REASON
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.malformed_reason is None
     assert result.accepted_capabilities == ()
     assert result.uncertain_capabilities == ()
-    assert result.rejected_capabilities == ()
     assert result.capabilities == ()
+    assert [finding.finding_id for finding in result.rejected_capabilities] == [
+        f"{TWO_FACE_CARD_ID}-rejected-0"
+    ]
+    assert [finding.summary for finding in result.rejected_capabilities] == ["draw"]
+    assert [finding.reason for finding in result.rejected_capabilities] == [
+        CAPABILITY_CONTRACT_REASON
+    ]
+
+
+def test_a_valid_capability_stays_retained_beside_a_surrogate_quantity(
+    capability_sources: EnrichmentSources,
+) -> None:
+    """Prove the retained capability of a surrogate response survives."""
+    capabilities = [
+        _capability_candidate(finding_id="capability-retained"),
+        _capability_candidate(
+            finding_id="capability-surrogate",
+            quantity=_quantity(relation=SURROGATE_RELATION),
+        ),
+    ]
+
+    content = _content(_capability_response(capabilities))
+
+    assert r"\ud800" in content
+
+    result = _parse_card(content, capability_sources)
+
+    assert result.outcome is ExtractionOutcome.SUCCESS
+    assert result.malformed_reason is None
+    assert [capability.finding_id for capability in result.uncertain_capabilities] == [
+        "capability-retained"
+    ]
+    assert [finding.finding_id for finding in result.rejected_capabilities] == [
+        f"{TWO_FACE_CARD_ID}-rejected-1"
+    ]
+    assert [finding.reason for finding in result.rejected_capabilities] == [
+        CAPABILITY_CONTRACT_REASON
+    ]
 
 
 @pytest.mark.parametrize(

@@ -6,13 +6,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+
+
 from pathlib import Path
 from typing import Any
 
+# When set to "1", the run stops at the relationship-validation boundary instead of paying for
+# any model validation call; every constructed pair stays exactly as the local matcher resolved it.
+_STOP_BEFORE_RELATIONSHIP_VALIDATION_ENV = "DRAFTOMEN_HOB_STOP_BEFORE_RELATIONSHIP_VALIDATION"
 from draftomen.carddb import CardInfo
 from draftomen.openrouter_client import (
     OpenRouterClient,
@@ -31,21 +37,33 @@ from draftomen.set_card_data import SetCardData, SetCardDataError
 from draftomen.set_enrichment import (
     Completion,
     EnrichmentOutcome,
+    EnrichmentPhase,
     EnrichmentProgress,
     EnrichmentRunResult,
     openrouter_completion,
+    partition_relationship_batches,
     run_set_enrichment,
 )
-from draftomen.set_enrichment_candidates import ROLE_COMPATIBILITY_RULES
+from draftomen.set_enrichment_candidates import (
+    ROLE_COMPATIBILITY_RULES,
+    CandidateOmission,
+    CandidatePackage,
+    CandidateResolution,
+    CandidateResolutionBasis,
+    CandidateResolutionSet,
+    CandidateResolutionVerdict,
+)
 from draftomen.set_enrichment_extraction import (
+    CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
     CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
     GUIDE_EXTRACTION_PROMPT_ID,
-    RELATIONSHIP_VALIDATION_PROMPT_ID,
+    RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
     ExtractionRequest,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
-    build_relationship_validation_request,
-    relationship_source_sha256,
+    build_relationship_validation_batch_request,
+    relationship_batch_source_sha256,
+    relationship_batch_subject_id,
     relationship_subject_id,
 )
 from draftomen.set_enrichment_work import (
@@ -89,6 +107,11 @@ DRY_RUN_ROLE_CYCLE = ("token_maker", "go_wide_payoff", "token_maker", "go_wide_p
 DRY_RUN_FILLER_ROLE = "draw"
 
 MINIMUM_OVERLAP_CHARS = 20
+
+# Acceptance gates of the full HOB verification run: the structured matcher must decide most pairs
+# locally, and the residual validation must stay within the planned call budget.
+MINIMUM_LOCAL_RESOLUTION_PERCENT = 80.0
+MAXIMUM_RELATIONSHIP_VALIDATION_BATCHES = 60
 
 EXIT_OK = 0
 EXIT_ACCEPTANCE_FAILURE = 1
@@ -344,7 +367,12 @@ def _dry_run_card_content(
             for role in roles
         ]
     )
-    return json.dumps({"schema_version": 2, "capabilities": capabilities})
+    return json.dumps(
+        {
+            "schema_version": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
+            "capabilities": capabilities,
+        }
+    )
 
 
 def _dry_run_guide_content(prompt: Mapping[str, Any]) -> str:
@@ -368,37 +396,43 @@ def _dry_run_guide_content(prompt: Mapping[str, Any]) -> str:
     return json.dumps({"schema_version": 1, "findings": findings})
 
 
-def _dry_run_relationship_content(prompt: Mapping[str, Any]) -> str:
-    """Answer one relationship request with an advisory v2 verdict quoting both participants.
+def _dry_run_relationship_verdict(pair: Mapping[str, Any]) -> dict[str, Any]:
+    """Build one accepted v2 verdict quoting both participants of one listed pair.
     The typed prerequisites stay advisory, so no projection is fabricated.
     """
-    source: Mapping[str, Any] = prompt["source"]
-    target: Mapping[str, Any] = prompt["target"]
+    source: Mapping[str, Any] = pair["source"]
+    target: Mapping[str, Any] = pair["target"]
+    return {
+        "index": pair["index"],
+        "schema_version": 2,
+        "verdict": "accepted",
+        "claim": (
+            f"{source['card_name']} enables {target['card_name']} "
+            f"through {pair['mechanism']}."
+        ),
+        "reason": None,
+        "evidence": [
+            {
+                "card_id": source["card_id"],
+                "face_index": source["face_index"],
+                "quote": source["evidence"][0]["quote"],
+            },
+            {
+                "card_id": target["card_id"],
+                "face_index": target["face_index"],
+                "quote": target["evidence"][0]["quote"],
+            },
+        ],
+        "prerequisite_status": "uncertain",
+        "source_prerequisites": [],
+        "target_prerequisites": [],
+    }
+
+
+def _dry_run_relationship_batch_content(prompt: Mapping[str, Any]) -> str:
+    """Answer one relationship batch with one advisory verdict per listed pair."""
     return json.dumps(
-        {
-            "schema_version": 2,
-            "verdict": "accepted",
-            "claim": (
-                f"{source['card_name']} enables {target['card_name']} "
-                f"through {prompt['mechanism']}."
-            ),
-            "reason": None,
-            "evidence": [
-                {
-                    "card_id": source["card_id"],
-                    "face_index": source["face_index"],
-                    "quote": source["evidence"][0]["quote"],
-                },
-                {
-                    "card_id": target["card_id"],
-                    "face_index": target["face_index"],
-                    "quote": target["evidence"][0]["quote"],
-                },
-            ],
-            "prerequisite_status": "uncertain",
-            "source_prerequisites": [],
-            "target_prerequisites": [],
-        }
+        {"verdicts": [_dry_run_relationship_verdict(pair) for pair in prompt["pairs"]]}
     )
 
 
@@ -431,8 +465,8 @@ class _DryRunCompletion:
         if request.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID:
             card_id = prompt["card"]["card_id"]
             return _dry_run_card_content(prompt, roles=self._roles[card_id])
-        if request.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID:
-            return _dry_run_relationship_content(prompt)
+        if request.prompt_id == RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID:
+            return _dry_run_relationship_batch_content(prompt)
         raise HobEnrichmentRunError(f"unexpected pinned request {request.prompt_id!r}.")
 
 
@@ -723,10 +757,10 @@ def _guide_rows(result: EnrichmentRunResult) -> list[dict[str, Any]]:
 
 def _relationship_row(
     *,
-    package: Any | None,
+    package: CandidatePackage | None,
     entry: Any,
 ) -> dict[str, Any]:
-    """Summarize one constructed candidate and the verdict it received."""
+    """Summarize one constructed candidate and the model verdict it received."""
     relationship = entry.relationship
     rejected = entry.rejected
     if relationship is not None:
@@ -763,6 +797,8 @@ def _relationship_row(
                 "target": package.target.to_json(),
             }
         ),
+        # Model rows only ever render the verdict of a residual validation response.
+        "resolution_basis": CandidateResolutionBasis.MODEL.value,
         "outcome": entry.outcome.value,
         "verdict": verdict,
         "claim": claim,
@@ -771,14 +807,99 @@ def _relationship_row(
     }
 
 
+def _pending_relationship_row(package: CandidatePackage) -> dict[str, Any]:
+    """Summarize one residual candidate the run has not validated yet."""
+    return {
+        "subject_id": relationship_subject_id(
+            mechanism=package.mechanism,
+            source=package.source,
+            target=package.target,
+        ),
+        "mechanism": package.mechanism,
+        "participants": {
+            "source": package.source.to_json(),
+            "target": package.target.to_json(),
+        },
+        "resolution_basis": CandidateResolutionBasis.MODEL.value,
+        "outcome": CandidateResolutionVerdict.UNRESOLVED.value,
+        "verdict": CandidateResolutionVerdict.UNRESOLVED.value,
+        "claim": None,
+        "reason": None,
+        "evidence": [],
+    }
+
+
+def _local_resolution_row(resolution: CandidateResolution) -> dict[str, Any]:
+    """Summarize one pair the structured capability parameters decided without a validation call.
+    The claim repeats the deterministic projection the workflow publishes for a local decision,
+    which is the claim of an accepted relationship and the summary of a rejection.
+    """
+    package = resolution.package
+    return {
+        "subject_id": relationship_subject_id(
+            mechanism=package.mechanism,
+            source=package.source,
+            target=package.target,
+        ),
+        "mechanism": package.mechanism,
+        "participants": {
+            "source": package.source.to_json(),
+            "target": package.target.to_json(),
+        },
+        "resolution_basis": resolution.basis.value,
+        "outcome": resolution.verdict.value,
+        "verdict": resolution.verdict.value,
+        "claim": (
+            f"{package.source.card_name} supports {package.target.card_name}"
+            f" through {package.mechanism}."
+        ),
+        "reason": resolution.reason,
+        "evidence": [
+            item.to_json() for item in (*package.source.evidence, *package.target.evidence)
+        ],
+    }
+
+
+def _relationship_row_pairs(
+    result: EnrichmentRunResult,
+) -> list[tuple[CandidatePackage | None, dict[str, Any]]]:
+    """Pair every candidate with its summary row in canonical resolution order.
+    Each constructed candidate carries exactly one row: local pairs render from their resolution,
+    and the i-th residual package joins the i-th retained validation result.
+    """
+    resolutions = result.candidate_resolutions
+    if resolutions is None:
+        # Before any resolution exists, results still follow the constructed package order.
+        packages = () if result.candidate_packages is None else result.candidate_packages.packages
+        pairs: list[tuple[CandidatePackage | None, dict[str, Any]]] = []
+        for index, entry in enumerate(result.relationship_results):
+            package = packages[index] if index < len(packages) else None
+            pairs.append((package, _relationship_row(package=package, entry=entry)))
+        for package in packages[len(result.relationship_results) :]:
+            pairs.append((package, _pending_relationship_row(package)))
+        return pairs
+    pairs = []
+    entries = iter(result.relationship_results)
+    for resolution in resolutions.resolutions:
+        package = resolution.package
+        if resolution.basis is CandidateResolutionBasis.LOCAL:
+            pairs.append((package, _local_resolution_row(resolution)))
+            continue
+        entry = next(entries, None)
+        pairs.append(
+            (
+                package,
+                _pending_relationship_row(package)
+                if entry is None
+                else _relationship_row(package=package, entry=entry),
+            )
+        )
+    return pairs
+
+
 def _relationship_rows(result: EnrichmentRunResult) -> list[dict[str, Any]]:
-    """Summarize every relationship result against its constructed candidate."""
-    packages = () if result.candidate_packages is None else result.candidate_packages.packages
-    rows: list[dict[str, Any]] = []
-    for index, entry in enumerate(result.relationship_results):
-        package = packages[index] if index < len(packages) else None
-        rows.append(_relationship_row(package=package, entry=entry))
-    return rows
+    """Summarize every candidate resolution with the verdict it received."""
+    return [row for _, row in _relationship_row_pairs(result)]
 
 
 def _work_kind_rows(
@@ -809,27 +930,19 @@ def _work_kind_rows(
                 card_source_sha256(cards[card_id]),
             )
         )
-    if result.candidate_packages is not None:
-        for package in result.candidate_packages.packages:
+    if result.candidate_resolutions is not None:
+        # Only residual pairs reach a paid validation call, and the engine submits them in
+        # deterministic batches whose durable subject is the batch index.
+        for batch_index, batch in enumerate(
+            partition_relationship_batches(result.candidate_resolutions.model_packages)
+        ):
+            request = build_relationship_validation_batch_request(sources=sources, packages=batch)
             items.append(
                 (
                     WorkKind.RELATIONSHIP,
-                    relationship_subject_id(
-                        mechanism=package.mechanism,
-                        source=package.source,
-                        target=package.target,
-                    ),
-                    build_relationship_validation_request(
-                        sources=sources,
-                        mechanism=package.mechanism,
-                        source=package.source,
-                        target=package.target,
-                    ),
-                    relationship_source_sha256(
-                        mechanism=package.mechanism,
-                        source=package.source,
-                        target=package.target,
-                    ),
+                    relationship_batch_subject_id(batch_index),
+                    request,
+                    relationship_batch_source_sha256(request=request),
                 )
             )
     rows: list[dict[str, Any]] = []
@@ -1318,10 +1431,11 @@ def _relationship_expectation(
     target_card_id = int(entry["target_card_id"])
     source_face = entry["source_face_index"]
     target_face = entry["target_face_index"]
-    packages = () if result.candidate_packages is None else result.candidate_packages.packages
     constructed: list[dict[str, Any]] = []
-    for index, package in enumerate(packages):
-        if package.mechanism != mechanism:
+    # Locally decided and model-validated pairs are reviewed together: a pair the structured
+    # parameters already accept is exactly as matched as an equivalent accepted model verdict.
+    for package, row in _relationship_row_pairs(result):
+        if package is None or package.mechanism != mechanism:
             continue
         if package.source.card_id != source_card_id or package.target.card_id != target_card_id:
             continue
@@ -1329,32 +1443,7 @@ def _relationship_expectation(
             continue
         if target_face is not None and package.target.face_index != target_face:
             continue
-        entry_result = (
-            result.relationship_results[index]
-            if index < len(result.relationship_results)
-            else None
-        )
-        constructed.append(
-            _relationship_row(package=package, entry=entry_result)
-            if entry_result is not None
-            else {
-                "subject_id": relationship_subject_id(
-                    mechanism=package.mechanism,
-                    source=package.source,
-                    target=package.target,
-                ),
-                "mechanism": package.mechanism,
-                "participants": {
-                    "source": package.source.to_json(),
-                    "target": package.target.to_json(),
-                },
-                "outcome": "unresolved",
-                "verdict": "unresolved",
-                "claim": None,
-                "reason": None,
-                "evidence": [],
-            }
-        )
+        constructed.append(row)
     accepted = [row for row in constructed if row["verdict"] == FindingStatus.ACCEPTED.value]
     accepted_row = accepted[0] if accepted else None
     quote_match = (
@@ -1486,6 +1575,46 @@ def _absent_benchmark(path: Path) -> dict[str, Any]:
     }
 
 
+def _resolution_rejections(resolutions: CandidateResolutionSet) -> list[dict[str, Any]]:
+    """Count locally rejected pairs per mechanism and conflict reason in deterministic order.
+    Grouped like a construction omission so both diagnostics render alike, although the count
+    names pairs the structured parameters reject rather than pairs a bound omitted.
+    """
+    counts: dict[tuple[str, str], int] = {}
+    for resolution in resolutions.resolutions:
+        if (
+            resolution.basis is not CandidateResolutionBasis.LOCAL
+            or resolution.verdict is not CandidateResolutionVerdict.REJECTED
+        ):
+            continue
+        key = (resolution.package.mechanism, resolution.reason)
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        CandidateOmission(mechanism=mechanism, omitted_pairs=count, reason=reason).to_json()
+        for (mechanism, reason), count in sorted(counts.items())
+    ]
+
+
+def _resolution_facts(resolutions: CandidateResolutionSet) -> dict[str, Any]:
+    """Summarize how many candidate pairs the structured matcher settles without a model call."""
+    total_pairs = len(resolutions.resolutions)
+    local_accepted = len(resolutions.local_accepted)
+    local_rejected = len(resolutions.local_rejected)
+    local_pairs = local_accepted + local_rejected
+    model_packages = resolutions.model_packages
+    return {
+        "total_pairs": total_pairs,
+        "local_pairs": local_pairs,
+        "local_accepted": local_accepted,
+        "local_rejected": local_rejected,
+        "model_pairs": len(model_packages),
+        "local_percent": 0.0 if not total_pairs else round(local_pairs * 100.0 / total_pairs, 1),
+        # The planned paid call count of the resolved run, independent of response reuse.
+        "relationship_validation_batches": len(partition_relationship_batches(model_packages)),
+        "rejections": _resolution_rejections(resolutions),
+    }
+
+
 def _build_report(
     *,
     args: argparse.Namespace,
@@ -1528,6 +1657,8 @@ def _build_report(
                 for item in packages.omissions
             ],
         }
+        if result.candidate_resolutions is not None:
+            candidate_facts["resolution"] = _resolution_facts(result.candidate_resolutions)
     report: dict[str, Any] = {
         "run": {
             "run_id": result.run_id,
@@ -1698,41 +1829,69 @@ def _acceptance(
         f"set profiles changed: {report['profiles']['changed']}",
     )
     comparison = report["benchmark"]
-    if benchmark is None:
-        return {
-            "checks": ["outcome", "review", "profiles"],
-            "failures": failures,
-            "passed": not failures,
-            "note": comparison["note"],
-        }
-    check(
-        "source-identity",
-        bool(comparison["source_identity_match"]),
-        "the run did not analyse the reviewed full source set "
-        f"(limited_to={report['sources']['limited_to']})",
+    # The quantitative HOB thresholds describe the full paid analysis. A limited, synthetic or
+    # early-stopped run reports the same metrics without claiming to answer them.
+    resolution = (
+        None if report["candidates"] is None else report["candidates"].get("resolution")
     )
-    for item in (*comparison["mechanics"], *comparison["relationships"]):
-        if item["required"] and not item["matched"]:
-            failures.append(
-                {
-                    "kind": f"required-{item['kind']}",
-                    "expectation": item["expectation"],
-                    "classification": item["classification"],
-                    "detail": item["detail"],
-                }
-            )
-    return {
-        "checks": [
+    hob_gates = (
+        resolution is not None
+        and result.complete
+        and report["sources"]["limit_applied"] is False
+        and report["run"]["dry_run"] is False
+        and report["sources"]["set_source_sha256"] == report["sources"]["full_set_source_sha256"]
+    )
+    if benchmark is None:
+        checks = ["outcome", "review", "profiles"]
+    else:
+        check(
+            "source-identity",
+            bool(comparison["source_identity_match"]),
+            "the run did not analyse the reviewed full source set "
+            f"(limited_to={report['sources']['limited_to']})",
+        )
+        hob_gates = hob_gates and bool(comparison["source_identity_match"])
+        checks = [
             "outcome",
             "review",
             "profiles",
             "source-identity",
             "required-mechanics",
             "required-relationships",
-        ],
+        ]
+        for item in (*comparison["mechanics"], *comparison["relationships"]):
+            if item["required"] and not item["matched"]:
+                failures.append(
+                    {
+                        "kind": f"required-{item['kind']}",
+                        "expectation": item["expectation"],
+                        "classification": item["classification"],
+                        "detail": item["detail"],
+                    }
+                )
+    if hob_gates and resolution is not None:
+        checks.extend(["local-resolution", "relationship-validation-calls"])
+        check(
+            "local-resolution",
+            resolution["local_percent"] >= MINIMUM_LOCAL_RESOLUTION_PERCENT,
+            f"only {resolution['local_percent']}% of {resolution['total_pairs']} candidate pairs "
+            f"resolved locally, below {MINIMUM_LOCAL_RESOLUTION_PERCENT}%",
+        )
+        check(
+            "relationship-validation-calls",
+            resolution["relationship_validation_batches"]
+            <= MAXIMUM_RELATIONSHIP_VALIDATION_BATCHES,
+            f"the run plans {resolution['relationship_validation_batches']} relationship "
+            f"validation batches, above {MAXIMUM_RELATIONSHIP_VALIDATION_BATCHES}",
+        )
+    acceptance: dict[str, Any] = {
+        "checks": checks,
         "failures": failures,
         "passed": not failures,
     }
+    if benchmark is None:
+        acceptance["note"] = comparison["note"]
+    return acceptance
 
 
 def _write_report(report: Mapping[str, Any], *, run_dir: Path) -> tuple[Path, Path]:
@@ -1789,6 +1948,11 @@ def _render_markdown(report: Mapping[str, Any]) -> str:
         f"- configured model configuration: {report['model']}",
     ]
     for row in report["work"]["kinds"]:
+        if not row["items"]:
+            # A run whose pairs are all decided locally plans no validation call, so this work
+            # kind has no pinned request identity to render.
+            lines.append(f"- {row['work_kind']}: no resolved work items")
+            continue
         lines.append(
             f"- {row['work_kind']}: {row['items']} items, prompt `{row['prompt_id']}`, "
             f"schema `{row['response_schema_id']}` (`{row['response_schema_name']}`), "
@@ -1848,6 +2012,24 @@ def _render_markdown(report: Mapping[str, Any]) -> str:
                 f"  - rejected `{finding['finding_id']}`: {finding['reason']}"
             )
     lines.extend(["", "## Candidate construction", "", f"- {report['candidates']}", ""])
+    resolution = None if report["candidates"] is None else report["candidates"].get("resolution")
+    if resolution is not None:
+        lines.append(
+            f"- resolution: {resolution['local_pairs']}/{resolution['total_pairs']} pairs decided "
+            f"locally ({resolution['local_percent']}%), accepted {resolution['local_accepted']}, "
+            f"rejected {resolution['local_rejected']}, awaiting validation "
+            f"{resolution['model_pairs']}"
+        )
+        lines.append(
+            f"- planned relationship validation batches: "
+            f"{resolution['relationship_validation_batches']}"
+        )
+        for rejection in resolution["rejections"]:
+            lines.append(
+                f"  - local rejection: mechanism {rejection['mechanism']} "
+                f"{rejection['omitted_pairs']} pairs, reason {rejection['reason']}"
+            )
+        lines.append("")
     lines.extend(
         [
             "## Relationships",
@@ -1972,6 +2154,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_UNUSABLE_INPUT
 
 
+def _relationship_stop_requested(progress: EnrichmentProgress | None) -> bool:
+    """Report whether the no-paid-validation guard stops a run at its relationship boundary.
+
+    The guard is active only while the environment variable is exactly "1", and it stops a run only
+    when the boundary still carries residual work. Every local decision is terminal before the
+    first batch, so `relationships_completed` already counts the pairs the structured matcher
+    decided, and the residual count is exactly the validation work a model would be paid for.
+    """
+    if os.environ.get(_STOP_BEFORE_RELATIONSHIP_VALIDATION_ENV) != "1":
+        return False
+    if progress is None or progress.phase is not EnrichmentPhase.RELATIONSHIPS:
+        return False
+    return progress.relationships_total > progress.relationships_completed
+
+
 def _run(
     *,
     args: argparse.Namespace,
@@ -2028,13 +2225,26 @@ def _run(
         complete = openrouter_completion(model_config=model_config)
     guard = _SpendGuard(complete=complete, ceiling=ceiling)
     store = SetEnrichmentWorkStore(work_dir)
+    observed_progress: list[EnrichmentProgress] = []
+
+    def observe_progress(progress: EnrichmentProgress) -> None:
+        observed_progress.append(progress)
+        _print_progress(progress)
+
+    def stop_before_relationship_validation() -> bool:
+        """Stop at the relationship boundary only when paid validation work is outstanding."""
+        return _relationship_stop_requested(
+            observed_progress[-1] if observed_progress else None
+        )
+
     try:
         result = run_set_enrichment(
             sources=sources,
             complete=guard,
             work_store=store,
             model_config=model_config,
-            observer=_print_progress,
+            observer=observe_progress,
+            is_cancelled=stop_before_relationship_validation,
         )
     except SpendCeilingExceeded as error:
         profiles_after = _profile_snapshot(profile_directories)

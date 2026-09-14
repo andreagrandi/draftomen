@@ -22,6 +22,7 @@ from draftomen.set_enrichment import (
     run_set_enrichment,
 )
 from draftomen.set_enrichment_extraction import (
+    CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
     CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
     GUIDE_EXTRACTION_PROMPT_ID,
     RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
@@ -228,7 +229,7 @@ def _capability_content(card_id: int) -> str:
     """Return the pinned capability response for one canonical card."""
     return json.dumps(
         {
-            "schema_version": 2,
+            "schema_version": CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
             "capabilities": _capability_candidates(card_id),
         }
     )
@@ -381,8 +382,20 @@ def _print_progress(progress: EnrichmentProgress) -> None:
     )
 
 
+def _resolution_counts(result: EnrichmentRunResult) -> str:
+    """Render the local and residual pair counts one run's structured resolution settled."""
+    resolutions = result.candidate_resolutions
+    if resolutions is None:
+        return "local_accepted=0 local_rejected=0 residual=0"
+    return (
+        f"local_accepted={len(resolutions.local_accepted)}"
+        f" local_rejected={len(resolutions.local_rejected)}"
+        f" residual={len(resolutions.model_packages)}"
+    )
+
+
 def _summary_line(result: EnrichmentRunResult) -> str:
-    """Render the run outcome, review state, relationship identity and reuse counts."""
+    """Render the run outcome, review state, model relationship identity and reuse counts."""
     accepted = next(
         (
             item.relationship
@@ -397,29 +410,50 @@ def _summary_line(result: EnrichmentRunResult) -> str:
     accounting = result.progress.accounting
     return (
         f"summary outcome={result.outcome.value} review={result.review.state}"
-        f" relationship={relationship} ineligible_card_ids={ineligible}"
+        f" model_relationship={relationship} ineligible_card_ids={ineligible}"
+        f" {_resolution_counts(result)}"
         f" reused_work={accounting.reused_work} executed_work={accounting.executed_work}"
     )
 
 
-def _mismatches(result: EnrichmentRunResult) -> list[str]:
-    """List every observable smoke check one resumed run failed."""
+def _mismatches(result: EnrichmentRunResult, *, completion: _FakeCompletion) -> list[str]:
+    """List every observable smoke check one resumed run failed.
+
+    The fixture's single token-go-wide pair is settled by the structured capability parameters,
+    so a complete run must resolve it locally and spend no relationship validation call at all.
+    """
     mismatches: list[str] = []
     if result.outcome is not EnrichmentOutcome.COMPLETE:
         mismatches.append(f"outcome is {result.outcome.value}, expected complete")
     if result.review.state != "pending":
         mismatches.append(f"review state is {result.review.state}, expected pending")
-    accepted = [
-        item.relationship
-        for item in result.relationship_results
-        if item.relationship is not None
-        and item.relationship.review.status is FindingStatus.ACCEPTED
-    ]
+    resolutions = result.candidate_resolutions
     packages = () if result.candidate_packages is None else result.candidate_packages.packages
-    if len(accepted) != 1:
-        mismatches.append(f"accepted relationships are {len(accepted)}, expected 1")
-    elif len(packages) != 1 or accepted[0].identity != packages[0].identity:
-        mismatches.append("the accepted relationship does not match the constructed candidate")
+    local_accepted = () if resolutions is None else resolutions.local_accepted
+    local_rejected = () if resolutions is None else resolutions.local_rejected
+    residual = () if resolutions is None else resolutions.model_packages
+    if resolutions is None or len(resolutions.resolutions) != len(packages):
+        mismatches.append("the run did not resolve every constructed candidate pair")
+    if len(local_accepted) != 1 or local_rejected:
+        mismatches.append(
+            f"local resolutions are {len(local_accepted)} accepted and {len(local_rejected)}"
+            " rejected, expected 1 and 0"
+        )
+    if residual:
+        mismatches.append(f"residual candidate pairs are {len(residual)}, expected 0")
+    if result.relationship_results:
+        mismatches.append(
+            f"relationship results are {len(result.relationship_results)}, expected 0"
+        )
+    relationship_calls = [
+        prompt_id
+        for prompt_id in completion.calls
+        if prompt_id == RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID
+    ]
+    if relationship_calls:
+        mismatches.append(
+            f"relationship validation calls are {len(relationship_calls)}, expected 0"
+        )
     accounting = result.progress.accounting
     if accounting.reused_work <= 0:
         mismatches.append(f"reused work is {accounting.reused_work}, expected more than 0")
@@ -470,16 +504,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("mismatch=the interrupted run finished without raising")
         return 1
     print(f"durable_work {_durable_counts(store=store, identities=identities)}")
+    completion = _FakeCompletion()
     result = run_set_enrichment(
         sources=sources,
-        complete=_FakeCompletion(),
+        complete=completion,
         work_store=store,
         model_config=model_config,
         run_id=SECOND_RUN_ID,
         observer=_print_progress,
     )
     print(_summary_line(result))
-    mismatches = _mismatches(result)
+    mismatches = _mismatches(result, completion=completion)
     for mismatch in mismatches:
         print(f"mismatch={mismatch}")
     return 1 if mismatches else 0
