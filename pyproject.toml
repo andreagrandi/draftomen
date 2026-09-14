@@ -30,6 +30,9 @@ dependencies = [
     "textual-image>=0.13.2",
 ]
 
+[project.optional-dependencies]
+draftmancer = ["python-socketio[client]>=5.16.4,<6"]
+
 [project.scripts]
 draftomen-gui-mockup = "draftomen.qt_mock:main"
 draftomen-tui = "draftomen.cli:main"
@@ -78,6 +81,7 @@ files = [
     "draftomen/config.py",
     "draftomen/corpus.py",
     "draftomen/deckbuilder.py",
+    "draftomen/draftmancer.py",
     "draftomen/events.py",
     "draftomen/guide_client.py",
     "draftomen/logfollow.py",

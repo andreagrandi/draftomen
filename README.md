@@ -263,6 +263,47 @@ See the [desktop GUI guide](docs/gui-mockup.md) for live and mock launch
 options, selectable states, and responsive review targets. For reproducible
 unsigned development bundles, see the [desktop bundle guide](docs/desktop-bundles.md).
 
+### Draftmancer protocol development
+
+The Draftmancer protocol smoke requires Node.js 22 and a sibling checkout;
+do not put the simulator in a tracked or vendored directory. From the parent
+directory of this repository:
+
+```bash
+git clone https://github.com/Senryoku/Draftmancer.git
+cd Draftmancer
+git checkout --detach df08e5ef647aae54e0b1c569e70b4b2aa5e0016c
+npm ci
+npm run build-server
+DISABLE_PERSISTENCE=TRUE npm start
+```
+
+Download Scryfall's complete default-cards bulk source once through the
+development corpus cache; the smoke never performs per-card API requests:
+
+```bash
+uv run draftomen-tui corpus-build --selection explicit --set-code HOB
+```
+
+With the pinned server running, open a second terminal in Draft Omen and run:
+
+```bash
+uv run --extra draftmancer python scripts/draftmancer_smoke.py \
+  --draftmancer-dir ../Draftmancer
+```
+
+The helper, rather than ordinary Draft Omen startup, owns the simulator
+connection. It chooses the first simulator card instance deterministically
+only to complete the protocol smoke; it does not apply recommendations or
+manage the Draftmancer service.
+
+HOB is the default and required real-smoke target. The helper maps each
+Draftmancer Scryfall printing ID through the local bulk file's `oracle_id` to
+the canonical HOB Arena grpId. Missing, ambiguous, or unknown identities fail
+before an offer reaches `LiveSession`. Pass `--scryfall-bulk-file` only when
+the complete local JSONL bulk cache is stored somewhere other than
+`.draftomen/corpus-cache/sources/scryfall-default-cards.jsonl.gz`.
+
 Live recommendations currently support Quick Draft. Windows support is best-effort.
 
 ## Local draft audit data
