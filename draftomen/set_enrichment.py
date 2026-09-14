@@ -478,7 +478,13 @@ def _resolve_work(
     if record.state is WorkState.UNVALIDATED:
         response = _durable_response(record)
         result = parse(content=response.content, run_id=run_id)
-        store.record_result(identity=identity, result=result)
+        if record.legacy_result:
+            # A genuine legacy relationship result embeds no capabilities, so the paid response
+            # is reparsed against the current participants and atomically replaces the stored
+            # result without issuing another request and without any completion call.
+            store.record_revalidated_result(identity=identity, result=result)
+        else:
+            store.record_result(identity=identity, result=result)
         return result, response, True
     store.record_attempt(identity=identity)
     response = complete(request)

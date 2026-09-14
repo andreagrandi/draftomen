@@ -13,8 +13,12 @@ import pytest
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.openrouter_client import OpenRouterResponse
 from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityCardType,
     CapabilityPrerequisite,
+    CapabilityQualifier,
     CapabilityQuantity,
+    CapabilityTokenRestriction,
     CapabilityZone,
     PrerequisiteKind,
     QuantityRelation,
@@ -26,6 +30,7 @@ from draftomen.semantic_enrichment import (
     set_source_sha256,
 )
 from draftomen.semantic_enrichment_records import FindingStatus, OracleEvidence
+import draftomen.set_enrichment as set_enrichment_module
 from draftomen.set_enrichment import (
     Completion,
     EnrichmentOutcome,
@@ -106,6 +111,13 @@ MULTIFACE_BACK_FINDING_ID = "capability-beta"
 MULTIFACE_CARD_TEXT = f"{MULTIFACE_FRONT_QUOTE} // {MULTIFACE_BACK_QUOTE}"
 
 ELIGIBLE_CARD_IDS = (TOKEN_CARD_ID, WIDE_CARD_ID, UNRELATED_CARD_ID, MULTIFACE_CARD_ID)
+LEGACY_CARD_CAPABILITY_PROMPT_ID = "draftomen-card-capability-extraction-v1"
+LEGACY_CARD_CAPABILITY_RESPONSE_SCHEMA_ID = "draftomen-card-capability-extraction-response-v1"
+LEGACY_CARD_CAPABILITY_SCHEMA_NAME = "draftomen_card_capability_extraction_v1"
+LEGACY_CARD_CAPABILITY_CONTRACT_VERSION = 1
+_CARD_PROMPT_IDS = frozenset(
+    {CARD_CAPABILITY_EXTRACTION_PROMPT_ID, LEGACY_CARD_CAPABILITY_PROMPT_ID}
+)
 RELATIONSHIP_MECHANISM = "token-go-wide-payoff"
 RELATIONSHIP_CLAIM = "Tokens feed the go-wide payoff."
 
@@ -232,6 +244,37 @@ def _card_identity(card_id: int) -> WorkIdentity:
     )
 
 
+def _legacy_card_request(*, sources: EnrichmentSources, card_id: int) -> ExtractionRequest:
+    """Build the pinned pre-v2 card request whose paid responses the migration resumes from.
+
+    Only the contract version, the three v1 card identities, and the user-prompt contract
+    version differ from the current request; the response schema stays the current one.
+    """
+    current = build_card_capability_extraction_request(sources=sources, card_id=card_id)
+    payload = _prompt_payload(current)
+    payload["contract_version"] = LEGACY_CARD_CAPABILITY_CONTRACT_VERSION
+    return ExtractionRequest(
+        contract_version=LEGACY_CARD_CAPABILITY_CONTRACT_VERSION,
+        prompt_id=LEGACY_CARD_CAPABILITY_PROMPT_ID,
+        system_prompt=current.system_prompt,
+        user_prompt=json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        response_schema_id=LEGACY_CARD_CAPABILITY_RESPONSE_SCHEMA_ID,
+        response_schema_name=LEGACY_CARD_CAPABILITY_SCHEMA_NAME,
+        schema=current.response_schema(),
+    )
+
+
+def _legacy_card_identity(card_id: int) -> WorkIdentity:
+    """Return the durable identity the pre-v2 card request produces for one fixture card."""
+    return build_work_identity(
+        work_kind=WorkKind.CARD_CAPABILITY,
+        subject_id=str(card_id),
+        input_sha256=card_source_sha256(_card_for(card_id)),
+        request=_legacy_card_request(sources=_sources(), card_id=card_id),
+        model_config=_model_config(),
+    )
+
+
 def _card_results() -> tuple[CardCapabilityExtractionResult, ...]:
     """Return every parsed card extraction the fixture sources produce, in engine order."""
     return tuple(
@@ -263,6 +306,31 @@ def _relationship_identity() -> WorkIdentity:
     )
 
 
+def _legacyize_relationship_result(work_root: Path) -> None:
+    """Rewrite the stored relationship batch result into its canonical pre-v2 bytes.
+
+    Only the v2 capability fields leave each accepted verdict's participants, so the artifact
+    keeps its envelope, identity, and completion timestamp and stays byte-canonical.
+    """
+    path = work_root / "results" / f"{_relationship_identity().content_sha256}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for verdict in payload["result"]["verdicts"]:
+        relationship = verdict["relationship"]
+        if relationship is None:
+            continue
+        for participant in (relationship["source"], relationship["target"]):
+            for field_name in ("action", "zone", "qualifier"):
+                del participant[field_name]
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    path.write_bytes((encoded + "\n").encode("utf-8"))
+
+
 def _guide_content() -> str:
     return json.dumps(
         {
@@ -282,6 +350,35 @@ def _guide_content() -> str:
     )
 
 
+def _qualifier(*, card_types: list[str], token_restriction: str) -> dict[str, Any]:
+    """Build one explicit closed qualifier object for a scripted capability."""
+    return {
+        "card_types": card_types,
+        "token_restriction": token_restriction,
+        "subtype": None,
+        "mana_value": None,
+    }
+
+
+def _role_arguments(role: str) -> tuple[str, str, dict[str, Any]]:
+    """Return the role-accurate v2 action, zone, and qualifier of one scripted capability."""
+    if role == "token_maker":
+        return (
+            "create",
+            "battlefield",
+            _qualifier(card_types=["creature"], token_restriction="token"),
+        )
+    if role == "go_wide_payoff":
+        return (
+            "control",
+            "battlefield",
+            _qualifier(card_types=["creature"], token_restriction="unrestricted"),
+        )
+    if role == "draw":
+        return "draw", "hand", _qualifier(card_types=[], token_restriction="unrestricted")
+    return "other", "battlefield", _qualifier(card_types=[], token_restriction="unrestricted")
+
+
 def _capability_candidate(
     *,
     finding_id: str,
@@ -298,6 +395,7 @@ def _capability_candidate(
     prerequisites: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one scripted capability entry bound to exact Oracle evidence."""
+    action, zone, qualifier = _role_arguments(role)
     return {
         "finding_id": finding_id,
         "card_id": card_id,
@@ -305,6 +403,9 @@ def _capability_candidate(
         "face_index": face_index,
         "face_name": face_name,
         "role": role,
+        "action": action,
+        "zone": zone,
+        "qualifier": qualifier,
         "quantity": quantity,
         "timing": timing,
         "source_zone": source_zone,
@@ -390,7 +491,7 @@ def _capability_candidates(card_id: int) -> list[dict[str, Any]]:
 def _capability_content(card_id: int) -> str:
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "capabilities": _capability_candidates(card_id),
         }
     )
@@ -470,7 +571,7 @@ def _prompt_subject(request: ExtractionRequest) -> str:
     payload = _prompt_payload(request)
     if request.prompt_id == GUIDE_EXTRACTION_PROMPT_ID:
         return payload["guide"]["guide_id"]
-    if request.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID:
+    if request.prompt_id in _CARD_PROMPT_IDS:
         return str(payload["card"]["card_id"])
     raise AssertionError(f"unexpected prompt {request.prompt_id}.")
 
@@ -480,7 +581,7 @@ def _completion_content(request: ExtractionRequest, *, foreign_quote: str | None
     payload = _prompt_payload(request)
     if request.prompt_id == GUIDE_EXTRACTION_PROMPT_ID:
         return _guide_content()
-    if request.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID:
+    if request.prompt_id in _CARD_PROMPT_IDS:
         return _capability_content(payload["card"]["card_id"])
     return _relationship_content(payload, foreign_quote=foreign_quote)
 
@@ -670,6 +771,96 @@ def test_resumed_run_reuses_durable_work_without_replacement_calls(tmp_path: Pat
     assert second.relationship_results == first.relationship_results
     assert second.progress.accounting.reused_work == WORKED_CALLS
     assert second.progress.accounting.executed_work == 0
+
+
+def test_card_v2_resume_reexecutes_cards_and_reuses_guide_and_relationship_responses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove the v2 migration re-pays only cards and revalidates paid relationship verdicts."""
+    work_root = tmp_path / "work"
+    store = _store(work_root)
+    monkeypatch.setattr(
+        set_enrichment_module,
+        "build_card_capability_extraction_request",
+        _legacy_card_request,
+    )
+    legacy_completion = _FakeCompletion()
+    first = _run(work_root=work_root, completion=legacy_completion)
+
+    assert first.outcome is EnrichmentOutcome.COMPLETE
+    assert legacy_completion.calls_for(CARD_CAPABILITY_EXTRACTION_PROMPT_ID) == []
+    assert [
+        subject for _, subject in legacy_completion.calls_for(LEGACY_CARD_CAPABILITY_PROMPT_ID)
+    ] == [str(card_id) for card_id in ELIGIBLE_CARD_IDS]
+    legacy_requests = [
+        request
+        for request in legacy_completion.requests
+        if request.prompt_id == LEGACY_CARD_CAPABILITY_PROMPT_ID
+    ]
+    assert len(legacy_requests) == len(ELIGIBLE_CARD_IDS)
+    assert all(
+        request.contract_version == LEGACY_CARD_CAPABILITY_CONTRACT_VERSION
+        and request.response_schema_id == LEGACY_CARD_CAPABILITY_RESPONSE_SCHEMA_ID
+        and request.response_schema_name == LEGACY_CARD_CAPABILITY_SCHEMA_NAME
+        and _prompt_payload(request)["contract_version"] == LEGACY_CARD_CAPABILITY_CONTRACT_VERSION
+        for request in legacy_requests
+    )
+    for card_id in ELIGIBLE_CARD_IDS:
+        assert _legacy_card_identity(card_id) != _card_identity(card_id)
+        assert store.lookup(identity=_legacy_card_identity(card_id)).state is WorkState.COMPLETED
+
+    paid = store.lookup(identity=_relationship_identity())
+    assert paid.state is WorkState.COMPLETED
+    assert paid.legacy_result is False
+    _legacyize_relationship_result(work_root)
+    legacy_record = store.lookup(identity=_relationship_identity())
+    assert legacy_record.state is WorkState.UNVALIDATED
+    assert legacy_record.legacy_result is True
+
+    monkeypatch.setattr(
+        set_enrichment_module,
+        "build_card_capability_extraction_request",
+        build_card_capability_extraction_request,
+    )
+    resumed_completion = _FakeCompletion()
+    resumed = _run(work_root=work_root, completion=resumed_completion)
+
+    assert resumed.outcome is EnrichmentOutcome.COMPLETE
+    assert resumed.card_results == first.card_results
+    assert resumed_completion.calls_for(GUIDE_EXTRACTION_PROMPT_ID) == []
+    assert resumed_completion.calls_for(RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID) == []
+    assert [
+        subject for _, subject in resumed_completion.calls_for(CARD_CAPABILITY_EXTRACTION_PROMPT_ID)
+    ] == [str(card_id) for card_id in ELIGIBLE_CARD_IDS]
+    assert len(resumed_completion.calls) == len(ELIGIBLE_CARD_IDS)
+    assert resumed.progress.accounting.executed_work == len(ELIGIBLE_CARD_IDS)
+    assert resumed.progress.accounting.reused_work == WORKED_CALLS - len(ELIGIBLE_CARD_IDS)
+    for card_id in ELIGIBLE_CARD_IDS:
+        assert store.lookup(identity=_card_identity(card_id)).state is WorkState.COMPLETED
+
+    record = store.lookup(identity=_relationship_identity())
+    assert record.state is WorkState.COMPLETED
+    assert record.legacy_result is False
+    assert record.result is not None
+    assert record.result.verdicts == resumed.relationship_results
+    for item, package in zip(resumed.relationship_results, _candidate_packages()):
+        assert item.relationship is not None
+        assert item.relationship.source == package.source
+        assert item.relationship.target == package.target
+    token_relationship = next(
+        item.relationship
+        for item in resumed.relationship_results
+        if item.relationship is not None and item.relationship.source.card_id == TOKEN_CARD_ID
+    )
+    assert token_relationship.source.action is CapabilityAction.CREATE
+    assert token_relationship.source.zone is CapabilityZone.BATTLEFIELD
+    assert token_relationship.source.qualifier == CapabilityQualifier(
+        card_types=(CapabilityCardType.CREATURE,),
+        token_restriction=CapabilityTokenRestriction.TOKEN,
+        subtype=None,
+        mana_value=None,
+    )
 
 
 def test_unvalidated_durable_response_is_reparsed_without_a_request(tmp_path: Path) -> None:

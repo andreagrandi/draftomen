@@ -9,8 +9,11 @@ from typing import Any, Literal, Self
 
 from draftomen.carddb import CardInfo
 from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityCardType,
     CapabilityPrerequisite,
     CapabilityQuantity,
+    CapabilityTokenRestriction,
     CapabilityZone,
     PrerequisiteKind,
     QuantityRelation,
@@ -48,39 +51,12 @@ PREREQUISITE_CONTRADICTION_MESSAGE = "relationship prerequisites contradict thei
 
 _SUBJECTS: frozenset[str] = frozenset({"participant", "output", "input", "event"})
 _OPERATIONS: frozenset[str] = frozenset(
-    {
-        "attack",
-        "cast",
-        "control",
-        "count",
-        "create",
-        "die",
-        "discard",
-        "draw",
-        "enter",
-        "leave",
-        "mill",
-        "none",
-        "return",
-        "sacrifice",
-    }
+    {*(member.value for member in CapabilityAction if member is not CapabilityAction.OTHER), "none"}
 )
 _OBJECT_KINDS: frozenset[str] = frozenset({"card", "permanent", "spell", "token"})
 _TYPE_OPERATORS: frozenset[str] = frozenset({"unrestricted", "any_of", "all_of"})
-_CARD_TYPES: frozenset[str] = frozenset(
-    {
-        "artifact",
-        "battle",
-        "creature",
-        "enchantment",
-        "instant",
-        "kindred",
-        "land",
-        "planeswalker",
-        "sorcery",
-    }
-)
-_TOKEN_RESTRICTIONS: frozenset[str] = frozenset({"unrestricted", "token", "nontoken"})
+_CARD_TYPES: frozenset[str] = frozenset(member.value for member in CapabilityCardType)
+_TOKEN_RESTRICTIONS: frozenset[str] = frozenset(member.value for member in CapabilityTokenRestriction)
 _EXCLUSIONS: frozenset[str] = frozenset({"none", "ability_source"})
 _COLOR_OPERATORS: frozenset[str] = frozenset({"unrestricted", "exact", "any_of", "all_of"})
 _COLORS: tuple[str, ...] = ("W", "U", "B", "R", "G")

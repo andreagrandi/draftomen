@@ -262,6 +262,30 @@ def _dry_run_capability(
     quote: str,
 ) -> dict[str, Any]:
     """Build one schema-valid capability bound to exact prompt Oracle text."""
+    if role == "token_maker":
+        action, zone = "create", "battlefield"
+        qualifier: dict[str, Any] = {
+            "card_types": ["creature"],
+            "token_restriction": "token",
+            "subtype": None,
+            "mana_value": None,
+        }
+    elif role == "go_wide_payoff":
+        action, zone = "control", "battlefield"
+        qualifier = {
+            "card_types": ["creature"],
+            "token_restriction": "unrestricted",
+            "subtype": None,
+            "mana_value": None,
+        }
+    else:
+        action, zone = "draw", "hand"
+        qualifier = {
+            "card_types": [],
+            "token_restriction": "unrestricted",
+            "subtype": None,
+            "mana_value": None,
+        }
     return {
         "finding_id": f"dry-run-{role}-{prompt_card['card_id']}",
         "card_id": prompt_card["card_id"],
@@ -269,6 +293,9 @@ def _dry_run_capability(
         "face_index": face_index,
         "face_name": face_name,
         "role": role,
+        "action": action,
+        "zone": zone,
+        "qualifier": qualifier,
         "quantity": None,
         "timing": None,
         "source_zone": None,
@@ -317,7 +344,7 @@ def _dry_run_card_content(
             for role in roles
         ]
     )
-    return json.dumps({"schema_version": 1, "capabilities": capabilities})
+    return json.dumps({"schema_version": 2, "capabilities": capabilities})
 
 
 def _dry_run_guide_content(prompt: Mapping[str, Any]) -> str:

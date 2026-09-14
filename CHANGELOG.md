@@ -8,6 +8,16 @@
   pair, a local mechanism-compatibility filter prunes pairs whose oracle
   texts cannot express the mechanism before any paid call, and per-batch
   work identities keep runs resumable at batch granularity. (#432)
+- Carry matcher-ready structured parameters on card capabilities (#526):
+  extracted card capabilities now require a closed primary `action`, a
+  `zone`, and a `qualifier` object (card types, token restriction,
+  subtype, mana value) alongside the existing fields; card extraction
+  requests move to the dedicated `draftomen-card-capability-extraction-v2`
+  prompt and response schema while guide extraction stays on its v1
+  contract, so previously paid card responses are re-acquired under the
+  new identities while guide work is reused, and stored relationship
+  results that predate the card v2 fields are revalidated from their
+  already-paid responses without a new request.
 - Skip end-of-pack handshake picks in `backtest` (#432 follow-up): Arena
   sends a one-card `BotDraftDraftPick` request with `PickNumber` 14 after
   the last pick of each pack, and persisted drafts carrying those records

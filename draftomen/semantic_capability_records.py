@@ -47,6 +47,47 @@ class PrerequisiteKind(StrEnum):
     THRESHOLD = "threshold"
 
 
+class CapabilityAction(StrEnum):
+    """The closed primary action of a matcher-ready capability."""
+
+    ATTACK = "attack"
+    CAST = "cast"
+    CONTROL = "control"
+    COUNT = "count"
+    CREATE = "create"
+    DIE = "die"
+    DISCARD = "discard"
+    DRAW = "draw"
+    ENTER = "enter"
+    LEAVE = "leave"
+    MILL = "mill"
+    RETURN = "return"
+    SACRIFICE = "sacrifice"
+    OTHER = "other"
+
+
+class CapabilityCardType(StrEnum):
+    """The closed card-type vocabulary of a capability qualifier."""
+
+    ARTIFACT = "artifact"
+    BATTLE = "battle"
+    CREATURE = "creature"
+    ENCHANTMENT = "enchantment"
+    INSTANT = "instant"
+    KINDRED = "kindred"
+    LAND = "land"
+    PLANESWALKER = "planeswalker"
+    SORCERY = "sorcery"
+
+
+class CapabilityTokenRestriction(StrEnum):
+    """The closed token restriction of a capability qualifier."""
+
+    UNRESTRICTED = "unrestricted"
+    TOKEN = "token"
+    NONTOKEN = "nontoken"
+
+
 def _keys(value: Mapping[str, Any], expected: set[str], field_name: str) -> None:
     """Require exactly the expected object keys."""
     unknown = set(value) - expected
@@ -224,6 +265,66 @@ class CapabilityQuantity:
 
 
 @dataclass(frozen=True, slots=True)
+class CapabilityQualifier:
+    """The closed matcher qualifiers selecting the object one capability acts on."""
+
+    card_types: tuple[CapabilityCardType, ...]
+    token_restriction: CapabilityTokenRestriction
+    subtype: str | None
+    mana_value: CapabilityQuantity | None
+
+    def __post_init__(self) -> None:
+        card_types = _tuple(self.card_types, "card_types")
+        if any(type(item) is not CapabilityCardType for item in card_types):
+            raise SemanticEnrichmentError(
+                "card_types must contain CapabilityCardType members."
+            )
+        object.__setattr__(
+            self,
+            "card_types",
+            _canonical(card_types, field_name="card_types", key=lambda item: item.value),
+        )
+        _enum_member(self.token_restriction, "token_restriction", CapabilityTokenRestriction)
+        subtype = _optional_text(self.subtype, "subtype")
+        if subtype is not None:
+            subtype = subtype.casefold()
+        object.__setattr__(self, "subtype", subtype)
+        if self.mana_value is not None and not isinstance(self.mana_value, CapabilityQuantity):
+            raise SemanticEnrichmentError("mana_value must be a CapabilityQuantity or null.")
+
+    def to_json(self) -> dict[str, object]:
+        """Return a fresh JSON-compatible qualifier object."""
+        return {
+            "card_types": [item.value for item in self.card_types],
+            "token_restriction": self.token_restriction.value,
+            "subtype": self.subtype,
+            "mana_value": self.mana_value.to_json() if self.mana_value is not None else None,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> Self:
+        """Decode and validate one capability qualifier object."""
+        if not isinstance(value, Mapping):
+            raise SemanticEnrichmentError("capability qualifier must be an object.")
+        _keys(
+            value,
+            {"card_types", "token_restriction", "subtype", "mana_value"},
+            "capability qualifier",
+        )
+        return cls(
+            card_types=tuple(
+                _enum_from_json(item, "card_types", CapabilityCardType)
+                for item in _json_array(value["card_types"], "card_types")
+            ),
+            token_restriction=_enum_from_json(
+                value["token_restriction"], "token_restriction", CapabilityTokenRestriction
+            ),
+            subtype=value["subtype"],
+            mana_value=_optional_record(value["mana_value"], CapabilityQuantity.from_json),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityPrerequisite:
     """A structured prerequisite bound to one capability."""
 
@@ -291,6 +392,9 @@ class CardCapability:
     face_index: int | None
     face_name: str | None
     role: Role
+    action: CapabilityAction
+    zone: CapabilityZone
+    qualifier: CapabilityQualifier
     quantity: CapabilityQuantity | None
     timing: str | None
     source_zone: CapabilityZone | None
@@ -309,6 +413,10 @@ class CardCapability:
         object.__setattr__(self, "face_index", face_index)
         object.__setattr__(self, "face_name", _optional_text(self.face_name, "face_name"))
         _enum_member(self.role, "role", Role)
+        _enum_member(self.action, "action", CapabilityAction)
+        _enum_member(self.zone, "zone", CapabilityZone)
+        if not isinstance(self.qualifier, CapabilityQualifier):
+            raise SemanticEnrichmentError("qualifier must be a CapabilityQualifier.")
         if self.quantity is not None and not isinstance(self.quantity, CapabilityQuantity):
             raise SemanticEnrichmentError("quantity must be a CapabilityQuantity or null.")
         object.__setattr__(self, "timing", _optional_text(self.timing, "timing"))
@@ -372,6 +480,9 @@ class CardCapability:
             "face_index": self.face_index,
             "face_name": self.face_name,
             "role": self.role.value,
+            "action": self.action.value,
+            "zone": self.zone.value,
+            "qualifier": self.qualifier.to_json(),
             "quantity": self.quantity.to_json() if self.quantity is not None else None,
             "timing": self.timing,
             "source_zone": self.source_zone.value if self.source_zone is not None else None,
@@ -398,6 +509,9 @@ class CardCapability:
                 "face_index",
                 "face_name",
                 "role",
+                "action",
+                "zone",
+                "qualifier",
                 "quantity",
                 "timing",
                 "source_zone",
@@ -416,6 +530,9 @@ class CardCapability:
             face_index=value["face_index"],
             face_name=value["face_name"],
             role=_enum_from_json(value["role"], "role", Role),
+            action=_enum_from_json(value["action"], "action", CapabilityAction),
+            zone=_enum_from_json(value["zone"], "zone", CapabilityZone),
+            qualifier=CapabilityQualifier.from_json(value["qualifier"]),
             quantity=_optional_record(value["quantity"], CapabilityQuantity.from_json),
             timing=value["timing"],
             source_zone=_optional_enum_from_json(
@@ -436,8 +553,12 @@ class CardCapability:
 
 
 __all__ = [
+    "CapabilityAction",
+    "CapabilityCardType",
     "CapabilityPrerequisite",
+    "CapabilityQualifier",
     "CapabilityQuantity",
+    "CapabilityTokenRestriction",
     "CapabilityZone",
     "CardCapability",
     "PrerequisiteKind",

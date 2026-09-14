@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from draftomen.semantic_capability_records import CardCapability
+from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityQualifier,
+    CapabilityTokenRestriction,
+    CapabilityZone,
+    CardCapability,
+)
 from draftomen.semantic_enrichment_records import FindingReview, FindingStatus, OracleEvidence
 from draftomen.semantic_roles import Role
 from scripts.hob_enrichment_run import MINIMUM_OVERLAP_CHARS, _oracle_evidence_matches
@@ -20,6 +26,12 @@ ADVENTURES_FACE_QUOTE = (
     "enchantment later from exile.)"
 )
 REVIEW_REASON = "capability requires semantic review beyond exact-source validation."
+UNRESTRICTED_QUALIFIER = CapabilityQualifier(
+    card_types=(),
+    token_restriction=CapabilityTokenRestriction.UNRESTRICTED,
+    subtype=None,
+    mana_value=None,
+)
 
 
 def _entry(
@@ -55,6 +67,9 @@ def _capability(
         face_index=face_index,
         face_name=None,
         role=role,
+        action=CapabilityAction.OTHER,
+        zone=CapabilityZone.BATTLEFIELD,
+        qualifier=UNRESTRICTED_QUALIFIER,
         quantity=None,
         timing=None,
         source_zone=None,

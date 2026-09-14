@@ -7,13 +7,20 @@ from datetime import UTC, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import threading
 from typing import Any
 
 import pytest
 
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.openrouter_client import OpenRouterResponse
-from draftomen.semantic_capability_records import CardCapability
+from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityQualifier,
+    CapabilityTokenRestriction,
+    CapabilityZone,
+    CardCapability,
+)
 from draftomen.semantic_enrichment import EnrichmentSources, GuideSource, card_source_sha256
 from draftomen.semantic_enrichment_records import (
     FindingReview,
@@ -26,12 +33,19 @@ from draftomen.semantic_enrichment_records import (
 from draftomen.semantic_roles import Role
 from draftomen.set_enrichment_candidates import CANDIDATE_REASON, CandidatePackage
 from draftomen.set_enrichment_extraction import (
+    CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION,
+    CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
+    CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID,
+    CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME,
+    GUIDE_EXTRACTION_CONTRACT_VERSION,
+    GUIDE_EXTRACTION_PROMPT_ID,
+    GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID,
+    GUIDE_EXTRACTION_SCHEMA_NAME,
     CardCapabilityExtractionResult,
     ExtractionOutcome,
     ExtractionRequest,
     GuideExtractionResult,
     RelationshipBatchValidationResult,
-    RelationshipValidationResult,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
     build_relationship_validation_batch_request,
@@ -45,6 +59,7 @@ from draftomen.set_enrichment_work import (
     WORK_ATTEMPT_DIRECTORY,
     WORK_RESPONSE_DIRECTORY,
     WORK_RESULT_DIRECTORY,
+    _RESULT_REPLACEMENT_LOCK_NAME,
     SetEnrichmentWorkConflictError,
     SetEnrichmentWorkError,
     SetEnrichmentWorkStore,
@@ -236,10 +251,20 @@ def _guide_content() -> str:
     )
 
 
+def _unrestricted_qualifier() -> CapabilityQualifier:
+    """Return the explicit unrestricted qualifier of a capability with no stated limits."""
+    return CapabilityQualifier(
+        card_types=(),
+        token_restriction=CapabilityTokenRestriction.UNRESTRICTED,
+        subtype=None,
+        mana_value=None,
+    )
+
+
 def _capability_content() -> str:
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "capabilities": [
                 {
                     "finding_id": "capability-draw",
@@ -248,6 +273,14 @@ def _capability_content() -> str:
                     "face_index": 1,
                     "face_name": BACK_FACE_NAME,
                     "role": "draw",
+                    "action": "draw",
+                    "zone": "hand",
+                    "qualifier": {
+                        "card_types": [],
+                        "token_restriction": "unrestricted",
+                        "subtype": None,
+                        "mana_value": None,
+                    },
                     "quantity": None,
                     "timing": None,
                     "source_zone": None,
@@ -275,6 +308,9 @@ def _relationship_source() -> CardCapability:
         face_index=None,
         face_name=None,
         role=Role.DRAW,
+        action=CapabilityAction.DRAW,
+        zone=CapabilityZone.HAND,
+        qualifier=_unrestricted_qualifier(),
         quantity=None,
         timing=None,
         source_zone=None,
@@ -294,6 +330,9 @@ def _relationship_target() -> CardCapability:
         face_index=1,
         face_name=BACK_FACE_NAME,
         role=Role.SELF_MILL,
+        action=CapabilityAction.MILL,
+        zone=CapabilityZone.GRAVEYARD,
+        qualifier=_unrestricted_qualifier(),
         quantity=None,
         timing=None,
         source_zone=None,
@@ -390,86 +429,46 @@ def _relationship_result() -> RelationshipBatchValidationResult:
     )
 
 
-# Exact pre-projection relationship result bytes: the legacy key set without a
-# prerequisite projection. Stored results written before v2 still decode as-is.
-LEGACY_V1_RELATIONSHIP_RESULT_JSON = """
-{
-    "outcome": "success",
-    "relationship": {
-        "mechanism": "draw-mill",
-        "source": {
-            "finding_id": "capability-draw",
-            "card_id": 201,
-            "card_name": "Solo Sentinel",
-            "face_index": null,
-            "face_name": null,
-            "role": "draw",
-            "quantity": null,
-            "timing": null,
-            "source_zone": null,
-            "destination_zone": null,
-            "prerequisites": [],
-            "evidence": [
-                {
-                    "card_id": 201,
-                    "face_index": null,
-                    "quote": "When this creature enters, draw a card."
-                }
-            ],
-            "review": {
-                "status": "accepted",
-                "reason": null
-            },
-            "run_id": "run-1"
-        },
-        "target": {
-            "finding_id": "capability-mill",
-            "card_id": 202,
-            "card_name": "Alpha // Beta",
-            "face_index": 1,
-            "face_name": "Beta",
-            "role": "self_mill",
-            "quantity": null,
-            "timing": null,
-            "source_zone": null,
-            "destination_zone": null,
-            "prerequisites": [],
-            "evidence": [
-                {
-                    "card_id": 202,
-                    "face_index": 1,
-                    "quote": "each opponent mills two cards"
-                }
-            ],
-            "review": {
-                "status": "accepted",
-                "reason": null
-            },
-            "run_id": "run-1"
-        },
-        "claim": "The entering draw feeds the mill payoff.",
-        "evidence": [
-            {
-                "card_id": 201,
-                "face_index": null,
-                "quote": "When this creature enters, draw a card."
-            },
-            {
-                "card_id": 202,
-                "face_index": 1,
-                "quote": "each opponent mills two cards"
-            }
-        ],
-        "review": {
-            "status": "accepted",
-            "reason": null
-        },
-        "run_id": "run-1"
-    },
-    "rejected": null,
-    "malformed_reason": null
-}
-"""
+def _legacy_relationship_result_bytes(value: dict[str, Any]) -> bytes:
+    """Strip only the v2 capability fields from every stored successful verdict.
+
+    The result stays a genuine pre-v2 artifact: schema version, identity, completion stamp, and
+    every other capability key remain exactly as recorded, while each embedded participant drops
+    the three fields the v2 card contract added.
+    """
+    for verdict in value["result"]["verdicts"]:
+        relationship = verdict["relationship"]
+        if relationship is None:
+            continue
+        for capability in (relationship["source"], relationship["target"]):
+            for field in ("action", "zone", "qualifier"):
+                del capability[field]
+    return _compact_bytes(value)
+
+
+def _stored_legacy_relationship_result(
+    root: Path,
+) -> tuple[SetEnrichmentWorkStore, WorkIdentity, Path]:
+    """Record one complete relationship result, then rewrite it into exact pre-v2 bytes."""
+    store = make_store(root)
+    identity = _relationship_identity()
+    store.record_attempt(identity=identity)
+    store.record_response(identity=identity, response=_relationship_response())
+    store.record_result(identity=identity, result=_relationship_result())
+    path = _stage_path(store, "result", identity)
+    value: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    path.write_bytes(_legacy_relationship_result_bytes(value))
+    return store, identity, path
+
+
+def _revalidated_result_error(
+    store: SetEnrichmentWorkStore,
+    identity: WorkIdentity,
+    message: str,
+) -> None:
+    """Assert one legacy-result replacement is rejected with the pinned reason."""
+    with pytest.raises(SetEnrichmentWorkError, match=message):
+        store.record_revalidated_result(identity=identity, result=_relationship_result())
 
 
 def _populated_guide_result() -> GuideExtractionResult:
@@ -640,6 +639,8 @@ def _layout(root: Path) -> tuple[str, ...]:
     entries: list[str] = []
     for path in sorted(root.rglob("*")):
         relative = str(path.relative_to(root))
+        if relative == _RESULT_REPLACEMENT_LOCK_NAME:
+            continue
         if path.is_symlink():
             entries.append(f"{relative} -> {os.readlink(path)}")
         elif path.is_dir():
@@ -653,7 +654,7 @@ def _tree(root: Path) -> dict[str, bytes]:
     return {
         str(path.relative_to(root)): path.read_bytes()
         for path in sorted(root.rglob("*"))
-        if path.is_file()
+        if path.is_file() and path.name != _RESULT_REPLACEMENT_LOCK_NAME
     }
 
 
@@ -679,6 +680,14 @@ def test_identity_is_content_addressed_from_pinned_request_and_model_config() ->
     assert identity.response_schema_sha256 == request.response_schema_sha256
     assert identity.input_sha256 == _guide().text_sha256
     assert identity.model_config == _model_config()
+    assert identity.contract_version == 1
+    assert identity.contract_version == GUIDE_EXTRACTION_CONTRACT_VERSION
+    assert identity.prompt_id == "draftomen-guide-extraction-v1"
+    assert identity.prompt_id == GUIDE_EXTRACTION_PROMPT_ID
+    assert identity.response_schema_id == "draftomen-guide-extraction-response-v1"
+    assert identity.response_schema_id == GUIDE_EXTRACTION_RESPONSE_SCHEMA_ID
+    assert identity.response_schema_name == "draftomen_guide_extraction_v1"
+    assert identity.response_schema_name == GUIDE_EXTRACTION_SCHEMA_NAME
 
     variants = {
         "contract-version": _identity(contract_version=2),
@@ -723,6 +732,15 @@ def test_identity_is_content_addressed_from_pinned_request_and_model_config() ->
     assert card_identity.prompt_sha256 == card_request.prompt_sha256
     assert card_identity.response_schema_sha256 == card_request.response_schema_sha256
     assert card_identity.content_sha256 != identity.content_sha256
+    assert card_identity.contract_version == 2
+    assert card_identity.contract_version == CARD_CAPABILITY_EXTRACTION_CONTRACT_VERSION
+    assert card_identity.prompt_id == "draftomen-card-capability-extraction-v2"
+    assert card_identity.prompt_id == CARD_CAPABILITY_EXTRACTION_PROMPT_ID
+    assert card_identity.response_schema_id == "draftomen-card-capability-extraction-response-v2"
+    assert card_identity.response_schema_id == CARD_CAPABILITY_EXTRACTION_RESPONSE_SCHEMA_ID
+    assert card_identity.response_schema_name == "draftomen_card_capability_extraction_v2"
+    assert card_identity.response_schema_name == CARD_CAPABILITY_EXTRACTION_SCHEMA_NAME
+    assert card_request.contract_version == 2
 
     assert _identity(input_sha256="A" * 64).input_sha256 == "a" * 64
 
@@ -795,6 +813,24 @@ def test_stored_successful_response_and_result_are_recovered_without_a_new_reque
     assert recovered.attempted_at == NOW
     assert recovered.responded_at == NOW
     assert recovered.completed_at == NOW
+    (capability,) = recovered.result.uncertain_capabilities
+    assert capability.action is CapabilityAction.DRAW
+    assert capability.zone is CapabilityZone.HAND
+    assert capability.qualifier == _unrestricted_qualifier()
+    assert CardCapability.from_json(capability.to_json()) == capability
+    assert capability.to_json()["qualifier"] == {
+        "card_types": [],
+        "token_restriction": "unrestricted",
+        "subtype": None,
+        "mana_value": None,
+    }
+
+    rerun_root = tmp_path / "work"
+    tree = _tree(rerun_root)
+    rerun = make_store(rerun_root).lookup(identity=identity)
+    assert rerun == recovered
+    assert rerun.legacy_result is False
+    assert _tree(rerun_root) == tree
 
     other = make_store(tmp_path / "work").lookup(identity=_guide_identity())
     assert other.state is WorkState.MISSING
@@ -841,6 +877,14 @@ def test_stored_relationship_result_is_recovered_without_a_new_request(tmp_path:
         MILL_FINDING_ID,
     )
     assert relationship.source == _relationship_source()
+    assert relationship.source.action is CapabilityAction.DRAW
+    assert relationship.source.zone is CapabilityZone.HAND
+    assert relationship.source.qualifier == _unrestricted_qualifier()
+    assert relationship.target.action is CapabilityAction.MILL
+    assert relationship.target.zone is CapabilityZone.GRAVEYARD
+    assert relationship.target.qualifier == _unrestricted_qualifier()
+    assert CardCapability.from_json(relationship.source.to_json()) == relationship.source
+    assert CardCapability.from_json(relationship.target.to_json()) == relationship.target
     assert relationship.target == _relationship_target()
     assert relationship.claim == RELATIONSHIP_CLAIM
     assert relationship.evidence == (
@@ -860,36 +904,297 @@ def test_stored_relationship_result_is_recovered_without_a_new_request(tmp_path:
     assert other.result is None
 
 
-def test_legacy_relationship_result_without_a_projection_stays_readable(
+def test_stored_legacy_relationship_result_is_revalidated_from_its_paid_response(
     tmp_path: Path,
 ) -> None:
-    """Prove stored relationship bytes written before v2 still decode without a projection."""
-    payload: dict[str, Any] = json.loads(LEGACY_V1_RELATIONSHIP_RESULT_JSON)
-    assert "prerequisite_projection" not in payload["relationship"]
-    legacy_verdict = RelationshipValidationResult.from_json(payload)
-    (current_verdict,) = _relationship_result().verdicts
-    assert legacy_verdict == current_verdict
-    assert legacy_verdict.relationship is not None
-    assert legacy_verdict.relationship.prerequisite_projection is None
-    legacy_result = RelationshipBatchValidationResult(
-        outcome=ExtractionOutcome.SUCCESS,
-        verdicts=(legacy_verdict,),
-        malformed_reason=None,
+    """Prove a genuine pre-v2 relationship result is replaced without another request."""
+    root = tmp_path / "work"
+    store, identity, path = _stored_legacy_relationship_result(root)
+    response_path = _stage_path(store, "response", identity)
+    response_bytes = response_path.read_bytes()
+    transcribed: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    relationship = transcribed["result"]["verdicts"][0]["relationship"]
+    assert "prerequisite_projection" not in relationship
+    for capability in (relationship["source"], relationship["target"]):
+        assert {"action", "zone", "qualifier"}.isdisjoint(capability)
+
+    legacy = make_store(root).lookup(identity=identity)
+    assert legacy.state is WorkState.UNVALIDATED
+    assert legacy.legacy_result is True
+    assert legacy.result is None
+    assert legacy.response == _relationship_response()
+    assert legacy.diagnostics == ()
+    assert legacy.attempted_at == NOW
+    assert legacy.responded_at == NOW
+    assert legacy.completed_at is None
+
+    revalidated = store.record_revalidated_result(identity=identity, result=_relationship_result())
+
+    assert revalidated.state is WorkState.COMPLETED
+    assert revalidated.legacy_result is False
+    assert revalidated.result == _relationship_result()
+    assert revalidated.completed_at == NOW
+    assert response_path.read_bytes() == response_bytes
+
+    recovered = make_store(root).lookup(identity=identity)
+    assert recovered.state is WorkState.COMPLETED
+    assert recovered.legacy_result is False
+    assert recovered.result == _relationship_result()
+    rewritten: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    participants = rewritten["result"]["verdicts"][0]["relationship"]
+    assert participants["source"]["action"] == "draw"
+    assert participants["source"]["zone"] == "hand"
+    assert participants["target"]["action"] == "mill"
+    assert participants["target"]["zone"] == "graveyard"
+    assert participants["source"]["qualifier"] == {
+        "card_types": [],
+        "token_restriction": "unrestricted",
+        "subtype": None,
+        "mana_value": None,
+    }
+
+
+def test_reworded_legacy_participant_quote_is_superseded_by_the_durable_response(
+    tmp_path: Path,
+) -> None:
+    """Prove reworded legacy bytes never reach a consumer: replacement writes the fresh parse.
+
+    The legacy predicate proves only that the old 14-key capability shape decodes, so a reworded
+    quotation inside one still classifies as a replaceable legacy result. Revalidation discards the
+    stored bytes and publishes the result parsed from the paid response instead.
+    """
+    store, identity, path = _stored_legacy_relationship_result(tmp_path / "work")
+    value: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    source = value["result"]["verdicts"][0]["relationship"]["source"]
+    source["evidence"][0]["quote"] = "When this creature enters, draw two cards."
+    path.write_bytes(_compact_bytes(value))
+
+    legacy = store.lookup(identity=identity)
+    assert legacy.state is WorkState.UNVALIDATED
+    assert legacy.legacy_result is True
+
+    store.record_revalidated_result(identity=identity, result=_relationship_result())
+
+    recovered = store.lookup(identity=identity)
+    assert recovered.state is WorkState.COMPLETED
+    assert recovered.result == _relationship_result()
+    assert recovered.result is not None
+    (verdict,) = recovered.result.verdicts
+    assert verdict.relationship is not None
+    assert verdict.relationship.source == _relationship_source()
+    assert verdict.relationship.source.evidence[0].quote == DRAW_QUOTE
+
+
+def test_record_revalidated_result_requires_a_valid_durable_attempt(tmp_path: Path) -> None:
+    """Prove the replacement predicate rechecks the attempt stage that lookup requires."""
+    for case in ("missing", "malformed"):
+        root = tmp_path / case
+        store, identity, _path = _stored_legacy_relationship_result(root)
+        if case == "missing":
+            _stage_path(store, "attempt", identity).unlink()
+        else:
+            _stage_path(store, "attempt", identity).write_bytes(b"{not-json")
+        before = _tree(store.root)
+        legacy_bytes = _stage_path(store, "result", identity).read_bytes()
+
+        _revalidated_result_error(store, identity, "valid durable attempt")
+
+        assert _tree(store.root) == before
+        assert _stage_path(store, "result", identity).read_bytes() == legacy_bytes
+    root = tmp_path / "work"
+    store, identity, _path = _stored_legacy_relationship_result(root)
+    outcomes: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def revalidate() -> None:
+        """Record one revalidation attempt from a competing writer."""
+        barrier.wait()
+        try:
+            store.record_revalidated_result(identity=identity, result=_relationship_result())
+        except SetEnrichmentWorkError:
+            outcomes.append("rejected")
+        else:
+            outcomes.append("recorded")
+
+    threads = [threading.Thread(target=revalidate) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert sorted(outcomes) == ["recorded", "rejected"]
+    recovered = make_store(root).lookup(identity=identity)
+    assert recovered.state is WorkState.COMPLETED
+    assert recovered.legacy_result is False
+    assert recovered.result == _relationship_result()
+
+
+def test_mutated_legacy_relationship_results_stay_corrupt(tmp_path: Path) -> None:
+    def pretty_printed(path: Path) -> None:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        path.write_bytes(json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8"))
+
+    def wrong_identity(path: Path) -> None:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["identity"]["subject_id"] = "batch-1"
+        path.write_bytes(_compact_bytes(value))
+
+    def blanked_embedded_quote(path: Path) -> None:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        source = value["result"]["verdicts"][0]["relationship"]["source"]
+        source["evidence"][0]["quote"] = ""
+        path.write_bytes(_compact_bytes(value))
+
+    def rekeyed_capability(path: Path) -> None:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        target = value["result"]["verdicts"][0]["relationship"]["target"]
+        del target["prerequisites"]
+        path.write_bytes(_compact_bytes(value))
+
+    mutations: tuple[tuple[str, Callable[[Path], None]], ...] = (
+        ("pretty-printed", pretty_printed),
+        ("wrong-identity", wrong_identity),
+        ("blanked-embedded-quote", blanked_embedded_quote),
+        ("rekeyed-capability", rekeyed_capability),
     )
+    for label, mutate in mutations:
+        store, identity, path = _stored_legacy_relationship_result(tmp_path / label)
+        mutate(path)
+
+        record = store.lookup(identity=identity)
+
+        assert record.state is WorkState.CORRUPT, label
+        assert record.diagnostics == ("result-invalid",), label
+        assert record.result is None, label
+        assert record.legacy_result is False, label
+        assert record.completed_at is None, label
+        assert record.response == _relationship_response(), label
+
+    store, identity, _ = _stored_legacy_relationship_result(tmp_path / "missing-response")
+    _stage_path(store, "response", identity).unlink()
+
+    stranded = store.lookup(identity=identity)
+
+    assert stranded.state is WorkState.CORRUPT
+    assert stranded.diagnostics == ("result-invalid",)
+    assert stranded.legacy_result is False
+    assert stranded.completed_at is None
+    assert stranded.response is None
+
+
+def test_decided_relationship_rejection_is_completed_work_without_the_legacy_path(
+    tmp_path: Path,
+) -> None:
+    """Prove a stored rejection is completed work rather than a replaceable legacy result."""
+    content = json.dumps(
+        {
+            "verdicts": [
+                {
+                    "index": 0,
+                    "schema_version": 2,
+                    "verdict": "rejected",
+                    "claim": RELATIONSHIP_CLAIM,
+                    "reason": "The interaction needs review.",
+                    "evidence": [],
+                    "prerequisite_status": "uncertain",
+                    "source_prerequisites": [],
+                    "target_prerequisites": [],
+                }
+            ]
+        }
+    )
+    result = parse_relationship_validation_batch_response(
+        content=content,
+        run_id=RUN_ID,
+        sources=_capability_sources(),
+        packages=(_relationship_package(),),
+    )
+    (verdict,) = result.verdicts
+    assert verdict.relationship is None
+    assert verdict.rejected is not None
 
     store = make_store(tmp_path / "work")
     identity = _relationship_identity()
     store.record_attempt(identity=identity)
-    store.record_response(identity=identity, response=_relationship_response())
-    assert store.record_result(identity=identity, result=legacy_result).state is WorkState.COMPLETED
+    store.record_response(identity=identity, response=_relationship_response(content=content))
+    assert store.record_result(identity=identity, result=result).state is WorkState.COMPLETED
 
-    stored: dict[str, Any] = json.loads(
-        _stage_path(store, "result", identity).read_text(encoding="utf-8")
-    )
-    assert "prerequisite_projection" not in stored["result"]["verdicts"][0]["relationship"]
     recovered = make_store(tmp_path / "work").lookup(identity=identity)
     assert recovered.state is WorkState.COMPLETED
-    assert recovered.result == legacy_result
+    assert recovered.legacy_result is False
+    assert recovered.result == result
+
+    with pytest.raises(SetEnrichmentWorkError, match="exact durable legacy result artifact"):
+        store.record_revalidated_result(identity=identity, result=result)
+
+
+def test_record_revalidated_result_rejects_everything_but_an_exact_legacy_artifact(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "absent"
+    store = make_store(root)
+    identity = _relationship_identity()
+    store.record_attempt(identity=identity)
+    store.record_response(identity=identity, response=_relationship_response())
+    before = _tree(root)
+
+    _revalidated_result_error(store, identity, "exact durable legacy result artifact")
+
+    assert _tree(root) == before
+
+    root = tmp_path / "current"
+    store = make_store(root)
+    identity = _relationship_identity()
+    store.record_attempt(identity=identity)
+    store.record_response(identity=identity, response=_relationship_response())
+    store.record_result(identity=identity, result=_relationship_result())
+    current_path = _stage_path(store, "result", identity)
+    current_bytes = current_path.read_bytes()
+
+    _revalidated_result_error(store, identity, "exact durable legacy result artifact")
+
+    assert current_path.read_bytes() == current_bytes
+
+    store, identity, path = _stored_legacy_relationship_result(tmp_path / "noncanonical")
+    value: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    path.write_bytes(json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8"))
+    before = _tree(store.root)
+
+    _revalidated_result_error(store, identity, "exact durable legacy result artifact")
+
+    assert _tree(store.root) == before
+
+    store, identity, path = _stored_legacy_relationship_result(tmp_path / "symlinked")
+    target = path.with_name(path.name + ".target")
+    path.rename(target)
+    path.symlink_to(target)
+    target_bytes = target.read_bytes()
+    before = _layout(store.root)
+
+    _revalidated_result_error(store, identity, "exact durable legacy result artifact")
+
+    assert path.is_symlink()
+    assert target.read_bytes() == target_bytes
+    assert _layout(store.root) == before
+
+    root = tmp_path / "guide"
+    store = make_store(root)
+    identity = _guide_identity()
+    store.record_attempt(identity=identity)
+    store.record_response(identity=identity, response=_guide_response())
+
+    _revalidated_result_error(store, identity, "relationship work")
+
+    assert not (store.results / f"{identity.content_sha256}.json").exists()
+
+    store, identity, _ = _stored_legacy_relationship_result(tmp_path / "wrong-result")
+    before = _tree(store.root)
+    with pytest.raises(SetEnrichmentWorkError, match="RelationshipBatchValidationResult"):
+        store.record_revalidated_result(
+            identity=identity,
+            result=_guide_result(),  # type: ignore[arg-type]
+        )
+    assert _tree(store.root) == before
 
 
 def test_changed_input_model_prompt_or_schema_prevents_stale_reuse(tmp_path: Path) -> None:

@@ -11,8 +11,12 @@ import pytest
 
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.semantic_capability_records import (
+    CapabilityAction,
+    CapabilityCardType,
     CapabilityPrerequisite,
+    CapabilityQualifier,
     CapabilityQuantity,
+    CapabilityTokenRestriction,
     CapabilityZone,
     CardCapability,
     PrerequisiteKind,
@@ -56,7 +60,7 @@ SCALING_TOKEN_ID = 1000
 SCALING_OUTLET_ID = 2000
 
 CAPABILITY_REVIEW_REASON = "capability requires semantic review beyond exact-source validation."
-MALFORMED_REASON = "response does not match card capability extraction schema version 1."
+MALFORMED_REASON = "response does not match card capability extraction schema version 2."
 SAME_CARD_REASON = "source and target must be different cards."
 
 TOKEN_QUOTE = "Create two 1/1 colorless Soldier artifact creature tokens."
@@ -80,6 +84,42 @@ ENABLER_ID = 401
 PAYOFF_ID = 402
 
 
+def _role_parameters(role: Role) -> tuple[CapabilityAction, CapabilityZone, CapabilityQualifier]:
+    """Return the role-accurate v2 action, zone, and qualifier of one capability."""
+    if role is Role.TOKEN_MAKER:
+        return (
+            CapabilityAction.CREATE,
+            CapabilityZone.BATTLEFIELD,
+            CapabilityQualifier(
+                card_types=(CapabilityCardType.CREATURE,),
+                token_restriction=CapabilityTokenRestriction.TOKEN,
+                subtype=None,
+                mana_value=None,
+            ),
+        )
+    if role is Role.GO_WIDE_PAYOFF:
+        return (
+            CapabilityAction.CONTROL,
+            CapabilityZone.BATTLEFIELD,
+            CapabilityQualifier(
+                card_types=(CapabilityCardType.CREATURE,),
+                token_restriction=CapabilityTokenRestriction.UNRESTRICTED,
+                subtype=None,
+                mana_value=None,
+            ),
+        )
+    return (
+        CapabilityAction.OTHER,
+        CapabilityZone.BATTLEFIELD,
+        CapabilityQualifier(
+            card_types=(),
+            token_restriction=CapabilityTokenRestriction.UNRESTRICTED,
+            subtype=None,
+            mana_value=None,
+        ),
+    )
+
+
 def _capability(
     *,
     finding_id: str,
@@ -98,6 +138,7 @@ def _capability(
     run_id: str = RUN_ID,
 ) -> CardCapability:
     """Build one real capability record around a single Oracle evidence quote."""
+    action, zone, qualifier = _role_parameters(role)
     return CardCapability(
         finding_id=finding_id,
         card_id=card_id,
@@ -105,6 +146,9 @@ def _capability(
         face_index=face_index,
         face_name=face_name,
         role=role,
+        action=action,
+        zone=zone,
+        qualifier=qualifier,
         quantity=quantity,
         timing=timing,
         source_zone=source_zone,
