@@ -26,10 +26,16 @@ from draftomen.card_data_client import (
 from draftomen.carddb import CardDatabase, CardDatabaseError, save_card_database
 from draftomen.guide_client import GuideClient, GuideClientError, GuideDocument, _validate_url as _validate_guide_url
 from draftomen.profile_generation import ProfileGenerationStage
+from draftomen.profile_manifest import ProfileManifestError, load_profile_manifest
 from draftomen.profile_publication import (
+    PROFILE_BASE_URL,
     ProfilePublicationError,
     ProfilePublicationResult,
     generate_local_profile_artifacts,
+    merge_profile_manifest_artifacts,
+    profile_manifest_artifact_from_publication,
+    publish_profile_manifest,
+    publish_profile_object,
 )
 from draftomen.semantic_capability_records import CardCapability
 from draftomen.semantic_enrichment import (
@@ -145,6 +151,8 @@ class SetEnrichmentReviewResult:
     artifact: SemanticEnrichmentArtifact
     artifact_path: Path
     publication: ProfilePublicationResult | None
+    published_object_path: Path | None = None
+    published_manifest_path: Path | None = None
 
 
 class SetEnrichmentWorkflowError(RuntimeError):
@@ -1284,8 +1292,14 @@ def finalize_set_enrichment(
     decision: EnrichmentReviewDecision,
     reviewer_id: str,
     reviewed_at: datetime,
+    profiles_dir: PathInput = Path("website/public/profiles"),
 ) -> SetEnrichmentReviewResult:
-    """Publish a review decision and optionally generate the confirmed local profile."""
+    """Publish a review decision and optionally generate and publish the confirmed profile.
+
+    ``profiles_dir`` is resolved from the process current directory only after the
+    reviewed artifact is durable and only for Confirm, so Cancel never inspects or
+    creates the repository profile tree.
+    """
     if (
         not isinstance(analysis, SetEnrichmentWorkflowResult)
         or analysis.run.outcome is not EnrichmentOutcome.COMPLETE
@@ -1389,11 +1403,81 @@ def finalize_set_enrichment(
             PROFILE_PUBLICATION_ERROR,
             review_result=review_result,
         ) from error
-    return SetEnrichmentReviewResult(
-        decision=decision,
-        artifact=reviewed,
-        artifact_path=artifact_path,
+    return _publish_confirmed_profile(
         publication=publication,
+        profiles_dir=profiles_dir,
+        published_at=normalized_reviewed_at,
+        review_result=SetEnrichmentReviewResult(
+            decision=decision,
+            artifact=reviewed,
+            artifact_path=artifact_path,
+            publication=publication,
+        ),
+    )
+
+
+def _publish_confirmed_profile(
+    *,
+    publication: ProfilePublicationResult,
+    profiles_dir: PathInput,
+    published_at: datetime,
+    review_result: SetEnrichmentReviewResult,
+) -> SetEnrichmentReviewResult:
+    """Install one confirmed profile object and merge the repository manifest.
+
+    The manifest is loaded before any repository write and the immutable object is
+    installed before the manifest, so an identical republication rewrites neither
+    while a manifest failure leaves the previous manifest authoritative.
+    """
+    try:
+        profiles = Path(profiles_dir)
+        manifest_path = profiles / "manifest.json"
+        existing_manifest = load_profile_manifest(manifest_path)
+        report = publication.generation.report
+        artifact = profile_manifest_artifact_from_publication(
+            publication,
+            f"{PROFILE_BASE_URL}{report.gzip_sha256}.json.gz",
+        )
+        merged = merge_profile_manifest_artifacts(
+            existing_manifest,
+            (artifact,),
+            published_at=published_at,
+        )
+        manifest_changed = merged is not existing_manifest
+        payload = publication.artifact_path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != report.gzip_sha256:
+            raise ProfilePublicationError(
+                "The published profile object does not match its validated gzip digest."
+            )
+        published_object = publish_profile_object(
+            path=profiles / "objects" / f"{report.gzip_sha256}.json.gz",
+            payload=payload,
+        )
+        published_manifest = (
+            publish_profile_manifest(manifest_path, merged)
+            if manifest_changed
+            else manifest_path
+        )
+    except (
+        OSError,
+        ProfileManifestError,
+        ProfilePublicationError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as error:
+        raise _workflow_error(
+            PROFILE_PUBLICATION_ERROR,
+            error,
+            review_result=review_result,
+        ) from error
+    return SetEnrichmentReviewResult(
+        decision=review_result.decision,
+        artifact=review_result.artifact,
+        artifact_path=review_result.artifact_path,
+        publication=publication,
+        published_object_path=published_object,
+        published_manifest_path=published_manifest,
     )
 
 

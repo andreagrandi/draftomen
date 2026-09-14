@@ -3230,6 +3230,19 @@ def test_enrich_set_parser_registers_arguments_and_requires_each_input() -> None
             parser.parse_args(args=missing)
         assert error.value.code == 2
 
+    complete = [
+        "enrich-set",
+        "LCI",
+        "--guide-url",
+        "https://x/y",
+        "--output-dir",
+        "/tmp/enrichment",
+    ]
+    for unsupported in (["--profiles-dir", "/tmp/profiles"], ["--repo-root", "/tmp/repo"]):
+        with pytest.raises(SystemExit) as error:
+            parser.parse_args(args=[*complete, *unsupported])
+        assert error.value.code == 2
+
 
 def test_enrich_set_help_does_not_require_credentials_or_invoke_analysis(
     monkeypatch: pytest.MonkeyPatch,
@@ -3401,6 +3414,8 @@ def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
             )
         ),
     )
+    published_object = tmp_path / "website/public/profiles/objects/gzip-sha.json.gz"
+    published_manifest = tmp_path / "website/public/profiles/manifest.json"
 
     monkeypatch.setattr(cli, "analyze_set_enrichment", lambda **kwargs: analysis)
     monkeypatch.setattr(cli, "_format_enrichment_review", lambda value: "")
@@ -3413,6 +3428,8 @@ def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
             artifact=SimpleNamespace(),
             artifact_path=tmp_path / "confirmed.json",
             publication=publication,
+            published_object_path=published_object,
+            published_manifest_path=published_manifest,
         )
 
     monkeypatch.setattr(cli, "finalize_set_enrichment", finalize)
@@ -3424,10 +3441,10 @@ def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
     assert captured.out == (
         "decision=Confirm\n"
         f"enrichment_artifact={tmp_path / 'confirmed.json'}\n"
-        f"profile={tmp_path / 'profile.json.gz'}\n"
-        f"generation_report={tmp_path / 'generation.json'}\n"
+        f"published_profile_object={published_object}\n"
         "profile_sha256=profile-sha\n"
         "gzip_sha256=gzip-sha\n"
+        f"profile_manifest={published_manifest}\n"
     )
     assert captured.err == ""
     assert finalize_calls["reviewer_id"] == "draftomen-tui"
@@ -3444,6 +3461,8 @@ def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
         ("   ", False, False),
         ("confirm", True, False),
         ("yes", True, False),
+        ("Reject", True, False),
+        ("reject", True, False),
         (EOFError(), False, True),
         (KeyboardInterrupt(), False, True),
     ],
@@ -3453,6 +3472,8 @@ def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
         "whitespace",
         "lowercase-confirm",
         "yes",
+        "literal-reject",
+        "lowercase-reject",
         "eof",
         "prompt-ctrl-c",
     ],
@@ -3620,4 +3641,43 @@ def test_handle_enrich_set_finalization_failures_report_only_retained_review(
         )
     else:
         assert captured.out == ""
+
+
+@pytest.mark.parametrize("missing", ["published_object_path", "published_manifest_path"])
+def test_handle_enrich_set_reports_not_published_for_incomplete_repository_publication(
+    missing: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    analysis = _complete_enrichment_analysis(tmp_path)
+    retained_path = tmp_path / "confirmed.json"
+    publication = SimpleNamespace(generation=SimpleNamespace(report=SimpleNamespace()))
+
+    monkeypatch.setattr(cli, "analyze_set_enrichment", lambda **kwargs: analysis)
+    monkeypatch.setattr(cli, "_format_enrichment_review", lambda value: "")
+    monkeypatch.setattr("builtins.input", lambda prompt: "Confirm")
+    monkeypatch.setattr(
+        cli,
+        "finalize_set_enrichment",
+        lambda **kwargs: SimpleNamespace(
+            decision=cli.EnrichmentReviewDecision.CONFIRM,
+            artifact=SimpleNamespace(),
+            artifact_path=retained_path,
+            publication=publication,
+            published_object_path=None if missing == "published_object_path" else tmp_path / "object.json.gz",
+            published_manifest_path=None if missing == "published_manifest_path" else tmp_path / "manifest.json",
+        ),
+    )
+
+    exit_code = main(argv=_enrichment_handler_argv(tmp_path))
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == (
+        "decision=Confirm\n"
+        f"enrichment_artifact={retained_path}\n"
+        "profile=not-published\n"
+    )
+    assert captured.err == f"enrich-set failed: {cli.PROFILE_PUBLICATION_ERROR}\n"
 

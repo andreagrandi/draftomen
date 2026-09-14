@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 import re
-import tempfile
 from typing import Any, TypeAlias
 
 from draftomen.profile_generation import (
@@ -24,13 +23,16 @@ from draftomen.profile_generation import (
     generate_set_profile,
 )
 from draftomen.profile_manifest import (
-    ProfileManifest,
     ProfileManifestArtifact,
     ProfileManifestError,
     load_profile_manifest,
 )
 from draftomen.profile_publication import (
+    PROFILE_BASE_URL,
     ProfilePublicationError,
+    merge_profile_manifest_artifacts,
+    publish_profile_manifest,
+    publish_profile_object,
     validate_profile_generation,
 )
 from draftomen.seventeen import (
@@ -48,7 +50,6 @@ FetchJson: TypeAlias = Callable[[str, int], Any]
 Clock: TypeAlias = Callable[[], datetime]
 
 FILTERS_ENDPOINT = "https://www.17lands.com/data/filters"
-PROFILE_BASE_URL = "https://www.draftomen.com/profiles/objects/"
 RATINGS_CACHE_TTL = timedelta(days=1)
 SUPPORTED_FORMATS = (
     "PremierDraft",
@@ -401,8 +402,8 @@ def execute_profile_data_refresh(
     replacements: dict[tuple[str, str], ProfileManifestArtifact] = {}
     for pair, gzip_bytes, artifact, object_path in prepared:
         try:
-            _reuse_or_publish_object(path=object_path, payload=gzip_bytes)
-        except (OSError, ProfileDataRefreshError):
+            publish_profile_object(path=object_path, payload=gzip_bytes)
+        except (OSError, ProfilePublicationError):
             failures.append(Failure(pair=pair, category="object-publish-failed"))
             continue
         published_pairs.append(pair)
@@ -410,32 +411,27 @@ def execute_profile_data_refresh(
 
     manifest_changed = False
     if replacements:
-        existing_artifacts = {
-            (artifact.set_code, artifact.event_format): artifact
-            for artifact in existing_manifest.artifacts
-        }
-        replacement_changed = any(
-            existing_artifacts.get(identity) != artifact
-            for identity, artifact in replacements.items()
+        merged_manifest = merge_profile_manifest_artifacts(
+            existing_manifest,
+            replacements.values(),
+            published_at=command_now,
         )
-        if replacement_changed:
-            existing_artifacts.update(replacements)
-            published_at = _now(clock=clock)
-            merged_manifest = ProfileManifest(
-                artifacts=tuple(existing_artifacts.values()),
-                published_at=published_at.isoformat(),
-            )
-            merged_bytes = merged_manifest.to_bytes()
-            if merged_bytes != existing_manifest_bytes:
-                try:
-                    _atomic_write(path=manifest_path, payload=merged_bytes)
-                except OSError:
-                    for pair in published_pairs:
-                        failures.append(Failure(pair=pair, category="manifest-publish-failed"))
-                    published_pairs.clear()
-                    replacements.clear()
-                else:
-                    manifest_changed = True
+        if merged_manifest.to_bytes() != existing_manifest_bytes:
+            try:
+                publish_profile_manifest(manifest_path, merged_manifest)
+            except (
+                OSError,
+                ProfileManifestError,
+                ProfilePublicationError,
+                TypeError,
+                ValueError,
+            ):
+                for pair in published_pairs:
+                    failures.append(Failure(pair=pair, category="manifest-publish-failed"))
+                published_pairs.clear()
+                replacements.clear()
+            else:
+                manifest_changed = True
 
     failures.sort(key=lambda failure: (failure.pair.set_code, SUPPORTED_FORMATS.index(failure.pair.event_format)))
     published_pairs.sort(key=lambda pair: (pair.set_code, SUPPORTED_FORMATS.index(pair.event_format)))
@@ -558,40 +554,6 @@ def _profile_url(*, base_url: str, digest: str) -> str:
     return f"{base_url.rstrip('/')}/{digest}.json.gz"
 
 
-def _reuse_or_publish_object(*, path: Path, payload: bytes) -> None:
-    try:
-        existing = path.read_bytes()
-    except FileNotFoundError:
-        _atomic_write(path=path, payload=payload)
-        return
-    if existing != payload:
-        raise ProfileDataRefreshError("content-addressed profile object conflicts")
-
-
-def _atomic_write(*, path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            delete=False,
-        ) as temporary:
-            temporary_name = temporary.name
-            temporary.write(payload)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.replace(temporary_name, path)
-        temporary_name = None
-    finally:
-        if temporary_name is not None:
-            try:
-                Path(temporary_name).unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
 def _now(*, clock: Clock | None) -> datetime:
     value = datetime.now(tz=UTC) if clock is None else clock()
     if not isinstance(value, datetime) or value.tzinfo is None:
@@ -601,7 +563,6 @@ def _now(*, clock: Clock | None) -> datetime:
 
 __all__ = [
     "FILTERS_ENDPOINT",
-    "PROFILE_BASE_URL",
     "RATINGS_CACHE_TTL",
     "SUPPORTED_FORMATS",
     "Failure",

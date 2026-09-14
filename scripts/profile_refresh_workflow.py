@@ -32,11 +32,9 @@ from draftomen.profile_batch_generation import (
 )
 from draftomen.profile_data_refresh import (
     FILTERS_ENDPOINT,
-    PROFILE_BASE_URL,
     Pair,
     Plan as ProfilePlan,
     _now,
-    _reuse_or_publish_object,
     prepare_profile_data_refresh,
 )
 from draftomen.profile_input_acquisition import (
@@ -51,9 +49,11 @@ from draftomen.profile_manifest import (
     load_profile_manifest,
 )
 from draftomen.profile_publication import (
+    PROFILE_BASE_URL,
     ProfilePublicationError,
-    build_profile_manifest,
+    merge_profile_manifest_artifacts,
     publish_profile_manifest,
+    publish_profile_object,
 )
 from draftomen.profile_refresh_execution import (
     DEFAULT_PROFILE_REFRESH_CACHE_POLICY,
@@ -389,8 +389,9 @@ def _materialize_profiles(
 
     if not candidates:
         return [], False
+    manifest_path = profiles_dir / "manifest.json"
     try:
-        existing_manifest = load_profile_manifest(profiles_dir / "manifest.json")
+        existing_manifest = load_profile_manifest(manifest_path)
     except (OSError, ProfileManifestError):
         for pair, _result in candidates:
             failures.append(
@@ -436,8 +437,8 @@ def _materialize_profiles(
         try:
             # Reuse the existing content-addressed publication primitive.  It
             # preserves prior identities when a conflicting object is found.
-            _reuse_or_publish_object(path=object_path, payload=payload)
-        except (OSError, ValueError):
+            publish_profile_object(path=object_path, payload=payload)
+        except (OSError, ProfilePublicationError):
             failures.append(
                 _failure(
                     stage="profile-execution",
@@ -452,36 +453,28 @@ def _materialize_profiles(
     if not published:
         return [], False
 
-    existing_artifacts = {
-        (artifact.set_code, artifact.event_format): artifact
-        for artifact in existing_manifest.artifacts
-    }
-    replacements = {pair.identity: artifact for pair, artifact in published}
-    replacement_changed = any(
-        existing_artifacts.get(identity) != artifact
-        for identity, artifact in replacements.items()
-    )
-    if replacement_changed:
-        existing_artifacts.update(replacements)
-        try:
-            merged_manifest = build_profile_manifest(
-                tuple(existing_artifacts.values()),
-                published_at=command_now,
-            )
-            publish_profile_manifest(profiles_dir / "manifest.json", merged_manifest)
-        except (OSError, ProfileManifestError, ProfilePublicationError, TypeError, ValueError):
-            for pair, _artifact in published:
-                failures.append(
-                    _failure(
-                        stage="profile-execution",
-                        category="manifest-publish-failed",
-                        set_code=pair.set_code,
-                        event_format=pair.event_format,
-                    )
+    published_pairs = [pair for pair, _artifact in published]
+    try:
+        merged_manifest = merge_profile_manifest_artifacts(
+            existing_manifest,
+            (artifact for _pair, artifact in published),
+            published_at=command_now,
+        )
+        if merged_manifest is not existing_manifest:
+            publish_profile_manifest(manifest_path, merged_manifest)
+            return published_pairs, True
+        return published_pairs, False
+    except (OSError, ProfileManifestError, ProfilePublicationError, TypeError, ValueError):
+        for pair in published_pairs:
+            failures.append(
+                _failure(
+                    stage="profile-execution",
+                    category="manifest-publish-failed",
+                    set_code=pair.set_code,
+                    event_format=pair.event_format,
                 )
-            return [], False
-        return [pair for pair, _artifact in published], True
-    return [pair for pair, _artifact in published], False
+            )
+        return [], False
 
 
 def _base_bytes(repo_root: Path, base_commit: str, relative_path: str) -> bytes | None:
