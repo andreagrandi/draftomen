@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Add the pinned Draftmancer typed-event adapter and deterministic protocol
+  smoke helper for local three-pack development drafts. (#537) The helper
+  resolves Draftmancer printing identities through a locally downloaded
+  Scryfall default-cards bulk file without per-card API calls; the required HOB
+  smoke completes all 42 picks across three packs and verifies the typed event
+  stream, final pool, and persisted source-less `LiveSession`.
 - Accept typed `DraftEvent` ingestion directly on `LiveSession` (#536):
   `LiveSession(log_path=None, ...)` builds a deliberate source-less session
   with no `LogFollower`, keeps the incremental parser so `process_lines`
