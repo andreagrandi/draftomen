@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Cut relationship-validation enrichment cost: candidate validation now
+  sends bounded batches of 20 pairs per model call instead of one call per
+  pair, a local mechanism-compatibility filter prunes pairs whose oracle
+  texts cannot express the mechanism before any paid call, and per-batch
+  work identities keep runs resumable at batch granularity. (#432)
 - Skip end-of-pack handshake picks in `backtest` (#432 follow-up): Arena
   sends a one-card `BotDraftDraftPick` request with `PickNumber` 14 after
   the last pick of each pack, and persisted drafts carrying those records

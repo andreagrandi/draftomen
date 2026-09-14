@@ -24,20 +24,22 @@ from draftomen.semantic_enrichment_records import (
     RejectedFinding,
 )
 from draftomen.semantic_roles import Role
+from draftomen.set_enrichment_candidates import CANDIDATE_REASON, CandidatePackage
 from draftomen.set_enrichment_extraction import (
     CardCapabilityExtractionResult,
     ExtractionOutcome,
     ExtractionRequest,
     GuideExtractionResult,
+    RelationshipBatchValidationResult,
     RelationshipValidationResult,
-    ValidatedRelationship,
     build_card_capability_extraction_request,
     build_guide_extraction_request,
-    build_relationship_validation_request,
+    build_relationship_validation_batch_request,
     parse_card_capability_extraction_response,
     parse_guide_extraction_response,
-    relationship_source_sha256,
-    relationship_subject_id,
+    parse_relationship_validation_batch_response,
+    relationship_batch_source_sha256,
+    relationship_batch_subject_id,
 )
 from draftomen.set_enrichment_work import (
     WORK_ATTEMPT_DIRECTORY,
@@ -303,23 +305,42 @@ def _relationship_target() -> CardCapability:
     )
 
 
+def _relationship_package() -> CandidatePackage:
+    """Return the single constructed candidate one batch request validates."""
+    return CandidatePackage(
+        mechanism=RELATIONSHIP_MECHANISM,
+        source=_relationship_source(),
+        target=_relationship_target(),
+        reason=CANDIDATE_REASON,
+    )
+
+
 def _relationship_content() -> str:
-    """Build the advisory v2 verdict one relationship request answers with.
+    """Build the advisory batch verdict one relationship request answers with.
     The typed prerequisites stay advisory, so no projection is fabricated.
     """
     return json.dumps(
         {
-            "schema_version": 2,
-            "verdict": "accepted",
-            "claim": RELATIONSHIP_CLAIM,
-            "reason": None,
-            "evidence": [
-                {"card_id": PLAIN_CARD_ID, "face_index": None, "quote": DRAW_QUOTE},
-                {"card_id": TWO_FACE_CARD_ID, "face_index": 1, "quote": BACK_MILL_QUOTE},
-            ],
-            "prerequisite_status": "uncertain",
-            "source_prerequisites": [],
-            "target_prerequisites": [],
+            "verdicts": [
+                {
+                    "index": 0,
+                    "schema_version": 2,
+                    "verdict": "accepted",
+                    "claim": RELATIONSHIP_CLAIM,
+                    "reason": None,
+                    "evidence": [
+                        {"card_id": PLAIN_CARD_ID, "face_index": None, "quote": DRAW_QUOTE},
+                        {
+                            "card_id": TWO_FACE_CARD_ID,
+                            "face_index": 1,
+                            "quote": BACK_MILL_QUOTE,
+                        },
+                    ],
+                    "prerequisite_status": "uncertain",
+                    "source_prerequisites": [],
+                    "target_prerequisites": [],
+                }
+            ]
         }
     )
 
@@ -336,11 +357,9 @@ def _card_request() -> ExtractionRequest:
 
 
 def _relationship_request() -> ExtractionRequest:
-    return build_relationship_validation_request(
+    return build_relationship_validation_batch_request(
         sources=_capability_sources(),
-        mechanism=RELATIONSHIP_MECHANISM,
-        source=_relationship_source(),
-        target=_relationship_target(),
+        packages=(_relationship_package(),),
     )
 
 
@@ -362,23 +381,12 @@ def _card_result() -> CardCapabilityExtractionResult:
     )
 
 
-def _relationship_result() -> RelationshipValidationResult:
-    return RelationshipValidationResult(
-        outcome=ExtractionOutcome.SUCCESS,
-        relationship=ValidatedRelationship(
-            mechanism=RELATIONSHIP_MECHANISM,
-            source=_relationship_source(),
-            target=_relationship_target(),
-            claim=RELATIONSHIP_CLAIM,
-            evidence=(
-                OracleEvidence(card_id=PLAIN_CARD_ID, face_index=None, quote=DRAW_QUOTE),
-                OracleEvidence(card_id=TWO_FACE_CARD_ID, face_index=1, quote=BACK_MILL_QUOTE),
-            ),
-            review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
-            run_id=RUN_ID,
-        ),
-        rejected=None,
-        malformed_reason=None,
+def _relationship_result() -> RelationshipBatchValidationResult:
+    return parse_relationship_validation_batch_response(
+        content=_relationship_content(),
+        run_id=RUN_ID,
+        sources=_capability_sources(),
+        packages=(_relationship_package(),),
     )
 
 
@@ -575,16 +583,8 @@ def _card_identity() -> WorkIdentity:
 def _relationship_identity() -> WorkIdentity:
     return build_work_identity(
         work_kind=WorkKind.RELATIONSHIP,
-        subject_id=relationship_subject_id(
-            mechanism=RELATIONSHIP_MECHANISM,
-            source=_relationship_source(),
-            target=_relationship_target(),
-        ),
-        input_sha256=relationship_source_sha256(
-            mechanism=RELATIONSHIP_MECHANISM,
-            source=_relationship_source(),
-            target=_relationship_target(),
-        ),
+        subject_id=relationship_batch_subject_id(0),
+        input_sha256=relationship_batch_source_sha256(request=_relationship_request()),
         request=_relationship_request(),
         model_config=_model_config(),
     )
@@ -812,7 +812,8 @@ def test_stored_relationship_result_is_recovered_without_a_new_request(tmp_path:
     result = _relationship_result()
     assert identity.work_kind is WorkKind.RELATIONSHIP
     assert result.outcome is ExtractionOutcome.SUCCESS
-    assert result.relationship is not None
+    (verdict,) = result.verdicts
+    assert verdict.relationship is not None
 
     assert store.lookup(identity=identity).state is WorkState.MISSING
     assert store.record_attempt(identity=identity).state is WorkState.INCOMPLETE
@@ -823,12 +824,14 @@ def test_stored_relationship_result_is_recovered_without_a_new_request(tmp_path:
     recovered = make_store(tmp_path / "work").lookup(identity=identity)
     assert recovered.state is WorkState.COMPLETED
     assert recovered.identity == identity
-    assert isinstance(recovered.result, RelationshipValidationResult)
+    assert isinstance(recovered.result, RelationshipBatchValidationResult)
     assert recovered.result == result
     assert recovered.result.outcome is ExtractionOutcome.SUCCESS
-    assert recovered.result.rejected is None
     assert recovered.result.malformed_reason is None
-    relationship = recovered.result.relationship
+    (recovered_verdict,) = recovered.result.verdicts
+    assert recovered_verdict.rejected is None
+    assert recovered_verdict.malformed_reason is None
+    relationship = recovered_verdict.relationship
     assert relationship is not None
     assert relationship.identity == (
         RELATIONSHIP_MECHANISM,
@@ -863,10 +866,16 @@ def test_legacy_relationship_result_without_a_projection_stays_readable(
     """Prove stored relationship bytes written before v2 still decode without a projection."""
     payload: dict[str, Any] = json.loads(LEGACY_V1_RELATIONSHIP_RESULT_JSON)
     assert "prerequisite_projection" not in payload["relationship"]
-    legacy_result = RelationshipValidationResult.from_json(payload)
-    assert legacy_result == _relationship_result()
-    assert legacy_result.relationship is not None
-    assert legacy_result.relationship.prerequisite_projection is None
+    legacy_verdict = RelationshipValidationResult.from_json(payload)
+    (current_verdict,) = _relationship_result().verdicts
+    assert legacy_verdict == current_verdict
+    assert legacy_verdict.relationship is not None
+    assert legacy_verdict.relationship.prerequisite_projection is None
+    legacy_result = RelationshipBatchValidationResult(
+        outcome=ExtractionOutcome.SUCCESS,
+        verdicts=(legacy_verdict,),
+        malformed_reason=None,
+    )
 
     store = make_store(tmp_path / "work")
     identity = _relationship_identity()
@@ -877,7 +886,7 @@ def test_legacy_relationship_result_without_a_projection_stays_readable(
     stored: dict[str, Any] = json.loads(
         _stage_path(store, "result", identity).read_text(encoding="utf-8")
     )
-    assert "prerequisite_projection" not in stored["result"]["relationship"]
+    assert "prerequisite_projection" not in stored["result"]["verdicts"][0]["relationship"]
     recovered = make_store(tmp_path / "work").lookup(identity=identity)
     assert recovered.state is WorkState.COMPLETED
     assert recovered.result == legacy_result

@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from draftomen.carddb import CardFace, CardInfo
 from draftomen.semantic_capability_records import (
     CapabilityPrerequisite,
     CapabilityQuantity,
@@ -22,6 +23,7 @@ from draftomen.semantic_roles import Role
 import draftomen.set_enrichment_candidates as candidates_module
 from draftomen.set_enrichment_candidates import (
     CANDIDATE_REASON,
+    LOCAL_FILTER_OMITTED_REASON,
     MAX_EVALUATED_CANDIDATE_PAIRS,
     MAX_PAIR_WORK_OMITTED_REASON,
     ROLE_COMPATIBILITY_RULES,
@@ -33,6 +35,7 @@ from draftomen.set_enrichment_candidates import (
     RoleLink,
     SetEnrichmentCandidatesError,
     construct_candidate_packages,
+    prune_candidate_packages,
 )
 from draftomen.set_enrichment_extraction import CardCapabilityExtractionResult, ExtractionOutcome
 
@@ -64,6 +67,17 @@ FODDER_QUOTE = "When this creature dies, you gain 1 life."
 DRAW_QUOTE = "Draw two cards."
 COUNTER_QUOTE = "Counter target spell."
 PREREQUISITE_QUOTE = "you may sacrifice a creature."
+DISCARD_QUOTE = "Draw a card, then discard a card."
+LOOT_QUOTE = "{2}, {T}: Draw a card, then discard a card."
+RETURN_QUOTE = "When this creature dies, return it to the battlefield tapped."
+RECURSION_QUOTE = "Return target creature card from your graveyard to your hand."
+MILL_QUOTE = "Mill four cards."
+GRAVEYARD_QUOTE = (
+    "This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+)
+
+ENABLER_ID = 401
+PAYOFF_ID = 402
 
 
 def _capability(
@@ -313,6 +327,8 @@ def test_public_surface_pins_contract_values_and_rules() -> None:
         "CandidatePackageSet",
         "RoleLink",
         "SetEnrichmentCandidatesError",
+        "LOCAL_FILTER_OMITTED_REASON",
+        "prune_candidate_packages",
         "construct_candidate_packages",
     }
     assert issubclass(SetEnrichmentCandidatesError, ValueError)
@@ -937,3 +953,424 @@ def test_candidate_packages_are_frozen_and_hashable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         package.mechanism = "fodder-dies-payoff"  # type: ignore[misc]
+
+
+def _card(
+    *,
+    grp_id: int,
+    name: str,
+    oracle_text: str | None = None,
+    faces: tuple[CardFace, ...] = (),
+) -> CardInfo:
+    """Build one card database entry carrying the Oracle text a local gate reads."""
+    return CardInfo(
+        grp_id=grp_id,
+        name=name,
+        colors=(),
+        mana_value=None,
+        rarity="common",
+        types=("Creature",),
+        oracle_text=oracle_text,
+        faces=faces,
+    )
+
+
+def _gate_case(
+    *,
+    mechanism: str,
+    enabler_role: Role,
+    payoff_role: Role,
+    enabler_text: str,
+    payoff_text: str,
+) -> tuple[CandidatePackage, dict[int, CardInfo]]:
+    """Build one candidate pair and the card database entries its participants bind to."""
+    package = CandidatePackage(
+        mechanism=mechanism,
+        source=_capability(
+            finding_id="capability-enabler",
+            card_id=ENABLER_ID,
+            card_name="Enabler",
+            role=enabler_role,
+            quote=enabler_text,
+        ),
+        target=_capability(
+            finding_id="capability-payoff",
+            card_id=PAYOFF_ID,
+            card_name="Payoff",
+            role=payoff_role,
+            quote=payoff_text,
+        ),
+        reason=CANDIDATE_REASON,
+    )
+    cards = {
+        ENABLER_ID: _card(grp_id=ENABLER_ID, name="Enabler", oracle_text=enabler_text),
+        PAYOFF_ID: _card(grp_id=PAYOFF_ID, name="Payoff", oracle_text=payoff_text),
+    }
+    return package, cards
+
+
+GATED_MECHANISM_CASES = (
+    pytest.param(
+        "discard-recursion-payoff",
+        Role.DISCARD_ENABLER,
+        Role.RECURSION_PAYOFF,
+        DISCARD_QUOTE,
+        RECURSION_QUOTE,
+        ("source", "target"),
+        id="discard-recursion-payoff",
+    ),
+    pytest.param(
+        "fodder-dies-payoff",
+        Role.SACRIFICE_FODDER,
+        Role.DEATH_PAYOFF,
+        FODDER_QUOTE,
+        DEATH_QUOTE,
+        ("target",),
+        id="fodder-dies-payoff",
+    ),
+    pytest.param(
+        "fodder-sacrifice-outlet",
+        Role.SACRIFICE_FODDER,
+        Role.SACRIFICE_OUTLET,
+        FODDER_QUOTE,
+        OUTLET_QUOTE,
+        ("target",),
+        id="fodder-sacrifice-outlet",
+    ),
+    pytest.param(
+        "loot-recursion-payoff",
+        Role.LOOT,
+        Role.RECURSION_PAYOFF,
+        LOOT_QUOTE,
+        RETURN_QUOTE,
+        ("source", "target"),
+        id="loot-recursion-payoff",
+    ),
+    pytest.param(
+        "mill-graveyard-payoff",
+        Role.SELF_MILL,
+        Role.GRAVEYARD_PAYOFF,
+        MILL_QUOTE,
+        GRAVEYARD_QUOTE,
+        ("source", "target"),
+        id="mill-graveyard-payoff",
+    ),
+    pytest.param(
+        "token-death-payoff",
+        Role.TOKEN_MAKER,
+        Role.DEATH_PAYOFF,
+        TOKEN_QUOTE,
+        DEATH_QUOTE,
+        ("source", "target"),
+        id="token-death-payoff",
+    ),
+    pytest.param(
+        "token-go-wide-payoff",
+        Role.TOKEN_MAKER,
+        Role.GO_WIDE_PAYOFF,
+        TOKEN_QUOTE,
+        WIDE_QUOTE,
+        ("source", "target"),
+        id="token-go-wide-payoff",
+    ),
+    pytest.param(
+        "token-sacrifice-outlet",
+        Role.TOKEN_MAKER,
+        Role.SACRIFICE_OUTLET,
+        TOKEN_QUOTE,
+        OUTLET_QUOTE,
+        ("source", "target"),
+        id="token-sacrifice-outlet",
+    ),
+)
+
+
+def _prune_fixture() -> tuple[CandidatePackageSet, dict[int, CardInfo]]:
+    """Build candidate pairs that both survive and fail the local mechanism gates."""
+    results = (
+        _result(
+            _capability(
+                finding_id="capability-tokens-one",
+                card_id=TOKEN_ID,
+                card_name="Token Maker One",
+                role=Role.TOKEN_MAKER,
+                quote=TOKEN_QUOTE,
+            ),
+            _capability(
+                finding_id="capability-tokens-two",
+                card_id=TOKEN_ID + 1,
+                card_name="Token Maker Two",
+                role=Role.TOKEN_MAKER,
+                quote=TOKEN_QUOTE,
+            ),
+        ),
+        _result(
+            _capability(
+                finding_id="capability-silent-death",
+                card_id=DEATH_ID,
+                card_name="Silent Payoff",
+                role=Role.DEATH_PAYOFF,
+                quote=DRAW_QUOTE,
+            )
+        ),
+        _result(
+            _capability(
+                finding_id="capability-fodder",
+                card_id=FODDER_ID,
+                card_name="Fodder",
+                role=Role.SACRIFICE_FODDER,
+                quote=FODDER_QUOTE,
+            )
+        ),
+        _result(
+            _capability(
+                finding_id="capability-silent-outlet",
+                card_id=OUTLET_ID,
+                card_name="Silent Outlet",
+                role=Role.SACRIFICE_OUTLET,
+                quote=DRAW_QUOTE,
+            )
+        ),
+        _result(_wide_payoff()),
+    )
+    texts = {
+        TOKEN_ID: TOKEN_QUOTE,
+        TOKEN_ID + 1: TOKEN_QUOTE,
+        DEATH_ID: DRAW_QUOTE,
+        FODDER_ID: FODDER_QUOTE,
+        OUTLET_ID: DRAW_QUOTE,
+        WIDE_ID: WIDE_QUOTE,
+    }
+    cards = {
+        card_id: _card(grp_id=card_id, name=f"Card {card_id}", oracle_text=text)
+        for card_id, text in texts.items()
+    }
+    return construct_candidate_packages(results), cards
+
+
+@pytest.mark.parametrize(
+    ("mechanism", "enabler_role", "payoff_role", "enabler_text", "payoff_text", "_gated_sides"),
+    GATED_MECHANISM_CASES,
+)
+def test_local_gates_keep_pairs_that_reference_their_mechanism(
+    mechanism: str,
+    enabler_role: Role,
+    payoff_role: Role,
+    enabler_text: str,
+    payoff_text: str,
+    _gated_sides: tuple[str, ...],
+) -> None:
+    package, cards = _gate_case(
+        mechanism=mechanism,
+        enabler_role=enabler_role,
+        payoff_role=payoff_role,
+        enabler_text=enabler_text,
+        payoff_text=payoff_text,
+    )
+
+    assert prune_candidate_packages((package,), cards=cards) == ((package,), ())
+
+
+@pytest.mark.parametrize(
+    ("mechanism", "enabler_role", "payoff_role", "enabler_text", "payoff_text", "gated_sides"),
+    GATED_MECHANISM_CASES,
+)
+def test_local_gates_prune_pairs_that_miss_the_mechanism_action(
+    mechanism: str,
+    enabler_role: Role,
+    payoff_role: Role,
+    enabler_text: str,
+    payoff_text: str,
+    gated_sides: tuple[str, ...],
+) -> None:
+    expected = (
+        CandidateOmission(
+            mechanism=mechanism,
+            omitted_pairs=1,
+            reason=LOCAL_FILTER_OMITTED_REASON,
+        ),
+    )
+
+    for gated_side in gated_sides:
+        package, cards = _gate_case(
+            mechanism=mechanism,
+            enabler_role=enabler_role,
+            payoff_role=payoff_role,
+            enabler_text=DRAW_QUOTE if gated_side == "source" else enabler_text,
+            payoff_text=DRAW_QUOTE if gated_side == "target" else payoff_text,
+        )
+
+        assert prune_candidate_packages((package,), cards=cards) == ((), expected)
+
+
+def test_local_gates_read_the_text_of_the_capability_face() -> None:
+    payoff, cards = _gate_case(
+        mechanism="token-death-payoff",
+        enabler_role=Role.TOKEN_MAKER,
+        payoff_role=Role.DEATH_PAYOFF,
+        enabler_text=TOKEN_QUOTE,
+        payoff_text=DEATH_QUOTE,
+    )
+    cards[ENABLER_ID] = _card(
+        grp_id=ENABLER_ID,
+        name="Enabler",
+        oracle_text=f"Flying // {TOKEN_QUOTE}",
+        faces=(
+            CardFace(name="Front", oracle_text="Flying"),
+            CardFace(name="Back", oracle_text=TOKEN_QUOTE),
+        ),
+    )
+
+    def package_for(
+        face_index: int | None,
+        face_name: str | None,
+        quote: str,
+    ) -> CandidatePackage:
+        return CandidatePackage(
+            mechanism="token-death-payoff",
+            source=_capability(
+                finding_id="capability-enabler",
+                card_id=ENABLER_ID,
+                card_name="Enabler",
+                role=Role.TOKEN_MAKER,
+                face_index=face_index,
+                face_name=face_name,
+                quote=quote,
+            ),
+            target=payoff.target,
+            reason=CANDIDATE_REASON,
+        )
+
+    back_face = package_for(1, "Back", TOKEN_QUOTE)
+    assert prune_candidate_packages((back_face,), cards=cards) == ((back_face,), ())
+
+    joined_card_text = package_for(None, None, TOKEN_QUOTE)
+    assert prune_candidate_packages((joined_card_text,), cards=cards) == ((joined_card_text,), ())
+
+    front_face = package_for(0, "Front", "Flying")
+    absent_face = package_for(2, "Back", TOKEN_QUOTE)
+    assert prune_candidate_packages((front_face, absent_face), cards=cards) == (
+        (),
+        (
+            CandidateOmission(
+                mechanism="token-death-payoff",
+                omitted_pairs=2,
+                reason=LOCAL_FILTER_OMITTED_REASON,
+            ),
+        ),
+    )
+
+
+def test_pruned_pairs_aggregate_into_one_omission_per_mechanism() -> None:
+    package_set, cards = _prune_fixture()
+    packages = package_set.packages
+
+    kept, omissions = prune_candidate_packages(packages, cards=cards)
+
+    assert omissions == (
+        CandidateOmission(
+            mechanism="fodder-dies-payoff",
+            omitted_pairs=1,
+            reason=LOCAL_FILTER_OMITTED_REASON,
+        ),
+        CandidateOmission(
+            mechanism="fodder-sacrifice-outlet",
+            omitted_pairs=1,
+            reason=LOCAL_FILTER_OMITTED_REASON,
+        ),
+        CandidateOmission(
+            mechanism="token-death-payoff",
+            omitted_pairs=2,
+            reason=LOCAL_FILTER_OMITTED_REASON,
+        ),
+        CandidateOmission(
+            mechanism="token-sacrifice-outlet",
+            omitted_pairs=2,
+            reason=LOCAL_FILTER_OMITTED_REASON,
+        ),
+    )
+    assert kept == tuple(
+        package for package in packages if package.mechanism == "token-go-wide-payoff"
+    )
+    assert len(kept) + sum(omission.omitted_pairs for omission in omissions) == len(packages)
+
+
+def test_pruning_is_deterministic_and_preserves_input_order() -> None:
+    package_set, cards = _prune_fixture()
+    reversed_packages = tuple(reversed(package_set.packages))
+
+    kept, omissions = prune_candidate_packages(reversed_packages, cards=cards)
+
+    assert prune_candidate_packages(reversed_packages, cards=cards) == (kept, omissions)
+    assert kept == tuple(
+        package
+        for package in reversed_packages
+        if package.mechanism == "token-go-wide-payoff"
+    )
+    assert [omission.mechanism for omission in omissions] == [
+        "fodder-dies-payoff",
+        "fodder-sacrifice-outlet",
+        "token-death-payoff",
+        "token-sacrifice-outlet",
+    ]
+
+
+def test_ungated_mechanisms_and_missing_metadata_keep_their_pairs() -> None:
+    ungated, ungated_cards = _gate_case(
+        mechanism="recursion-graveyard-payoff",
+        enabler_role=Role.RECURSION,
+        payoff_role=Role.GRAVEYARD_PAYOFF,
+        enabler_text=DRAW_QUOTE,
+        payoff_text=DRAW_QUOTE,
+    )
+    assert prune_candidate_packages((ungated,), cards=ungated_cards) == ((ungated,), ())
+
+    undeclared, undeclared_cards = _gate_case(
+        mechanism="undeclared-mechanism",
+        enabler_role=Role.TOKEN_MAKER,
+        payoff_role=Role.GO_WIDE_PAYOFF,
+        enabler_text=DRAW_QUOTE,
+        payoff_text=DRAW_QUOTE,
+    )
+    assert prune_candidate_packages((undeclared,), cards=undeclared_cards) == (
+        (undeclared,),
+        (),
+    )
+
+    gated, _ = _gate_case(
+        mechanism="token-go-wide-payoff",
+        enabler_role=Role.TOKEN_MAKER,
+        payoff_role=Role.GO_WIDE_PAYOFF,
+        enabler_text=DRAW_QUOTE,
+        payoff_text=DRAW_QUOTE,
+    )
+    assert prune_candidate_packages((gated,), cards={}) == ((gated,), ())
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_message"),
+    (
+        pytest.param(
+            lambda: prune_candidate_packages(("capability-tokens",), cards={}),  # type: ignore[arg-type]
+            "packages must be a tuple of CandidatePackage records.",
+            id="non-package-participant",
+        ),
+        pytest.param(
+            lambda: prune_candidate_packages([_compatible_package()], cards={}),  # type: ignore[arg-type]
+            "packages must be a tuple of CandidatePackage records.",
+            id="list-of-packages",
+        ),
+        pytest.param(
+            lambda: prune_candidate_packages((_compatible_package(),), cards=()),  # type: ignore[arg-type]
+            "cards must be a mapping of card ids to CardInfo records.",
+            id="non-mapping-cards",
+        ),
+    ),
+)
+def test_pruning_rejects_invalid_trusted_input(
+    operation: Callable[[], object],
+    expected_message: str,
+) -> None:
+    with pytest.raises(SetEnrichmentCandidatesError) as error:
+        operation()
+    assert str(error.value) == expected_message

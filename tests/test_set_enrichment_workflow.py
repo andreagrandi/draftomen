@@ -31,13 +31,19 @@ from draftomen.semantic_relationship_records import (
     RelationshipPrerequisiteProjection,
 )
 from draftomen.set_card_data import SetCardData
-from draftomen.set_enrichment import EnrichmentOutcome, EnrichmentPhase, EnrichmentProgress
+from draftomen.set_enrichment import (
+    EnrichmentOutcome,
+    EnrichmentPhase,
+    EnrichmentProgress,
+    partition_relationship_batches,
+)
 from draftomen.set_enrichment_candidates import CandidateBounds, MAX_PAIR_WORK_OMITTED_REASON
 from draftomen.set_enrichment_extraction import (
     CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
     GUIDE_EXTRACTION_PROMPT_ID,
-    RELATIONSHIP_VALIDATION_PROMPT_ID,
+    RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
     ExtractionRequest,
+    ValidatedRelationship,
 )
 from draftomen.set_enrichment_work import WorkIdentity, WorkKind, WorkModelConfig
 from draftomen.set_profile import SetProfile, load_set_profile
@@ -376,38 +382,54 @@ def _capability_content(
     return json.dumps({"schema_version": 1, "capabilities": candidates})
 
 
-def _relationship_content(request: dict[str, Any], *, status: str) -> str:
-    """Build the advisory v2 verdict one relationship request answers with.
+def _relationship_verdict(pair: dict[str, Any], *, status: str) -> dict[str, Any]:
+    """Build one advisory v2 verdict for a single pair of a batch request.
     The typed prerequisites stay advisory, so no projection is fabricated.
     """
-    source = request["source"]
-    target = request["target"]
     if status == "malformed":
-        return "{malformed"
-    reason = None if status == "accepted" else "The interaction needs review."
-    return json.dumps(
-        {
+        # Structurally valid, yet undecodable for its own pair: an uncertain verdict that keeps no
+        # evidence cannot become the record the pair's validation requires.
+        return {
+            "index": pair["index"],
             "schema_version": 2,
-            "verdict": status,
+            "verdict": "uncertain",
             "claim": "The token engine feeds the wide payoff.",
-            "reason": reason,
-            "evidence": [
-                {
-                    "card_id": source["card_id"],
-                    "face_index": source["face_index"],
-                    "quote": source["evidence"][0]["quote"],
-                },
-                {
-                    "card_id": target["card_id"],
-                    "face_index": target["face_index"],
-                    "quote": target["evidence"][0]["quote"],
-                },
-            ],
+            "reason": "The interaction needs review.",
+            "evidence": [],
             "prerequisite_status": "uncertain",
             "source_prerequisites": [],
             "target_prerequisites": [],
         }
-    )
+    source = pair["source"]
+    target = pair["target"]
+    reason = None if status == "accepted" else "The interaction needs review."
+    return {
+        "index": pair["index"],
+        "schema_version": 2,
+        "verdict": status,
+        "claim": "The token engine feeds the wide payoff.",
+        "reason": reason,
+        "evidence": [
+            {
+                "card_id": source["card_id"],
+                "face_index": source["face_index"],
+                "quote": source["evidence"][0]["quote"],
+            },
+            {
+                "card_id": target["card_id"],
+                "face_index": target["face_index"],
+                "quote": target["evidence"][0]["quote"],
+            },
+        ],
+        "prerequisite_status": "uncertain",
+        "source_prerequisites": [],
+        "target_prerequisites": [],
+    }
+
+
+def _relationship_batch_content(verdicts: Sequence[dict[str, Any]]) -> str:
+    """Wrap one verdict per requested pair into a batch relationship response."""
+    return json.dumps({"verdicts": list(verdicts)})
 
 
 def _typed_cards() -> tuple[CardInfo, ...]:
@@ -511,48 +533,47 @@ def _typed_wide_payoff_clause(*, card_id: int, oracle_text: str) -> dict[str, An
     }
 
 
-def _typed_relationship_content(
-    payload: dict[str, Any],
+def _typed_relationship_verdict(
+    pair: dict[str, Any],
     *,
     source_colors: Sequence[str] = ("W",),
-) -> str:
-    """Answer one relationship request with a complete typed token-go-wide projection."""
-    source = payload["source"]
-    target = payload["target"]
-    return json.dumps(
-        {
-            "schema_version": 2,
-            "verdict": "accepted",
-            "claim": TYPED_RELATIONSHIP_CLAIM,
-            "reason": None,
-            "evidence": [
-                {
-                    "card_id": source["card_id"],
-                    "face_index": source["face_index"],
-                    "quote": source["evidence"][0]["quote"],
-                },
-                {
-                    "card_id": target["card_id"],
-                    "face_index": target["face_index"],
-                    "quote": target["evidence"][0]["quote"],
-                },
-            ],
-            "prerequisite_status": "complete",
-            "source_prerequisites": [
-                _typed_token_output_clause(
-                    card_id=source["card_id"],
-                    oracle_text=payload["source_oracle_text"],
-                    colors=source_colors,
-                )
-            ],
-            "target_prerequisites": [
-                _typed_wide_payoff_clause(
-                    card_id=target["card_id"],
-                    oracle_text=payload["target_oracle_text"],
-                )
-            ],
-        }
-    )
+) -> dict[str, Any]:
+    """Answer one pair of a batch request with a complete typed token-go-wide projection."""
+    source = pair["source"]
+    target = pair["target"]
+    return {
+        "index": pair["index"],
+        "schema_version": 2,
+        "verdict": "accepted",
+        "claim": TYPED_RELATIONSHIP_CLAIM,
+        "reason": None,
+        "evidence": [
+            {
+                "card_id": source["card_id"],
+                "face_index": source["face_index"],
+                "quote": source["evidence"][0]["quote"],
+            },
+            {
+                "card_id": target["card_id"],
+                "face_index": target["face_index"],
+                "quote": target["evidence"][0]["quote"],
+            },
+        ],
+        "prerequisite_status": "complete",
+        "source_prerequisites": [
+            _typed_token_output_clause(
+                card_id=source["card_id"],
+                oracle_text=pair["source_oracle_text"],
+                colors=source_colors,
+            )
+        ],
+        "target_prerequisites": [
+            _typed_wide_payoff_clause(
+                card_id=target["card_id"],
+                oracle_text=pair["target_oracle_text"],
+            )
+        ],
+    }
 
 
 class _ProviderFailure(RuntimeError):
@@ -593,6 +614,31 @@ class _Completion:
         self.interrupt_after = interrupt_after
         self.fail_after = fail_after
         self.calls: list[ExtractionRequest] = []
+        self.relationship_pairs_seen = 0
+
+    def _pair_statuses(self, pairs: Sequence[dict[str, Any]]) -> list[str]:
+        """Return the scripted status of every pair one batch requests, in request order.
+
+        Scripted statuses stay per pair, because a batch answers each pair independently.
+        """
+        statuses: list[str] = []
+        for pair in pairs:
+            index = self.relationship_pairs_seen + pair["index"]
+            if self.relationship_statuses:
+                status = self.relationship_statuses[index]
+            elif self.relationship_mode == "accepted-pair":
+                source_id = pair["source"]["finding_id"]
+                target_id = pair["target"]["finding_id"]
+                status = (
+                    "accepted" if (source_id, target_id) in self.accepted_pairs else "uncertain"
+                )
+            elif self.relationship_mode == "mixed":
+                status = "accepted" if index == 0 else "malformed"
+            else:
+                status = self.relationship_mode
+            statuses.append(status)
+        self.relationship_pairs_seen += len(pairs)
+        return statuses
 
     def __call__(self, request: ExtractionRequest) -> OpenRouterResponse:
         index = len(self.calls)
@@ -616,31 +662,19 @@ class _Completion:
                     counts=self.counts,
                     fidelity=self.fidelity,
                 )
-        elif request.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID:
+        elif request.prompt_id == RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID:
+            pairs = payload["pairs"]
             if self.typed:
-                content = _typed_relationship_content(
-                    payload,
-                    source_colors=self.typed_source_colors,
-                )
+                verdicts = [
+                    _typed_relationship_verdict(pair, source_colors=self.typed_source_colors)
+                    for pair in pairs
+                ]
             else:
-                relationship_index = sum(
-                    call.prompt_id == RELATIONSHIP_VALIDATION_PROMPT_ID for call in self.calls
-                ) - 1
-                if self.relationship_statuses:
-                    status = self.relationship_statuses[relationship_index]
-                elif self.relationship_mode == "accepted-pair":
-                    source_id = payload["source"]["finding_id"]
-                    target_id = payload["target"]["finding_id"]
-                    status = (
-                        "accepted"
-                        if (source_id, target_id) in self.accepted_pairs
-                        else "uncertain"
-                    )
-                elif self.relationship_mode == "mixed":
-                    status = "accepted" if len(self.calls) == 5 else "malformed"
-                else:
-                    status = self.relationship_mode
-                content = _relationship_content(payload, status=status)
+                verdicts = [
+                    _relationship_verdict(pair, status=status)
+                    for pair, status in zip(pairs, self._pair_statuses(pairs))
+                ]
+            content = _relationship_batch_content(verdicts)
         else:
             raise AssertionError(f"unexpected prompt {request.prompt_id}")
         if self.null_cost_first and index == 0:
@@ -909,8 +943,11 @@ def test_complete_run_round_trips_pending_artifact_and_maps_durable_requests(tmp
     )
     assert findings
     assert all(item.finding_id.startswith("work-") and ":" in item.finding_id for item in findings)
-    assert len(result.artifact.runs) == len(result.run.guide_results) + len(result.run.card_results) + len(
-        result.run.relationship_results
+    assert result.run.candidate_packages is not None
+    batches = partition_relationship_batches(result.run.candidate_packages.packages)
+    assert len(result.run.relationship_results) == len(result.run.candidate_packages.packages)
+    assert len(result.artifact.runs) == (
+        len(result.run.guide_results) + len(result.run.card_results) + len(batches)
     )
     assert all(run.run_id.startswith("work-") for run in result.artifact.runs)
     assert b'"content"' not in result.artifact.to_bytes()
@@ -1143,7 +1180,7 @@ def test_reasoning_provenance_timestamps_tokens_and_unknown_cost_reconcile(
     assert {run.prompt_id for run in runs} == {
         GUIDE_EXTRACTION_PROMPT_ID,
         CARD_CAPABILITY_EXTRACTION_PROMPT_ID,
-        RELATIONSHIP_VALIDATION_PROMPT_ID,
+        RELATIONSHIP_BATCH_VALIDATION_PROMPT_ID,
     }
     assert len(
         {
@@ -1459,11 +1496,19 @@ def _durable_identities(work_dir: Path) -> dict[str, WorkIdentity]:
 
 def _namespaced_relationship_ids(work_dir: Path) -> set[str]:
     """Return every namespaced relationship id the durable work would produce."""
-    return {
-        f"{run_id}:{identity.subject_id}"
-        for run_id, identity in _durable_identities(work_dir).items()
-        if identity.work_kind is WorkKind.RELATIONSHIP
-    }
+    identifiers: set[str] = set()
+    for path in (work_dir / "results").glob("*.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        identity = WorkIdentity.from_json(payload["identity"])
+        if identity.work_kind is not WorkKind.RELATIONSHIP:
+            continue
+        for verdict in payload["result"]["verdicts"]:
+            stored = verdict["relationship"]
+            if stored is None:
+                continue
+            relationship = ValidatedRelationship.from_json(stored)
+            identifiers.add(f"work-{identity.content_sha256}:{relationship.finding_id}")
+    return identifiers
 
 
 def test_colliding_accepted_relationships_retain_the_lowest_namespaced_identifier(
