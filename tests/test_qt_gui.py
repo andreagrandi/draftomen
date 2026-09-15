@@ -327,6 +327,76 @@ def test_live_gui_profile_flags_use_cached_provider_state_without_network(
     assert attempted_requests == []
 
 
+def test_gui_provider_exposes_test_draft_capability_only_with_the_opt_in(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    base_args = [
+        "--provider",
+        "live",
+        "--app-dir",
+        str(app_dir),
+        "--log-path",
+        str(tmp_path / "Player.log"),
+        "--poll-interval",
+        "0.01",
+        "--no-startup-scan",
+    ]
+
+    arena_only = _build_provider(
+        args=_parser().parse_args(base_args),
+        contextual_adjustments_enabled=False,
+    )
+
+    assert arena_only.state["test_draft"]["enabled"] is False
+
+    opted_in = _build_provider(
+        args=_parser().parse_args(
+            [*base_args, "--draftmancer-dir", str(tmp_path / "Draftmancer")]
+        ),
+        contextual_adjustments_enabled=False,
+    )
+
+    assert opted_in.state["test_draft"]["enabled"] is True
+
+
+def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    card_data_path = app_dir / "card-data" / "hob.json.gz"
+    card_data_path.parent.mkdir(parents=True, exist_ok=True)
+    card_data_path.write_bytes(gzip.compress(b"{}"))
+    checkout = tmp_path / "Draftmancer"
+    constants_path = checkout / "src" / "data" / "constants.json"
+    constants_path.parent.mkdir(parents=True, exist_ok=True)
+    constants_path.write_text('{"MTGASets": ["HOB", "XYZ"]}', encoding="utf-8")
+
+    provider = _build_provider(
+        args=_parser().parse_args(
+            [
+                "--provider",
+                "live",
+                "--app-dir",
+                str(app_dir),
+                "--draftmancer-dir",
+                str(checkout),
+                "--log-path",
+                str(tmp_path / "Player.log"),
+                "--poll-interval",
+                "0.01",
+                "--no-startup-scan",
+            ]
+        ),
+        contextual_adjustments_enabled=False,
+    )
+
+    factory = provider._test_draft_factory  # type: ignore[attr-defined]
+
+    assert factory is not None
+    assert factory.supported_set_codes() == ("hob",)
+
+
 def test_verify_bundled_profile_flag_is_hidden_and_parsed() -> None:
     parser = _parser()
 

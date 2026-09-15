@@ -20,6 +20,7 @@ from draftomen.card_data_client import (
     CardDataClient,
     CardDataClientError,
     card_data_cache_path,
+    cached_card_data_set_codes,
 )
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.set_card_data import SetCardData
@@ -84,6 +85,21 @@ def test_cache_path_normalizes_code_and_rejects_unsafe_values(tmp_path: Path) ->
     for unsafe in ("", "../tst", "tst/other", "tst\\other", "tst.json.gz", " tst"):
         with pytest.raises(CardDataClientError):
             card_data_cache_path(set_code=unsafe, app_dir=tmp_path)
+
+
+def test_cached_card_data_set_codes_lists_only_valid_cached_artifacts(tmp_path: Path) -> None:
+    assert cached_card_data_set_codes(app_dir=tmp_path) == ()
+
+    directory = tmp_path / "card-data"
+    directory.mkdir(parents=True)
+    (directory / "hob.json.gz").write_bytes(b"")
+    (directory / "lci.json.gz").write_bytes(b"")
+    (directory / "Bad.json.gz").write_bytes(b"")
+    (directory / "notes.txt").write_bytes(b"")
+    (directory / "hob.json").write_bytes(b"")
+    (directory / "msh.json.gz").mkdir()
+
+    assert cached_card_data_set_codes(app_dir=tmp_path) == ("hob", "lci")
 
 
 def test_cold_load_uses_safe_url_headers_timeout_and_atomically_caches(tmp_path: Path) -> None:

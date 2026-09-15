@@ -18,6 +18,8 @@ import zlib
 
 from draftomen.card_data_client import CardDataClient
 from draftomen.carddb import CardDatabase
+from draftomen.cardimages import CardImageService
+from draftomen.corpus import DEFAULT_CACHE_DIR
 from draftomen.draftmancer import (
     DraftmancerAdapter,
     DraftmancerAdapterError,
@@ -39,6 +41,12 @@ from draftomen.session import (
 
 DRAFTMANCER_TEST_USER_NAME = "Draft Omen test draft"
 SIMULATION_DIRECTORY_PREFIX = "draftomen-test-draft-"
+DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE = (
+    DEFAULT_CACHE_DIR / "sources" / "scryfall-default-cards.jsonl.gz"
+)
+DEFAULT_TEST_DRAFT_SERVER_URL = "http://127.0.0.1:3000"
+DEFAULT_TEST_DRAFT_SET_CODE = "HOB"
+DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS = 10.0
 BUILD_FAILED_ERROR_CODE = "build_failed"
 
 TestDraftStage: TypeAlias = Literal["startup", "readiness", "drafting", "build"]
@@ -651,6 +659,7 @@ def create_test_draft_runtime(
     ai_enhanced_suggestions_enabled: bool = True,
     simulation_app_dir: Path | None = None,
     socket_client: object | None = None,
+    card_image_service: CardImageService | None = None,
 ) -> TestDraftRuntime:
     """Create one isolated simulated draft runtime from validated sources.
     The returned runtime owns its session, adapter, and temporary directory.
@@ -741,6 +750,7 @@ def create_test_draft_runtime(
                 card_database=card_database,
                 profile_client=profile_client,
                 snapshot_publisher=snapshot_publisher,
+                card_image_service=card_image_service,
                 splash_enabled=splash_enabled,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
                 ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,

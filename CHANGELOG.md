@@ -3,6 +3,26 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Add the developer Test Draft opt-in to the native GUI and the serialized worker
+  lifecycle behind it (#547): `draftomen/qt_gui.py` accepts `--draftmancer-dir` to pin a
+  Draftmancer checkout beside `--scryfall-bulk-file`, `--test-draft-server-url`, and
+  `--test-draft-timeout`, builds the runtime factory only behind that explicit opt-in,
+  and leaves the mock provider and every run without the flag on the unchanged
+  Arena-only contract; `draftomen/qt_adapter.py` publishes the immutable
+  `TestDraftSessionState` (capability, authoritative source, phase, mode, set code,
+  supported and default set codes, pending flag, opaque `offer_generation`, and error)
+  with the `TestDraftFactory` boundary and the `startTestDraft`, `pickTestDraft`, and
+  `leaveTestDraft` provider intentions, and runs that lifecycle on the existing worker
+  thread, so the Arena `LiveSession` stays retained while a separate simulated source is
+  authoritative, Arena snapshots, image completions, and profile refreshes are dropped
+  by their source generation while simulated snapshots are dropped by their runtime
+  generation, manual picks submit at most once per published offer generation, leaving
+  restores the retained Arena session with exactly one poll, and the splash,
+  contextual-scoring, and AI-enhanced preference values are shared with the simulated
+  session and replayed onto Arena on leave; `draftomen/card_data_client.py` gains
+  `cached_card_data_set_codes(...)` and `draftomen/test_draft.py` now exports the shared
+  `DEFAULT_TEST_DRAFT_*` constants and accepts an injected `CardImageService`, so the
+  offered sets intersect the pinned checkout with locally cached card data.
 - Make the test-draft runtime cancellable and reusable (#546):
   `draftomen/test_draft.py` exposes `create_test_draft_runtime(...)`, which performs the
   supported-set, card-data, Scryfall-identity, and profile-source preflight and returns a

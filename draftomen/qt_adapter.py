@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from dataclasses import fields, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 from os import PathLike
-from typing import Any, Literal, TypeAlias, cast
+from typing import Any, Literal, Protocol, TypeAlias, cast
 
 from PySide6.QtCore import (
     Property,
@@ -57,8 +57,55 @@ from draftomen.session import (
     RetryError,
     SnapshotPublisher,
 )
+from draftomen.test_draft import (
+    DEFAULT_TEST_DRAFT_SET_CODE,
+    TestDraftOfferIdentity,
+    TestDraftRuntime,
+)
 
 SessionFactory = Callable[[SnapshotPublisher], LiveSession]
+
+TestDraftMode: TypeAlias = Literal["manual", "auto"]
+TestDraftSource: TypeAlias = Literal["arena", "test-draft"]
+TestDraftPhase: TypeAlias = Literal["idle", "starting", "drafting", "completed", "failed"]
+
+TEST_DRAFT_MODES: tuple[TestDraftMode, ...] = ("manual", "auto")
+
+
+@dataclass(frozen=True, slots=True)
+class TestDraftSessionState:
+    """Publish the native Test Draft capability, source, and pick token."""
+
+    enabled: bool = False
+    active: bool = False
+    phase: TestDraftPhase = "idle"
+    mode: TestDraftMode | None = None
+    set_code: str | None = None
+    supported_set_codes: tuple[str, ...] = ()
+    default_set_code: str | None = None
+    pending: bool = False
+    offer_generation: int = 0
+    error: str | None = None
+
+
+class TestDraftFactory(Protocol):
+    """Create simulated draft runtimes and report the supported set codes."""
+
+    def supported_set_codes(self) -> tuple[str, ...]:
+        ...
+
+    def create_runtime(
+        self,
+        *,
+        set_code: str,
+        publisher: SnapshotPublisher,
+        splash_enabled: bool,
+        contextual_adjustments_enabled: bool,
+        ai_enhanced_suggestions_enabled: bool,
+    ) -> TestDraftRuntime:
+        ...
+
+
 _ImageRequestKind: TypeAlias = Literal["selected", "recommendation", "recent"]
 _OMITTED_SNAPSHOT_FIELDS = frozenset(("current_pack_event", "current_scored_pack"))
 
@@ -487,6 +534,9 @@ class SessionAdapter(QObject):
         super().__init__(parent)
         self._state: dict[str, Any] = {}
         self._state_before_failure: dict[str, Any] | None = None
+        self._test_draft_state: dict[str, Any] = _to_qml_value(
+            TestDraftSessionState()
+        )
         self._recommendations_model = RecommendationListModel(parent=self)
         self._publish(snapshot=LiveSessionSnapshot() if snapshot is None else snapshot)
 
@@ -581,6 +631,18 @@ class SessionAdapter(QObject):
     def retryError(self, error_id: str) -> None:
         self._dispatch(command=RetryError(error_id=error_id))
 
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        del mode, set_code
+
+    @Slot(int, int)
+    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+        del grp_id, offer_generation
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        return
+
     def _dispatch(self, *, command: LiveSessionCommand) -> None:
         raise NotImplementedError
 
@@ -611,7 +673,12 @@ class SessionAdapter(QObject):
         self._replace_state(state=state)
 
     def _publish(self, *, snapshot: LiveSessionSnapshot) -> None:
-        self._replace_state(state=cast(dict[str, Any], _to_qml_value(snapshot)))
+        state = cast(dict[str, Any], _to_qml_value(snapshot))
+        state["test_draft"] = self._test_draft_state_value()
+        self._replace_state(state=state)
+
+    def _test_draft_state_value(self) -> dict[str, Any]:
+        return self._test_draft_state
 
     def _replace_state(self, *, state: dict[str, Any]) -> None:
         if state == self._state:
@@ -632,14 +699,13 @@ class _CardImageFetchWorker(QObject):
 
     resultReady = Signal(object, object, str)
 
-    def __init__(self, *, session: LiveSession) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._session = session
 
-    @Slot(object)
-    def fetch(self, request: CardImageRequest) -> None:
+    @Slot(object, object)
+    def fetch(self, session: LiveSession, request: CardImageRequest) -> None:
         try:
-            result = self._session.fetch_card_image(request=request)
+            result = session.fetch_card_image(request=request)
         except Exception as error:  # pragma: no cover - network boundary.
             self.resultReady.emit(request, None, str(error))
         else:
@@ -672,10 +738,11 @@ class _ProfileRefreshWorker(QObject):
 
 
 class _LiveSessionWorker(QObject):
-    _imageFetchRequested = Signal(object)
+    _imageFetchRequested = Signal(object, object)
     _imageScheduleRequested = Signal()
     _profileRefreshRequested = Signal(object)
     snapshotReady = Signal(object)
+    testDraftStateReady = Signal(object)
     failed = Signal(str)
     finished = Signal()
 
@@ -686,12 +753,14 @@ class _LiveSessionWorker(QObject):
         poll_interval_ms: int,
         startup_scan: bool,
         profile_client: ProfileClient | None = None,
+        test_draft_factory: TestDraftFactory | None = None,
     ) -> None:
         super().__init__()
         self._session_factory = session_factory
         self._poll_interval_ms = poll_interval_ms
         self._startup_scan = startup_scan
         self._profile_client = profile_client
+        self._test_draft_factory = test_draft_factory
         self._session: LiveSession | None = None
         self._timer: QTimer | None = None
         self._stop_requested = False
@@ -702,9 +771,70 @@ class _LiveSessionWorker(QObject):
         self._image_worker: _CardImageFetchWorker | None = None
         self._image_request_in_flight: CardImageRequest | None = None
         self._image_request_kind: _ImageRequestKind | None = None
+        self._image_session: LiveSession | None = None
+        self._image_source_generation = 0
         self._profile_thread: QThread | None = None
         self._profile_worker: _ProfileRefreshWorker | None = None
         self._profile_request_in_flight: ProfileRefreshRequest | None = None
+        self._profile_source_generation = 0
+        self._test_draft_runtime: TestDraftRuntime | None = None
+        self._test_draft_mode: TestDraftMode | None = None
+        self._test_draft_set_code: str | None = None
+        self._test_draft_offer: TestDraftOfferIdentity | None = None
+        self._test_draft_offer_generation = 0
+        self._test_draft_pending = False
+        self._test_draft_leaving = False
+        self._test_draft_phase: TestDraftPhase = "idle"
+        self._test_draft_error: str | None = None
+        self._test_draft_supported_set_codes: tuple[str, ...] = ()
+        self._test_draft_default_set_code: str | None = None
+        self._authoritative_source: TestDraftSource = "arena"
+        self._source_generation = 0
+        self._runtime_generation = 0
+        self._splash_enabled = True
+        self._contextual_adjustments_enabled = True
+        self._ai_enhanced_suggestions_enabled = True
+        self._arena_ai_enabled = True
+
+    def _arena_snapshot_publisher(self, snapshot: LiveSessionSnapshot) -> None:
+        if self._authoritative_source != "arena":
+            return
+        self._publish_snapshot(snapshot)
+
+    def _test_draft_snapshot_publisher(
+        self,
+        *,
+        runtime_generation: int,
+    ) -> SnapshotPublisher:
+        def publish(snapshot: LiveSessionSnapshot) -> None:
+            if (
+                self._authoritative_source != "test-draft"
+                or runtime_generation != self._runtime_generation
+            ):
+                return
+            self._publish_snapshot(snapshot)
+
+        return publish
+
+    def _switch_source(self, *, source: TestDraftSource) -> None:
+        """Change the authoritative source and drop stale in-flight auxiliary work."""
+        self._authoritative_source = source
+        self._source_generation += 1
+        self._image_request_in_flight = None
+        self._image_request_kind = None
+        self._image_session = None
+        self._profile_request_in_flight = None
+        if self._timer is not None:
+            if source == "arena":
+                self._timer.start()
+            else:
+                self._timer.stop()
+
+    def _active_session(self) -> LiveSession | None:
+        runtime = self._test_draft_runtime
+        if self._authoritative_source == "test-draft" and runtime is not None:
+            return runtime.session
+        return self._session
 
     def _publish_snapshot(self, snapshot: LiveSessionSnapshot) -> None:
         if self._stop_requested:
@@ -728,7 +858,7 @@ class _LiveSessionWorker(QObject):
         if session is None or self._image_thread is not None:
             return
         thread = QThread(parent=self)
-        image_worker = _CardImageFetchWorker(session=session)
+        image_worker = _CardImageFetchWorker()
         image_worker.moveToThread(thread)
         self._imageFetchRequested.connect(
             image_worker.fetch,
@@ -774,13 +904,21 @@ class _LiveSessionWorker(QObject):
     def request_stop(self) -> None:
         """Request cooperative stop without queuing behind busy session work."""
         self._stop_requested = True
+        self.request_test_draft_stop()
 
     @Slot()
     def start(self) -> None:
         self._startup_loading = True
         self._startup_snapshot = None
         try:
-            self._session = self._session_factory(self._publish_snapshot)
+            self._session = self._session_factory(self._arena_snapshot_publisher)
+            initial_snapshot = self._session.snapshot
+            self._splash_enabled = initial_snapshot.recommendations.splash_enabled
+            self._contextual_adjustments_enabled = (
+                initial_snapshot.contextual_adjustments_enabled
+            )
+            self._ai_enhanced_suggestions_enabled = True
+            self._arena_ai_enabled = True
             self._start_image_worker()
             self._start_profile_worker()
             self._publish_snapshot(self._session.snapshot)
@@ -809,6 +947,21 @@ class _LiveSessionWorker(QObject):
             self._timer.setInterval(self._poll_interval_ms)
             self._timer.timeout.connect(self._poll)
             self._timer.start()
+            if self._test_draft_factory is not None and not self._stop_requested:
+                try:
+                    self._test_draft_supported_set_codes = (
+                        self._test_draft_factory.supported_set_codes()
+                    )
+                    default_code = DEFAULT_TEST_DRAFT_SET_CODE.casefold()
+                    if default_code in self._test_draft_supported_set_codes:
+                        self._test_draft_default_set_code = default_code
+                    elif self._test_draft_supported_set_codes:
+                        self._test_draft_default_set_code = (
+                            self._test_draft_supported_set_codes[0]
+                        )
+                except Exception as error:
+                    self._test_draft_error = str(error)
+                self._publish_test_draft_state()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             if not self._stop_requested:
                 self.failed.emit(str(error))
@@ -816,10 +969,25 @@ class _LiveSessionWorker(QObject):
 
     @Slot(object)
     def dispatch(self, command: LiveSessionCommand) -> None:
-        if self._session is None or self._stop_requested:
+        session = self._active_session()
+        if session is None or self._stop_requested:
+            return
+        if self._authoritative_source == "test-draft" and isinstance(
+            command, (ChooseAccount, RequestBacktest)
+        ):
             return
         try:
-            self._session.dispatch(command=command)
+            session.dispatch(command=command)
+            if isinstance(command, ChangeSplashPreference):
+                self._splash_enabled = command.enabled
+            elif isinstance(command, ChangeContextualScoring):
+                self._contextual_adjustments_enabled = command.enabled
+            elif isinstance(command, ChangeAiEnhancedSuggestions):
+                self._ai_enhanced_suggestions_enabled = command.enabled
+            if self._authoritative_source == "arena" and isinstance(
+                command, ChangeAiEnhancedSuggestions
+            ):
+                self._arena_ai_enabled = command.enabled
             if isinstance(command, ChangeContextualScoring):
                 return
             self._request_one_card_image()
@@ -830,6 +998,8 @@ class _LiveSessionWorker(QObject):
 
     @Slot()
     def _poll(self) -> bool:
+        if self._authoritative_source != "arena":
+            return False
         if self._session is None:
             return False
         if self._stop_requested:
@@ -852,7 +1022,7 @@ class _LiveSessionWorker(QObject):
     def _request_one_card_image(self) -> None:
         """Schedule one image, prioritizing focus before pack thumbnails."""
 
-        session = self._session
+        session = self._active_session()
         if (
             session is None
             or self._stop_requested
@@ -880,14 +1050,17 @@ class _LiveSessionWorker(QObject):
 
         self._image_request_in_flight = request
         self._image_request_kind = request_kind
-        self._imageFetchRequested.emit(request)
+        self._image_session = session
+        self._image_source_generation = self._source_generation
+        self._imageFetchRequested.emit(session, request)
 
     def _request_profile_refresh(self) -> None:
         """Schedule the one pending profile refresh without blocking polling."""
 
         session = self._session
         if (
-            session is None
+            self._authoritative_source != "arena"
+            or session is None
             or self._profile_client is None
             or self._stop_requested
             or self._profile_request_in_flight is not None
@@ -901,6 +1074,7 @@ class _LiveSessionWorker(QObject):
         if request is None:
             return
         self._profile_request_in_flight = request
+        self._profile_source_generation = self._source_generation
         self._profileRefreshRequested.emit(request)
 
     @Slot(object, object, str)
@@ -913,10 +1087,13 @@ class _LiveSessionWorker(QObject):
         """Apply the result in the session thread and queue the next request."""
         if request != self._image_request_in_flight:
             return
+        if self._image_source_generation != self._source_generation:
+            return
         request_kind = self._image_request_kind
         self._image_request_in_flight = None
         self._image_request_kind = None
-        session = self._session
+        session = self._image_session
+        self._image_session = None
         if session is None or self._stop_requested:
             return
 
@@ -974,6 +1151,8 @@ class _LiveSessionWorker(QObject):
 
         if request != self._profile_request_in_flight:
             return
+        if self._profile_source_generation != self._source_generation:
+            return
         self._profile_request_in_flight = None
         session = self._session
         if session is None or self._stop_requested:
@@ -995,6 +1174,220 @@ class _LiveSessionWorker(QObject):
         finally:
             self._request_profile_refresh()
 
+    def _publish_test_draft_state(self) -> None:
+        if self._stop_requested:
+            return
+        self.testDraftStateReady.emit(
+            TestDraftSessionState(
+                enabled=self._test_draft_factory is not None,
+                active=self._authoritative_source == "test-draft",
+                phase=self._test_draft_phase,
+                mode=self._test_draft_mode,
+                set_code=self._test_draft_set_code,
+                supported_set_codes=self._test_draft_supported_set_codes,
+                default_set_code=self._test_draft_default_set_code,
+                pending=self._test_draft_pending,
+                offer_generation=self._test_draft_offer_generation,
+                error=self._test_draft_error,
+            )
+        )
+
+    @Slot(str, str)
+    def start_test_draft(self, mode: str, set_code: str) -> None:
+        """Create one simulated runtime and make it the authoritative source."""
+
+        if self._test_draft_factory is None or self._stop_requested:
+            return
+        if self._test_draft_runtime is not None or self._test_draft_pending:
+            return
+        if self._test_draft_leaving:
+            return
+        if mode not in TEST_DRAFT_MODES:
+            self._test_draft_phase = "failed"
+            self._test_draft_error = f"Unsupported Test Draft mode: {mode}"
+            self._publish_test_draft_state()
+            return
+        trimmed_set_code = set_code.strip()
+        if not trimmed_set_code:
+            self._test_draft_phase = "failed"
+            self._test_draft_error = "The Test Draft set code must not be empty."
+            self._publish_test_draft_state()
+            return
+
+        self._test_draft_pending = True
+        self._test_draft_error = None
+        self._test_draft_mode = cast(TestDraftMode, mode)
+        self._test_draft_set_code = trimmed_set_code
+        self._test_draft_phase = "starting"
+        self._test_draft_offer = None
+        self._test_draft_offer_generation = 0
+        self._publish_test_draft_state()
+        try:
+            self._runtime_generation += 1
+            generation = self._runtime_generation
+            runtime = self._test_draft_factory.create_runtime(
+                set_code=trimmed_set_code,
+                publisher=self._test_draft_snapshot_publisher(
+                    runtime_generation=generation
+                ),
+                splash_enabled=self._splash_enabled,
+                contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+                ai_enhanced_suggestions_enabled=self._ai_enhanced_suggestions_enabled,
+            )
+            if self._stop_requested or self._test_draft_leaving:
+                runtime.close()
+                self._runtime_generation += 1
+                return
+            self._test_draft_runtime = runtime
+            if mode == "manual":
+                inspection = runtime.controller.start()
+                self._switch_source(source="test-draft")
+                self._test_draft_offer = inspection.offer
+                self._test_draft_offer_generation = 1
+                self._test_draft_phase = "drafting"
+                self._publish_test_draft_state()
+                self._publish_snapshot(runtime.session.snapshot)
+                self._request_one_card_image()
+            else:
+                self._switch_source(source="test-draft")
+                self._test_draft_phase = "drafting"
+                self._publish_test_draft_state()
+                result = runtime.controller.run_auto()
+                self._test_draft_phase = "completed"
+                self._test_draft_offer = None
+                self._test_draft_offer_generation = 0
+                self._publish_snapshot(result.build)
+                self._request_one_card_image()
+        except Exception as error:
+            self._fail_test_draft(message=str(error))
+        finally:
+            self._test_draft_pending = False
+            self._publish_test_draft_state()
+
+    def _fail_test_draft(self, *, message: str) -> None:
+        """Report one Test Draft failure without disturbing an untouched Arena."""
+        self._test_draft_phase = "failed"
+        self._test_draft_error = message
+        self._test_draft_offer = None
+        self._test_draft_offer_generation = 0
+        if self._authoritative_source == "test-draft":
+            return  # runtime stays owned until leave/shutdown
+        self._close_test_draft_runtime()
+
+    @Slot(int, int)
+    def pick_test_draft(self, grp_id: int, offer_generation: int) -> None:
+        """Confirm one inspected simulated offer and publish the next pack."""
+
+        runtime = self._test_draft_runtime
+        if (
+            self._stop_requested
+            or self._test_draft_leaving
+            or runtime is None
+            or self._authoritative_source != "test-draft"
+            or self._test_draft_mode != "manual"
+            or self._test_draft_pending
+            or self._test_draft_offer is None
+            or offer_generation <= 0
+            or offer_generation != self._test_draft_offer_generation
+        ):
+            return
+        self._test_draft_pending = True
+        self._publish_test_draft_state()
+        try:
+            step = runtime.controller.confirm(
+                grp_id=grp_id,
+                expected_offer=self._test_draft_offer,
+            )
+            self._publish_snapshot(step.after)
+            if step.after.draft is not None and step.after.draft.completed:
+                self._test_draft_offer = None
+                self._test_draft_offer_generation = 0
+                self._test_draft_phase = "completed"
+            else:
+                inspection = runtime.controller.inspect()
+                self._test_draft_offer = inspection.offer
+                self._test_draft_offer_generation += 1
+                self._test_draft_phase = "drafting"
+                self._request_one_card_image()
+        except Exception as error:
+            if self._stop_requested or self._test_draft_leaving:
+                return
+            self._fail_test_draft(message=str(error))
+        finally:
+            self._test_draft_pending = False
+            self._publish_test_draft_state()
+
+    def request_test_draft_stop(self) -> None:
+        """Cancel blocked simulated work without queueing behind it."""
+        self._test_draft_leaving = True
+        runtime = self._test_draft_runtime
+        if runtime is not None:
+            runtime.cancel()
+
+    @Slot()
+    def leave_test_draft(self) -> None:
+        """Return to Arena authority and release the simulated runtime."""
+
+        if self._stop_requested:
+            return
+        if self._test_draft_runtime is not None:
+            switched = self._authoritative_source == "test-draft"
+            self._close_test_draft_runtime()
+            if switched:
+                self._switch_source(source="arena")
+                try:
+                    self._restore_arena_preferences()
+                except Exception as error:
+                    self.failed.emit(str(error))
+                self._poll()
+        self._test_draft_mode = None
+        self._test_draft_set_code = None
+        self._test_draft_offer = None
+        self._test_draft_offer_generation = 0
+        self._test_draft_phase = "idle"
+        self._test_draft_error = None
+        self._test_draft_leaving = False
+        self._publish_test_draft_state()
+
+    def _close_test_draft_runtime(self) -> None:
+        runtime = self._test_draft_runtime
+        self._test_draft_runtime = None
+        self._test_draft_offer = None
+        self._test_draft_offer_generation = 0
+        self._runtime_generation += 1
+        if runtime is None:
+            return
+        try:
+            runtime.cancel()
+            runtime.close()
+        except Exception as error:
+            if not self._stop_requested:
+                self.failed.emit(str(error))
+
+    def _restore_arena_preferences(self) -> None:
+        session = self._session
+        if session is None:
+            return
+        snapshot = session.snapshot
+        if snapshot.recommendations.splash_enabled != self._splash_enabled:
+            session.dispatch(command=ChangeSplashPreference(enabled=self._splash_enabled))
+        if (
+            snapshot.contextual_adjustments_enabled
+            != self._contextual_adjustments_enabled
+        ):
+            session.dispatch(
+                command=ChangeContextualScoring(
+                    enabled=self._contextual_adjustments_enabled
+                )
+            )
+        if self._arena_ai_enabled != self._ai_enhanced_suggestions_enabled:
+            session.dispatch(
+                command=ChangeAiEnhancedSuggestions(
+                    enabled=self._ai_enhanced_suggestions_enabled
+                )
+            )
+            self._arena_ai_enabled = self._ai_enhanced_suggestions_enabled
+
     @Slot()
     def stop(self) -> None:
         self._stop_requested = True
@@ -1004,6 +1397,7 @@ class _LiveSessionWorker(QObject):
             return
         if self._timer is not None:
             self._timer.stop()
+        self._close_test_draft_runtime()
         if self._session is not None:
             try:
                 self._session.stop()
@@ -1032,6 +1426,9 @@ class LiveSessionAdapter(SessionAdapter):
     """
 
     _commandRequested = Signal(object)
+    _testDraftStartRequested = Signal(str, str)
+    _testDraftPickRequested = Signal(int, int)
+    _testDraftLeaveRequested = Signal()
 
     def __init__(
         self,
@@ -1040,6 +1437,7 @@ class LiveSessionAdapter(SessionAdapter):
         poll_interval_ms: int,
         startup_scan: bool = True,
         profile_client: ProfileClient | None = None,
+        test_draft_factory: TestDraftFactory | None = None,
         parent: QObject | None = None,
     ) -> None:
         if poll_interval_ms <= 0:
@@ -1049,8 +1447,13 @@ class LiveSessionAdapter(SessionAdapter):
         self._poll_interval_ms = poll_interval_ms
         self._startup_scan = startup_scan
         self._profile_client = profile_client
+        self._test_draft_factory = test_draft_factory
         self.thread: QThread | None = None
         self._worker: _LiveSessionWorker | None = None
+        self._test_draft_state: dict[str, Any] = _to_qml_value(
+            TestDraftSessionState(enabled=test_draft_factory is not None)
+        )
+        self._replace_state(state=self._state | {"test_draft": self._test_draft_state})
 
     @Slot()
     def start(self) -> None:
@@ -1062,12 +1465,29 @@ class LiveSessionAdapter(SessionAdapter):
             poll_interval_ms=self._poll_interval_ms,
             startup_scan=self._startup_scan,
             profile_client=self._profile_client,
+            test_draft_factory=self._test_draft_factory,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.start)
         self._commandRequested.connect(worker.dispatch, Qt.ConnectionType.QueuedConnection)
+        self._testDraftStartRequested.connect(
+            worker.start_test_draft,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._testDraftPickRequested.connect(
+            worker.pick_test_draft,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._testDraftLeaveRequested.connect(
+            worker.leave_test_draft,
+            Qt.ConnectionType.QueuedConnection,
+        )
         worker.snapshotReady.connect(
             self._apply_snapshot,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        worker.testDraftStateReady.connect(
+            self._apply_test_draft_state,
             Qt.ConnectionType.QueuedConnection,
         )
         worker.failed.connect(self._apply_failure, Qt.ConnectionType.QueuedConnection)
@@ -1100,6 +1520,38 @@ class LiveSessionAdapter(SessionAdapter):
         thread = self.thread
         if thread is not None and thread.isRunning():
             thread.wait()
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        if self._test_draft_state.get("enabled") is not True or self._worker is None:
+            return
+        self._testDraftStartRequested.emit(mode, set_code)
+
+    @Slot(int, int)
+    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+        if self._worker is None:
+            return
+        self._testDraftPickRequested.emit(grp_id, offer_generation)
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        worker = self._worker
+        if worker is None:
+            return
+        # Unblock a blocked start or pick before the queued leave slot runs.
+        worker.request_test_draft_stop()
+        self._testDraftLeaveRequested.emit()
+
+    @Slot(object)
+    def _apply_test_draft_state(self, state: TestDraftSessionState) -> None:
+        value = cast(dict[str, Any], _to_qml_value(state))
+        if value == self._test_draft_state:
+            return
+        self._test_draft_state = value
+        self._replace_state(state=self._state | {"test_draft": value})
+
+    def _test_draft_state_value(self) -> dict[str, Any]:
+        return self._test_draft_state
 
     def _dispatch(self, *, command: LiveSessionCommand) -> None:
         self._commandRequested.emit(command)
