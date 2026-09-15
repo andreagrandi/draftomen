@@ -1,8 +1,9 @@
 """Smoke-test a compiled Draftomen bundle with mock, live, and Test Draft runs.
 The default mode launches the bundle twice in deterministic mock and default live
-configurations; --test-draft drives one manual Test Draft journey against a pinned
-Draftmancer server. This helper intentionally imports only the standard library so
-the target bundle is what supplies the application and PySide6 runtime.
+configurations; --test-draft drives the Auto and Manual real-server Test Draft
+journeys against a pinned Draftmancer checkout. This helper intentionally imports
+only the standard library so the target bundle is what supplies the application and
+PySide6 runtime.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from tempfile import TemporaryDirectory
 
 DEFAULT_PROCESS_TIMEOUT_SECONDS = 60
 DEFAULT_TEST_DRAFT_PROCESS_TIMEOUT_SECONDS = 1200
+REQUIRED_MANUAL_PICKS = 5
 DEFAULT_SERVER_URL = "http://127.0.0.1:3000"
 TEST_DRAFT_SUMMARY_PREFIX = "Test Draft smoke: "
 
@@ -30,7 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Launch a compiled Draftomen bundle in deterministic mock mode and then "
-            "as a default live start, or run the opt-in manual Test Draft journey."
+            "as a default live start, or run the opt-in Auto and Manual Test Draft "
+            "journeys."
         ),
     )
     parser.add_argument("bundle", type=Path)
@@ -48,8 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--test-draft",
         action="store_true",
         help=(
-            "Run the manual real-server Test Draft journey against a pinned "
-            "Draftmancer checkout and its running server; never part of CI."
+            "Run the Auto and Manual real-server Test Draft journeys against a "
+            "pinned Draftmancer checkout and its running server; never part of CI."
         ),
     )
     parser.add_argument(
@@ -73,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--server-url",
         default=DEFAULT_SERVER_URL,
-        help="Draftmancer server the manual Test Draft journey connects to.",
+        help="Draftmancer server the Auto and Manual Test Draft journeys connect to.",
     )
     return parser
 
@@ -244,7 +247,7 @@ def _run_test_draft_smoke(
     server_url: str,
     timeout: int,
 ) -> int:
-    """Drive one manual Test Draft journey against a pinned Draftmancer server."""
+    """Drive the Auto and Manual Test Draft journeys against a pinned server."""
 
     problems: list[str] = []
     if draftmancer_dir is None:
@@ -277,37 +280,77 @@ def _run_test_draft_smoke(
     _probe_draftmancer_server(server_url=server_url)
 
     with TemporaryDirectory(prefix="draftomen-bundle-smoke-") as temporary_dir:
-        log_path = Path(temporary_dir) / "Player.log"
-        log_path.touch()
-        command = [
-            str(executable),
-            "--provider",
-            "live",
-            "--draftmancer-dir",
-            str(draftmancer_dir),
-            "--scryfall-bulk-file",
-            str(scryfall_bulk_file),
-            "--app-dir",
-            str(app_dir),
-            "--log-path",
-            str(log_path),
-            "--no-startup-scan",
-            "--offline-profiles",
-            "--test-draft-server-url",
-            server_url,
-            "--test-draft-smoke",
-        ]
-        result = subprocess.run(
-            args=command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            cwd=executable.parent,
-            env=_clean_environment(environment=os.environ),
-            timeout=timeout,
-        )
+        directory = Path(temporary_dir)
+        for journey in ("auto", "manual"):
+            journey_directory = directory / journey
+            journey_directory.mkdir(parents=True, exist_ok=True)
+            log_path = journey_directory / "Player.log"
+            log_path.touch()
+            summary = _run_test_draft_journey(
+                journey=journey,
+                executable=executable,
+                draftmancer_dir=draftmancer_dir,
+                scryfall_bulk_file=scryfall_bulk_file,
+                app_dir=app_dir,
+                server_url=server_url,
+                log_path=log_path,
+                timeout=timeout,
+            )
+            print(
+                json.dumps(
+                    {**summary, "bundle": str(executable), "journey": journey},
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+
+    _probe_draftmancer_server(server_url=server_url)
+    return 0
+
+
+def _run_test_draft_journey(
+    *,
+    journey: str,
+    executable: Path,
+    draftmancer_dir: Path,
+    scryfall_bulk_file: Path,
+    app_dir: Path,
+    server_url: str,
+    log_path: Path,
+    timeout: int,
+) -> dict[str, object]:
+    """Run one compiled Test Draft journey and return its validated summary."""
+
+    command = [
+        str(executable),
+        "--provider",
+        "live",
+        "--draftmancer-dir",
+        str(draftmancer_dir),
+        "--scryfall-bulk-file",
+        str(scryfall_bulk_file),
+        "--app-dir",
+        str(app_dir),
+        "--log-path",
+        str(log_path),
+        "--no-startup-scan",
+        "--offline-profiles",
+        "--test-draft-server-url",
+        server_url,
+        "--test-draft-smoke",
+        journey,
+    ]
+    result = subprocess.run(
+        args=command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        cwd=executable.parent,
+        env=_clean_environment(environment=os.environ),
+        timeout=timeout,
+    )
 
     process_output = (
         f"exit code {result.returncode}; "
@@ -344,40 +387,56 @@ def _run_test_draft_smoke(
             f"{summary_line!r}; {process_output}"
         )
 
-    set_code = summary.get("set_code")
-    picks = summary.get("picks")
-    deck_size = summary.get("deck_size")
-    if (
-        summary.get("status") != "ok"
-        or not isinstance(set_code, str)
-        or not set_code
-        or not isinstance(picks, int)
-        or picks <= 0
-        or not isinstance(deck_size, int)
-        or deck_size <= 0
-    ):
+    if summary.get("status") != "ok":
         raise RuntimeError(
-            f"Test Draft smoke test reported an unusable summary line "
-            f"{summary_line!r}; {process_output}"
+            f"Test Draft smoke test reported status {summary.get('status')!r} for "
+            f"the {journey} journey; {process_output}"
         )
 
-    _probe_draftmancer_server(server_url=server_url)
-
-    print(
-        json.dumps(
-            {
-                "status": "ok",
-                "bundle": str(executable),
-                "set_code": set_code,
-                "picks": picks,
-                "deck_size": deck_size,
-                "selected_pair": summary.get("selected_pair"),
-            },
-            separators=(",", ":"),
-            sort_keys=True,
+    mode = summary.get("mode")
+    if mode != journey:
+        raise RuntimeError(
+            f"Test Draft smoke test reported mode {mode!r} for the {journey} "
+            f"journey; {process_output}"
         )
-    )
-    return 0
+
+    set_code = summary.get("set_code")
+    if not isinstance(set_code, str) or not set_code:
+        raise RuntimeError(
+            f"Test Draft smoke test reported no set code for the {journey} "
+            f"journey; {process_output}"
+        )
+
+    picks = summary.get("picks")
+    if journey == "auto":
+        deck_size = summary.get("deck_size")
+        if (
+            not isinstance(picks, int)
+            or picks <= 0
+            or not isinstance(deck_size, int)
+            or deck_size <= 0
+        ):
+            raise RuntimeError(
+                f"Test Draft smoke test reported an unusable auto summary line "
+                f"{summary_line!r}; {process_output}"
+            )
+    else:
+        non_top_rank = summary.get("non_top_rank")
+        pool_total = summary.get("pool_total")
+        if (
+            not isinstance(picks, int)
+            or picks < REQUIRED_MANUAL_PICKS
+            or not isinstance(non_top_rank, int)
+            or non_top_rank < 2
+            or not isinstance(pool_total, int)
+            or pool_total <= 0
+        ):
+            raise RuntimeError(
+                f"Test Draft smoke test reported an unusable manual summary line "
+                f"{summary_line!r}; {process_output}"
+            )
+
+    return summary
 
 
 def _probe_draftmancer_server(*, server_url: str) -> None:

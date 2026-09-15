@@ -73,9 +73,10 @@ def _completed_process(
     *,
     command: list[str],
     stdout: str = "",
+    returncode: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
-        args=command, returncode=0, stdout=stdout, stderr=""
+        args=command, returncode=returncode, stdout=stdout, stderr=""
     )
 
 
@@ -101,6 +102,38 @@ def _create_macos_bundle(
     with (bundle_path / "Contents" / "Info.plist").open(mode="wb") as plist_file:
         plistlib.dump(metadata, plist_file)
     return bundle_path
+
+
+def _prepare_test_draft_journey(
+    *,
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    """Create the pinned Test Draft inputs and stub the server probe."""
+
+    bundle_path = root / "Draftomen.exe"
+    bundle_path.write_bytes(b"executable")
+    draftmancer_dir = root / "Draftmancer"
+    draftmancer_dir.mkdir()
+    scryfall_bulk_file = root / "scryfall-default-cards.jsonl.gz"
+    scryfall_bulk_file.write_bytes(b"bulk")
+    app_dir = root / "prepared-app"
+    app_dir.mkdir()
+
+    def fake_probe(*, server_url: str) -> None:
+        assert server_url == bundle_smoke.DEFAULT_SERVER_URL
+
+    monkeypatch.setattr(bundle_smoke, "_probe_draftmancer_server", fake_probe)
+    return [
+        str(bundle_path),
+        "--test-draft",
+        "--draftmancer-dir",
+        str(draftmancer_dir),
+        "--scryfall-bulk-file",
+        str(scryfall_bulk_file),
+        "--app-dir",
+        str(app_dir),
+    ]
 
 
 def test_bundle_smoke_main_configures_launch_timeout(
@@ -345,7 +378,7 @@ def test_bundle_smoke_test_draft_mode_requires_pinned_sources(
     arguments: dict[str, str],
     error_fragment: str,
 ) -> None:
-    """The manual journey refuses to run without its pinned local inputs."""
+    """Both Test Draft journeys refuse to run without their pinned local inputs."""
 
     bundle_path = tmp_path / "Draftomen.exe"
     bundle_path.write_bytes(b"executable")
@@ -374,7 +407,7 @@ def test_bundle_smoke_test_draft_mode_probes_the_server_and_requires_the_summary
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The manual journey probes the pinned server around the compiled run."""
+    """Both Test Draft journeys probe the pinned server around the compiled runs."""
 
     bundle_path = tmp_path / "Draftomen.exe"
     bundle_path.write_bytes(b"executable")
@@ -397,12 +430,23 @@ def test_bundle_smoke_test_draft_mode_probes_the_server_and_requires_the_summary
     events: list[str] = []
     commands: list[list[str]] = []
     timeouts: list[float] = []
-    summary = {
-        "status": "ok",
-        "set_code": "hob",
-        "picks": 42,
-        "deck_size": 23,
-        "selected_pair": "UB",
+    summaries: dict[str, dict[str, object]] = {
+        "auto": {
+            "status": "ok",
+            "mode": "auto",
+            "set_code": "hob",
+            "picks": 42,
+            "deck_size": 23,
+            "selected_pair": "UB",
+        },
+        "manual": {
+            "status": "ok",
+            "mode": "manual",
+            "set_code": "hob",
+            "picks": 5,
+            "pool_total": 5,
+            "non_top_rank": 2,
+        },
     }
 
     def fake_probe(*, server_url: str) -> None:
@@ -414,26 +458,40 @@ def test_bundle_smoke_test_draft_mode_probes_the_server_and_requires_the_summary
         assert isinstance(command, list)
         timeout = kwargs["timeout"]
         assert isinstance(timeout, int)
+        assert command[-2] == "--test-draft-smoke"
         log_path = Path(command[command.index("--log-path") + 1])
         assert log_path.is_file()
         assert log_path.read_bytes() == b""
         events.append("launch")
         commands.append(command)
         timeouts.append(float(timeout))
-        stdout = f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}{json.dumps(summary)}\n"
+        stdout = (
+            f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}"
+            f"{json.dumps(summaries[command[-1]])}\n"
+        )
         return _completed_process(command=command, stdout=stdout)
 
     monkeypatch.setattr(bundle_smoke, "_probe_draftmancer_server", fake_probe)
     monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
 
     assert bundle_smoke.main(journey_arguments) == 0
-    assert events == ["probe", "launch", "probe"]
-    assert len(commands) == 1
-    command = commands[0]
-    log_path = Path(command[command.index("--log-path") + 1])
-    assert log_path.name == "Player.log"
-    assert log_path.parent.name.startswith("draftomen-bundle-smoke-")
-    assert command == [
+    assert events == ["probe", "launch", "launch", "probe"]
+    assert [command[-2:] for command in commands] == [
+        ["--test-draft-smoke", "auto"],
+        ["--test-draft-smoke", "manual"],
+    ]
+    assert len(timeouts) == 2
+    assert all(
+        timeout > qt_gui.TEST_DRAFT_SMOKE_TIMEOUT_SECONDS for timeout in timeouts
+    )
+
+    def without_journey_log_path(command: list[str]) -> list[str]:
+        """Hide the per-journey log path so both vectors can be compared."""
+        position = command.index("--log-path")
+        return command[: position + 1] + command[position + 2 : -2]
+
+    assert without_journey_log_path(commands[0]) == without_journey_log_path(commands[1])
+    assert without_journey_log_path(commands[0]) == [
         str(bundle_path.resolve()),
         "--provider",
         "live",
@@ -444,28 +502,60 @@ def test_bundle_smoke_test_draft_mode_probes_the_server_and_requires_the_summary
         "--app-dir",
         str(app_dir),
         "--log-path",
-        str(log_path),
         "--no-startup-scan",
         "--offline-profiles",
         "--test-draft-server-url",
         bundle_smoke.DEFAULT_SERVER_URL,
-        "--test-draft-smoke",
     ]
-    assert timeouts[0] > qt_gui.TEST_DRAFT_SMOKE_TIMEOUT_SECONDS
-    assert capsys.readouterr().out == (
-        json.dumps(
-            {
-                "status": "ok",
-                "bundle": str(bundle_path.resolve()),
-                "set_code": "hob",
-                "picks": 42,
-                "deck_size": 23,
-                "selected_pair": "UB",
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        + "\n"
+    log_paths = [
+        Path(command[command.index("--log-path") + 1]) for command in commands
+    ]
+    assert [log_path.name for log_path in log_paths] == ["Player.log", "Player.log"]
+    assert log_paths[0].parent != log_paths[1].parent
+    assert log_paths[0].parent.parent == log_paths[1].parent.parent
+    assert log_paths[0].parent.parent.name.startswith("draftomen-bundle-smoke-")
+
+    output = capsys.readouterr().out
+    assert output.count("\n") == 2
+    assert output.endswith("\n")
+    auto_line, manual_line = output.splitlines()
+    auto_summary = json.loads(auto_line)
+    manual_summary = json.loads(manual_line)
+    assert set(auto_summary) == {
+        "bundle",
+        "journey",
+        "status",
+        "mode",
+        "set_code",
+        "picks",
+        "deck_size",
+        "selected_pair",
+    }
+    assert set(manual_summary) == {
+        "bundle",
+        "journey",
+        "status",
+        "mode",
+        "set_code",
+        "picks",
+        "pool_total",
+        "non_top_rank",
+    }
+    assert auto_summary == {
+        **summaries["auto"],
+        "bundle": str(bundle_path.resolve()),
+        "journey": "auto",
+    }
+    assert manual_summary == {
+        **summaries["manual"],
+        "bundle": str(bundle_path.resolve()),
+        "journey": "manual",
+    }
+    assert auto_line == json.dumps(
+        auto_summary, separators=(",", ":"), sort_keys=True
+    )
+    assert manual_line == json.dumps(
+        manual_summary, separators=(",", ":"), sort_keys=True
     )
 
     def fake_run_without_summary(**kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -485,7 +575,7 @@ def test_bundle_smoke_test_draft_mode_resolves_journey_inputs_for_the_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Relative journey inputs reach the bundle absolute from its own directory."""
+    """Relative journey inputs reach both launches absolute from its own directory."""
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Draftomen.exe").write_bytes(b"executable")
@@ -493,19 +583,33 @@ def test_bundle_smoke_test_draft_mode_resolves_journey_inputs_for_the_bundle(
     (tmp_path / "scryfall-default-cards.jsonl.gz").write_bytes(b"bulk")
     (tmp_path / "prepared-app").mkdir()
     commands: list[list[str]] = []
-    summary = {
-        "status": "ok",
-        "set_code": "hob",
-        "picks": 42,
-        "deck_size": 23,
-        "selected_pair": "UB",
+    summaries: dict[str, dict[str, object]] = {
+        "auto": {
+            "status": "ok",
+            "mode": "auto",
+            "set_code": "hob",
+            "picks": 42,
+            "deck_size": 23,
+            "selected_pair": "UB",
+        },
+        "manual": {
+            "status": "ok",
+            "mode": "manual",
+            "set_code": "hob",
+            "picks": 5,
+            "pool_total": 5,
+            "non_top_rank": 2,
+        },
     }
 
     def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str]:
         command = kwargs["args"]
         assert isinstance(command, list)
         commands.append(command)
-        stdout = f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}{json.dumps(summary)}\n"
+        stdout = (
+            f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}"
+            f"{json.dumps(summaries[command[-1]])}\n"
+        )
         return _completed_process(command=command, stdout=stdout)
 
     def fake_probe(*, server_url: str) -> None:
@@ -530,54 +634,52 @@ def test_bundle_smoke_test_draft_mode_resolves_journey_inputs_for_the_bundle(
         == 0
     )
 
-    command = commands[0]
-    assert command[command.index("--draftmancer-dir") + 1] == str(
-        (tmp_path / "Draftmancer").resolve()
-    )
-    assert command[command.index("--scryfall-bulk-file") + 1] == str(
-        (tmp_path / "scryfall-default-cards.jsonl.gz").resolve()
-    )
-    assert command[command.index("--app-dir") + 1] == str(
-        (tmp_path / "prepared-app").resolve()
-    )
+    assert [command[-1] for command in commands] == ["auto", "manual"]
+    for command in commands:
+        assert command[command.index("--draftmancer-dir") + 1] == str(
+            (tmp_path / "Draftmancer").resolve()
+        )
+        assert command[command.index("--scryfall-bulk-file") + 1] == str(
+            (tmp_path / "scryfall-default-cards.jsonl.gz").resolve()
+        )
+        assert command[command.index("--app-dir") + 1] == str(
+            (tmp_path / "prepared-app").resolve()
+        )
 
 
 def test_bundle_smoke_test_draft_mode_rejects_a_dead_server(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pinned server that stops answering fails the manual journey."""
+    """A pinned server that stops answering fails after both journeys."""
 
     dead_server_url = "http://127.0.0.1:1"
     with pytest.raises(RuntimeError) as dead_probe:
         bundle_smoke._probe_draftmancer_server(server_url=dead_server_url)
     assert dead_server_url in str(dead_probe.value)
 
-    bundle_path = tmp_path / "Draftomen.exe"
-    bundle_path.write_bytes(b"executable")
-    draftmancer_dir = tmp_path / "Draftmancer"
-    draftmancer_dir.mkdir()
-    scryfall_bulk_file = tmp_path / "scryfall-default-cards.jsonl.gz"
-    scryfall_bulk_file.write_bytes(b"bulk")
-    app_dir = tmp_path / "prepared-app"
-    app_dir.mkdir()
-    journey_arguments = [
-        str(bundle_path),
-        "--test-draft",
-        "--draftmancer-dir",
-        str(draftmancer_dir),
-        "--scryfall-bulk-file",
-        str(scryfall_bulk_file),
-        "--app-dir",
-        str(app_dir),
-    ]
+    journey_arguments = _prepare_test_draft_journey(
+        root=tmp_path, monkeypatch=monkeypatch
+    )
     probes: list[str] = []
-    summary = {
-        "status": "ok",
-        "set_code": "hob",
-        "picks": 42,
-        "deck_size": 23,
-        "selected_pair": "UB",
+    launches: list[str] = []
+    summaries: dict[str, dict[str, object]] = {
+        "auto": {
+            "status": "ok",
+            "mode": "auto",
+            "set_code": "hob",
+            "picks": 42,
+            "deck_size": 23,
+            "selected_pair": "UB",
+        },
+        "manual": {
+            "status": "ok",
+            "mode": "manual",
+            "set_code": "hob",
+            "picks": 5,
+            "pool_total": 5,
+            "non_top_rank": 2,
+        },
     }
 
     def fake_probe(*, server_url: str) -> None:
@@ -588,7 +690,11 @@ def test_bundle_smoke_test_draft_mode_rejects_a_dead_server(
     def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str]:
         command = kwargs["args"]
         assert isinstance(command, list)
-        stdout = f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}{json.dumps(summary)}\n"
+        launches.append(command[-1])
+        stdout = (
+            f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}"
+            f"{json.dumps(summaries[command[-1]])}\n"
+        )
         return _completed_process(command=command, stdout=stdout)
 
     monkeypatch.setattr(bundle_smoke, "_probe_draftmancer_server", fake_probe)
@@ -598,7 +704,119 @@ def test_bundle_smoke_test_draft_mode_rejects_a_dead_server(
         bundle_smoke.main(journey_arguments)
 
     assert probes == [bundle_smoke.DEFAULT_SERVER_URL, bundle_smoke.DEFAULT_SERVER_URL]
+    assert launches == ["auto", "manual"]
     assert bundle_smoke.DEFAULT_SERVER_URL in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    ("manual_summary", "error_fragment"),
+    [
+        (
+            {
+                "status": "ok",
+                "mode": "auto",
+                "set_code": "hob",
+                "picks": bundle_smoke.REQUIRED_MANUAL_PICKS,
+                "pool_total": bundle_smoke.REQUIRED_MANUAL_PICKS,
+                "non_top_rank": 2,
+            },
+            "reported mode 'auto' for the manual journey",
+        ),
+        (None, "printed no summary line"),
+        (
+            {
+                "status": "ok",
+                "mode": "manual",
+                "set_code": "hob",
+                "picks": bundle_smoke.REQUIRED_MANUAL_PICKS - 1,
+                "pool_total": bundle_smoke.REQUIRED_MANUAL_PICKS - 1,
+                "non_top_rank": 2,
+            },
+            "unusable manual summary line",
+        ),
+        (
+            {
+                "status": "ok",
+                "mode": "manual",
+                "set_code": "hob",
+                "picks": bundle_smoke.REQUIRED_MANUAL_PICKS,
+                "pool_total": bundle_smoke.REQUIRED_MANUAL_PICKS,
+                "non_top_rank": 1,
+            },
+            "unusable manual summary line",
+        ),
+    ],
+    ids=[
+        "wrong-journey-mode",
+        "without-summary-line",
+        "below-required-picks",
+        "without-non-top-rank",
+    ],
+)
+def test_bundle_smoke_test_draft_mode_rejects_unusable_manual_summaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manual_summary: dict[str, object] | None,
+    error_fragment: str,
+) -> None:
+    """The Manual journey rejects every summary its requirements do not accept."""
+
+    journey_arguments = _prepare_test_draft_journey(
+        root=tmp_path, monkeypatch=monkeypatch
+    )
+    launches: list[str] = []
+    auto_summary = {
+        "status": "ok",
+        "mode": "auto",
+        "set_code": "hob",
+        "picks": 42,
+        "deck_size": 23,
+        "selected_pair": "UB",
+    }
+
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = kwargs["args"]
+        assert isinstance(command, list)
+        launches.append(command[-1])
+        summary = auto_summary if command[-1] == "auto" else manual_summary
+        stdout = (
+            ""
+            if summary is None
+            else f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}{json.dumps(summary)}\n"
+        )
+        return _completed_process(command=command, stdout=stdout)
+
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match=re.escape(error_fragment)):
+        bundle_smoke.main(journey_arguments)
+
+    assert launches == ["auto", "manual"]
+
+
+def test_bundle_smoke_test_draft_mode_stops_after_a_failed_auto_journey(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed first journey aborts the run before the Manual launch."""
+
+    journey_arguments = _prepare_test_draft_journey(
+        root=tmp_path, monkeypatch=monkeypatch
+    )
+    launches: list[str] = []
+
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = kwargs["args"]
+        assert isinstance(command, list)
+        launches.append(command[-1])
+        return _completed_process(command=command, returncode=1)
+
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="failed with exit code 1"):
+        bundle_smoke.main(journey_arguments)
+
+    assert launches == ["auto"]
 
 
 def test_macos_bundle_resolution_uses_plist_executable(tmp_path: Path) -> None:
