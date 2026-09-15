@@ -3,6 +3,16 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Add the UI-neutral test-draft controller and headless `draftomen-tui test-draft`
+  command (#538): `draftomen/test_draft.py` exposes `TestDraftController` for explicit
+  Manual confirmation of one inspected offer and recommendation-driven Auto advancement
+  over `LiveSession` snapshots, with `TestDraftError` preserving the failure stage, the
+  accepted steps, and the last trustworthy snapshot; `run_test_draft_auto(...)` drafts a
+  full event through production scoring and the normal `RequestBuild`, keeps simulated
+  draft state and audit records in an isolated simulation directory while card-data and
+  profile sources stay in the normal application directory, and the command prints one
+  `Pack N pick M: <card> (grpId <id>)` line per accepted pick before the unchanged
+  deck-builder report.
 - Add the pinned Draftmancer typed-event adapter and deterministic protocol
   smoke helper for local three-pack development drafts. (#537) The helper
   resolves Draftmancer printing identities through a locally downloaded

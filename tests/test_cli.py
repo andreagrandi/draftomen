@@ -21,8 +21,9 @@ from draftomen import __version__
 from draftomen import cli
 from draftomen import config
 from draftomen.audit import load_draft_audit_records
-from draftomen.carddb import CardDatabase
+from draftomen.carddb import CardDatabase, build_card_database_from_bulk_file
 from draftomen.cli import build_parser, main
+from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
 from draftomen.pool import DraftState, load_draft_state, save_draft_state
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_input_acquisition import (
@@ -35,6 +36,13 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.profile_refresh_execution import load_staged_profile_build_bundle
 from draftomen.refresh_plan import LifecycleMetadata, PlannedEnvironment, RefreshPlan, write_refresh_plan
 from draftomen.semantic_enrichment_records import FindingStatus
+from draftomen.session import (
+    BuildResult,
+    CardView,
+    LiveSessionSnapshot,
+    Recommendation,
+    RecommendationState,
+)
 from draftomen.set_enrichment import (
     EnrichmentAccounting,
     EnrichmentOutcome,
@@ -52,6 +60,13 @@ from draftomen.seventeen import (
     QUICK_DRAFT_FORMAT,
     load_17lands_format_data,
     seventeen_lands_structure_targets_cache_path,
+)
+from draftomen.test_draft import (
+    TestDraftError,
+    TestDraftInspection,
+    TestDraftOfferIdentity,
+    TestDraftRunResult,
+    TestDraftStep,
 )
 from draftomen.tui import DraftomenTuiApp
 from draftomen.watch import PlainLogWatcher
@@ -115,6 +130,7 @@ def test_tui_parser_uses_tui_command_name(
         ("watch", "Live"),
         ("replay", "Deterministic"),
         ("build", "Select"),
+        ("test-draft", "headless"),
         ("backtest", "Dry-run"),
         ("benchmark-picks", "Offline benchmark"),
         ("refresh-data", "Scryfall"),
@@ -1592,6 +1608,165 @@ def test_build_rejects_invalid_pair(capsys: pytest.CaptureFixture[str]) -> None:
     assert "invalid choice" in captured.err
 
 
+def test_test_draft_parser_defaults_and_options() -> None:
+    parser = build_parser()
+
+    defaults = parser.parse_args(
+        args=["test-draft", "--draftmancer-dir", "../Draftmancer"]
+    )
+
+    assert defaults.draftmancer_dir == Path("../Draftmancer")
+    assert defaults.scryfall_bulk_file == cli.DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE
+    assert defaults.scryfall_bulk_file == Path(
+        ".draftomen/corpus-cache/sources/scryfall-default-cards.jsonl.gz"
+    )
+    assert defaults.server_url == "http://127.0.0.1:3000"
+    assert defaults.set_code == "HOB"
+    assert defaults.timeout == 10.0
+    assert defaults.app_dir is None
+    assert defaults.profile_manifest_url is None
+    assert defaults.offline_profiles is False
+    assert defaults.splash_enabled is True
+
+    configured = parser.parse_args(
+        args=[
+            "test-draft",
+            "--draftmancer-dir",
+            "../Draftmancer",
+            "--scryfall-bulk-file",
+            "bulk.jsonl.gz",
+            "--server-url",
+            "http://127.0.0.1:9999",
+            "--set-code",
+            "dsk",
+            "--timeout",
+            "2.5",
+            "--app-dir",
+            "/tmp/app",
+            "--profile-manifest-url",
+            "https://profiles.example/manifest.json",
+            "--offline-profiles",
+            "--no-splash",
+        ]
+    )
+
+    assert configured.scryfall_bulk_file == Path("bulk.jsonl.gz")
+    assert configured.server_url == "http://127.0.0.1:9999"
+    assert configured.set_code == "dsk"
+    assert configured.timeout == 2.5
+    assert configured.app_dir == Path("/tmp/app")
+    assert configured.profile_manifest_url == "https://profiles.example/manifest.json"
+    assert configured.offline_profiles is True
+    assert configured.splash_enabled is False
+
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(args=["test-draft"])
+
+    assert error.value.code == 2
+
+
+def test_test_draft_prints_ordered_trace_and_build_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    build_snapshot, expected_build = _test_draft_build_snapshot(directory=tmp_path)
+    result = TestDraftRunResult(
+        steps=(
+            _test_draft_step(
+                pack_number=0,
+                pick_number=0,
+                offered=((7, "First Pick"), (9, "Runner Up")),
+                accepted_grp_id=7,
+            ),
+            _test_draft_step(
+                pack_number=0,
+                pick_number=2,
+                offered=((11, "Second Rank"), (13, "Accepted Second Pick")),
+                accepted_grp_id=13,
+            ),
+            _test_draft_step(
+                pack_number=2,
+                pick_number=0,
+                offered=((17, "Deep Pick"),),
+                accepted_grp_id=17,
+            ),
+        ),
+        completed=LiveSessionSnapshot(),
+        build=build_snapshot,
+    )
+
+    monkeypatch.setattr(cli, "run_test_draft_auto", lambda **kwargs: result)
+
+    exit_code = main(
+        argv=[
+            "test-draft",
+            "--draftmancer-dir",
+            str(tmp_path / "Draftmancer"),
+            "--scryfall-bulk-file",
+            str(tmp_path / "bulk.jsonl.gz"),
+            "--app-dir",
+            str(tmp_path / "app"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert captured.out == (
+        "Pack 1 pick 1: First Pick (grpId 7)\n"
+        "Pack 1 pick 3: Accepted Second Pick (grpId 13)\n"
+        "Pack 3 pick 1: Deep Pick (grpId 17)\n"
+        f"{expected_build}"
+    )
+
+
+@pytest.mark.parametrize("stage", ["startup", "drafting", "build"])
+def test_test_draft_reports_failures_without_deck_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stage: str,
+) -> None:
+    def fail(**kwargs: object) -> TestDraftRunResult:
+        raise TestDraftError(f"{stage} failed", stage=stage)
+
+    monkeypatch.setattr(cli, "run_test_draft_auto", fail)
+
+    exit_code = main(
+        argv=["test-draft", "--draftmancer-dir", str(tmp_path / "Draftmancer")]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == f"test-draft failed: {stage} failed\n"
+
+
+@pytest.mark.parametrize("timeout", ["0", "inf", "nan"])
+def test_test_draft_rejects_invalid_timeout_without_running(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    timeout: str,
+) -> None:
+    def unexpected(**kwargs: object) -> TestDraftRunResult:
+        raise AssertionError("invalid configuration must not run the draft")
+
+    monkeypatch.setattr(cli, "run_test_draft_auto", unexpected)
+
+    exit_code = main(
+        argv=["test-draft", "--draftmancer-dir", "Draftmancer", "--timeout", timeout]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "test-draft failed: --timeout must be finite and positive.\n"
+
+
 def test_config_exposes_documented_tunables() -> None:
     assert config.DECK_BUILDER.deck_size == 40
     assert config.DECK_BUILDER.target_spell_count == 23
@@ -1943,6 +2118,93 @@ def _write_build_bulk_file(*, directory: Path) -> Path:
     )
     return path
 
+
+def _test_draft_recommendation(*, rank: int, grp_id: int, name: str) -> Recommendation:
+    return Recommendation(
+        rank=rank,
+        card=CardView(
+            grp_id=grp_id,
+            name=name,
+            colors=("W",),
+            rarity="common",
+            types=("Creature",),
+            mana_cost="{2}",
+            mana_value=2.0,
+            image_path=None,
+        ),
+        score=100 - rank,
+        win_rate=0.55,
+        average_last_seen_at=6000.0,
+        source_label="17Lands",
+        color_fit="on-color",
+        no_data=False,
+    )
+
+
+def _test_draft_step(
+    *,
+    pack_number: int,
+    pick_number: int,
+    offered: tuple[tuple[int, str], ...],
+    accepted_grp_id: int,
+) -> TestDraftStep:
+    rows = tuple(
+        _test_draft_recommendation(rank=rank, grp_id=grp_id, name=name)
+        for rank, (grp_id, name) in enumerate(offered, start=1)
+    )
+    accepted = next(row for row in rows if row.card.grp_id == accepted_grp_id)
+    return TestDraftStep(
+        before=TestDraftInspection(
+            offer=TestDraftOfferIdentity(
+                account_id=FIXTURE_ACCOUNT_ID,
+                event_name="QuickDraft",
+                set_code="TST",
+                pack_number=pack_number,
+                pick_number=pick_number,
+                offered_grp_ids=tuple(grp_id for grp_id, _ in offered),
+                pool_grp_ids=(),
+            ),
+            snapshot=LiveSessionSnapshot(
+                recommendations=RecommendationState(cards=rows)
+            ),
+        ),
+        grp_id=accepted.card.grp_id,
+        unique_card_id=accepted.card.grp_id + 1000,
+        after=LiveSessionSnapshot(),
+    )
+
+
+def _test_draft_build_snapshot(*, directory: Path) -> tuple[LiveSessionSnapshot, str]:
+    bulk_file = _write_build_bulk_file(directory=directory)
+    database = build_card_database_from_bulk_file(path=bulk_file)
+    pool = BuildPool(
+        set_code="TST",
+        pool_grp_ids=(1, 2, 3, 4, 5),
+        source_label="test-draft pool",
+    )
+    selection, build_sheet = build_deck_from_pool(pool=pool, card_database=database)
+    return (
+        LiveSessionSnapshot(
+            build=BuildResult(
+                selected_pair=selection.chosen.pair,
+                pair_options=(),
+                spells=(),
+                lands=(),
+                bench=(),
+                deck_size=build_sheet.mana_base.total_cards,
+                domain_pool=pool,
+                domain_selection=selection,
+                domain_spell_selection=build_sheet.spell_selection,
+                domain_mana_base=build_sheet.mana_base,
+            )
+        ),
+        format_build_result(
+            pool=pool,
+            selection=selection,
+            spell_selection=build_sheet.spell_selection,
+            mana_base=build_sheet.mana_base,
+        ),
+    )
 
 
 def _write_structure_draft_data_file(*, directory: Path) -> Path:

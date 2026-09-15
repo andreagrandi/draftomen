@@ -304,6 +304,34 @@ before an offer reaches `LiveSession`. Pass `--scryfall-bulk-file` only when
 the complete local JSONL bulk cache is stored somewhere other than
 `.draftomen/corpus-cache/sources/scryfall-default-cards.jsonl.gz`.
 
+The same pinned checkout and bulk source drive the headless test draft, which
+drafts a complete three-pack event through production recommendations and the
+normal deck builder:
+
+```bash
+uv run --extra draftmancer draftomen-tui test-draft \
+  --draftmancer-dir ../Draftmancer
+```
+
+`test-draft` always drafts automatically: it confirms the first ranked
+recommendation of every offered pack, prints one
+`Pack N pick M: <card> (grpId <id>)` line per accepted pick, and finishes with
+the ordinary deck-builder report. It reads the configured card-data cache and
+set profiles from the normal application directory, keeps simulated draft state
+and audit records in a private temporary directory, and neither reads nor
+changes Arena draft history.
+
+`--set-code` accepts any set present in both Draftmancer's `MTGASets` and the
+local card-data cache (HOB by default); an unsupported set fails before any
+pick, and a booster printing that cannot be resolved to one canonical Arena
+grpId fails before that pack is submitted.
+
+`--server-url`, `--scryfall-bulk-file`, and `--timeout` mirror the smoke
+defaults, and `--profile-manifest-url` / `--offline-profiles` behave as in
+`watch`. Startup, drafting, and deck-building failures report
+`test-draft failed: <reason>` and exit nonzero; the command never starts,
+stops, or configures the Draftmancer service.
+
 Live recommendations currently support Quick Draft. Windows support is best-effort.
 
 ## Local draft audit data

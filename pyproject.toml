@@ -128,6 +128,7 @@ files = [
     "draftomen/setinfo.py",
     "draftomen/seventeen.py",
     "draftomen/splash.py",
+    "draftomen/test_draft.py",
     "draftomen/tui.py",
     "draftomen/watch.py",
     "draftomen/baseline_profiles/hob-quickdraft.json",

@@ -73,6 +73,7 @@ from draftomen.deckbuilder import (
     load_persisted_pool,
     load_pool_file,
 )
+from draftomen.draftmancer import DraftmancerAdapterError
 from draftomen.events import DraftLogParseError
 from draftomen.logfollow import LogFollowError
 from draftomen.paths import UnsupportedPlatformError, resolve_player_log_path
@@ -122,10 +123,21 @@ from draftomen.set_enrichment_workflow import (
     analyze_set_enrichment,
     finalize_set_enrichment,
 )
+from draftomen.test_draft import (
+    TestDraftError,
+    TestDraftRunResult,
+    run_test_draft_auto,
+)
 from draftomen.tui import run_tui_watch
 from draftomen.watch import run_plain_watch
 
 DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
+DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE = (
+    DEFAULT_CACHE_DIR / "sources" / "scryfall-default-cards.jsonl.gz"
+)
+DEFAULT_TEST_DRAFT_SERVER_URL = "http://127.0.0.1:3000"
+DEFAULT_TEST_DRAFT_SET_CODE = "HOB"
+DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS = 10.0
 
 CommandHandler = Callable[[argparse.Namespace], int]
 
@@ -379,6 +391,76 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     build_parser_command.set_defaults(allow_splash=True, handler=handle_build)
+
+    test_draft_parser = subparsers.add_parser(
+        name="test-draft",
+        help="Run a headless Auto test draft against a local Draftmancer server.",
+        description=(
+            "Drive a headless simulated Draftmancer draft through production "
+            "recommendations and print the finished deck."
+        ),
+    )
+    test_draft_parser.add_argument(
+        "--draftmancer-dir",
+        type=Path,
+        required=True,
+        help="sibling checkout of the pinned Draftmancer repository",
+    )
+    test_draft_parser.add_argument(
+        "--scryfall-bulk-file",
+        type=Path,
+        default=DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
+        help=(
+            "local Scryfall default-cards JSONL(.gz) bulk file "
+            f"(default: {DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE})"
+        ),
+    )
+    test_draft_parser.add_argument(
+        "--server-url",
+        default=DEFAULT_TEST_DRAFT_SERVER_URL,
+        help=f"Draftmancer server URL (default: {DEFAULT_TEST_DRAFT_SERVER_URL})",
+    )
+    test_draft_parser.add_argument(
+        "--set-code",
+        default=DEFAULT_TEST_DRAFT_SET_CODE,
+        help=f"set code to draft (default: {DEFAULT_TEST_DRAFT_SET_CODE})",
+    )
+    test_draft_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
+        help=(
+            "per-operation timeout in seconds "
+            f"(default: {DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS})"
+        ),
+    )
+    test_draft_parser.add_argument(
+        "--app-dir",
+        type=Path,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    test_draft_parser.add_argument(
+        "--profile-manifest-url",
+        default=None,
+        help=(
+            "Override the hosted set-profile manifest URL. "
+            f"Defaults to {DEFAULT_PROFILE_MANIFEST_URL}."
+        ),
+    )
+    test_draft_parser.add_argument(
+        "--offline-profiles",
+        action="store_true",
+        help="Use only cached set profiles; do not access the hosted manifest.",
+    )
+    test_draft_parser.add_argument(
+        "--no-splash",
+        dest="splash_enabled",
+        action="store_false",
+        help="Build a strict two-color deck without third-color splash cards.",
+    )
+    test_draft_parser.set_defaults(splash_enabled=True)
+    test_draft_parser.set_defaults(handler=handle_test_draft)
 
     backtest_parser = subparsers.add_parser(
         name="backtest",
@@ -1459,6 +1541,76 @@ def handle_build(args: argparse.Namespace) -> int:
         end="",
     )
     return 0
+
+
+def handle_test_draft(args: argparse.Namespace) -> int:
+    """Handle a headless Auto test draft against a local Draftmancer server.
+    The pick trace prints only after the draft and its build both succeed.
+    """
+
+    if not 0 < args.timeout < float("inf"):
+        print(
+            "test-draft failed: --timeout must be finite and positive.",
+            file=sys.stderr,
+        )
+        return 1
+
+    profile_manifest_url = (
+        DEFAULT_PROFILE_MANIFEST_URL
+        if args.profile_manifest_url is None
+        else args.profile_manifest_url
+    )
+    profile_network_policy = (
+        ProfileNetworkPolicy.OFFLINE
+        if args.offline_profiles
+        else ProfileNetworkPolicy.ALLOWED
+    )
+    try:
+        result = run_test_draft_auto(
+            draftmancer_dir=args.draftmancer_dir,
+            scryfall_bulk_file=args.scryfall_bulk_file,
+            server_url=args.server_url,
+            set_code=args.set_code,
+            timeout_seconds=args.timeout,
+            source_app_dir=args.app_dir,
+            profile_manifest_url=profile_manifest_url,
+            profile_network_policy=profile_network_policy,
+            splash_enabled=args.splash_enabled,
+        )
+    except (DraftmancerAdapterError, TestDraftError) as error:
+        print(f"test-draft failed: {error}", file=sys.stderr)
+        return 1
+
+    build_result = result.build.build
+    print(_format_test_draft_trace(result=result), end="")
+    print(
+        format_build_result(
+            pool=build_result.domain_pool,
+            selection=build_result.domain_selection,
+            spell_selection=build_result.domain_spell_selection,
+            mana_base=build_result.domain_mana_base,
+        ),
+        end="",
+    )
+    return 0
+
+
+def _format_test_draft_trace(*, result: TestDraftRunResult) -> str:
+    """Format one accepted-pick trace line per recorded step in order."""
+
+    lines: list[str] = []
+    for step in result.steps:
+        accepted = next(
+            row
+            for row in step.before.snapshot.recommendations.cards
+            if row.card.grp_id == step.grp_id
+        )
+        lines.append(
+            f"Pack {step.before.offer.pack_number + 1} "
+            f"pick {step.before.offer.pick_number + 1}: "
+            f"{accepted.card.name} (grpId {step.grp_id})"
+        )
+    return "".join(f"{line}\n" for line in lines)
 
 
 def _load_build_card_database(*, args: argparse.Namespace) -> CardDatabase:
