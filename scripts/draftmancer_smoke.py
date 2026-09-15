@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
-import gzip
 import json
 from pathlib import Path
 import sys
@@ -30,6 +29,10 @@ from draftomen.events import (
 )
 from draftomen.session import LiveSession
 from draftomen.set_card_data import SetCardData
+from draftomen.test_draft import (
+    _load_canonical_grp_ids_by_scryfall_id,
+    _load_supported_set_codes,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SERVER_URL = "http://127.0.0.1:3000"
@@ -95,30 +98,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_supported_set_codes(*, draftmancer_dir: Path) -> tuple[str, ...]:
-    """Read the pinned simulator's MTGASets capability list.
-    Malformed checkout metadata fails before any network connection.
-    """
-
-    constants_path = draftmancer_dir / "src" / "data" / "constants.json"
-    if not constants_path.is_file():
-        raise DraftmancerSmokeError(f"missing Draftmancer constants file: {constants_path}")
-    try:
-        payload = json.loads(constants_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise DraftmancerSmokeError(
-            f"could not parse Draftmancer constants file {constants_path}: {error}"
-        ) from error
-    if not isinstance(payload, dict):
-        raise DraftmancerSmokeError("Draftmancer constants.json must contain an object")
-    draftmancer_codes = payload.get("MTGASets")
-    if not isinstance(draftmancer_codes, list):
-        raise DraftmancerSmokeError(
-            "Draftmancer constants.json MTGASets must contain an array"
-        )
-    return tuple(draftmancer_codes)
-
-
 def _draftomen_set_codes() -> tuple[str, ...]:
     """Enumerate Draft Omen's generated card-data set artifacts.
     Artifact names are the lowercase set-code capability boundary.
@@ -155,83 +134,6 @@ def _prepare_card_database(*, set_code: str) -> CardDatabase:
             f"card-data artifact {card_path} is invalid: {error}"
         ) from error
     return card_data.to_card_database()
-
-
-def _load_canonical_grp_ids_by_scryfall_id(
-    *,
-    bulk_path: Path,
-    set_code: str,
-    card_database: CardDatabase,
-) -> dict[str, int]:
-    """Resolve every deterministic set printing to its canonical Arena grpId.
-    The complete Scryfall bulk file is read locally and never queried per card.
-    """
-
-    if not bulk_path.is_file():
-        raise DraftmancerSmokeError(f"missing local Scryfall bulk file: {bulk_path}")
-    records_by_card_id: dict[str, tuple[str, int | None]] = {}
-    open_bulk = gzip.open if bulk_path.suffix == ".gz" else Path.open
-    try:
-        with open_bulk(bulk_path, mode="rt", encoding="utf-8") as stream:
-            for line_number, line in enumerate(stream, start=1):
-                if not line.strip():
-                    continue
-                value = json.loads(line)
-                if not isinstance(value, dict):
-                    raise DraftmancerSmokeError(
-                        f"Scryfall bulk line {line_number} must be an object"
-                    )
-                if value.get("set") != set_code:
-                    continue
-                card_id = value.get("id")
-                oracle_id = value.get("oracle_id")
-                if not isinstance(card_id, str) or not card_id:
-                    raise DraftmancerSmokeError(
-                        f"Scryfall {set_code} card on line {line_number} has no id"
-                    )
-                if not isinstance(oracle_id, str) or not oracle_id:
-                    raise DraftmancerSmokeError(
-                        f"Scryfall {set_code} card {card_id} has no oracle_id"
-                    )
-                arena_id = value.get("arena_id")
-                if not isinstance(arena_id, int) or isinstance(arena_id, bool):
-                    arena_id = None
-                record = (oracle_id, arena_id)
-                previous = records_by_card_id.get(card_id)
-                if previous is not None and previous != record:
-                    raise DraftmancerSmokeError(
-                        f"Scryfall card {card_id} has conflicting bulk records"
-                    )
-                records_by_card_id[card_id] = record
-    except DraftmancerSmokeError:
-        raise
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise DraftmancerSmokeError(
-            f"could not parse local Scryfall bulk file {bulk_path}: {error}"
-        ) from error
-    if not records_by_card_id:
-        raise DraftmancerSmokeError(
-            f"local Scryfall bulk file {bulk_path} contains no {set_code} cards"
-        )
-    records = tuple(
-        (card_id, oracle_id, arena_id)
-        for card_id, (oracle_id, arena_id) in records_by_card_id.items()
-    )
-
-    canonical_ids = set(card_database.cards)
-    arena_ids_by_oracle: dict[str, set[int]] = {}
-    for _, oracle_id, arena_id in records:
-        if arena_id is not None and arena_id in canonical_ids:
-            arena_ids_by_oracle.setdefault(oracle_id, set()).add(arena_id)
-
-    identities: dict[str, int] = {}
-    for card_id, oracle_id, arena_id in records:
-        candidates = arena_ids_by_oracle.get(oracle_id, set())
-        if arena_id is not None and arena_id in canonical_ids:
-            identities[card_id] = arena_id
-        elif len(candidates) == 1:
-            identities[card_id] = next(iter(candidates))
-    return identities
 
 
 def _validate_event_stream(

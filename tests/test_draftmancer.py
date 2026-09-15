@@ -28,8 +28,8 @@ from draftomen.events import (
     PickMadeEvent,
 )
 from draftomen.session import ApplicationPhase, LiveSession
-from scripts.draftmancer_smoke import (
-    DraftmancerSmokeError,
+from draftomen.test_draft import (
+    TestDraftError,
     _load_canonical_grp_ids_by_scryfall_id,
 )
 
@@ -419,14 +419,15 @@ def test_scryfall_identity_mapping_rejects_conflicting_duplicate_prints(
     )
 
     with pytest.raises(
-        DraftmancerSmokeError,
+        TestDraftError,
         match=r"^Scryfall card print-1 has conflicting bulk records$",
-    ):
+    ) as error:
         _load_canonical_grp_ids_by_scryfall_id(
             bulk_path=bulk_path,
             set_code="hob",
             card_database=_database(100, 101),
         )
+    assert error.value.stage == "startup"
 
 
 def test_scryfall_identity_mapping_uses_canonical_arena_id_for_each_instance() -> None:
