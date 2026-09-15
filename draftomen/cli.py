@@ -124,6 +124,10 @@ from draftomen.set_enrichment_workflow import (
     finalize_set_enrichment,
 )
 from draftomen.test_draft import (
+    DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
+    DEFAULT_TEST_DRAFT_SERVER_URL,
+    DEFAULT_TEST_DRAFT_SET_CODE,
+    DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
     TestDraftError,
     TestDraftRunResult,
     run_test_draft_auto,
@@ -132,12 +136,6 @@ from draftomen.tui import run_tui_watch
 from draftomen.watch import run_plain_watch
 
 DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
-DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE = (
-    DEFAULT_CACHE_DIR / "sources" / "scryfall-default-cards.jsonl.gz"
-)
-DEFAULT_TEST_DRAFT_SERVER_URL = "http://127.0.0.1:3000"
-DEFAULT_TEST_DRAFT_SET_CODE = "HOB"
-DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS = 10.0
 
 CommandHandler = Callable[[argparse.Namespace], int]
 

@@ -18,7 +18,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 
 from draftomen import __version__
-from draftomen.card_data_client import CardDataClient
+from draftomen.card_data_client import CardDataClient, cached_card_data_set_codes
 from draftomen.carddb import build_card_database_from_bulk_file
 from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.mock_session import MOCK_SCENARIOS, MockLiveSession, MockScenario
@@ -28,9 +28,18 @@ from draftomen.qt_adapter import (
     LiveSessionAdapter,
     SessionAdapter,
     SessionFactory,
+    TestDraftFactory,
 )
 from draftomen.qt_mock import MockSessionAdapter
 from draftomen.session import LiveSession, SnapshotPublisher
+from draftomen.test_draft import (
+    DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
+    DEFAULT_TEST_DRAFT_SERVER_URL,
+    DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
+    TestDraftRuntime,
+    create_test_draft_runtime,
+    supported_test_draft_set_codes,
+)
 from draftomen.profile_client import (
     BUNDLED_PROFILE_BYTES,
     BUNDLED_PROFILE_EVENT_FORMAT,
@@ -134,6 +143,24 @@ def _parser(*, forced_provider: ProviderName | None = None) -> argparse.Argument
         dest="startup_scan",
         action="store_false",
         help="Skip live startup log recovery.",
+    )
+    parser.add_argument(
+        "--draftmancer-dir",
+        type=Path,
+        default=None,
+        help="Enable the developer Test Draft with a pinned Draftmancer checkout.",
+    )
+    parser.add_argument(
+        "--scryfall-bulk-file",
+        type=Path,
+        default=DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
+        help="Scryfall JSONL bulk source used to resolve simulated printing identities.",
+    )
+    parser.add_argument("--test-draft-server-url", default=DEFAULT_TEST_DRAFT_SERVER_URL)
+    parser.add_argument(
+        "--test-draft-timeout",
+        type=float,
+        default=DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
     )
     parser.add_argument(
         "--smoke-test",
@@ -256,6 +283,95 @@ def _live_session_factory(
     return factory
 
 
+def _test_draft_runtime_factory(
+    *,
+    draftmancer_dir: Path,
+    scryfall_bulk_file: Path,
+    server_url: str,
+    timeout_seconds: float,
+    app_dir: Path | None,
+    profile_manifest_url: str | None,
+    profile_network_policy: ProfileNetworkPolicy,
+    simulation_app_dir: Path | None = None,
+) -> TestDraftFactory:
+    """Create the developer Test Draft factory behind the explicit opt-in."""
+    return _GuiTestDraftFactory(
+        draftmancer_dir=draftmancer_dir,
+        scryfall_bulk_file=scryfall_bulk_file,
+        server_url=server_url,
+        timeout_seconds=timeout_seconds,
+        app_dir=app_dir,
+        profile_manifest_url=profile_manifest_url,
+        profile_network_policy=profile_network_policy,
+        simulation_app_dir=simulation_app_dir,
+    )
+
+
+class _GuiTestDraftFactory:
+    """Create simulated draft runtimes from pinned developer sources.
+    Supported sets intersect the checkout with locally cached card data.
+    """
+
+    def __init__(
+        self,
+        *,
+        draftmancer_dir: Path,
+        scryfall_bulk_file: Path,
+        server_url: str,
+        timeout_seconds: float,
+        app_dir: Path | None,
+        profile_manifest_url: str | None,
+        profile_network_policy: ProfileNetworkPolicy,
+        simulation_app_dir: Path | None,
+    ) -> None:
+        self._draftmancer_dir = draftmancer_dir
+        self._scryfall_bulk_file = scryfall_bulk_file
+        self._server_url = server_url
+        self._timeout_seconds = timeout_seconds
+        self._app_dir = app_dir
+        self._profile_manifest_url = profile_manifest_url
+        self._profile_network_policy = profile_network_policy
+        self._simulation_app_dir = simulation_app_dir
+
+    def supported_set_codes(self) -> tuple[str, ...]:
+        """List the sets the checkout and the local cache both provide."""
+        return supported_test_draft_set_codes(
+            draftmancer_dir=self._draftmancer_dir,
+            draftomen_set_codes=cached_card_data_set_codes(app_dir=self._app_dir),
+        )
+
+    def create_runtime(
+        self,
+        *,
+        set_code: str,
+        publisher: SnapshotPublisher,
+        splash_enabled: bool,
+        contextual_adjustments_enabled: bool,
+        ai_enhanced_suggestions_enabled: bool,
+    ) -> TestDraftRuntime:
+        """Create one isolated simulated draft with the shared preferences."""
+        return create_test_draft_runtime(
+            draftmancer_dir=self._draftmancer_dir,
+            scryfall_bulk_file=self._scryfall_bulk_file,
+            server_url=self._server_url,
+            set_code=set_code,
+            timeout_seconds=self._timeout_seconds,
+            source_app_dir=self._app_dir,
+            profile_manifest_url=self._profile_manifest_url,
+            profile_network_policy=self._profile_network_policy,
+            snapshot_publisher=publisher,
+            splash_enabled=splash_enabled,
+            contextual_adjustments_enabled=contextual_adjustments_enabled,
+            ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
+            simulation_app_dir=self._simulation_app_dir,
+            card_image_service=CardImageService(
+                cache_dir=card_image_cache_dir(app_dir=self._app_dir),
+                timeout_seconds=2.0,
+                max_attempts=1,
+            ),
+        )
+
+
 def _build_provider(
     *,
     args: argparse.Namespace,
@@ -283,6 +399,33 @@ def _build_provider(
         manifest_url=resolved_profile_manifest_url,
         network_policy=profile_network_policy,
     )
+    test_draft_factory: TestDraftFactory | None = None
+    draftmancer_dir = getattr(args, "draftmancer_dir", None)
+    if draftmancer_dir is not None:
+        test_draft_timeout = getattr(
+            args,
+            "test_draft_timeout",
+            DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
+        )
+        if not 0 < test_draft_timeout < float("inf"):
+            raise ValueError("--test-draft-timeout must be finite and positive.")
+        test_draft_factory = _test_draft_runtime_factory(
+            draftmancer_dir=draftmancer_dir,
+            scryfall_bulk_file=getattr(
+                args,
+                "scryfall_bulk_file",
+                DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
+            ),
+            server_url=getattr(
+                args,
+                "test_draft_server_url",
+                DEFAULT_TEST_DRAFT_SERVER_URL,
+            ),
+            timeout_seconds=test_draft_timeout,
+            app_dir=args.app_dir,
+            profile_manifest_url=resolved_profile_manifest_url,
+            profile_network_policy=profile_network_policy,
+        )
     return LiveSessionAdapter(
         session_factory=_live_session_factory(
             log_path=args.log_path,
@@ -297,6 +440,7 @@ def _build_provider(
         profile_client=profile_client,
         poll_interval_ms=max(1, round(args.poll_interval * 1000)),
         startup_scan=args.startup_scan,
+        test_draft_factory=test_draft_factory,
     )
 
 

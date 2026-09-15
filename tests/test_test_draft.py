@@ -17,6 +17,7 @@ import zlib
 import pytest
 from draftomen.audit import DraftAuditStore, load_draft_audit_records
 from draftomen.card_data_client import card_data_cache_path
+from draftomen.cardimages import CardImageService
 from draftomen.deckbuilder import DeckBuilderError
 from draftomen.draftmancer import (
     DraftmancerAdapter,
@@ -40,6 +41,8 @@ from draftomen.set_profile import (
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
 from draftomen.session import (
     ApplicationPhase,
+    CardImageFetchResult,
+    CardImageRequest,
     ChooseRecommendation,
     ContextualEvidenceStatus,
     DataLoadPhase,
@@ -429,6 +432,7 @@ def _create_runtime(
     timeout_seconds: float = 1.0,
     snapshot_publisher: SnapshotPublisher | None = None,
     simulation_app_dir: Path | None = None,
+    card_image_service: CardImageService | None = None,
 ) -> TestDraftRuntime:
     """Create one isolated runtime over the seeded card, profile, and bulk sources."""
 
@@ -444,6 +448,7 @@ def _create_runtime(
         snapshot_publisher=snapshot_publisher,
         simulation_app_dir=simulation_app_dir,
         socket_client=socket,
+        card_image_service=card_image_service,
     )
 
 
@@ -1420,6 +1425,43 @@ def test_reusable_test_draft_runtime_matches_headless_auto_contract(
     assert "draft_completed" in {record["record_type"] for record in records}
 
     runtime.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_create_test_draft_runtime_accepts_a_card_image_service(
+    tmp_path: Path,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    image_path = tmp_path / "card-images" / "fixture.jpg"
+    fetched_uris: list[str] = []
+
+    class RecordingCardImageService:
+        """Record every image fetch and answer with one local placeholder."""
+
+        def fetch(self, *, image_uri: str) -> Path:
+            fetched_uris.append(image_uri)
+            return image_path
+
+    socket = _FakeSocket()
+    with _create_runtime(
+        sources=sources,
+        socket=socket,
+        simulation_app_dir=sources.simulation_dir,
+        card_image_service=RecordingCardImageService(),
+    ) as runtime:
+        request = CardImageRequest(
+            generation=1,
+            grp_id=_HELPER_GRP_IDS[0],
+            image_uri="https://images.example/x.jpg",
+        )
+
+        result = runtime.session.fetch_card_image(request=request)
+
+        assert isinstance(result, CardImageFetchResult)
+        assert result.image_path == image_path
+        assert result.image_uri == request.image_uri
+        assert fetched_uris == [request.image_uri]
 
     assert socket.disconnect_count == 1
 

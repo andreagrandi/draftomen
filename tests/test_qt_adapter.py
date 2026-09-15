@@ -5,12 +5,13 @@ import hashlib
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
 from os import PathLike
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -82,6 +83,30 @@ from draftomen.set_profile import (
     dump_set_profile,
     load_set_profile,
 )
+from draftomen.test_draft import (
+    TestDraftController,
+    TestDraftError,
+    TestDraftInspection,
+    TestDraftOfferIdentity,
+    TestDraftRuntime,
+    create_test_draft_runtime,
+)
+
+from tests.test_draftmancer import _FakeSocket, _withheld_ack_action
+from tests.test_test_draft import (
+    _HELPER_GRP_IDS,
+    _HELPER_OFFERS,
+    _HelperSources,
+    _arena_states,
+    _helper_socket,
+    _pick_card_calls,
+    _seed_helper_sources,
+)
+
+if TYPE_CHECKING:
+    # Typing only: importing the protocol at runtime makes pytest try to
+    # collect it as a test class and warn on every run.
+    from draftomen.qt_adapter import TestDraftFactory
 
 
 _PROFILE_FIXTURE_PATH = (
@@ -2429,5 +2454,1700 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         assert later_recommendation.contextual_evidence == ()
         assert later_recommendation.contextual_breakdown.aggregate == 0
     finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+# --------------------------------------------------------------------------
+# Test Draft worker lifecycle (issue #547). The doubles below stay at module
+# level for the manual/auto/leave/shutdown acceptance tests appended next:
+#   _RecordingTestDraftFactory         records capability and runtime requests
+#   _FakeTestDraftController           scripts start/inspect/confirm/run_auto
+#   _FakeTestDraftRuntime              owns one simulated session and controller
+#   _FakeTestDraftSession              duck-typed simulated source-less session
+#   _BlockedArenaAuxiliaryFakeSession  blocked Arena image and profile work
+#   _GuiTickCounter                    counts GUI-thread timer ticks
+#   _test_draft_session_snapshot()     simulated snapshot unlike Arena state
+#   _test_draft_inspection()           real inspection for the fake controller
+#   _test_draft_offer()                real offer token for the fake controller
+#   _DISABLED_TEST_DRAFT_STATE         published no-opt-in provider contract
+# A factory that needs a fresh runtime per call can pass `runtime_factory`,
+# called with the same keywords as `create_runtime`, and read the runtime
+# publisher from `publishers` to publish simulated snapshots by hand.
+# --------------------------------------------------------------------------
+
+
+_DISABLED_TEST_DRAFT_STATE: dict[str, object] = {
+    "enabled": False,
+    "active": False,
+    "phase": "idle",
+    "mode": None,
+    "set_code": None,
+    "supported_set_codes": [],
+    "default_set_code": None,
+    "pending": False,
+    "offer_generation": 0,
+    "error": None,
+}
+_SIMULATED_POOL_TOTAL_CARDS = 7
+
+
+def _test_draft_offer(
+    *,
+    pack_number: int = 1,
+    pick_number: int = 1,
+) -> TestDraftOfferIdentity:
+    """Build the real offer token one simulated pack is confirmed through."""
+    return TestDraftOfferIdentity(
+        account_id=None,
+        event_name="Test Draft HOB",
+        set_code="hob",
+        pack_number=pack_number,
+        pick_number=pick_number,
+        offered_grp_ids=(1, 2, 3),
+        pool_grp_ids=(),
+    )
+
+
+def _test_draft_session_snapshot(
+    *,
+    total_cards: int = _SIMULATED_POOL_TOTAL_CARDS,
+) -> LiveSessionSnapshot:
+    """Build one simulated draft snapshot that differs from Arena state."""
+    ready = MockLiveSession().snapshot
+    return replace(
+        ready,
+        pool=replace(ready.pool, total_cards=total_cards),
+    )
+
+
+def _test_draft_inspection(
+    *,
+    snapshot: LiveSessionSnapshot | None = None,
+    offer: TestDraftOfferIdentity | None = None,
+) -> TestDraftInspection:
+    """Pair one ready simulated offer with the snapshot that published it."""
+    return TestDraftInspection(
+        offer=_test_draft_offer() if offer is None else offer,
+        snapshot=(
+            _test_draft_session_snapshot() if snapshot is None else snapshot
+        ),
+    )
+
+
+class _FakeTestDraftSession:
+    """Stand in for the source-less session inside one simulated runtime."""
+
+    def __init__(
+        self,
+        *,
+        snapshot: LiveSessionSnapshot | None = None,
+    ) -> None:
+        self.snapshot = (
+            _test_draft_session_snapshot() if snapshot is None else snapshot
+        )
+        self.commands: list[LiveSessionCommand] = []
+        self.dispatch_thread_ids: list[int] = []
+        self.image_selection_thread_ids: list[int] = []
+        self.stopped = False
+
+    def selected_card_image_request(self) -> CardImageRequest | None:
+        self.image_selection_thread_ids.append(threading.get_ident())
+        return None
+
+    def dispatch(self, *, command: LiveSessionCommand) -> LiveSessionSnapshot:
+        self.dispatch_thread_ids.append(threading.get_ident())
+        self.commands.append(command)
+        return self.snapshot
+
+    def stop(self) -> LiveSessionSnapshot:
+        self.stopped = True
+        return self.snapshot
+
+
+class _FakeTestDraftController:
+    """Script the simulated controller calls run on the live worker thread."""
+
+    def __init__(
+        self,
+        *,
+        inspection: TestDraftInspection | None = None,
+        inspections: Iterable[TestDraftInspection] = (),
+        confirm: Callable[..., object] | None = None,
+        run_auto: Callable[[], object] | None = None,
+        start_blocks: bool = False,
+    ) -> None:
+        self.inspection = (
+            _test_draft_inspection() if inspection is None else inspection
+        )
+        self.release = threading.Event()
+        self.cancelled = threading.Event()
+        self.started = threading.Event()
+        self.start_calls = 0
+        self.start_thread_ids: list[int] = []
+        self.inspect_calls = 0
+        self.confirm_calls: list[tuple[int, TestDraftOfferIdentity]] = []
+        self.run_auto_calls = 0
+        self._inspections = deque(inspections)
+        self._confirm = confirm
+        self._run_auto = run_auto
+        if not start_blocks:
+            self.release.set()
+
+    def start(self) -> TestDraftInspection:
+        self.start_calls += 1
+        self.start_thread_ids.append(threading.get_ident())
+        self.started.set()
+        self.release.wait(timeout=3.0)
+        if self.cancelled.is_set():
+            raise TestDraftError(
+                "the simulated draft did not start: cancelled.",
+                stage="startup",
+            )
+        return self.inspection
+
+    def inspect(self) -> TestDraftInspection:
+        self.inspect_calls += 1
+        if self._inspections:
+            return self._inspections.popleft()
+        return self.inspection
+
+    def confirm(
+        self,
+        *,
+        grp_id: int,
+        expected_offer: TestDraftOfferIdentity,
+    ) -> object:
+        self.confirm_calls.append((grp_id, expected_offer))
+        if self._confirm is None:
+            raise AssertionError("the simulated confirm call is not scripted.")
+        return self._confirm(grp_id=grp_id, expected_offer=expected_offer)
+
+    def run_auto(self) -> object:
+        self.run_auto_calls += 1
+        if self._run_auto is None:
+            raise AssertionError("the simulated run_auto call is not scripted.")
+        return self._run_auto()
+
+    def cancel(self) -> None:
+        self.cancelled.set()
+        self.release.set()
+
+
+class _FakeTestDraftRuntime:
+    """Own one scripted simulated source the worker treats as a runtime."""
+
+    def __init__(
+        self,
+        *,
+        session: _FakeTestDraftSession | None = None,
+        controller: _FakeTestDraftController | None = None,
+    ) -> None:
+        self.session = (
+            _FakeTestDraftSession() if session is None else session
+        )
+        self.controller = (
+            _FakeTestDraftController() if controller is None else controller
+        )
+        self.cancel_calls = 0
+        self.close_calls = 0
+
+    def cancel(self) -> None:
+        self.cancel_calls += 1
+        self.controller.cancel()
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _RecordingTestDraftFactory:
+    """Record the capability and runtime requests the live worker makes."""
+
+    def __init__(
+        self,
+        *,
+        set_codes: tuple[str, ...] = (),
+        runtime: object | None = None,
+        runtime_factory: Callable[..., object] | None = None,
+        create_error: Exception | None = None,
+        supported_error: Exception | None = None,
+    ) -> None:
+        self.set_codes = set_codes
+        self.runtime = runtime
+        self.runtime_factory = runtime_factory
+        self.create_error = create_error
+        self.supported_error = supported_error
+        self.supported_calls = 0
+        self.create_calls: list[dict[str, object]] = []
+        self.create_thread_ids: list[int] = []
+        self.publishers: list[SnapshotPublisher] = []
+
+    def supported_set_codes(self) -> tuple[str, ...]:
+        self.supported_calls += 1
+        if self.supported_error is not None:
+            raise self.supported_error
+        return self.set_codes
+
+    def create_runtime(
+        self,
+        *,
+        set_code: str,
+        publisher: SnapshotPublisher,
+        splash_enabled: bool,
+        contextual_adjustments_enabled: bool,
+        ai_enhanced_suggestions_enabled: bool,
+    ) -> object:
+        self.create_calls.append(
+            {
+                "set_code": set_code,
+                "splash_enabled": splash_enabled,
+                "contextual_adjustments_enabled": (
+                    contextual_adjustments_enabled
+                ),
+                "ai_enhanced_suggestions_enabled": (
+                    ai_enhanced_suggestions_enabled
+                ),
+            }
+        )
+        self.create_thread_ids.append(threading.get_ident())
+        self.publishers.append(publisher)
+        if self.create_error is not None:
+            raise self.create_error
+        if self.runtime_factory is not None:
+            return self.runtime_factory(
+                set_code=set_code,
+                publisher=publisher,
+                splash_enabled=splash_enabled,
+                contextual_adjustments_enabled=contextual_adjustments_enabled,
+                ai_enhanced_suggestions_enabled=(
+                    ai_enhanced_suggestions_enabled
+                ),
+            )
+        if self.runtime is None:
+            raise AssertionError("the test-draft factory has no runtime.")
+        return self.runtime
+
+
+class _BlockedArenaAuxiliaryFakeSession(_BlockedFocusedImageFakeSession):
+    """Hold one Arena image fetch and one Arena profile refresh in flight."""
+
+    def __init__(self, *, publish: SnapshotPublisher) -> None:
+        super().__init__(publish=publish)
+        self.profile_request = ProfileRefreshRequest(
+            generation=1,
+            set_code="OTJ",
+            event_format="QuickDraft",
+            force=False,
+        )
+        self.fetch_returned = threading.Event()
+        self.completed_profile_requests: list[ProfileRefreshRequest] = []
+        self.failed_profile_requests: list[ProfileRefreshRequest] = []
+
+    def fetch_card_image(
+        self,
+        *,
+        request: CardImageRequest,
+    ) -> CardImageFetchResult:
+        result = super().fetch_card_image(request=request)
+        self.fetch_returned.set()
+        return result
+
+    def profile_refresh_request(self) -> ProfileRefreshRequest | None:
+        return self.profile_request
+
+    def complete_profile_refresh(
+        self,
+        *,
+        request: ProfileRefreshRequest,
+        result: object,
+    ) -> None:
+        del result
+        self.completed_profile_requests.append(request)
+        self.profile_request = None
+
+    def fail_profile_refresh(
+        self,
+        *,
+        request: ProfileRefreshRequest,
+        error_message: str | None = None,
+    ) -> None:
+        del error_message
+        self.failed_profile_requests.append(request)
+        self.profile_request = None
+
+
+class _GuiTickCounter(QObject):
+    """Count GUI-thread timer ticks while the worker stays busy elsewhere."""
+
+    def __init__(self, *, interval_ms: int = 1) -> None:
+        super().__init__()
+        self.ticks = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(interval_ms)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    @Slot()
+    def _tick(self) -> None:
+        self.ticks += 1
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+
+def test_live_adapter_without_test_draft_opt_in_ignores_test_draft_commands(
+    qcore_application: QCoreApplication,
+) -> None:
+    gui_thread_id = threading.get_ident()
+    sessions: list[_FakeSession] = []
+
+    def factory(publish: SnapshotPublisher) -> LiveSession:
+        session = _FakeSession(publish=publish)
+        sessions.append(session)
+        return cast(LiveSession, session)
+
+    adapter = LiveSessionAdapter(session_factory=factory, poll_interval_ms=5)
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(sessions)
+            and len(sessions[0].poll_thread_ids) >= 2,
+            description="polling without a configured Test Draft",
+        )
+        session = sessions[0]
+        assert adapter.state["test_draft"] == _DISABLED_TEST_DRAFT_STATE
+        assert all(
+            thread_id != gui_thread_id for thread_id in session.poll_thread_ids
+        )
+
+        polls_before_commands = len(session.poll_thread_ids)
+        adapter.startTestDraft("manual", "hob")
+        adapter.pickTestDraft(1, 1)
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(session.poll_thread_ids)
+            >= polls_before_commands + 2,
+            description="polling after ignored Test Draft commands",
+        )
+        assert adapter.state["test_draft"] == _DISABLED_TEST_DRAFT_STATE
+        assert session.commands == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_publishes_test_draft_support_and_default_set(
+    qcore_application: QCoreApplication,
+) -> None:
+    gui_thread_id = threading.get_ident()
+
+    def build_adapter(
+        test_draft_factory: _RecordingTestDraftFactory,
+    ) -> tuple[LiveSessionAdapter, list[_FakeSession]]:
+        """Start one live adapter over a recording Arena session factory."""
+        arenas: list[_FakeSession] = []
+
+        def session_factory(publish: SnapshotPublisher) -> LiveSession:
+            arena = _FakeSession(publish=publish)
+            arenas.append(arena)
+            return cast(LiveSession, arena)
+
+        adapter = LiveSessionAdapter(
+            session_factory=session_factory,
+            poll_interval_ms=5,
+            test_draft_factory=cast("TestDraftFactory", test_draft_factory),
+        )
+        adapter.start()
+        return adapter, arenas
+
+    factory = _RecordingTestDraftFactory(set_codes=("hob", "lci"))
+    adapter, arenas = build_adapter(factory)
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["supported_set_codes"]
+            == ["hob", "lci"],
+            description="the published Test Draft capability",
+        )
+        assert adapter.state["test_draft"]["enabled"] is True
+        assert adapter.state["test_draft"]["default_set_code"] == "hob"
+        assert adapter.state["test_draft"]["phase"] == "idle"
+        assert adapter.state["test_draft"]["active"] is False
+        assert adapter.state["test_draft"]["error"] is None
+        assert factory.supported_calls == 1
+        assert factory.create_calls == []
+        assert arenas[0].poll_thread_ids
+        assert all(
+            thread_id != gui_thread_id for thread_id in arenas[0].poll_thread_ids
+        )
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+    # The preferred set code wins the default when it is not listed first.
+    preferred_factory = _RecordingTestDraftFactory(set_codes=("lci", "hob"))
+    preferred_adapter, _ = build_adapter(preferred_factory)
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: preferred_adapter.state["test_draft"][
+                "default_set_code"
+            ]
+            == "hob",
+            description="the preferred default Test Draft set",
+        )
+        assert preferred_adapter.state["test_draft"]["supported_set_codes"] == [
+            "lci",
+            "hob",
+        ]
+    finally:
+        preferred_adapter.shutdown()
+        preferred_adapter.wait_for_shutdown()
+
+    failing_factory = _RecordingTestDraftFactory(
+        supported_error=TestDraftError(
+            "capability metadata is invalid",
+            stage="startup",
+        )
+    )
+    failing_adapter, failing_arenas = build_adapter(failing_factory)
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: failing_adapter.state["test_draft"]["error"]
+            == "capability metadata is invalid",
+            description="the published Test Draft capability failure",
+        )
+        failing_arena = failing_arenas[0]
+        assert failing_adapter.state["test_draft"]["enabled"] is True
+        assert failing_adapter.state["test_draft"]["supported_set_codes"] == []
+        assert failing_adapter.state["test_draft"]["default_set_code"] is None
+        assert failing_adapter.state["test_draft"]["active"] is False
+        polls_before_failure = len(failing_arena.poll_thread_ids)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(failing_arena.poll_thread_ids)
+            >= polls_before_failure + 2,
+            description="Arena polling despite the capability failure",
+        )
+        assert (
+            failing_adapter.state["test_draft"]["error"]
+            == "capability metadata is invalid"
+        )
+    finally:
+        failing_adapter.shutdown()
+        failing_adapter.wait_for_shutdown()
+
+
+def test_live_adapter_keeps_gui_thread_responsive_during_blocked_test_draft_start(
+    qcore_application: QCoreApplication,
+) -> None:
+    gui_thread_id = threading.get_ident()
+    sessions: list[_FakeSession] = []
+    simulated_session = _FakeTestDraftSession()
+    controller = _FakeTestDraftController(start_blocks=True)
+    runtime = _FakeTestDraftRuntime(
+        session=simulated_session,
+        controller=controller,
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        session = _FakeSession(publish=publish)
+        sessions.append(session)
+        return cast(LiveSession, session)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    ticks = _GuiTickCounter()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(sessions)
+            and bool(sessions[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["pending"] is True
+            and ticks.ticks > 0,
+            description="the pending Test Draft start",
+        )
+        assert controller.started.is_set()
+        assert controller.start_thread_ids
+        assert all(
+            thread_id != gui_thread_id
+            for thread_id in controller.start_thread_ids
+        )
+        assert adapter.state["test_draft"]["phase"] == "starting"
+
+        ticks_before_release = ticks.ticks
+        blocked_deadline = time.monotonic() + 0.2
+        while time.monotonic() < blocked_deadline:
+            qcore_application.processEvents()
+            time.sleep(0.001)
+        assert ticks.ticks > ticks_before_release
+        assert not controller.release.is_set()
+        assert adapter.state["test_draft"]["pending"] is True
+
+        controller.release.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["pending"] is False
+            and adapter.state["test_draft"]["phase"] == "drafting",
+            description="the released Test Draft start",
+        )
+        assert controller.start_calls == 1
+        assert runtime.close_calls == 0
+        assert adapter.state["test_draft"]["active"] is True
+        assert adapter.state["test_draft"]["offer_generation"] == 1
+        assert adapter.state["test_draft"]["set_code"] == "hob"
+        assert adapter.state["pool"]["total_cards"] == _SIMULATED_POOL_TOTAL_CARDS
+    finally:
+        ticks.stop()
+        controller.release.set()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_ignores_late_arena_results_while_test_draft_is_authoritative(
+    qcore_application: QCoreApplication,
+) -> None:
+    gui_thread_id = threading.get_ident()
+    arenas: list[_BlockedArenaAuxiliaryFakeSession] = []
+    arena_publishers: list[SnapshotPublisher] = []
+    client = _ProfileRefreshFakeClient(
+        result=ProfileRefreshResult(
+            profile=SetProfile.generic(set_code="OTJ", event_format="QuickDraft"),
+            outcome=ProfileRefreshOutcome.UPDATED,
+            diagnostics=(),
+        )
+    )
+    simulated_session = _FakeTestDraftSession()
+    runtime = _FakeTestDraftRuntime(
+        session=simulated_session,
+        controller=_FakeTestDraftController(),
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _BlockedArenaAuxiliaryFakeSession(publish=publish)
+        arenas.append(arena)
+        arena_publishers.append(publish)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=60_000,
+        profile_client=cast(ProfileClient, client),
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas)
+            and arenas[0].fetch_started.is_set()
+            and client.started.is_set(),
+            description="the blocked Arena image and profile work",
+        )
+        arena = arenas[0]
+        publish_arena_snapshot = arena_publishers[0]
+        changed_arena_snapshot = replace(
+            arena.snapshot,
+            pool=replace(arena.snapshot.pool, total_cards=31),
+        )
+        publish_arena_snapshot(changed_arena_snapshot)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["pool"]["total_cards"] == 31,
+            description="the Arena snapshot published while Arena is authoritative",
+        )
+        assert client.calls == [("OTJ", "QuickDraft", False)]
+
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["active"] is True
+            and adapter.state["pool"]["total_cards"]
+            == _SIMULATED_POOL_TOTAL_CARDS,
+            description="the simulated draft becoming authoritative",
+        )
+        assert adapter.state["test_draft"]["phase"] == "drafting"
+        assert adapter.state["test_draft"]["offer_generation"] == 1
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(
+                simulated_session.image_selection_thread_ids
+            ),
+            description="the simulated session probed for its next card image",
+        )
+        simulated_state = json.dumps(adapter.state, sort_keys=True)
+
+        arena.fetch_release.set()
+        client.release.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: arena.fetch_returned.is_set(),
+            description="the released Arena image fetch",
+        )
+        publish_arena_snapshot(
+            replace(
+                arena.snapshot,
+                pool=replace(arena.snapshot.pool, total_cards=55),
+            )
+        )
+        adapter.setSplashEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: simulated_session.commands
+            == [ChangeSplashPreference(enabled=False)],
+            description="the command routed to the simulated session",
+        )
+        # Both stale completions are released and one further queued command
+        # has run, so every late Arena input has since reached the worker.
+        settle_deadline = time.monotonic() + 0.3
+        while time.monotonic() < settle_deadline:
+            qcore_application.processEvents()
+            assert json.dumps(adapter.state, sort_keys=True) == simulated_state
+            time.sleep(0.001)
+
+        assert json.dumps(adapter.state, sort_keys=True) == simulated_state
+        assert adapter.state["pool"]["total_cards"] == _SIMULATED_POOL_TOTAL_CARDS
+        assert adapter.state["test_draft"]["active"] is True
+        assert arena.completions == []
+        assert arena.completed_profile_requests == []
+        assert arena.failed_profile_requests == []
+        assert len(arena.fetch_thread_ids) == 1
+        assert client.calls == [("OTJ", "QuickDraft", False)]
+        assert simulated_session.dispatch_thread_ids
+        assert all(
+            thread_id != gui_thread_id
+            for thread_id in simulated_session.dispatch_thread_ids
+        )
+        assert all(
+            thread_id != gui_thread_id
+            for thread_id in simulated_session.image_selection_thread_ids
+        )
+    finally:
+        if arenas:
+            arenas[0].fetch_release.set()
+        client.release.set()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_start_failure_keeps_arena_authoritative(
+    qcore_application: QCoreApplication,
+) -> None:
+    gui_thread_id = threading.get_ident()
+    sessions: list[_FakeSession] = []
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob",),
+        create_error=TestDraftError(
+            "the test draft could not start: boom",
+            stage="startup",
+        ),
+    )
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        session = _FakeSession(publish=publish)
+        sessions.append(session)
+        return cast(LiveSession, session)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["supported_set_codes"]
+            == ["hob"],
+            description="the published Test Draft capability",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
+            description="the reported Test Draft start failure",
+        )
+        session = sessions[0]
+        assert adapter.state["test_draft"]["active"] is False
+        assert (
+            adapter.state["test_draft"]["error"]
+            == "the test draft could not start: boom"
+        )
+        assert adapter.state["test_draft"]["pending"] is False
+        assert adapter.state["test_draft"]["offer_generation"] == 0
+        assert adapter.state["pool"]["total_cards"] == 24
+        assert factory.supported_calls == 1
+        assert len(factory.create_calls) == 1
+        assert factory.create_calls[0]["set_code"] == "hob"
+        assert factory.create_thread_ids[0] != gui_thread_id
+        polls_before_leave = len(session.poll_thread_ids)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(session.poll_thread_ids)
+            >= polls_before_leave + 2,
+            description="Arena polling after the Test Draft start failure",
+        )
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle",
+            description="the cleared Test Draft failure",
+        )
+        assert adapter.state["test_draft"]["error"] is None
+        assert adapter.state["test_draft"]["active"] is False
+        assert adapter.state["test_draft"]["pending"] is False
+        assert adapter.state["test_draft"]["offer_generation"] == 0
+        assert len(factory.create_calls) == 1
+        assert session.commands == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+# --------------------------------------------------------------------------
+# Test Draft acceptance over real simulated runtimes (issue #547). The tests
+# above script the simulated source; these drive the production runtime over
+# the fixture fake transport, so published state, picks, and the build are the
+# real card-data and controller results:
+#   _CountingTestDraftRuntime      counts one real runtime's close() calls
+#   _RealTestDraftRuntimeFactory   builds real runtimes for the live worker
+#   _start_real_test_draft_adapter boots one adapter over a seeded tmp tree
+# `_helper_socket` is the fixture socket a real runtime can start from: it
+# answers with the seats of the runtime's generated identity, which only the
+# connect query knows.
+# --------------------------------------------------------------------------
+
+
+class _CountingTestDraftRuntime:
+    """Count one real runtime's closes while delegating every owned resource."""
+
+    def __init__(self, *, runtime: TestDraftRuntime) -> None:
+        self.runtime = runtime
+        self.close_calls = 0
+
+    @property
+    def session(self) -> LiveSession:
+        return self.runtime.session
+
+    @property
+    def controller(self) -> TestDraftController:
+        return self.runtime.controller
+
+    def cancel(self) -> None:
+        self.runtime.cancel()
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.runtime.close()
+
+
+class _RealTestDraftRuntimeFactory:
+    """Create real simulated runtimes over one seeded fake transport."""
+
+    def __init__(
+        self,
+        *,
+        sources: _HelperSources,
+        socket: _FakeSocket,
+        timeout_seconds: float = 5.0,
+    ) -> None:
+        self._sources = sources
+        self._socket = socket
+        self._timeout_seconds = timeout_seconds
+        self.started: list[_CountingTestDraftRuntime] = []
+        self.publication_thread_ids: list[int] = []
+
+    def __call__(
+        self,
+        *,
+        set_code: str,
+        publisher: SnapshotPublisher,
+        splash_enabled: bool,
+        contextual_adjustments_enabled: bool,
+        ai_enhanced_suggestions_enabled: bool,
+    ) -> _CountingTestDraftRuntime:
+        """Build one runtime that publishes through the worker's publisher."""
+
+        publication_thread_ids = self.publication_thread_ids
+
+        def recording_publisher(snapshot: LiveSessionSnapshot) -> None:
+            publication_thread_ids.append(threading.get_ident())
+            publisher(snapshot)
+
+        simulation_app_dir = self._sources.simulation_dir / f"run-{len(self.started)}"
+        simulation_app_dir.mkdir(parents=True, exist_ok=True)
+        runtime = create_test_draft_runtime(
+            draftmancer_dir=self._sources.draftmancer_dir,
+            scryfall_bulk_file=self._sources.bulk_path,
+            server_url="http://127.0.0.1:3000",
+            set_code=set_code,
+            timeout_seconds=self._timeout_seconds,
+            source_app_dir=self._sources.normal_app_dir,
+            profile_manifest_url=None,
+            profile_network_policy=ProfileNetworkPolicy.OFFLINE,
+            snapshot_publisher=recording_publisher,
+            splash_enabled=splash_enabled,
+            contextual_adjustments_enabled=contextual_adjustments_enabled,
+            ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
+            simulation_app_dir=simulation_app_dir,
+            socket_client=self._socket,
+        )
+        wrapper = _CountingTestDraftRuntime(runtime=runtime)
+        self.started.append(wrapper)
+        return wrapper
+
+    @property
+    def runtime(self) -> TestDraftRuntime:
+        """Return the one runtime the worker asked this factory to build."""
+        assert len(self.started) == 1, "the worker built more than one runtime."
+        return self.started[0].runtime
+
+    @property
+    def close_calls(self) -> int:
+        return sum(wrapper.close_calls for wrapper in self.started)
+
+
+def _start_real_test_draft_adapter(
+    *,
+    application: QCoreApplication,
+    tmp_path: Path,
+    socket: _FakeSocket,
+) -> tuple[
+    LiveSessionAdapter,
+    _FakeSession,
+    _RecordingTestDraftFactory,
+    _RealTestDraftRuntimeFactory,
+]:
+    """Start one live adapter whose Test Draft factory builds real runtimes."""
+
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    source = _RealTestDraftRuntimeFactory(sources=sources, socket=socket)
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime_factory=source)
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        # A long interval keeps Arena polls countable: only explicit polls run.
+        poll_interval_ms=600_000,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    _process_until(
+        application=application,
+        predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+        description="the initial Arena poll",
+    )
+    assert len(arenas) == 1
+    return adapter, arenas[0], factory, source
+
+
+def test_live_adapter_publishes_manual_test_draft_snapshots_off_gui_thread(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    gui_thread_id = threading.get_ident()
+    socket = _helper_socket(states=_arena_states())
+    adapter, arena, factory, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=socket,
+    )
+    try:
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+        assert arena.snapshot.build is not None
+
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        simulated = source.runtime.session.snapshot
+        test_draft = adapter.state["test_draft"]
+        assert test_draft["active"] is True
+        assert test_draft["phase"] == "drafting"
+        assert test_draft["mode"] == "manual"
+        assert test_draft["set_code"] == "hob"
+        assert test_draft["pending"] is False
+        assert test_draft["error"] is None
+        assert factory.create_calls[0]["set_code"] == "hob"
+        assert factory.create_thread_ids[0] != gui_thread_id
+        assert source.publication_thread_ids
+        assert all(
+            thread_id != gui_thread_id
+            for thread_id in source.publication_thread_ids
+        )
+        # The published state is the simulated session's state: a fresh pool,
+        # the simulated draft identity, and no Arena build.
+        assert adapter.state["pool"]["total_cards"] == simulated.pool.total_cards == 0
+        assert (
+            adapter.state["draft"]["draft_id"]
+            == simulated.draft.draft_id
+            != arena.snapshot.draft.draft_id
+        )
+        assert (
+            adapter.state["draft"]["set_code"]
+            == simulated.draft.set_code
+            == "HOB"
+        )
+        assert [
+            row["card"]["grp_id"]
+            for row in adapter.state["recommendations"]["cards"]
+        ] == [
+            row.card.grp_id for row in simulated.recommendations.cards
+        ] == list(_HELPER_GRP_IDS)
+        assert adapter.state["build"] is None
+        # No image work is configured for this runtime, so the published state
+        # must stay free of any implied image failure.
+        assert adapter.state["errors"] == []
+
+        # A poll tick the Arena timer queued before the switch cannot publish
+        # Arena state: the worker must keep the simulated source authoritative.
+        polls_before_tick = len(arena.poll_thread_ids)
+        worker = adapter._worker
+        assert worker is not None
+        QMetaObject.invokeMethod(
+            worker,
+            "_poll",
+            Qt.ConnectionType.QueuedConnection,
+        )
+        # A simulated-session command queued behind the tick proves the tick
+        # was processed before this state is observed.
+        adapter.setSplashEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["recommendations"]["splash_enabled"]
+            is False,
+            description="the queued Arena poll tick",
+        )
+        assert len(arena.poll_thread_ids) == polls_before_tick
+        assert adapter.state["pool"]["total_cards"] == 0
+        assert adapter.state["draft"]["draft_id"] == simulated.draft.draft_id
+        assert adapter.state["test_draft"]["offer_generation"] == 1
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_runs_auto_test_draft_to_completion_and_build(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    socket = _helper_socket(states=_arena_states())
+    adapter, arena, factory, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=socket,
+    )
+    try:
+        adapter.startTestDraft("auto", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "completed",
+            description="the completed automatic Test Draft",
+        )
+        state = adapter.state
+        assert state["test_draft"]["active"] is True
+        assert state["test_draft"]["mode"] == "auto"
+        assert state["test_draft"]["offer_generation"] == 0
+        assert state["test_draft"]["pending"] is False
+        assert state["test_draft"]["error"] is None
+        assert state["draft"]["completed"] is True
+        assert state["pool"]["total_cards"] == len(_HELPER_OFFERS)
+        assert state["draft"]["draft_id"] != arena.snapshot.draft.draft_id
+
+        simulated_build = source.runtime.session.snapshot.build
+        build = state["build"]
+        assert simulated_build is not None
+        assert build is not None
+        assert build["selected_pair"] == simulated_build.selected_pair
+        assert build["spells"]
+        assert build["lands"]
+        assert [
+            row["card"]["grp_id"] for row in build["spells"]
+        ] == [spell.card.grp_id for spell in simulated_build.spells]
+        assert [row["name"] for row in build["lands"]] == [
+            land.name for land in simulated_build.lands
+        ]
+        assert all(row["quantity"] >= 1 for row in build["lands"])
+
+        picks = _pick_card_calls(socket)
+        assert len(picks) == len(_HELPER_OFFERS) == len(_HELPER_GRP_IDS)
+        for payload, offered_grp_ids in zip(
+            picks, _HELPER_OFFERS, strict=True
+        ):
+            assert payload["burnedCards"] == []
+            (chosen_index,) = payload["pickedCards"]
+            assert 0 <= chosen_index < len(offered_grp_ids)
+        assert state["errors"] == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_rejects_stale_and_duplicate_test_draft_generations(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    socket = _helper_socket(states=_arena_states())
+    adapter, _, _, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=socket,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        rank_one_grp_id = adapter.state["recommendations"]["cards"][0]["card"]["grp_id"]
+
+        # The stale generation, the future generation, and the duplicate of the
+        # current generation are queued back to back; only the one call holding
+        # the current generation may reach the simulator.
+        adapter.pickTestDraft(rank_one_grp_id, 0)
+        adapter.pickTestDraft(rank_one_grp_id, 2)
+        adapter.pickTestDraft(rank_one_grp_id, 1)
+        adapter.pickTestDraft(rank_one_grp_id, 1)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 2,
+            description="the one accepted manual pick",
+        )
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                source.runtime.session.snapshot.pool.total_cards == 1
+            ),
+            description="the confirmed simulated pick",
+        )
+        assert len(_pick_card_calls(socket)) == 1
+        assert adapter.state["pool"]["total_cards"] == 1
+        assert [
+            row["card"]["grp_id"]
+            for row in adapter.state["recommendations"]["cards"]
+        ] == list(_HELPER_OFFERS[1])
+        assert rank_one_grp_id not in {
+            row["card"]["grp_id"]
+            for row in adapter.state["recommendations"]["cards"]
+        }
+        assert adapter.state["test_draft"]["phase"] == "drafting"
+        assert adapter.state["test_draft"]["pending"] is False
+        assert adapter.state["test_draft"]["active"] is True
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_leaves_test_draft_and_restores_arena_state(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    socket = _helper_socket(states=_arena_states())
+    adapter, arena, factory, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=socket,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        assert adapter.state["pool"]["total_cards"] == 0
+        assert arena.snapshot.pool.total_cards != 0
+        polls_before_leave = len(arena.poll_thread_ids)
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
+            and adapter.state["test_draft"]["active"] is False,
+            description="the restored Arena authority",
+        )
+        assert len(arena.poll_thread_ids) == polls_before_leave + 1
+        assert adapter.state["test_draft"] == {
+            "enabled": True,
+            "active": False,
+            "phase": "idle",
+            "mode": None,
+            "set_code": None,
+            "supported_set_codes": ["hob"],
+            "default_set_code": "hob",
+            "pending": False,
+            "offer_generation": 0,
+            "error": None,
+        }
+        # The published state is Arena state again, not the simulated draft.
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+        assert adapter.state["draft"]["draft_id"] == arena.snapshot.draft.draft_id
+        assert [
+            row["card"]["grp_id"]
+            for row in adapter.state["recommendations"]["cards"]
+        ] == [
+            row.card.grp_id for row in arena.snapshot.recommendations.cards
+        ]
+        assert len(factory.create_calls) == 1
+        assert source.close_calls == 1
+        assert socket.disconnect_count == 1
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_leave_cancels_blocked_test_draft_and_closes_once(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    socket = _FakeSocket(start_action=_withheld_ack_action(entered=entered))
+    adapter, arena, factory, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=socket,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: entered.is_set()
+            and adapter.state["test_draft"]["pending"] is True,
+            description="the blocked Test Draft start",
+        )
+        assert adapter.state["test_draft"]["active"] is False
+        assert adapter.state["test_draft"]["phase"] == "starting"
+
+        adapter.leaveTestDraft()
+        # The runtime timeout is five seconds, so only a cancelled start can
+        # return to Arena state inside this bounded pump.
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
+            and adapter.state["test_draft"]["pending"] is False,
+            description="the cancelled Test Draft start",
+        )
+        assert adapter.state["test_draft"]["active"] is False
+        assert adapter.state["test_draft"]["error"] is None
+        assert adapter.state["test_draft"]["mode"] is None
+        assert adapter.state["status"]["phase"] != "error"
+        assert adapter.state["errors"] == []
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+        assert len(factory.create_calls) == 1
+        assert source.close_calls == 1
+        assert socket.disconnect_count == 1
+        assert _pick_card_calls(socket) == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_shutdown_closes_blocked_test_draft_once(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    socket = _FakeSocket(start_action=_withheld_ack_action(entered=entered))
+    adapter, arena, factory, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=socket,
+    )
+    adapter.startTestDraft("manual", "hob")
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: entered.is_set()
+            and adapter.state["test_draft"]["pending"] is True,
+            description="the blocked Test Draft start",
+        )
+        blocked_state = json.dumps(adapter.state, sort_keys=True)
+
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+        thread = adapter.thread
+        assert thread is not None
+        assert thread.isRunning() is False
+        assert len(factory.create_calls) == 1
+        assert source.close_calls == 1
+        assert socket.disconnect_count == 1
+        assert _pick_card_calls(socket) == []
+        assert adapter.state["errors"] == []
+        assert adapter.state["test_draft"]["active"] is False
+        assert (
+            adapter.state["pool"]["total_cards"]
+            == arena.snapshot.pool.total_cards
+        )
+        # Shutdown publishes nothing: the last visible state survives it.
+        assert json.dumps(adapter.state, sort_keys=True) == blocked_state
+        qcore_application.processEvents()
+        assert json.dumps(adapter.state, sort_keys=True) == blocked_state
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_carries_preferences_across_test_draft_sources(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    socket = _helper_socket(states=_arena_states())
+    adapter, arena, factory, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=socket,
+    )
+    try:
+        adapter.setSplashEnabled(False)
+        adapter.setContextualScoringEnabled(False)
+        adapter.setAiEnhancedSuggestionsEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: arena.commands
+            == [
+                ChangeSplashPreference(enabled=False),
+                ChangeContextualScoring(enabled=False),
+                ChangeAiEnhancedSuggestions(enabled=False),
+            ],
+            description="the Arena preference commands",
+        )
+        assert arena.snapshot.recommendations.splash_enabled is False
+        assert arena.snapshot.contextual_adjustments_enabled is False
+
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        assert factory.create_calls[0] == {
+            "set_code": "hob",
+            "splash_enabled": False,
+            "contextual_adjustments_enabled": False,
+            "ai_enhanced_suggestions_enabled": False,
+        }
+        assert adapter.state["recommendations"]["splash_enabled"] is False
+        assert adapter.state["contextual_adjustments_enabled"] is False
+
+        adapter.setSplashEnabled(True)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                source.runtime.session.snapshot.recommendations.splash_enabled
+                is True
+            ),
+            description="the splash toggle inside the simulated draft",
+        )
+        assert adapter.state["recommendations"]["splash_enabled"] is True
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle",
+            description="the restored Arena authority",
+        )
+        assert adapter.state["recommendations"]["splash_enabled"] is True
+        assert [
+            command
+            for command in arena.commands
+            if isinstance(command, ChangeSplashPreference)
+        ] == [
+            ChangeSplashPreference(enabled=False),
+            ChangeSplashPreference(enabled=True),
+        ]
+        # Only the changed preference is replayed; the two unchanged choices
+        # were already applied to the retained Arena session.
+        assert [
+            command
+            for command in arena.commands
+            if isinstance(command, ChangeContextualScoring)
+        ] == [ChangeContextualScoring(enabled=False)]
+        assert [
+            command
+            for command in arena.commands
+            if isinstance(command, ChangeAiEnhancedSuggestions)
+        ] == [ChangeAiEnhancedSuggestions(enabled=False)]
+        assert source.close_calls == 1
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+# --------------------------------------------------------------------------
+# Test Draft review evidence (issue #547 findings F1-F4). Each test pins one
+# behavior the review could only infer from the surrounding mechanism:
+#   F2  a processed Leave owns the worker, so a queued Start is dropped
+#   F1  a superseded runtime's publisher cannot change published state
+#   F3  contextual and AI choices made during a Test Draft replay onto Arena
+#   F4  the GUI thread keeps ticking while a queued pick is blocked
+# --------------------------------------------------------------------------
+
+
+class _ScriptedTestDraftStep:
+    """Carry the one snapshot a scripted simulated pick publishes."""
+
+    def __init__(self, *, after: LiveSessionSnapshot) -> None:
+        self.after = after
+
+
+def test_live_adapter_drops_a_start_that_a_pending_leave_owns(
+    qcore_application: QCoreApplication,
+) -> None:
+    arenas: list[_BusySession] = []
+    controller = _FakeTestDraftController()
+    runtime = _FakeTestDraftRuntime(
+        session=_FakeTestDraftSession(),
+        controller=controller,
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _BusySession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas),
+            description="the created Arena session",
+        )
+        assert len(arenas) == 1
+        arena = arenas[0]
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: arena.started.is_set(),
+            description="the blocked Arena startup scan",
+        )
+        # Start and Leave are queued while the worker is still inside the
+        # startup scan; the leave request marks the worker directly, so the
+        # Start the worker has not reached yet must be dropped.
+        adapter.startTestDraft("manual", "hob")
+        adapter.leaveTestDraft()
+        arena.release.set()
+
+        # One further intention queued behind both proves they were processed.
+        adapter.setSplashEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: arena.commands
+            == [ChangeSplashPreference(enabled=False)],
+            description="the intention queued behind the start and the leave",
+        )
+        assert factory.create_calls == []
+        assert factory.supported_calls == 1
+        assert controller.start_calls == 0
+        assert runtime.close_calls == 0
+        assert adapter.state["test_draft"] == {
+            "enabled": True,
+            "active": False,
+            "phase": "idle",
+            "mode": None,
+            "set_code": None,
+            "supported_set_codes": ["hob"],
+            "default_set_code": "hob",
+            "pending": False,
+            "offer_generation": 0,
+            "error": None,
+        }
+        assert adapter.state["errors"] == []
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+        polls_before = len(arena.poll_thread_ids)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(arena.poll_thread_ids) >= polls_before + 2,
+            description="Arena polling after the dropped Test Draft start",
+        )
+    finally:
+        if arenas:
+            arenas[0].release.set()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_ignores_publications_from_a_superseded_test_draft_runtime(
+    qcore_application: QCoreApplication,
+) -> None:
+    arenas: list[_FakeSession] = []
+    runtimes: list[_FakeTestDraftRuntime] = []
+
+    def runtime_factory(**_: object) -> object:
+        runtime = _FakeTestDraftRuntime()
+        runtimes.append(runtime)
+        return runtime
+
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob",),
+        runtime_factory=runtime_factory,
+    )
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=60_000,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the first manual Test Draft offer",
+        )
+        superseded_publisher = factory.publishers[0]
+        assert len(runtimes) == 1
+        assert adapter.state["pool"]["total_cards"] == _SIMULATED_POOL_TOTAL_CARDS
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
+            and adapter.state["test_draft"]["active"] is False,
+            description="the restored Arena authority",
+        )
+        assert runtimes[0].close_calls == 1
+
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(factory.publishers) == 2
+            and adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the second manual Test Draft offer",
+        )
+        assert superseded_publisher is not factory.publishers[1]
+        superseded_state = json.dumps(adapter.state, sort_keys=True)
+        simulated = _test_draft_session_snapshot()
+
+        # The retired runtime still holds its publisher. The snapshot it would
+        # publish is the terminal STOPPED state a closing simulated session
+        # emits, carried here with a pool the live draft never showed.
+        superseded_publisher(
+            replace(
+                simulated,
+                status=replace(simulated.status, phase="stopped"),
+                pool=replace(simulated.pool, total_cards=41),
+            )
+        )
+        settle_deadline = time.monotonic() + 0.2
+        while time.monotonic() < settle_deadline:
+            qcore_application.processEvents()
+            assert json.dumps(adapter.state, sort_keys=True) == superseded_state
+            time.sleep(0.001)
+        assert json.dumps(adapter.state, sort_keys=True) == superseded_state
+
+        # The publisher of the runtime that owns the current generation still
+        # publishes, so the guard drops stale publications only.
+        factory.publishers[1](
+            replace(simulated, pool=replace(simulated.pool, total_cards=63))
+        )
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["pool"]["total_cards"] == 63,
+            description="the current Test Draft runtime publication",
+        )
+        assert adapter.state["status"]["phase"] != "stopped"
+        assert adapter.state["test_draft"]["active"] is True
+        assert adapter.state["test_draft"]["offer_generation"] == 1
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_replays_contextual_and_ai_preferences_on_leave(
+    qcore_application: QCoreApplication,
+) -> None:
+    arenas: list[_FakeSession] = []
+    simulated_session = _FakeTestDraftSession()
+    runtime = _FakeTestDraftRuntime(
+        session=simulated_session,
+        controller=_FakeTestDraftController(),
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=60_000,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        arena = arenas[0]
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        assert arena.commands == []
+        assert adapter.state["contextual_adjustments_enabled"] is True
+
+        adapter.setContextualScoringEnabled(False)
+        adapter.setAiEnhancedSuggestionsEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: simulated_session.commands
+            == [
+                ChangeContextualScoring(enabled=False),
+                ChangeAiEnhancedSuggestions(enabled=False),
+            ],
+            description="the preference commands inside the simulated draft",
+        )
+        assert arena.commands == []
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
+            and arena.commands
+            == [
+                ChangeContextualScoring(enabled=False),
+                ChangeAiEnhancedSuggestions(enabled=False),
+            ],
+            description="the replayed Arena preferences",
+        )
+        assert adapter.state["test_draft"]["active"] is False
+        assert adapter.state["contextual_adjustments_enabled"] is False
+        assert not any(
+            isinstance(command, ChangeSplashPreference)
+            for command in arena.commands
+        )
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_keeps_gui_thread_responsive_during_blocked_test_draft_pick(
+    qcore_application: QCoreApplication,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    simulated = _test_draft_session_snapshot()
+    confirmed_snapshot = replace(
+        simulated,
+        pool=replace(simulated.pool, total_cards=13),
+    )
+
+    def confirm(*, grp_id: int, expected_offer: TestDraftOfferIdentity) -> object:
+        del grp_id, expected_offer
+        entered.set()
+        release.wait(timeout=3.0)
+        return _ScriptedTestDraftStep(after=confirmed_snapshot)
+
+    arenas: list[_FakeSession] = []
+    controller = _FakeTestDraftController(confirm=confirm)
+    runtime = _FakeTestDraftRuntime(
+        session=_FakeTestDraftSession(),
+        controller=controller,
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    ticks = _GuiTickCounter()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        rank_one_grp_id = adapter.state["recommendations"]["cards"][0]["card"][
+            "grp_id"
+        ]
+
+        adapter.pickTestDraft(rank_one_grp_id, 1)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: entered.is_set()
+            and adapter.state["test_draft"]["pending"] is True,
+            description="the blocked Test Draft pick",
+        )
+        ticks_before_release = ticks.ticks
+        blocked_deadline = time.monotonic() + 0.2
+        while time.monotonic() < blocked_deadline:
+            qcore_application.processEvents()
+            time.sleep(0.001)
+        assert ticks.ticks > ticks_before_release
+        assert not release.is_set()
+        assert adapter.state["test_draft"]["pending"] is True
+
+        release.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["pending"] is False
+            and adapter.state["test_draft"]["offer_generation"] == 2,
+            description="the confirmed Test Draft pick",
+        )
+        assert controller.confirm_calls == [(rank_one_grp_id, _test_draft_offer())]
+        assert controller.inspect_calls == 1
+        assert adapter.state["pool"]["total_cards"] == 13
+        assert adapter.state["test_draft"]["phase"] == "drafting"
+    finally:
+        release.set()
+        ticks.stop()
         adapter.shutdown()
         adapter.wait_for_shutdown()

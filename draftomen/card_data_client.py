@@ -99,6 +99,28 @@ def card_data_cache_path(*, set_code: str, app_dir: PathInput | None = None) -> 
     return root / _CARD_DATA_DIRECTORY / f"{normalized_set_code}.json.gz"
 
 
+def cached_card_data_set_codes(*, app_dir: PathInput | None = None) -> tuple[str, ...]:
+    """List normalized set codes with a locally cached card-data artifact.
+    Missing, unreadable, and non-cache entries are skipped.
+    """
+
+    root = Path(app_data_dir() if app_dir is None else app_dir).expanduser()
+    directory = root / _CARD_DATA_DIRECTORY
+    if not directory.is_dir():
+        return ()
+    codes: list[str] = []
+    try:
+        for entry in directory.iterdir():
+            if not entry.name.endswith(".json.gz") or not entry.is_file():
+                continue
+            set_code = entry.name.removesuffix(".json.gz")
+            if _SET_CODE_RE.fullmatch(set_code) is not None:
+                codes.append(set_code)
+    except OSError:
+        return ()
+    return tuple(sorted(codes))
+
+
 def _positive_float(value: Any, field_name: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{field_name} must be positive.")
@@ -387,4 +409,5 @@ __all__ = [
     "CardDataClient",
     "CardDataClientError",
     "card_data_cache_path",
+    "cached_card_data_set_codes",
 ]
