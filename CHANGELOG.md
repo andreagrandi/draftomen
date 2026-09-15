@@ -3,6 +3,31 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Add the simulator-backed native Manual Test Draft acceptance journey (#553):
+  `draftomen/qt_gui.py` turns the hidden `--test-draft-smoke` flag into a journey
+  selector whose bare form still selects the existing Auto journey while `manual`
+  selects the new Manual journey, adds `TEST_DRAFT_MANUAL_PICK_COUNT`, and adds the
+  `_TestDraftManualSmokeDriver` behind the narrow `_SmokeControls` port with the
+  `_QmlSmokeControls` implementation that locates a control by object name inside the
+  running window and activates it with a synthesized Space key, so the driver stays
+  testable without a display; the journey drives the real controls in order —
+  `testDraftButton`, `testDraftManualModeButton`, and `testDraftStartButton` to start
+  a manual draft, `testDraftCloseButton`, a real `wideRecommendationRow2` (or
+  `narrowRecommendationRow2`) recommendation row for the first pick,
+  `testDraftPickButton` for each of the five picks, then `testDraftButton` and
+  `testDraftLeaveButton` to leave — requires the first confirmed pick to be a non-top
+  recommendation, and requires every pick to grow the published pool by exactly one
+  and to re-render the drafting heading, exits 1 with a named reason on any failed
+  requirement or missing capability, and prints one `Test Draft smoke: {...}` manual
+  summary line whose `mode`, `set_code`, `picks`, `pool_total`, `non_top_rank`, and
+  `status` keys report `manual`, `hob`, `5`, `5`, `2`, and `ok`;
+  `tests/bundle_smoke.py` runs both journeys in one invocation behind
+  `REQUIRED_MANUAL_PICKS` and validates each journey's summary before printing its own
+  compact result; `tests/test_qt_gui.py` covers the selector, the activation order,
+  the summary line, the non-top requirement, and the named failures while
+  `tests/test_desktop_bundle.py` covers the two-launch argument vectors and the
+  summary validation; and `README.md` and `docs/desktop-bundles.md` document the
+  developer runbook for the headless, compiled, and interactive runs. (#553)
 - Add the developer-only native Test Draft controls to the desktop GUI:
   `draftomen/qml/TestDraftDialog.qml` is the new modal dialog that lists the capability's
   supported set codes with the published default preselected, offers Manual or Auto,

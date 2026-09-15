@@ -214,13 +214,24 @@ check against the final mounted macOS app and Windows executable.
 ### Native Test Draft smoke (manual)
 
 The opt-in `--test-draft` mode of `tests/bundle_smoke.py` is the only check that
-exercises the compiled bundle's Socket.IO path end to end. It drives the bundled
-GUI through the hidden `--test-draft-smoke` flag against a real Draftmancer
-server, so an opted-in developer proves that the packaged transport publishes
-the Test Draft capability, starts the capability's default set code, completes a
-simulated draft and build, leaves the simulated session, and shuts down while
-the external server keeps running. The mode is never part of CI: the workflow
-never runs it and never requires an ambient Draftmancer service.
+exercises the compiled bundle's Socket.IO path end to end. It launches the
+bundled GUI twice through the hidden `--test-draft-smoke` flag against a real
+Draftmancer server, so an opted-in developer proves that the packaged transport
+publishes the Test Draft capability and that the native Test Draft controls
+drive it, while the external server keeps running. The mode is never part of CI:
+the workflow never runs it and never requires an ambient Draftmancer service.
+
+The helper runs both journeys in one invocation:
+
+- **Auto** starts the capability's published default set code, completes a full
+  simulated draft, reaches the ordinary build result, reports the deck size and
+  the selected pair, then leaves the simulated session.
+- **Manual** starts a manual HOB draft through the real Test Draft dialog
+  **Start** control, closes the dialog, then confirms five consecutive picks
+  through the real recommendation rows and the real **Pick** control, one of
+  them a non-top recommendation (`non_top_rank` is 2). Every confirmation must
+  grow the published pool and advance the pack and pick counters, and the run
+  leaves through the dialog's **Leave test draft** control.
 
 Prerequisites:
 
@@ -245,26 +256,30 @@ uv run python tests/bundle_smoke.py \
   dist-native/macos-unsigned/Draftomen-unsigned-macos.app
 ```
 
-The launched GUI prints one summary line on stdout when it has reported the
-completed draft and build and left the simulated session:
+Each journey prints its own summary line on stdout once it has left the
+simulated session:
 
 ```text
 Test Draft smoke: {"deck_size":..,"mode":"auto","picks":..,"selected_pair":"..","set_code":"..","status":"ok"}
+Test Draft smoke: {"mode":"manual","non_top_rank":2,"picks":5,"pool_total":5,"set_code":"hob","status":"ok"}
 ```
 
-The helper requires that line, with a `status` of `ok`, a non-empty `set_code`,
-at least one pick, and a non-empty deck, then prints its own compact
-`{"status":"ok",...}` summary and exits 0. The app gives up after 900 seconds and
-the helper after 1200 seconds by default, so the app reports the reason first;
-`--timeout` overrides the helper's own bound. `--server-url` selects a
-Draftmancer endpoint other than `http://127.0.0.1:3000`.
+The helper requires each journey's line, with a `status` of `ok`, a `mode` that
+matches the journey, and a non-empty `set_code`; the Auto journey additionally
+requires at least one pick and a non-empty deck, and the Manual journey at least
+five picks, a `non_top_rank` of 2, and a positive `pool_total`. It then prints
+its own compact per-journey summary and exits 0. The app gives up after 900
+seconds and the helper after 1200 seconds by default, so the app reports the
+reason first; `--timeout` overrides the helper's own bound. `--server-url`
+selects a Draftmancer endpoint other than `http://127.0.0.1:3000`.
 
-The helper only probes that endpoint before and after the run: it never starts,
-stops, or configures Draftmancer, and the post-run probe proves the external
-server is still alive once the app has exited. It requires an explicit
-`--app-dir`, so the developer's real application data is never mutated, and it
-runs the app with `--offline-profiles` and `--no-startup-scan` so the journey
-follows no Arena log and performs no profile network request.
+The helper only probes that endpoint before and after the two launches: it
+never starts, stops, or configures Draftmancer, and the post-run probe proves
+the external server is still alive once the app has exited. It requires an
+explicit `--app-dir`, so the developer's real application data is never
+mutated, and it runs each launch with `--offline-profiles` and
+`--no-startup-scan` so the journey follows no Arena log and performs no profile
+network request.
 
 ## GitHub Actions artifacts and tagged releases
 

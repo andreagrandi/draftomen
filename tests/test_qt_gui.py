@@ -9,7 +9,7 @@ import subprocess
 import sys
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -24,7 +24,10 @@ from draftomen.pool import load_draft_state
 from draftomen.qt_gui import (
     APPLICATION_NAME,
     DEFAULT_PROFILE_MANIFEST_URL,
+    TEST_DRAFT_MANUAL_PICK_COUNT,
     TEST_DRAFT_SMOKE_SUMMARY_PREFIX,
+    TEST_DRAFT_SMOKE_TIMEOUT_SECONDS,
+    _TestDraftManualSmokeDriver,
     _TestDraftSmokeDriver,
     _build_provider,
     _configure_application_metadata,
@@ -411,8 +414,13 @@ def test_verify_bundled_profile_flag_is_hidden_and_parsed() -> None:
 def test_test_draft_smoke_flag_is_hidden_and_parsed() -> None:
     parser = _parser()
 
-    args = parser.parse_args(["--test-draft-smoke"])
-    assert args.test_draft_smoke is True
+    assert parser.parse_args(["--test-draft-smoke"]).test_draft_smoke == "auto"
+    assert (
+        parser.parse_args(["--test-draft-smoke", "manual"]).test_draft_smoke == "manual"
+    )
+    with pytest.raises(SystemExit) as rejected:
+        parser.parse_args(["--test-draft-smoke", "bogus"])
+    assert rejected.value.code == 2
     assert "--test-draft-smoke" not in parser.format_help()
 
 
@@ -679,6 +687,339 @@ def test_test_draft_smoke_driver_fails_on_error_and_timeout(
     now[0] = 901.0
 
     assert stalled_driver.advance() == 1
+    assert "timed out after 900 seconds" in capsys.readouterr().err
+
+
+_MANUAL_SMOKE_TOP_GRP_ID = 101
+_MANUAL_SMOKE_NON_TOP_GRP_ID = 202
+_MANUAL_SMOKE_SUMMARY = {
+    "status": "ok",
+    "mode": "manual",
+    "set_code": "hob",
+    "picks": 5,
+    "pool_total": 5,
+    "non_top_rank": 2,
+}
+
+
+class _StubSmokeItem:
+    """Stand in for one QML control the Manual journey reads.
+    Expose the same property accessor the real QML item offers.
+    """
+
+    def __init__(self, **properties: Any) -> None:
+        self._properties: dict[str, Any] = {
+            "visible": True,
+            "enabled": True,
+            **properties,
+        }
+
+    def property(self, name: str) -> Any:
+        return self._properties.get(name)
+
+    def publish(self, name: str, value: Any) -> None:
+        self._properties[name] = value
+
+
+class _StubManualSmokeProvider:
+    """Stand in for the adapter the Manual journey reads and never calls."""
+
+    def __init__(self) -> None:
+        self.state: dict[str, Any] = {
+            "test_draft": {
+                "enabled": True,
+                "active": False,
+                "phase": "idle",
+                "mode": None,
+                "set_code": None,
+                "offer_generation": 0,
+                "pending": False,
+            },
+            "pool": {"total_cards": 0},
+            "recommendations": {"cards": [], "selected_grp_id": None},
+        }
+        self.start_calls: list[tuple[str, str]] = []
+        self.pick_calls: list[tuple[int, int]] = []
+        self.leave_calls = 0
+
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+        self.pick_calls.append((grp_id, offer_generation))
+
+    def leaveTestDraft(self) -> None:
+        self.leave_calls += 1
+
+
+class _StubManualSmokeWindow:
+    """Simulate the window and published state one Manual journey drives.
+    Activating a control applies the change the real control causes, so the
+    journey only ever advances on state the running application published.
+    """
+
+    def __init__(self) -> None:
+        self.activations: list[str] = []
+        self.grow_pool = True
+        self.provider = _StubManualSmokeProvider()
+        self.items: dict[str, _StubSmokeItem] = {
+            "testDraftButton": _StubSmokeItem(),
+            "testDraftDialog": _StubSmokeItem(visible=False),
+            "testDraftManualModeButton": _StubSmokeItem(),
+            "testDraftStartButton": _StubSmokeItem(),
+            "testDraftCloseButton": _StubSmokeItem(),
+            "testDraftLeaveButton": _StubSmokeItem(visible=False),
+            "testDraftPickButton": _StubSmokeItem(visible=False),
+            "liveDraftView": _StubSmokeItem(draftHeading=""),
+            "wideRecommendationRow2": _StubSmokeItem(),
+            "narrowRecommendationRow2": _StubSmokeItem(),
+        }
+
+    def find(self, name: str) -> _StubSmokeItem | None:
+        return self.items.get(name)
+
+    def activate(self, name: str) -> None:
+        item = self.find(name)
+        assert item is not None, name
+        assert item.property("visible") is True, name
+        self.activations.append(name)
+        self._apply(name)
+
+    def _apply(self, name: str) -> None:
+        """Apply the state change the activated control causes."""
+        if name == "testDraftButton":
+            self.items["testDraftDialog"].publish("visible", True)
+        elif name == "testDraftStartButton":
+            self._start()
+        elif name == "testDraftCloseButton":
+            self.items["testDraftDialog"].publish("visible", False)
+        elif name in ("wideRecommendationRow2", "narrowRecommendationRow2"):
+            self.provider.state["recommendations"]["selected_grp_id"] = (
+                _MANUAL_SMOKE_NON_TOP_GRP_ID
+            )
+        elif name == "testDraftPickButton":
+            self._pick()
+        elif name == "testDraftLeaveButton":
+            self._leave()
+
+    def _start(self) -> None:
+        self.provider.state["test_draft"] |= {
+            "active": True,
+            "phase": "drafting",
+            "mode": "manual",
+            "set_code": "hob",
+            "offer_generation": 1,
+        }
+        self.provider.state["recommendations"] = {
+            "cards": self._offer_cards(),
+            "selected_grp_id": None,
+        }
+        self.items["liveDraftView"].publish("draftHeading", "Pack 1 · Pick 1")
+        self.items["testDraftStartButton"].publish("visible", False)
+        self.items["testDraftLeaveButton"].publish("visible", True)
+        self.items["testDraftPickButton"].publish("visible", True)
+
+    def _pick(self) -> None:
+        test_draft = self.provider.state["test_draft"]
+        generation = int(test_draft["offer_generation"]) + 1
+        test_draft["offer_generation"] = generation
+        if self.grow_pool:
+            pool = self.provider.state["pool"]
+            pool["total_cards"] = int(pool["total_cards"]) + 1
+        self.items["liveDraftView"].publish(
+            "draftHeading", f"Pack 1 · Pick {generation}"
+        )
+
+    def _leave(self) -> None:
+        self.provider.state["test_draft"] |= {
+            "active": False,
+            "phase": "idle",
+            "mode": None,
+        }
+        self.items["testDraftLeaveButton"].publish("visible", False)
+        self.items["testDraftPickButton"].publish("visible", False)
+
+    @staticmethod
+    def _offer_cards() -> list[dict[str, Any]]:
+        return [
+            {"card": {"grp_id": _MANUAL_SMOKE_TOP_GRP_ID}},
+            {"card": {"grp_id": _MANUAL_SMOKE_NON_TOP_GRP_ID}},
+        ]
+
+
+def _manual_smoke_driver(
+    window: _StubManualSmokeWindow,
+    *,
+    clock: Callable[[], float],
+) -> _TestDraftManualSmokeDriver:
+    """Build the Manual journey driver over the stubbed window and provider."""
+    return _TestDraftManualSmokeDriver(
+        provider=window.provider,  # type: ignore[arg-type]
+        controls=window,  # type: ignore[arg-type]
+        clock=clock,
+    )
+
+
+def _advance_manual_smoke_journey(
+    driver: _TestDraftManualSmokeDriver,
+    *,
+    limit: int = 64,
+) -> list[int | None]:
+    """Advance the Manual journey until it reports an exit code."""
+    exit_codes: list[int | None] = []
+    while len(exit_codes) < limit:
+        exit_codes.append(driver.advance())
+        if exit_codes[-1] is not None:
+            return exit_codes
+    raise AssertionError("the Manual journey never reported an exit code")
+
+
+def _manual_smoke_summaries(output: str) -> list[Any]:
+    """Return the summaries the journey printed."""
+    return [
+        json.loads(line[len(TEST_DRAFT_SMOKE_SUMMARY_PREFIX) :])
+        for line in output.splitlines()
+        if line.startswith(TEST_DRAFT_SMOKE_SUMMARY_PREFIX)
+    ]
+
+
+def test_test_draft_manual_smoke_driver_confirms_five_picks_and_reports(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    window = _StubManualSmokeWindow()
+    driver = _manual_smoke_driver(window, clock=lambda: 0.0)
+
+    exit_codes = _advance_manual_smoke_journey(driver)
+
+    assert exit_codes == [None] * (len(exit_codes) - 1) + [0]
+    assert window.activations == [
+        "testDraftButton",
+        "testDraftManualModeButton",
+        "testDraftStartButton",
+        "testDraftCloseButton",
+        "wideRecommendationRow2",
+        *["testDraftPickButton"] * TEST_DRAFT_MANUAL_PICK_COUNT,
+        "testDraftButton",
+        "testDraftLeaveButton",
+    ]
+    recommendations = window.provider.state["recommendations"]
+    selected_grp_id = recommendations["selected_grp_id"]
+    top_grp_id = recommendations["cards"][0]["card"]["grp_id"]
+    assert selected_grp_id == _MANUAL_SMOKE_NON_TOP_GRP_ID
+    assert selected_grp_id != top_grp_id
+    assert window.provider.start_calls == []
+    assert window.provider.pick_calls == []
+    assert window.provider.leave_calls == 0
+
+    assert _manual_smoke_summaries(capsys.readouterr().out) == [
+        _MANUAL_SMOKE_SUMMARY
+    ]
+
+    assert driver.advance() == 0
+    assert TEST_DRAFT_SMOKE_SUMMARY_PREFIX not in capsys.readouterr().out
+
+
+def test_test_draft_manual_smoke_driver_falls_back_to_the_narrow_row(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    window = _StubManualSmokeWindow()
+    del window.items["wideRecommendationRow2"]
+    driver = _manual_smoke_driver(window, clock=lambda: 0.0)
+
+    exit_codes = _advance_manual_smoke_journey(driver)
+
+    assert exit_codes == [None] * (len(exit_codes) - 1) + [0]
+    assert window.activations == [
+        "testDraftButton",
+        "testDraftManualModeButton",
+        "testDraftStartButton",
+        "testDraftCloseButton",
+        "narrowRecommendationRow2",
+        *["testDraftPickButton"] * TEST_DRAFT_MANUAL_PICK_COUNT,
+        "testDraftButton",
+        "testDraftLeaveButton",
+    ]
+    assert _manual_smoke_summaries(capsys.readouterr().out) == [
+        _MANUAL_SMOKE_SUMMARY
+    ]
+
+
+def test_test_draft_manual_smoke_driver_requires_the_opt_in(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    window = _StubManualSmokeWindow()
+    window.provider.state["test_draft"] = {
+        "enabled": False,
+        "active": False,
+        "phase": "idle",
+    }
+    driver = _manual_smoke_driver(window, clock=lambda: 0.0)
+
+    assert driver.advance() == 1
+    assert capsys.readouterr().err == (
+        "Test Draft smoke requires the --draftmancer-dir opt-in.\n"
+    )
+    assert window.activations == []
+
+
+def test_test_draft_manual_smoke_driver_reports_an_absent_start_control(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    window = _StubManualSmokeWindow()
+    del window.items["testDraftStartButton"]
+    driver = _manual_smoke_driver(window, clock=lambda: 0.0)
+
+    exit_codes = _advance_manual_smoke_journey(driver)
+
+    assert exit_codes[-1] == 1
+    assert exit_codes[:-1] == [None] * (len(exit_codes) - 1)
+    assert window.activations == ["testDraftButton", "testDraftManualModeButton"]
+    assert capsys.readouterr().err == (
+        "Test Draft smoke failed: the testDraftStartButton control is not available\n"
+    )
+
+
+def test_test_draft_manual_smoke_driver_requires_the_pool_to_grow(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    window = _StubManualSmokeWindow()
+    window.grow_pool = False
+    driver = _manual_smoke_driver(window, clock=lambda: 0.0)
+
+    exit_codes = _advance_manual_smoke_journey(driver)
+
+    assert exit_codes[-1] == 1
+    assert exit_codes[:-1] == [None] * (len(exit_codes) - 1)
+    assert window.activations == [
+        "testDraftButton",
+        "testDraftManualModeButton",
+        "testDraftStartButton",
+        "testDraftCloseButton",
+        "wideRecommendationRow2",
+        "testDraftPickButton",
+    ]
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "Test Draft smoke failed: the pool grew to 0 cards instead of 1\n"
+    )
+    assert TEST_DRAFT_SMOKE_SUMMARY_PREFIX not in captured.out
+
+
+def test_test_draft_manual_smoke_driver_times_out_when_the_draft_never_starts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    window = _StubManualSmokeWindow()
+    window.items["testDraftStartButton"].publish("enabled", False)
+    now = [0.0]
+    driver = _manual_smoke_driver(window, clock=lambda: now[0])
+
+    assert driver.advance() is None
+    assert driver.advance() is None
+    assert driver.advance() is None
+    now[0] = TEST_DRAFT_SMOKE_TIMEOUT_SECONDS + 1.0
+
+    assert driver.advance() == 1
+    assert window.activations == ["testDraftButton", "testDraftManualModeButton"]
     assert "timed out after 900 seconds" in capsys.readouterr().err
 
 

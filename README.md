@@ -349,10 +349,42 @@ Auto reuses the normal completed-draft and build surfaces. Without the opt-in no
 Test Draft control is present, and the Pick button stays hidden during ordinary
 Arena drafting.
 
+The complete acceptance workflow is three developer-run commands, all against
+the developer-managed pinned server above:
+
+A headless auto draft proves the production recommendation and deck-building
+path end to end against the real protocol:
+
+```bash
+uv run --extra draftmancer draftomen-tui test-draft \
+  --draftmancer-dir ../Draftmancer
+```
+
+The compiled bundle proves both native journeys in one invocation. Auto drafts
+to the ordinary build result, and Manual confirms five picks through the real
+Test Draft controls. The helper requires each journey's summary line and proves
+the external server is still alive before and after:
+
+```bash
+uv run python tests/bundle_smoke.py --test-draft \
+  --draftmancer-dir ../Draftmancer \
+  --scryfall-bulk-file .draftomen/corpus-cache/sources/scryfall-default-cards.jsonl.gz \
+  --app-dir <prepared-dir> \
+  dist-native/macos-unsigned/Draftomen-unsigned-macos.app
+```
+
+An interactive launch proves a developer can start a simulated draft, confirm
+picks, and leave it by hand through those same controls:
+
+```bash
+uv run --extra draftmancer draftomen --draftmancer-dir ../Draftmancer
+```
+
 To run the same pinned server through a compiled bundle instead of the source
 tree, see [Native Test Draft smoke
 (manual)](docs/desktop-bundles.md#native-test-draft-smoke-manual) in the desktop
-bundle guide.
+bundle guide, which lists the prerequisites, the prepared app directory, and
+both journey summary lines.
 
 Live recommendations currently support Quick Draft. Windows support is best-effort.
 

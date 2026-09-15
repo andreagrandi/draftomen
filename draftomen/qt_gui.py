@@ -11,12 +11,14 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from time import monotonic
-from typing import Literal, cast
+from typing import Any, Literal, Protocol, cast
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, QUrl, Qt
 from PySide6.QtGui import QFontDatabase, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
 
 from draftomen import __version__
 from draftomen.card_data_client import CardDataClient, cached_card_data_set_codes
@@ -57,6 +59,7 @@ APPLICATION_NAME = "Draft Omen"
 DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
 TEST_DRAFT_SMOKE_SUMMARY_PREFIX = "Test Draft smoke: "
 TEST_DRAFT_SMOKE_TIMEOUT_SECONDS = 900.0
+TEST_DRAFT_MANUAL_PICK_COUNT = 5
 
 
 def _configure_application_metadata(*, application: QGuiApplication) -> None:
@@ -177,7 +180,10 @@ def _parser(*, forced_provider: ProviderName | None = None) -> argparse.Argument
     )
     parser.add_argument(
         "--test-draft-smoke",
-        action="store_true",
+        nargs="?",
+        choices=("auto", "manual"),
+        const="auto",
+        default=None,
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
@@ -591,6 +597,376 @@ class _TestDraftSmokeDriver:
         return None
 
 
+class _SmokeControls(Protocol):
+    """Locate and activate the controls of one running application window."""
+
+    def find(self, name: str) -> QObject | None:
+        ...
+
+    def activate(self, name: str) -> None:
+        ...
+
+
+def _find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    """Find one descendant item by object name.
+    List delegates are only reachable through the visual child tree.
+    """
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = _find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+class _QmlSmokeControls:
+    """Locate and activate one QML control inside the running application window."""
+
+    def __init__(self, *, window: QObject) -> None:
+        self._window = window
+
+    def find(self, name: str) -> QObject | None:
+        """Return the named control of the window, or None when it is absent."""
+        found = self._window.findChild(QObject, name)
+        if found is not None:
+            return found
+        content_item = self._window.property("contentItem")
+        if not isinstance(content_item, QQuickItem):
+            return None
+        return _find_visual_item(content_item, name)
+
+    def activate(self, name: str) -> None:
+        """Focus the named control, press Space, and process the queued events."""
+        item = self.find(name)
+        if item is None:
+            raise RuntimeError(f"the {name} control is not available")
+        if item.property("visible") is not True:
+            raise RuntimeError(f"the {name} control is not visible")
+        cast(QQuickItem, item).forceActiveFocus()
+        QTest.keyClick(self._window, Qt.Key_Space)
+        QCoreApplication.processEvents()
+
+
+class _TestDraftManualSmokeDriver:
+    """Drive one Manual Test Draft journey through the real QML controls.
+    Confirm consecutive picks and require published pool and pack state each time.
+    """
+
+    _STEP_OPEN_DIALOG = 0
+    _STEP_DIALOG_VISIBLE = 1
+    _STEP_MODE = 2
+    _STEP_START = 3
+    _STEP_DRAFTING = 4
+    _STEP_CLOSE_DIALOG = 5
+    _STEP_DIALOG_CLOSED = 6
+    _STEP_SELECT_ROW = 7
+    _STEP_ROW_SELECTED = 8
+    _STEP_PICK = 9
+    _STEP_PICK_CONFIRMED = 10
+    _STEP_REDRAWN = 11
+    _STEP_LEAVE_DIALOG = 12
+    _STEP_LEAVE_VISIBLE = 13
+    _STEP_LEAVE = 14
+    _STEP_LEFT = 15
+    _STEP_DONE = 16
+
+    def __init__(
+        self,
+        *,
+        provider: SessionAdapter,
+        controls: _SmokeControls,
+        timeout_seconds: float = TEST_DRAFT_SMOKE_TIMEOUT_SECONDS,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
+        self._provider = provider
+        self._controls = controls
+        self._timeout_seconds = timeout_seconds
+        self._clock = clock
+        self._deadline = clock() + timeout_seconds
+        self._step = self._STEP_OPEN_DIALOG
+        self._started = False
+        self._picks = 0
+        self._non_top_rank = 0
+        self._generation = 0
+        self._pool_total = 0
+        self._set_code: str | None = None
+        self._heading = ""
+
+    def advance(self) -> int | None:
+        """Advance the journey once and return an exit code when it ends.
+        Stay on each step until its control or state requirement holds.
+        """
+        if self._step == self._STEP_DONE:
+            return 0
+        if self._test_draft().get("enabled") is not True:
+            print(
+                "Test Draft smoke requires the --draftmancer-dir opt-in.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            reason = self._capability_failure()
+            if reason is None:
+                reason = self._run_step()
+        except RuntimeError as error:
+            reason = str(error)
+        if reason is not None:
+            return self._fail(reason)
+        if self._step == self._STEP_DONE:
+            return 0
+        if self._clock() >= self._deadline:
+            print(
+                f"Test Draft smoke timed out after {self._timeout_seconds:g} seconds.",
+                file=sys.stderr,
+            )
+            return 1
+        return None
+
+    def _run_step(self) -> str | None:
+        """Run the current journey step and report the requirement it failed."""
+        if self._step == self._STEP_OPEN_DIALOG:
+            self._controls.activate("testDraftButton")
+            self._step = self._STEP_DIALOG_VISIBLE
+        elif self._step == self._STEP_DIALOG_VISIBLE:
+            if self._control_visible("testDraftDialog"):
+                self._step = self._STEP_MODE
+        elif self._step == self._STEP_MODE:
+            self._controls.activate("testDraftManualModeButton")
+            self._step = self._STEP_START
+        elif self._step == self._STEP_START:
+            missing = self._missing_control("testDraftStartButton")
+            if missing is not None:
+                return missing
+            if not self._control_ready("testDraftStartButton", enabled=True):
+                return None
+            self._started = True
+            self._controls.activate("testDraftStartButton")
+            self._step = self._STEP_DRAFTING
+        elif self._step == self._STEP_DRAFTING:
+            if self._offer_generation() == 1 and self._offer_ready(minimum_cards=1):
+                self._pool_total = self._published_pool_total() or 0
+                self._set_code = self._draft_set_code()
+                self._heading = self._draft_heading() or ""
+                self._step = self._STEP_CLOSE_DIALOG
+        elif self._step == self._STEP_CLOSE_DIALOG:
+            self._controls.activate("testDraftCloseButton")
+            self._step = self._STEP_DIALOG_CLOSED
+        elif self._step == self._STEP_DIALOG_CLOSED:
+            if not self._control_visible("testDraftDialog"):
+                self._step = self._STEP_SELECT_ROW
+        elif self._step == self._STEP_SELECT_ROW:
+            if self._offer_ready(minimum_cards=2):
+                row = self._row_name()
+                if row is None:
+                    return None
+                self._controls.activate(row)
+                self._step = self._STEP_ROW_SELECTED
+        elif self._step == self._STEP_ROW_SELECTED:
+            top_grp_id = self._top_grp_id()
+            if top_grp_id is not None and self._selected_grp_id() != top_grp_id:
+                self._non_top_rank = 2
+                self._step = self._STEP_PICK
+        elif self._step == self._STEP_PICK:
+            if self._offer_ready(minimum_cards=1):
+                missing = self._missing_control("testDraftPickButton")
+                if missing is not None:
+                    return missing
+                if not self._control_ready("testDraftPickButton", enabled=True):
+                    return None
+                self._generation = self._offer_generation()
+                self._controls.activate("testDraftPickButton")
+                self._step = self._STEP_PICK_CONFIRMED
+        elif self._step == self._STEP_PICK_CONFIRMED:
+            if self._offer_generation() == self._generation + 1:
+                pool_total = self._published_pool_total()
+                if pool_total is None:
+                    return "the published pool total is missing"
+                if pool_total != self._pool_total + 1:
+                    return (
+                        f"the pool grew to {pool_total} cards instead of "
+                        f"{self._pool_total + 1}"
+                    )
+                self._pool_total = pool_total
+                self._step = self._STEP_REDRAWN
+        elif self._step == self._STEP_REDRAWN:
+            heading = self._draft_heading()
+            if heading is not None and heading != self._heading:
+                self._heading = heading
+                self._picks += 1
+                self._step = (
+                    self._STEP_LEAVE_DIALOG
+                    if self._picks == TEST_DRAFT_MANUAL_PICK_COUNT
+                    else self._STEP_PICK
+                )
+        elif self._step == self._STEP_LEAVE_DIALOG:
+            self._controls.activate("testDraftButton")
+            self._step = self._STEP_LEAVE_VISIBLE
+        elif self._step == self._STEP_LEAVE_VISIBLE:
+            if self._control_visible("testDraftDialog"):
+                self._step = self._STEP_LEAVE
+        elif self._step == self._STEP_LEAVE:
+            missing = self._missing_control("testDraftLeaveButton")
+            if missing is not None:
+                return missing
+            if not self._control_ready("testDraftLeaveButton", enabled=True):
+                return None
+            self._controls.activate("testDraftLeaveButton")
+            self._step = self._STEP_LEFT
+        elif self._step == self._STEP_LEFT:
+            test_draft = self._test_draft()
+            if (
+                test_draft.get("phase") == "idle"
+                and test_draft.get("active") is False
+            ):
+                self._publish_summary()
+                self._step = self._STEP_DONE
+        return None
+
+    def _capability_failure(self) -> str | None:
+        """Report the published capability state that stops the journey."""
+        test_draft = self._test_draft()
+        phase = test_draft.get("phase")
+        if phase == "failed":
+            return str(test_draft.get("error") or "the simulated draft failed")
+        if not self._started and test_draft.get("error"):
+            return str(test_draft["error"])
+        if phase == "completed" and self._picks < TEST_DRAFT_MANUAL_PICK_COUNT:
+            return f"the simulated draft completed after {self._picks} picks"
+        return None
+
+    def _publish_summary(self) -> None:
+        """Print the journey summary the bundle helper validates.
+        Leaving clears the capability, so the journey reports what it observed.
+        """
+        summary = {
+            "status": "ok",
+            "mode": "manual",
+            "set_code": self._set_code,
+            "picks": self._picks,
+            "pool_total": self._pool_total,
+            "non_top_rank": self._non_top_rank,
+        }
+        print(
+            f"{TEST_DRAFT_SMOKE_SUMMARY_PREFIX}"
+            f"{json.dumps(summary, separators=(',', ':'), sort_keys=True)}"
+        )
+
+    def _fail(self, reason: str) -> int:
+        """Report one failed journey requirement and its exit code."""
+        print(f"Test Draft smoke failed: {reason}", file=sys.stderr)
+        return 1
+
+    def _test_draft(self) -> dict[str, Any]:
+        """Return the published Test Draft capability, empty when absent."""
+        value = self._provider.state.get("test_draft")
+        return value if isinstance(value, dict) else {}
+
+    def _published_pool_total(self) -> int | None:
+        """Return the published pool size, or None when it is absent."""
+        pool = self._provider.state.get("pool")
+        if not isinstance(pool, dict):
+            return None
+        total = pool.get("total_cards")
+        return total if isinstance(total, int) else None
+
+    def _offer_generation(self) -> int:
+        """Return the published offer generation, zero when it is absent."""
+        generation = self._test_draft().get("offer_generation")
+        return generation if isinstance(generation, int) else 0
+
+    def _draft_set_code(self) -> str | None:
+        """Return the simulated set code the capability published."""
+        set_code = self._test_draft().get("set_code")
+        return set_code if isinstance(set_code, str) and set_code else None
+
+    def _recommendation_cards(self) -> list[Any]:
+        """Return the published offer rows, empty when there are none."""
+        recommendations = self._provider.state.get("recommendations")
+        if not isinstance(recommendations, dict):
+            return []
+        cards = recommendations.get("cards")
+        return cards if isinstance(cards, list) else []
+
+    def _offer_ready(self, *, minimum_cards: int) -> bool:
+        """Report whether one settled offer carries enough published cards."""
+        test_draft = self._test_draft()
+        if test_draft.get("pending") is True or test_draft.get("phase") != "drafting":
+            return False
+        if self._offer_generation() <= 0:
+            return False
+        return len(self._recommendation_cards()) >= minimum_cards
+
+    def _top_grp_id(self) -> int | None:
+        """Return the top-ranked card identity of the published offer."""
+        cards = self._recommendation_cards()
+        if not cards or not isinstance(cards[0], dict):
+            return None
+        card = cards[0].get("card")
+        if not isinstance(card, dict):
+            return None
+        grp_id = card.get("grp_id")
+        return grp_id if isinstance(grp_id, int) else None
+
+    def _selected_grp_id(self) -> int | None:
+        """Return the selected recommendation identity, None when absent."""
+        recommendations = self._provider.state.get("recommendations")
+        if not isinstance(recommendations, dict):
+            return None
+        selected = recommendations.get("selected_grp_id")
+        return selected if isinstance(selected, int) else None
+
+    def _draft_heading(self) -> str | None:
+        """Return the heading the live drafting view currently renders."""
+        view = self._controls.find("liveDraftView")
+        if view is None:
+            return None
+        heading = view.property("draftHeading")
+        if not isinstance(heading, str) or not heading:
+            return None
+        return heading
+
+    def _row_name(self) -> str | None:
+        """Return the rank-two recommendation row the journey selects."""
+        for name in ("wideRecommendationRow2", "narrowRecommendationRow2"):
+            if self._control_ready(name):
+                return name
+        return None
+
+    def _missing_control(self, name: str) -> str | None:
+        """Report the required control the window does not carry at all."""
+        if self._controls.find(name) is None:
+            return f"the {name} control is not available"
+        return None
+
+    def _control_visible(self, name: str) -> bool:
+        """Report whether the named control is on screen right now."""
+        item = self._controls.find(name)
+        return item is not None and item.property("visible") is True
+
+    def _control_ready(self, name: str, *, enabled: bool = False) -> bool:
+        """Report whether the named control is visible and usable right now."""
+        item = self._controls.find(name)
+        if item is None or item.property("visible") is not True:
+            return False
+        return not enabled or item.property("enabled") is True
+
+
+def _test_draft_smoke_driver(
+    *,
+    journey: str,
+    provider: SessionAdapter,
+    window: QObject,
+) -> _TestDraftSmokeDriver | _TestDraftManualSmokeDriver:
+    """Select the Test Draft smoke journey the hidden flag asked for."""
+    if journey == "manual":
+        return _TestDraftManualSmokeDriver(
+            provider=provider,
+            controls=_QmlSmokeControls(window=window),
+        )
+    return _TestDraftSmokeDriver(provider=provider)
+
+
 def run_gui(
     *,
     argv: Sequence[str] | None = None,
@@ -649,7 +1025,11 @@ def run_gui(
         provider.start()
 
     if args.test_draft_smoke:
-        driver = _TestDraftSmokeDriver(provider=provider)
+        driver = _test_draft_smoke_driver(
+            journey=args.test_draft_smoke,
+            provider=provider,
+            window=engine.rootObjects()[0],
+        )
         test_draft_timer = QTimer(application)
 
         def advance_test_draft_smoke() -> None:
