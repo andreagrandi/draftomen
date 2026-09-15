@@ -3,6 +3,27 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Make the test-draft runtime cancellable and reusable (#546):
+  `draftomen/test_draft.py` exposes `create_test_draft_runtime(...)`, which performs the
+  supported-set, card-data, Scryfall-identity, and profile-source preflight and returns a
+  `TestDraftRuntime` owning the isolated source-less `LiveSession`, the Draftmancer
+  adapter, the `TestDraftController`, and the implicit simulation directory;
+  `TestDraftRuntime.cancel()` wakes a blocked connection, start, or pick operation
+  without acquiring the controller lock, without waiting for in-flight session
+  publication, and without disconnecting the client, while `TestDraftRuntime.close()`
+  retires the controller, session, and temporary directory exactly once in reverse
+  ownership order, unwinds partial construction, and reports every construction failure,
+  including the implicit simulation directory, as a startup `TestDraftError`;
+  `supported_test_draft_set_codes(...)` reuses the existing Draft Omen/Draftmancer
+  capability intersection, so HOB is offered only when both sides advertise it;
+  `DraftmancerAdapter` opens the transport without blocking on the namespace handshake
+  and waits for that handshake, `startDraft`, and `pickCard` on its own condition with a
+  public terminal `cancel()`, emits through a Socket.IO callback instead of the
+  transport's blocking `call()`, ignores late acknowledgements after a terminal outcome,
+  records completion before publishing it, and keeps `close()` as the only
+  client-transport teardown, so a blocked operation returns immediately on cancellation;
+  and `run_test_draft_auto(...)` keeps its signature, ordered picks, build result, and
+  isolated persistence.
 - Add the UI-neutral test-draft controller and headless `draftomen-tui test-draft`
   command (#538): `draftomen/test_draft.py` exposes `TestDraftController` for explicit
   Manual confirmation of one inspected offer and recommendation-driven Auto advancement

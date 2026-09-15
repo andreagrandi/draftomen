@@ -38,7 +38,16 @@ from draftomen.test_draft import (
 class _Call:
     event: str
     data: object
-    timeout: float
+
+
+class _NoAck:
+    """Mark a configured action that withholds its acknowledgement.
+The adapter must reach its own cancellation or deadline outcome.
+"""
+
+
+_NO_ACK = _NoAck()
+_CANCELLATION_TEXT = "Draftmancer operation was cancelled."
 
 
 class _FakeSocket:
@@ -48,15 +57,19 @@ class _FakeSocket:
         start_action: Callable[[_FakeSocket], object] | None = None,
         pick_actions: Iterable[Callable[[_FakeSocket], object]] = (),
         connect_error: Exception | None = None,
+        connect_action: Callable[[_FakeSocket], object] | None = None,
     ) -> None:
         self.handlers: dict[str, Callable[[object], None]] = {}
         self.start_action = start_action
         self.pick_actions = list(pick_actions)
         self.connect_error = connect_error
+        self.connect_action = connect_action
         self.connect_url: str | None = None
         self.connect_kwargs: dict[str, object] = {}
         self.calls: list[_Call] = []
+        self.pending_acknowledgements: dict[str, list[Callable[..., None]]] = {}
         self.disconnected = False
+        self.disconnect_count = 0
 
     def on(self, event: str, handler: Callable[[object], None]) -> None:
         self.handlers[event] = handler
@@ -66,21 +79,49 @@ class _FakeSocket:
         self.connect_kwargs = kwargs
         if self.connect_error is not None:
             raise self.connect_error
+        if self.connect_action is not None:
+            self.connect_action(self)
+        else:
+            self.server_connect()
 
-    def call(self, event: str, data: object, timeout: float) -> object:
-        self.calls.append(_Call(event=event, data=data, timeout=timeout))
+    def server_connect(self) -> None:
+        """Deliver the client connect event the real socket confirms after connecting."""
+
+        handler = self.handlers.get("connect")
+        if handler is not None:
+            handler()
+
+    def emit(
+        self,
+        event: str,
+        data: object = None,
+        callback: Callable[..., None] | None = None,
+    ) -> None:
+        self.calls.append(_Call(event=event, data=data))
+        if callback is not None:
+            self.pending_acknowledgements.setdefault(event, []).append(callback)
         if event == "startDraft" and self.start_action is not None:
-            return self.start_action(self)
-        if event == "pickCard" and self.pick_actions:
-            return self.pick_actions.pop(0)(self)
-        return {"code": 0}
+            result = self.start_action(self)
+        elif event == "pickCard" and self.pick_actions:
+            result = self.pick_actions.pop(0)(self)
+        else:
+            result = {"code": 0}
+        if result is not _NO_ACK and callback is not None:
+            callback(result)
+
+    def server_emit(self, event: str, payload: object) -> None:
+        handler = self.handlers[event]
+        handler(payload)
+
+    def acknowledge(self, event: str, *args: object) -> None:
+        callbacks = self.pending_acknowledgements.get(event)
+        if not callbacks:
+            raise AssertionError(f"no pending {event} acknowledgement callback")
+        callbacks.pop()(*args)
 
     def disconnect(self) -> None:
         self.disconnected = True
-
-    def emit(self, event: str, payload: object) -> None:
-        handler = self.handlers[event]
-        handler(payload)
+        self.disconnect_count += 1
 
     def disconnect_from_server(self, reason: str = "server closed") -> None:
         handler = self.handlers.get("disconnect")
@@ -186,9 +227,9 @@ def _start_action(
     ack: object = {"code": 0},
 ) -> Callable[[_FakeSocket], object]:
     def action(socket: _FakeSocket) -> object:
-        socket.emit("startDraft", _seats(config))
+        socket.server_emit("startDraft", _seats(config))
         if state is not None:
-            socket.emit("draftState", state)
+            socket.server_emit("draftState", state)
         return ack
 
     return action
@@ -234,6 +275,40 @@ def _disconnect_action(
     if wait_for_delivery and not done.wait(timeout=1):
         raise AssertionError("disconnect worker did not run")
     return {"code": 0}
+
+
+def _withheld_ack_action(*, entered: threading.Event) -> Callable[[_FakeSocket], object]:
+    """Signal that the outbound action ran and withhold its acknowledgement."""
+
+    def action(socket: _FakeSocket) -> object:
+        del socket
+        entered.set()
+        return _NO_ACK
+
+    return action
+
+
+def _withheld_connect_action(*, entered: threading.Event) -> Callable[[_FakeSocket], object]:
+    """Signal that the transport connected and withhold the connect event."""
+
+    def action(socket: _FakeSocket) -> object:
+        del socket
+        entered.set()
+        return None
+
+    return action
+
+
+def _assert_cancellation(errors: list[BaseException]) -> str:
+    """Assert one blocked worker failed with the cancellation error.
+Return its text so a repeated operation can be compared against it.
+"""
+
+    assert len(errors) == 1
+    error = errors[0]
+    assert isinstance(error, DraftmancerAdapterError)
+    assert str(error) == _CANCELLATION_TEXT
+    return str(error)
 
 
 def test_intersection_is_casefolded_sorted_unique_and_closed_over_malformed_values() -> None:
@@ -310,9 +385,9 @@ def test_start_query_settings_and_acknowledgement_gate_events() -> None:
         "ignoreCollections": True,
     }
     assert socket.connect_kwargs["transports"] == ["websocket", "polling"]
-    assert socket.connect_kwargs["wait"] is True
+    assert socket.connect_kwargs["wait"] is False
+    assert socket.calls[0].event == "startDraft"
     assert socket.calls[0].data is None
-    assert socket.calls[0].timeout == config.timeout_seconds
     assert [type(event) for event in published] == [DraftStartedEvent, PackOfferedEvent]
     started = published[0]
     assert isinstance(started, DraftStartedEvent)
@@ -342,8 +417,8 @@ def test_start_requires_one_configured_user_and_seven_bots() -> None:
             socket: _FakeSocket,
             payload: dict[str, dict[str, object]] = seats,
         ) -> object:
-            socket.emit("startDraft", payload)
-            socket.emit(
+            socket.server_emit("startDraft", payload)
+            socket.server_emit(
                 "draftState",
                 _state(pack_number=0, pick_number=0, arena_ids=(100,)),
             )
@@ -467,7 +542,7 @@ def test_duplicate_arena_ids_use_unique_instance_index_for_pick() -> None:
     socket = _FakeSocket(
         start_action=_start_action(config, first),
         pick_actions=[
-            lambda fake: (fake.emit("draftState", second), {"code": 0})[1],
+            lambda fake: (fake.server_emit("draftState", second), {"code": 0})[1],
         ],
     )
     adapter, published = _adapter(socket=socket, config=config, grp_ids=(100, 101))
@@ -543,19 +618,19 @@ def test_three_pack_lifecycle_orders_pick_before_queued_offer_and_completion(
         if not pick_published[index].wait(timeout=1):
             raise AssertionError("next-offer synchronization was not released")
         for payload in payloads:
-            socket.emit("draftState", payload)
+            socket.server_emit("draftState", payload)
         if index == 2:
             socket.handlers["endDraft"]()
 
     def pick_action(index: int) -> Callable[[_FakeSocket], object]:
         def action(socket: _FakeSocket) -> object:
             if index == 0:
-                socket.emit("draftState", {
+                socket.server_emit("draftState", {
                     "boosterNumber": 0,
                     "pickNumber": 1,
                     "boosterCount": 0,
                 })
-                socket.emit("draftState", states[1])
+                socket.server_emit("draftState", states[1])
             elif index in (1, 2):
                 payloads = (states[2], states[2]) if index == 1 else (states[3],)
                 _start_worker(
@@ -725,7 +800,7 @@ def test_unavailable_service_is_transport_failure_and_terminal() -> None:
 def test_start_and_first_offer_timeout_are_terminal() -> None:
     config = _config(timeout_seconds=0.01)
     def start_without_offer(socket: _FakeSocket) -> object:
-        socket.emit("startDraft", _seats(config))
+        socket.server_emit("startDraft", _seats(config))
         return {"code": 0}
 
     socket = _FakeSocket(start_action=start_without_offer)
@@ -772,6 +847,277 @@ def test_missing_next_offer_timeout_does_not_fabricate_completion() -> None:
     assert not any(isinstance(event, DraftCompletedEvent) for event in published)
 
 
+def test_cancel_wakes_blocked_connect() -> None:
+    config = _config(timeout_seconds=5.0)
+    entered = threading.Event()
+    workers: list[threading.Thread] = []
+    worker_errors: list[BaseException] = []
+    socket = _FakeSocket(connect_action=_withheld_connect_action(entered=entered))
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    done = _start_worker(
+        target=adapter.connect_and_start,
+        workers=workers,
+        errors=worker_errors,
+    )
+    assert entered.wait(timeout=1)
+
+    adapter.cancel()
+
+    assert done.wait(timeout=1)
+    cancelled = _assert_cancellation(worker_errors)
+    assert not any(call.event == "startDraft" for call in socket.calls)
+    assert published == []
+    assert socket.disconnect_count == 0
+
+    socket.server_connect()
+
+    with pytest.raises(DraftmancerAdapterError) as repeated:
+        adapter.connect_and_start()
+    assert str(repeated.value) == cancelled
+    assert not any(call.event == "startDraft" for call in socket.calls)
+    assert published == []
+
+    adapter.close()
+    adapter.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_cancel_wakes_blocked_start_acknowledgement() -> None:
+    config = _config(timeout_seconds=5.0)
+    entered = threading.Event()
+    workers: list[threading.Thread] = []
+    worker_errors: list[BaseException] = []
+    socket = _FakeSocket(start_action=_withheld_ack_action(entered=entered))
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    done = _start_worker(
+        target=adapter.connect_and_start,
+        workers=workers,
+        errors=worker_errors,
+    )
+    assert entered.wait(timeout=1)
+
+    adapter.cancel()
+
+    assert done.wait(timeout=1)
+    _assert_cancellation(worker_errors)
+    assert socket.calls[-1] == _Call(event="startDraft", data=None)
+    assert published == []
+    assert socket.disconnect_count == 0
+
+    adapter.close()
+    adapter.close()
+
+    assert socket.disconnect_count == 1
+    assert socket.disconnected
+    with pytest.raises(DraftmancerAdapterError) as repeated:
+        adapter.connect_and_start()
+    assert str(repeated.value) == _CANCELLATION_TEXT
+
+
+def test_cancel_wakes_blocked_pick_acknowledgement() -> None:
+    config = _config(timeout_seconds=5.0)
+    entered = threading.Event()
+    workers: list[threading.Thread] = []
+    worker_errors: list[BaseException] = []
+    state = _state(pack_number=0, pick_number=0, arena_ids=(100,))
+    socket = _FakeSocket(
+        start_action=_start_action(config, state),
+        pick_actions=[_withheld_ack_action(entered=entered)],
+    )
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    adapter.connect_and_start()
+    assert [type(event) for event in published] == [DraftStartedEvent, PackOfferedEvent]
+
+    done = _start_worker(
+        target=lambda: adapter.pick(unique_card_id=1),
+        workers=workers,
+        errors=worker_errors,
+    )
+    assert entered.wait(timeout=1)
+
+    adapter.cancel()
+
+    assert done.wait(timeout=1)
+    _assert_cancellation(worker_errors)
+    assert socket.calls[-1] == _Call(
+        event="pickCard",
+        data={"pickedCards": [0], "burnedCards": []},
+    )
+    assert [type(event) for event in published] == [DraftStartedEvent, PackOfferedEvent]
+    assert adapter.offered_instance_ids == (1,)
+    assert not adapter.completed
+    assert socket.disconnect_count == 0
+
+    adapter.close()
+    adapter.close()
+
+    assert socket.disconnect_count == 1
+    assert socket.disconnected
+
+
+def test_cancel_returns_while_event_publication_is_held() -> None:
+    config = _config(timeout_seconds=5.0)
+    state = _state(pack_number=0, pick_number=0, arena_ids=(100,))
+    entered = threading.Event()
+    released = threading.Event()
+    published: list[object] = []
+    workers: list[threading.Thread] = []
+    start_errors: list[BaseException] = []
+    cancel_errors: list[BaseException] = []
+
+    def sink(event: object) -> None:
+        published.append(event)
+        entered.set()
+        if not released.wait(timeout=1):
+            raise AssertionError("event publication was not released")
+
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, _ = _adapter(socket=socket, config=config, grp_ids=(100,), sink=sink)
+
+    started = _start_worker(
+        target=adapter.connect_and_start,
+        workers=workers,
+        errors=start_errors,
+    )
+    assert entered.wait(timeout=1)
+
+    cancel_done = _start_worker(
+        target=adapter.cancel,
+        workers=workers,
+        errors=cancel_errors,
+    )
+    assert cancel_done.wait(timeout=1)
+    assert not released.is_set()
+
+    released.set()
+
+    assert started.wait(timeout=1)
+    cancelled = _assert_cancellation(start_errors)
+    assert cancel_errors == []
+    assert [type(event) for event in published] == [DraftStartedEvent]
+    assert socket.disconnect_count == 0
+
+    with pytest.raises(DraftmancerAdapterError) as repeated:
+        adapter.connect_and_start()
+    assert str(repeated.value) == cancelled
+
+    adapter.close()
+    adapter.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_withheld_start_acknowledgement_reaches_the_deadline() -> None:
+    config = _config(timeout_seconds=0.05)
+    socket = _FakeSocket(start_action=lambda fake: _NO_ACK)
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    with pytest.raises(
+        DraftmancerAdapterError,
+        match=r"^Draftmancer rejected startDraft: acknowledgement timed out\.$",
+    ):
+        adapter.connect_and_start()
+
+    assert published == []
+    assert socket.disconnect_count == 0
+
+
+def test_unconfirmed_connection_reaches_the_deadline() -> None:
+    config = _config(timeout_seconds=0.05)
+    socket = _FakeSocket(connect_action=lambda fake: None)
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    with pytest.raises(
+        DraftmancerAdapterError,
+        match=r"(?i)(timed out|timeout)",
+    ) as error:
+        adapter.connect_and_start()
+
+    assert published == []
+    assert not any(call.event == "startDraft" for call in socket.calls)
+    with pytest.raises(DraftmancerAdapterError) as repeated:
+        adapter.connect_and_start()
+    assert str(repeated.value) == str(error.value)
+
+    adapter.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_late_start_acknowledgement_after_cancellation_is_ignored() -> None:
+    config = _config(timeout_seconds=5.0)
+    entered = threading.Event()
+    workers: list[threading.Thread] = []
+    worker_errors: list[BaseException] = []
+    late_errors: list[BaseException] = []
+    socket = _FakeSocket(start_action=_withheld_ack_action(entered=entered))
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    done = _start_worker(
+        target=adapter.connect_and_start,
+        workers=workers,
+        errors=worker_errors,
+    )
+    assert entered.wait(timeout=1)
+
+    adapter.cancel()
+
+    assert done.wait(timeout=1)
+    cancelled = _assert_cancellation(worker_errors)
+
+    late = _start_worker(
+        target=lambda: socket.acknowledge("startDraft", {"code": 0}),
+        workers=workers,
+        errors=late_errors,
+    )
+    assert late.wait(timeout=1)
+    assert late_errors == []
+
+    with pytest.raises(DraftmancerAdapterError) as repeated:
+        adapter.connect_and_start()
+    assert str(repeated.value) == cancelled
+    assert published == []
+    assert socket.disconnect_count == 0
+
+    adapter.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_late_start_acknowledgement_after_timeout_is_ignored() -> None:
+    config = _config(timeout_seconds=0.05)
+    workers: list[threading.Thread] = []
+    late_errors: list[BaseException] = []
+    socket = _FakeSocket(start_action=lambda fake: _NO_ACK)
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    with pytest.raises(DraftmancerAdapterError) as timed_out:
+        adapter.connect_and_start()
+    assert "acknowledgement timed out" in str(timed_out.value)
+
+    late = _start_worker(
+        target=lambda: socket.acknowledge("startDraft", {"code": 0}),
+        workers=workers,
+        errors=late_errors,
+    )
+    assert late.wait(timeout=1)
+    assert late_errors == []
+
+    with pytest.raises(DraftmancerAdapterError) as repeated:
+        adapter.connect_and_start()
+    assert str(repeated.value) == str(timed_out.value)
+    assert published == []
+    assert socket.disconnect_count == 0
+
+    adapter.close()
+
+    assert socket.disconnect_count == 1
+
+
 @pytest.mark.parametrize("wait_stage", ("start_ack", "first_offer", "pick_ack", "next_offer"))
 def test_disconnect_during_each_wait_is_terminal(
     wait_stage: str,
@@ -795,7 +1141,7 @@ def test_disconnect_during_each_wait_is_terminal(
         socket = _FakeSocket(start_action=start_action)
     elif wait_stage == "first_offer":
         def start_action(socket: _FakeSocket) -> object:
-            socket.emit("startDraft", _seats(config))
+            socket.server_emit("startDraft", _seats(config))
             _disconnect_action(
                 socket=socket,
                 reason="before first offer",
