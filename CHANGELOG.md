@@ -3,6 +3,21 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Add the developer-only native Test Draft controls to the desktop GUI:
+  `draftomen/qml/TestDraftDialog.qml` is the new modal dialog that lists the capability's
+  supported set codes with the published default preselected, offers Manual or Auto,
+  reports pending and failure text, and dispatches `startTestDraft` and `leaveTestDraft`;
+  `draftomen/qml/AppBar.qml` gains a Test Draft action that is visible only while the
+  capability is enabled and accented while a simulated draft is active;
+  `draftomen/qml/LiveDraftView.qml` gains the Test Draft status indicator, the visible
+  failure label, and the Manual Pick button that submits the selected recommendation with
+  its published offer generation, so the button stays absent during ordinary Arena
+  drafting; `draftomen/qml/Main.qml` mounts the dialog and opens it from the app-bar
+  action with focus restoration; the new component is registered in
+  `draftomen/qml/qmldir`, `pyproject.toml`, `pysidedeploy.macos.spec`, and
+  `pysidedeploy.windows.spec`; and `tests/test_qt_gui.py` gains offscreen QML interaction
+  tests covering the opt-in absence, the set and mode dialog dispatch, the Manual pick
+  dispatch, the pending and failure states, and leaving the run. (#552)
 - Package and smoke-test the native Test Draft (#548):
   `.github/workflows/native-bundles.yml` now syncs the locked `draftmancer` extra with
   `uv sync --locked --extra draftmancer` and keeps `--extra draftmancer` on every build-path
