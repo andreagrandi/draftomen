@@ -11,6 +11,9 @@ Rectangle {
     required property var provider
     required property bool narrow
     signal settingsRequested()
+    signal testDraftRequested(var opener)
+
+    readonly property var testDraft: root.sessionState.test_draft || null
 
     color: Theme.surfaceLow
     implicitHeight: 68
@@ -101,6 +104,18 @@ Rectangle {
             Accessible.description: "Choose deterministic visual-development data."
             onActivated: root.provider.selectScenario(currentText)
         }
+
+        DimensionalButton {
+            id: testDraftButton
+            objectName: "testDraftButton"
+            visible: root.testDraft !== null && root.testDraft.enabled === true
+            accented: root.testDraft !== null && root.testDraft.active === true
+            text: "Test Draft"
+            Accessible.name: "Open Test Draft controls"
+            Accessible.description: "Start or leave a developer simulated draft."
+            onClicked: root.testDraftRequested(testDraftButton)
+        }
+
         DimensionalButton {
             objectName: "settingsButton"
             text: "Settings"

@@ -96,6 +96,10 @@ ApplicationWindow {
         sessionState: window.sessionState
         provider: window.provider
         onSettingsRequested: window.currentSurface = "settings"
+        onTestDraftRequested: opener => {
+            testDraftDialog.returnFocusItem = opener
+            testDraftDialog.open()
+        }
     }
 
     footer: StatusStrip {
@@ -112,6 +116,11 @@ ApplicationWindow {
 
     PrivacyDialog {
         id: privacyDialog
+    }
+
+    TestDraftDialog {
+        id: testDraftDialog
+        sessionState: window.sessionState
     }
 
     RowLayout {

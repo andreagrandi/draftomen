@@ -6707,3 +6707,649 @@ with TemporaryDirectory() as preferences_dir:
     assert "Binding loop detected" not in completed.stderr
     assert "Unable to assign" not in completed.stderr
     assert "TypeError" not in completed.stderr
+
+
+def test_qml_test_draft_controls_are_absent_without_the_opt_in_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(
+        self, *, test_draft: dict, scenario: str = "ready"
+    ) -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str]] = []
+        self.pick_calls: list[tuple[int, int]] = []
+        self.leave_calls = 0
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+    @Slot(int, int)
+    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+        self.pick_calls.append((grp_id, offer_generation))
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        self.leave_calls += 1
+
+
+def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(test_draft={"enabled": False})
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+arena_row = find_visual_item(root.contentItem(), "wideRecommendationRow1")
+assert arena_row is not None and arena_row.isVisible()
+test_draft_button = root.findChild(QObject, "testDraftButton")
+pick_button = root.findChild(QObject, "testDraftPickButton")
+dialog = root.findChild(QObject, "testDraftDialog")
+indicator = root.findChild(QObject, "testDraftIndicator")
+error_label = root.findChild(QObject, "testDraftError")
+assert test_draft_button is not None
+assert pick_button is not None
+assert dialog is not None
+assert indicator is not None
+assert error_label is not None
+assert test_draft_button.property("visible") is False
+assert test_draft_button.isVisible() is False
+assert pick_button.property("visible") is False
+assert pick_button.isVisible() is False
+assert dialog.property("visible") is False
+assert indicator.isVisible() is False
+assert error_label.isVisible() is False
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_test_draft_dialog_offers_supported_sets_and_modes_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(
+        self, *, test_draft: dict, scenario: str = "ready"
+    ) -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str]] = []
+        self.pick_calls: list[tuple[int, int]] = []
+        self.leave_calls = 0
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+    @Slot(int, int)
+    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+        self.pick_calls.append((grp_id, offer_generation))
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        self.leave_calls += 1
+
+
+def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "supported_set_codes": ["hob", "msh"],
+        "default_set_code": "hob",
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+test_draft_button = root.findChild(QObject, "testDraftButton")
+dialog = root.findChild(QObject, "testDraftDialog")
+selector = root.findChild(QObject, "testDraftSetSelector")
+manual_button = root.findChild(QObject, "testDraftManualModeButton")
+auto_button = root.findChild(QObject, "testDraftAutoModeButton")
+start_button = root.findChild(QObject, "testDraftStartButton")
+assert test_draft_button is not None and test_draft_button.isVisible()
+assert dialog is not None
+assert selector is not None
+assert manual_button is not None
+assert auto_button is not None
+assert start_button is not None
+assert dialog.property("visible") is False
+
+test_draft_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert dialog.property("visible") is True
+assert dialog.property("modal") is True
+assert selector.property("count") == 2
+assert list(selector.property("model")) == ["HOB", "MSH"]
+assert selector.property("displayText") == "HOB"
+assert selector.property("currentIndex") == 0
+assert manual_button.property("checked") is True
+assert auto_button.property("checked") is False
+assert dialog.property("selectedMode") == "manual"
+assert start_button.property("visible") is True
+assert start_button.property("enabled") is True
+
+auto_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert dialog.property("selectedMode") == "auto"
+assert auto_button.property("checked") is True
+assert manual_button.property("checked") is False
+
+start_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.start_calls == [("auto", "hob")]
+assert dialog.property("visible") is True
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_test_draft_pick_dispatches_selected_card_and_generation_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(
+        self, *, test_draft: dict, scenario: str = "ready"
+    ) -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str]] = []
+        self.pick_calls: list[tuple[int, int]] = []
+        self.leave_calls = 0
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+    @Slot(int, int)
+    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+        self.pick_calls.append((grp_id, offer_generation))
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        self.leave_calls += 1
+
+
+def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "active": True,
+        "mode": "manual",
+        "phase": "drafting",
+        "set_code": "hob",
+        "offer_generation": 3,
+        "pending": False,
+        "supported_set_codes": ["hob"],
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+indicator = root.findChild(QObject, "testDraftIndicator")
+pick_button = root.findChild(QObject, "testDraftPickButton")
+assert indicator is not None and indicator.isVisible()
+assert indicator.property("text") == "Test Draft · manual · HOB"
+assert pick_button is not None and pick_button.isVisible()
+assert pick_button.property("enabled") is True
+
+rank_two_row = find_visual_item(root.contentItem(), "wideRecommendationRow2")
+if rank_two_row is None:
+    rank_two_row = find_visual_item(root.contentItem(), "narrowRecommendationRow2")
+assert rank_two_row is not None and rank_two_row.isVisible()
+rank_two_grp_id = provider.state["recommendations"]["cards"][1]["card"]["grp_id"]
+assert provider.state["recommendations"]["selected_grp_id"] != rank_two_grp_id
+rank_two_row.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.state["recommendations"]["selected_grp_id"] == rank_two_grp_id
+assert pick_button.property("enabled") is True
+
+pick_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.pick_calls == [(rank_two_grp_id, 3)]
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_test_draft_pending_and_failure_states_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(
+        self, *, test_draft: dict, scenario: str = "ready"
+    ) -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str]] = []
+        self.pick_calls: list[tuple[int, int]] = []
+        self.leave_calls = 0
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+    @Slot(int, int)
+    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+        self.pick_calls.append((grp_id, offer_generation))
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        self.leave_calls += 1
+
+
+def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "active": True,
+        "mode": "manual",
+        "phase": "drafting",
+        "set_code": "hob",
+        "offer_generation": 3,
+        "pending": True,
+        "supported_set_codes": ["hob"],
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+test_draft_button = root.findChild(QObject, "testDraftButton")
+assert test_draft_button is not None and test_draft_button.isVisible()
+test_draft_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+dialog = root.findChild(QObject, "testDraftDialog")
+assert dialog is not None and dialog.property("visible") is True
+pick_button = root.findChild(QObject, "testDraftPickButton")
+start_button = root.findChild(QObject, "testDraftStartButton")
+leave_button = root.findChild(QObject, "testDraftLeaveButton")
+assert pick_button is not None
+assert start_button is not None
+assert leave_button is not None
+assert pick_button.property("visible") is True
+assert pick_button.property("enabled") is False
+assert start_button.property("visible") is False
+assert start_button.property("enabled") is False
+assert leave_button.property("visible") is True
+assert leave_button.property("enabled") is False
+
+pick_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+start_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.pick_calls == []
+assert provider.start_calls == []
+assert provider.leave_calls == 0
+assert dialog.property("visible") is True
+
+provider.publish_test_draft(
+    pending=False,
+    phase="failed",
+    error="the simulated draft stopped responding",
+    active=True,
+    mode="manual",
+    set_code="hob",
+    supported_set_codes=["hob"],
+)
+application.processEvents()
+error_label = root.findChild(QObject, "testDraftError")
+assert error_label is not None
+assert error_label.isVisible() is True
+assert error_label.property("text") == "the simulated draft stopped responding"
+assert pick_button.property("visible") is True
+assert pick_button.property("enabled") is False
+assert leave_button.property("visible") is True
+assert leave_button.property("enabled") is True
+
+provider.publish_test_draft(active=False)
+application.processEvents()
+message = root.findChild(QObject, "testDraftMessage")
+assert message is not None
+assert message.property("text") == "the simulated draft stopped responding"
+assert start_button.property("visible") is True
+assert start_button.property("enabled") is True
+assert leave_button.property("visible") is False
+assert error_label.isVisible() is False
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_test_draft_leave_dispatches_from_the_dialog_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(
+        self, *, test_draft: dict, scenario: str = "ready"
+    ) -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str]] = []
+        self.pick_calls: list[tuple[int, int]] = []
+        self.leave_calls = 0
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+    @Slot(int, int)
+    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+        self.pick_calls.append((grp_id, offer_generation))
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        self.leave_calls += 1
+
+
+def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "active": True,
+        "mode": "manual",
+        "phase": "drafting",
+        "set_code": "hob",
+        "offer_generation": 1,
+        "pending": False,
+        "supported_set_codes": ["hob"],
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+test_draft_button = root.findChild(QObject, "testDraftButton")
+assert test_draft_button is not None and test_draft_button.isVisible()
+test_draft_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+dialog = root.findChild(QObject, "testDraftDialog")
+assert dialog is not None and dialog.property("visible") is True
+leave_button = root.findChild(QObject, "testDraftLeaveButton")
+assert leave_button is not None
+assert leave_button.property("visible") is True
+assert leave_button.property("enabled") is True
+assert provider.leave_calls == 0
+
+leave_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.leave_calls == 1
+assert provider.pick_calls == []
+assert provider.start_calls == []
+assert dialog.property("visible") is True
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr

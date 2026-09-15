@@ -332,6 +332,23 @@ defaults, and `--profile-manifest-url` / `--offline-profiles` behave as in
 `test-draft failed: <reason>` and exit nonzero; the command never starts,
 stops, or configures the Draftmancer service.
 
+The native application exposes the same developer controls. The app bar shows a
+**Test Draft** action only when the application is started with the
+`--draftmancer-dir` opt-in:
+
+```bash
+uv run --extra draftmancer draftomen --draftmancer-dir ../Draftmancer
+```
+
+The dialog offers the sets the pinned checkout and the local card-data cache
+both provide (HOB, the application's default test-draft set, whenever both have
+it) and lets the developer choose Manual or Auto. Manual mode confirms the
+selected recommendation with the **Pick** button in the ordinary live drafting
+view and leaves the run through the dialog's **Leave test draft** button, while
+Auto reuses the normal completed-draft and build surfaces. Without the opt-in no
+Test Draft control is present, and the Pick button stays hidden during ordinary
+Arena drafting.
+
 To run the same pinned server through a compiled bundle instead of the source
 tree, see [Native Test Draft smoke
 (manual)](docs/desktop-bundles.md#native-test-draft-smoke-manual) in the desktop

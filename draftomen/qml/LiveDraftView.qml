@@ -116,6 +116,19 @@ Item {
         }
         return cards.length > 0 ? cards[0] : null
     }
+    readonly property var testDraft: sessionState.test_draft || null
+    readonly property bool testDraftActive: root.testDraft !== null && root.testDraft.active === true
+    readonly property bool testDraftManual: root.testDraftActive && root.testDraft.mode === "manual"
+    readonly property bool testDraftPending: root.testDraft !== null && root.testDraft.pending === true
+    readonly property string testDraftError: root.testDraft && root.testDraft.error
+        ? String(root.testDraft.error) : ""
+    readonly property int testDraftOfferGeneration: root.testDraft
+        ? Number(root.testDraft.offer_generation) : 0
+    readonly property bool testDraftCanPick: root.testDraftManual
+        && root.testDraft.phase === "drafting"
+        && !root.testDraftPending
+        && root.testDraftOfferGeneration > 0
+        && root.selectedRecommendation !== null
 
     property bool recommendationFocusPublishedWhileVisible: false
 
@@ -208,6 +221,49 @@ Item {
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                 }
+            }
+
+            ColumnLayout {
+                visible: root.testDraftActive
+                Layout.alignment: Qt.AlignVCenter
+                spacing: 2
+
+                Label {
+                    objectName: "testDraftIndicator"
+                    // The capability may be absent from the published state, so the
+                    // binding must not read through a null record.
+                    text: root.testDraft
+                        ? "Test Draft · " + String(root.testDraft.mode) + " · "
+                            + String(root.testDraft.set_code).toUpperCase()
+                        : ""
+                    color: Theme.primary
+                    font.pixelSize: Theme.textPixelSize(12)
+                    font.bold: true
+                }
+
+                Label {
+                    objectName: "testDraftError"
+                    visible: root.testDraftError.length > 0
+                    text: root.testDraftError
+                    color: Theme.error
+                    font.pixelSize: Theme.textPixelSize(12)
+                    Layout.maximumWidth: 320
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            DimensionalButton {
+                objectName: "testDraftPickButton"
+                visible: root.testDraftManual
+                enabled: root.testDraftCanPick
+                accented: true
+                text: "Pick"
+                Layout.alignment: Qt.AlignVCenter
+                Accessible.name: "Confirm Test Draft pick"
+                Accessible.description: "Submit the selected card to the simulated draft."
+                onClicked: sessionProvider.pickTestDraft(
+                    root.selectedRecommendation.card.grp_id, root.testDraftOfferGeneration
+                )
             }
 
             DimensionalComboBox {

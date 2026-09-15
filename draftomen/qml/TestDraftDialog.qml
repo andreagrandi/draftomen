@@ -1,0 +1,223 @@
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+
+Dialog {
+    id: root
+
+    required property var sessionState
+    property var returnFocusItem: null
+    property string selectedMode: "manual"
+
+    readonly property var testDraft: root.sessionState.test_draft || null
+    readonly property bool active: root.testDraft !== null && root.testDraft.active === true
+    readonly property bool pending: root.testDraft !== null && root.testDraft.pending === true
+    readonly property string phase: root.testDraft ? String(root.testDraft.phase) : "idle"
+    readonly property string error: root.testDraft && root.testDraft.error
+        ? String(root.testDraft.error) : ""
+    readonly property var supportedSetCodes: root.testDraft && root.testDraft.supported_set_codes
+        ? root.testDraft.supported_set_codes : []
+    readonly property string selectedSetCode: root.supportedSetCodes.length > 0
+        ? String(root.supportedSetCodes[Math.max(0, setSelector.currentIndex)]) : ""
+
+    ButtonGroup {
+        id: testDraftModeGroup
+        exclusive: true
+    }
+
+    objectName: "testDraftDialog"
+    parent: Overlay.overlay
+    modal: true
+    focus: true
+    closePolicy: Popup.CloseOnEscape
+    title: "Test Draft"
+    width: Math.min(460, Math.max(320, parent ? parent.width - 32 : 460))
+    x: parent ? Math.max(16, Math.round((parent.width - width) / 2)) : 16
+    y: parent ? Math.max(16, Math.round((parent.height - height) / 2)) : 16
+    padding: 16
+
+    Overlay.modal: Rectangle {
+        color: "#99000000"
+    }
+
+    background: Rectangle {
+        color: Theme.surface
+        border.color: Theme.outline
+        border.width: 1
+        radius: Theme.radius
+    }
+
+    header: Rectangle {
+        objectName: "testDraftDialogHeader"
+        implicitHeight: 52
+        color: Theme.surfaceHigh
+        border.color: Theme.outline
+        border.width: 1
+
+        Label {
+            objectName: "testDraftDialogTitle"
+            anchors.fill: parent
+            anchors.leftMargin: 16
+            anchors.rightMargin: 16
+            text: root.title
+            color: Theme.text
+            font.pixelSize: Theme.textPixelSize(18)
+            font.bold: true
+            verticalAlignment: Text.AlignVCenter
+            Accessible.name: text
+        }
+    }
+
+    onClosed: {
+        const opener = root.returnFocusItem
+        root.returnFocusItem = null
+        if (opener && opener.visible && opener.enabled)
+            opener.forceActiveFocus()
+    }
+
+    contentItem: ColumnLayout {
+        spacing: 12
+        implicitWidth: 360
+
+        Label {
+            text: "Set"
+            color: Theme.textMuted
+            Accessible.name: text
+        }
+
+        DimensionalComboBox {
+            id: setSelector
+            objectName: "testDraftSetSelector"
+            Layout.fillWidth: true
+            enabled: !root.active && !root.pending
+            model: root.supportedSetCodes.map(function(code) {
+                return String(code).toUpperCase()
+            })
+            currentIndex: {
+                const codes = root.supportedSetCodes
+                if (codes.length === 0)
+                    return -1
+                const testDraft = root.testDraft
+                const defaultCode = testDraft && testDraft.default_set_code
+                    ? String(testDraft.default_set_code).toLowerCase() : ""
+                for (let index = 0; index < codes.length; index++) {
+                    if (String(codes[index]).toLowerCase() === defaultCode)
+                        return index
+                }
+                return 0
+            }
+            Accessible.name: "Test Draft set"
+            Accessible.description: "Choose the simulated draft set."
+        }
+
+        Label {
+            text: "Mode"
+            color: Theme.textMuted
+            Accessible.name: text
+        }
+
+        RowLayout {
+            spacing: 8
+
+            DimensionalButton {
+                objectName: "testDraftManualModeButton"
+                text: "Manual"
+                checkable: true
+                checked: root.selectedMode === "manual"
+                accented: checked
+                enabled: !root.active && !root.pending
+                ButtonGroup.group: testDraftModeGroup
+                Accessible.name: "Manual mode"
+                Accessible.description: "Confirm every pick yourself in the live drafting view."
+                onClicked: root.selectedMode = "manual"
+            }
+
+            DimensionalButton {
+                objectName: "testDraftAutoModeButton"
+                text: "Auto"
+                checkable: true
+                checked: root.selectedMode === "auto"
+                accented: checked
+                enabled: !root.active && !root.pending
+                ButtonGroup.group: testDraftModeGroup
+                Accessible.name: "Auto mode"
+                Accessible.description: "Let Draft Omen pick for the whole simulated draft."
+                onClicked: root.selectedMode = "auto"
+            }
+        }
+
+        Label {
+            objectName: "testDraftMessage"
+            Layout.fillWidth: true
+            text: {
+                if (root.error.length > 0)
+                    return root.error
+                if (root.phase === "starting")
+                    return "Starting the simulated draft…"
+                if (root.phase === "drafting" && root.active) {
+                    return root.selectedMode === "manual"
+                        ? "Pick each card in the live drafting view."
+                        : "Draft Omen is picking automatically."
+                }
+                if (root.phase === "completed")
+                    return "The simulated draft is complete."
+                return "Choose a set and mode, then start."
+            }
+            color: root.error.length > 0 ? Theme.error : Theme.text
+            wrapMode: Text.WordWrap
+            Accessible.name: text
+        }
+    }
+
+    footer: DialogButtonBox {
+        implicitHeight: 58
+        alignment: Qt.AlignRight
+        background: Rectangle {
+            color: Theme.surfaceHigh
+            border.color: Theme.outline
+            border.width: 1
+        }
+
+        DimensionalButton {
+            objectName: "testDraftStartButton"
+            text: "Start"
+            accented: true
+            visible: !root.active
+            enabled: !root.pending && root.supportedSetCodes.length > 0
+            implicitWidth: 120
+            activeFocusOnTab: true
+            focusPolicy: Qt.StrongFocus
+            Accessible.role: Accessible.Button
+            Accessible.name: "Start Test Draft"
+            onClicked: sessionProvider.startTestDraft(
+                root.selectedMode, root.selectedSetCode
+            )
+        }
+
+        DimensionalButton {
+            objectName: "testDraftLeaveButton"
+            text: "Leave test draft"
+            accented: false
+            visible: root.active
+            enabled: !root.pending
+            implicitWidth: 120
+            activeFocusOnTab: true
+            focusPolicy: Qt.StrongFocus
+            Accessible.role: Accessible.Button
+            Accessible.name: "Leave Test Draft"
+            onClicked: sessionProvider.leaveTestDraft()
+        }
+
+        DimensionalButton {
+            objectName: "testDraftCloseButton"
+            text: "Close"
+            accented: false
+            implicitWidth: 120
+            activeFocusOnTab: true
+            focusPolicy: Qt.StrongFocus
+            Accessible.role: Accessible.Button
+            Accessible.name: "Close Test Draft dialog"
+            onClicked: root.close()
+        }
+    }
+}
