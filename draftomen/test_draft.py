@@ -4,14 +4,15 @@ The controller is UI-neutral so CLIs and native adapters share one contract.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import ExitStack
 from dataclasses import dataclass
 import gzip
 import json
 from pathlib import Path
 import tempfile
-from threading import RLock
-from typing import Literal, TypeAlias
+from threading import Lock, RLock
+from typing import Literal, Self, TypeAlias
 import uuid
 import zlib
 
@@ -33,6 +34,7 @@ from draftomen.session import (
     LiveSessionSnapshot,
     OperationKind,
     RequestBuild,
+    SnapshotPublisher,
 )
 
 DRAFTMANCER_TEST_USER_NAME = "Draft Omen test draft"
@@ -537,7 +539,103 @@ class TestDraftController:
         )
 
 
-def run_test_draft_auto(
+class TestDraftRuntime:
+    """Own one reusable simulated draft and its isolated runtime resources.
+    Callers cancel in-flight work; close retires every owned resource once.
+    """
+
+    # The Test-prefixed public name is deliberately not a pytest test class.
+    __test__ = False
+
+    def __init__(
+        self,
+        *,
+        session: LiveSession,
+        controller: TestDraftController,
+        adapter: DraftmancerAdapter,
+        simulation_app_dir: Path,
+        stack: ExitStack,
+    ) -> None:
+        self._session = session
+        self._controller = controller
+        self._adapter = adapter
+        self._simulation_app_dir = simulation_app_dir
+        self._stack = stack
+        self._cleanup_lock = Lock()
+        self._closed = False
+
+    @property
+    def session(self) -> LiveSession:
+        """Return the source-less session that owns simulated draft state."""
+
+        return self._session
+
+    @property
+    def controller(self) -> TestDraftController:
+        """Return the controller that confirms and advances simulated picks."""
+
+        return self._controller
+
+    @property
+    def simulation_app_dir(self) -> Path:
+        """Return the isolated directory that holds simulated draft artifacts."""
+
+        return self._simulation_app_dir
+
+    def cancel(self) -> None:
+        """Wake blocked draft work without acquiring the controller lock.
+        Cancellation is terminal for this runtime; close owns final cleanup.
+        """
+
+        self._adapter.cancel()
+
+    def close(self) -> None:
+        """Cancel in-flight work and retire every owned resource once.
+        Cleanup runs outside the runtime lock in reverse ownership order.
+        """
+
+        with self._cleanup_lock:
+            if self._closed:
+                return
+            self._closed = True
+        self.cancel()
+        self._stack.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc_value: object,
+        traceback: object,
+    ) -> None:
+        self.close()
+
+
+def supported_test_draft_set_codes(
+    *,
+    draftmancer_dir: Path,
+    draftomen_set_codes: Iterable[str],
+) -> tuple[str, ...]:
+    """Intersect requested Draft Omen set codes with the pinned simulator's.
+    Malformed capability metadata fails closed before any network work.
+    """
+
+    draftmancer_codes = _load_supported_set_codes(draftmancer_dir=draftmancer_dir)
+    try:
+        return intersect_supported_set_codes(
+            draftomen_set_codes=draftomen_set_codes,
+            draftmancer_set_codes=draftmancer_codes,
+        )
+    except DraftmancerAdapterError as error:
+        raise TestDraftError(
+            f"Draftmancer set capability metadata is invalid: {error}",
+            stage="startup",
+        ) from error
+
+
+def create_test_draft_runtime(
     *,
     draftmancer_dir: Path,
     scryfall_bulk_file: Path,
@@ -547,29 +645,23 @@ def run_test_draft_auto(
     source_app_dir: Path | None,
     profile_manifest_url: str | None,
     profile_network_policy: ProfileNetworkPolicy,
+    snapshot_publisher: SnapshotPublisher | None = None,
     splash_enabled: bool = True,
     contextual_adjustments_enabled: bool = True,
     ai_enhanced_suggestions_enabled: bool = True,
     simulation_app_dir: Path | None = None,
     socket_client: object | None = None,
-) -> TestDraftRunResult:
-    """Run one headless automatic draft against a pinned Draftmancer server.
-    Card and profile sources stay in the normal app directory; simulated draft
-    state and audit records stay in an isolated simulation directory.
+) -> TestDraftRuntime:
+    """Create one isolated simulated draft runtime from validated sources.
+    The returned runtime owns its session, adapter, and temporary directory.
+    Every construction failure unwinds the resources built before it.
     """
 
     normalized_set_code = _normalized_set_code(set_code=set_code)
-    draftmancer_codes = _load_supported_set_codes(draftmancer_dir=draftmancer_dir)
-    try:
-        supported_codes = intersect_supported_set_codes(
-            draftomen_set_codes=(normalized_set_code,),
-            draftmancer_set_codes=draftmancer_codes,
-        )
-    except DraftmancerAdapterError as error:
-        raise TestDraftError(
-            f"Draftmancer set capability metadata is invalid: {error}",
-            stage="startup",
-        ) from error
+    supported_codes = supported_test_draft_set_codes(
+        draftmancer_dir=draftmancer_dir,
+        draftomen_set_codes=(normalized_set_code,),
+    )
     if normalized_set_code not in supported_codes:
         raise TestDraftError(
             f"requested set {normalized_set_code!r} is not supported by Draftmancer",
@@ -602,15 +694,20 @@ def run_test_draft_auto(
             stage="startup",
         ) from error
     resolved_source_dir = _resolved_app_dir(app_dir=source_app_dir)
-    if (
-        simulation_app_dir is not None
-        and _resolved_app_dir(app_dir=simulation_app_dir) == resolved_source_dir
-    ):
-        raise TestDraftError(
-            "the simulation directory must differ from the card and profile "
-            "source directory",
-            stage="startup",
-        )
+    if simulation_app_dir is not None:
+        try:
+            resolved_simulation_dir = _resolved_app_dir(app_dir=simulation_app_dir)
+        except Exception as error:
+            raise TestDraftError(
+                f"the test draft could not start: {error}",
+                stage="startup",
+            ) from error
+        if resolved_simulation_dir == resolved_source_dir:
+            raise TestDraftError(
+                "the simulation directory must differ from the card and profile "
+                "source directory",
+                stage="startup",
+            )
     run_id = uuid.uuid4().hex
     try:
         config = DraftmancerConfig(
@@ -627,7 +724,8 @@ def run_test_draft_auto(
             stage="startup",
         ) from error
 
-    with ExitStack() as stack:
+    stack = ExitStack()
+    try:
         try:
             if simulation_app_dir is None:
                 simulation_dir = Path(
@@ -642,10 +740,12 @@ def run_test_draft_auto(
                 app_dir=simulation_dir,
                 card_database=card_database,
                 profile_client=profile_client,
+                snapshot_publisher=snapshot_publisher,
                 splash_enabled=splash_enabled,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
                 ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
             )
+            stack.callback(session.stop)
             adapter = DraftmancerAdapter(
                 config=config,
                 card_database=card_database,
@@ -653,18 +753,72 @@ def run_test_draft_auto(
                 event_sink=lambda event: session.process_events(events=(event,)),
                 socket_client=socket_client,
             )
-        except TestDraftError:
-            raise
         except Exception as error:
             raise TestDraftError(
                 f"the test draft could not start: {error}",
                 stage="startup",
             ) from error
-        controller = TestDraftController(session=session, adapter=adapter)
         try:
-            return controller.run_auto()
-        finally:
-            controller.close()
+            controller = TestDraftController(session=session, adapter=adapter)
+        except Exception as error:
+            adapter.close()
+            raise TestDraftError(
+                f"the test draft could not start: {error}",
+                stage="startup",
+            ) from error
+        stack.callback(controller.close)
+    except BaseException:
+        stack.close()
+        raise
+    return TestDraftRuntime(
+        session=session,
+        controller=controller,
+        adapter=adapter,
+        simulation_app_dir=simulation_dir,
+        stack=stack,
+    )
+
+
+def run_test_draft_auto(
+    *,
+    draftmancer_dir: Path,
+    scryfall_bulk_file: Path,
+    server_url: str,
+    set_code: str,
+    timeout_seconds: float,
+    source_app_dir: Path | None,
+    profile_manifest_url: str | None,
+    profile_network_policy: ProfileNetworkPolicy,
+    splash_enabled: bool = True,
+    contextual_adjustments_enabled: bool = True,
+    ai_enhanced_suggestions_enabled: bool = True,
+    simulation_app_dir: Path | None = None,
+    socket_client: object | None = None,
+) -> TestDraftRunResult:
+    """Run one headless automatic draft against a pinned Draftmancer server.
+    Card and profile sources stay in the normal app directory; simulated draft
+    state and audit records stay in an isolated simulation directory.
+    """
+
+    runtime = create_test_draft_runtime(
+        draftmancer_dir=draftmancer_dir,
+        scryfall_bulk_file=scryfall_bulk_file,
+        server_url=server_url,
+        set_code=set_code,
+        timeout_seconds=timeout_seconds,
+        source_app_dir=source_app_dir,
+        profile_manifest_url=profile_manifest_url,
+        profile_network_policy=profile_network_policy,
+        splash_enabled=splash_enabled,
+        contextual_adjustments_enabled=contextual_adjustments_enabled,
+        ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
+        simulation_app_dir=simulation_app_dir,
+        socket_client=socket_client,
+    )
+    try:
+        return runtime.controller.run_auto()
+    finally:
+        runtime.close()
 
 
 def _offer_identity(*, event: PackOfferedEvent) -> TestDraftOfferIdentity:

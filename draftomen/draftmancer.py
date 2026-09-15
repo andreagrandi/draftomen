@@ -154,6 +154,40 @@ class _OfferedCard:
 _RawMessage = tuple[str, object]
 
 
+class _Acknowledgement:
+    """Hold the first acknowledgement one Socket.IO callback delivers.
+Later deliveries are ignored; the adapter filters terminal states.
+"""
+
+    __slots__ = ("_delivered", "_value")
+
+    def __init__(self) -> None:
+        self._delivered = False
+        self._value: object = None
+
+    @property
+    def delivered(self) -> bool:
+        return self._delivered
+
+    @property
+    def value(self) -> object:
+        return self._value
+
+    def deliver(self, *args: object) -> bool:
+        """Store the normalized acknowledgement and report whether it was new."""
+
+        if self._delivered:
+            return False
+        self._delivered = True
+        if not args:
+            self._value = None
+        elif len(args) == 1:
+            self._value = args[0]
+        else:
+            self._value = args
+        return True
+
+
 class DraftmancerAdapter:
     """Drive one Draftmancer draft and publish typed lifecycle events.
 Socket callbacks only enqueue messages; caller-thread methods own all state mutation.
@@ -228,12 +262,10 @@ The method returns only after start and first draftState are processed.
         socket = self._ensure_socket()
         self._register_handlers(socket=socket)
         self._connect(socket=socket)
-        with self._condition:
-            if self._terminal_error is not None:
-                raise self._terminal_error
-            if self._closed:
-                raise self._fail(DraftmancerAdapterError("Draftmancer adapter is closed."))
-            self._connected = True
+        self._wait_for(
+            predicate=lambda: self._connected,
+            timeout_message="Timed out connecting to Draftmancer.",
+        )
         self._call_acknowledgement(
             socket=socket,
             event="startDraft",
@@ -298,20 +330,33 @@ The method returns only after a subsequent offer or completion is processed.
             self._accepted_pool.append(selected.arena_id)
             self._last_pick_coordinates = coordinates
             self._expected_coordinates = (coordinates[0], coordinates[1] + 1)
-            self._emit(
-                event=PickMadeEvent(
-                    event_name=self._event_name,
-                    set_code=self._config.set_code.upper(),
-                    pack_number=coordinates[0],
-                    pick_number=coordinates[1],
-                    chosen_grp_id=selected.arena_id,
-                    account_id=self._config.user_id,
-                )
+            event = PickMadeEvent(
+                event_name=self._event_name,
+                set_code=self._config.set_code.upper(),
+                pack_number=coordinates[0],
+                pick_number=coordinates[1],
+                chosen_grp_id=selected.arena_id,
+                account_id=self._config.user_id,
             )
+        self._emit(event=event)
         self._wait_for(
             predicate=lambda: self._completed or bool(self._active_offer),
             timeout_message="Timed out waiting for Draftmancer's next offer or completion.",
         )
+
+    def cancel(self) -> None:
+        """Cancel in-flight work and wake every waiter without disconnecting.
+Cancellation is terminal for this adapter; close() owns transport teardown.
+"""
+
+        with self._condition:
+            if self._terminal_error is not None or self._closed or self._completed:
+                return
+            self._terminal_error = DraftmancerAdapterError(
+                "Draftmancer operation was cancelled."
+            )
+            self._messages.clear()
+            self._condition.notify_all()
 
     def close(self) -> None:
         """Disconnect the socket safely and idempotently.
@@ -375,6 +420,7 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
             socket.on(event="startDraft", handler=self._raw_event_handler("startDraft"))
             socket.on(event="draftState", handler=self._raw_event_handler("draftState"))
             socket.on(event="endDraft", handler=self._raw_event_handler("endDraft"))
+            socket.on(event="connect", handler=self._connect_handler)
             socket.on(event="disconnect", handler=self._disconnect_handler)
             socket.on(event="connect_error", handler=self._connect_error_handler)
         except Exception as error:
@@ -385,6 +431,9 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
             raise self._fail(message) from error
 
     def _connect(self, *, socket: object) -> None:
+        """Open the transport without blocking on the namespace handshake.
+The handshake is awaited on the adapter's condition, so cancellation and the timeout both apply to it.
+"""
         query = {
             "userID": self._config.user_id,
             "userName": self._config.user_name,
@@ -420,8 +469,7 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
             socket.connect(
                 url=connection_url,
                 transports=list(_TRANSPORTS),
-                wait=True,
-                wait_timeout=self._config.timeout_seconds,
+                wait=False,
             )
         except Exception as error:
             message = DraftmancerAdapterError(
@@ -439,32 +487,91 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
         operation: str,
     ) -> object:
         started = monotonic()
+        pending = _Acknowledgement()
         try:
-            acknowledgement = socket.call(
+            socket.emit(
                 event=event,
                 data=data,
-                timeout=self._config.timeout_seconds,
+                callback=self._acknowledgement_handler(pending=pending),
             )
         except Exception as error:
             failure = self._queued_failure()
             if failure is None:
-                failure = self._ack_error(error=error, elapsed=monotonic() - started, operation=operation)
+                failure = self._ack_error(
+                    error=error,
+                    elapsed=monotonic() - started,
+                    operation=operation,
+                )
             raise self._fail(failure) from error
-        failure = self._queued_failure()
-        if failure is not None:
-            raise self._fail(failure)
-        elapsed = monotonic() - started
-        if elapsed >= self._config.timeout_seconds:
-            failure = DraftmancerAdapterError(
-                f"Draftmancer rejected {operation}: acknowledgement timed out."
+        acknowledgement = self._await_acknowledgement(
+            pending=pending,
+            operation=operation,
+            deadline=started + self._config.timeout_seconds,
+        )
+        if monotonic() - started >= self._config.timeout_seconds:
+            raise self._fail(
+                DraftmancerAdapterError(
+                    f"Draftmancer rejected {operation}: acknowledgement timed out."
+                )
             )
-            raise self._fail(failure)
         try:
             _require_success_ack(acknowledgement=acknowledgement, operation=operation)
         except DraftmancerAdapterError as error:
             failure = DraftmancerAdapterError(f"Draftmancer rejected {operation}: {error}")
             raise self._fail(failure) from error
         return acknowledgement
+
+    def _acknowledgement_handler(
+        self,
+        *,
+        pending: _Acknowledgement,
+    ) -> Callable[..., None]:
+        """Return the callback that stores one acknowledgement for its waiter.
+Late callbacks after a terminal outcome are ignored, never processed.
+"""
+
+        def handler(*args: object) -> None:
+            with self._condition:
+                if self._terminal_error is not None or self._closed or self._completed:
+                    return
+                if not pending.deliver(*args):
+                    return
+                self._condition.notify_all()
+
+        return handler
+
+    def _await_acknowledgement(
+        self,
+        *,
+        pending: _Acknowledgement,
+        operation: str,
+        deadline: float,
+    ) -> object:
+        """Wait for one acknowledgement or fail on terminal state or deadline.
+Queued transport failures end the wait before the acknowledgement timeout.
+"""
+
+        while True:
+            with self._condition:
+                if self._terminal_error is not None:
+                    raise self._terminal_error
+                if self._closed:
+                    raise self._fail(
+                        DraftmancerAdapterError("Draftmancer adapter is closed.")
+                    )
+                failure = self._queued_failure()
+                if failure is not None:
+                    raise self._fail(failure)
+                if pending.delivered:
+                    return pending.value
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise self._fail(
+                        DraftmancerAdapterError(
+                            f"Draftmancer rejected {operation}: acknowledgement timed out."
+                        )
+                    )
+                self._condition.wait(timeout=remaining)
 
     def _queued_failure(self) -> DraftmancerAdapterError | None:
         with self._condition:
@@ -528,6 +635,15 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
             return
         self._enqueue(kind="disconnect", payload=args[0] if args else "unknown reason")
 
+    def _connect_handler(self, *args: object) -> None:
+        if len(args) > 1:
+            self._enqueue(
+                kind="error",
+                payload=DraftmancerAdapterError("Malformed connect event envelope."),
+            )
+            return
+        self._enqueue(kind="connect", payload=None)
+
     def _connect_error_handler(self, *args: object) -> None:
         if len(args) > 1:
             self._enqueue(
@@ -586,6 +702,9 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
                 f"Draftmancer disconnected before {phase}: {_error_text(payload)}"
             )
             raise self._fail(error)
+        if kind == "connect":
+            self._process_connect()
+            return
         if kind == "startDraft":
             self._process_start(payload=payload)
             return
@@ -597,6 +716,18 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
             return
         error = DraftmancerAdapterError(f"Unknown Draftmancer event {kind!r}.")
         raise self._fail(error)
+
+    def _process_connect(self) -> None:
+        """Record the namespace handshake that releases the connection wait.
+A connect envelope after cancellation or close is dropped by _enqueue and never sets the flag; close() owns transport teardown.
+"""
+
+        with self._condition:
+            if self._terminal_error is not None:
+                raise self._terminal_error
+            if self._closed:
+                raise self._fail(DraftmancerAdapterError("Draftmancer adapter is closed."))
+            self._connected = True
 
     def _process_start(self, *, payload: object) -> None:
         with self._condition:
@@ -642,14 +773,13 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
             if self._closed:
                 raise self._fail(DraftmancerAdapterError("Draftmancer adapter is closed."))
             self._started = True
-            self._emit(
-                event=DraftStartedEvent(
-                    event_name=self._event_name,
-                    set_code=self._config.set_code.upper(),
-                    course_id=self._config.session_id,
-                    account_id=self._config.user_id,
-                )
+            event = DraftStartedEvent(
+                event_name=self._event_name,
+                set_code=self._config.set_code.upper(),
+                course_id=self._config.session_id,
+                account_id=self._config.user_id,
             )
+        self._emit(event=event)
 
     def _process_state(self, *, payload: object) -> None:
         with self._condition:
@@ -688,17 +818,16 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
             self._last_offer_key = offer_key
             self._active_coordinates = coordinates
             self._active_offer = offers
-            self._emit(
-                event=PackOfferedEvent(
-                    event_name=self._event_name,
-                    set_code=self._config.set_code.upper(),
-                    pack_number=coordinates[0],
-                    pick_number=coordinates[1],
-                    offered_grp_ids=tuple(card.arena_id for card in offers.values()),
-                    pool_grp_ids=tuple(self._accepted_pool),
-                    account_id=self._config.user_id,
-                )
+            event = PackOfferedEvent(
+                event_name=self._event_name,
+                set_code=self._config.set_code.upper(),
+                pack_number=coordinates[0],
+                pick_number=coordinates[1],
+                offered_grp_ids=tuple(card.arena_id for card in offers.values()),
+                pool_grp_ids=tuple(self._accepted_pool),
+                account_id=self._config.user_id,
             )
+        self._emit(event=event)
 
     def _decode_state(
         self,
@@ -799,35 +928,38 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
                 error = DraftmancerAdapterError("Draftmancer sent endDraft before the active pick.")
                 raise self._fail(error)
             coordinates = self._last_pick_coordinates
-            self._emit(
-                event=DraftCompletedEvent(
-                    event_name=self._event_name,
-                    set_code=self._config.set_code.upper(),
-                    pack_number=coordinates[0],
-                    pick_number=coordinates[1],
-                    picked_grp_ids=tuple(self._accepted_pool),
-                    inferred=False,
-                    account_id=self._config.user_id,
-                )
-            )
-            if self._terminal_error is not None:
-                raise self._terminal_error
-            if self._closed:
-                raise self._fail(DraftmancerAdapterError("Draftmancer adapter was closed."))
             self._completed = True
+            event = DraftCompletedEvent(
+                event_name=self._event_name,
+                set_code=self._config.set_code.upper(),
+                pack_number=coordinates[0],
+                pick_number=coordinates[1],
+                picked_grp_ids=tuple(self._accepted_pool),
+                inferred=False,
+                account_id=self._config.user_id,
+            )
+        self._emit(event=event)
+        with self._condition:
             self._messages.clear()
 
     def _emit(self, *, event: DraftEvent) -> None:
+        """Publish one event to the sink without holding the adapter condition.
+Only the caller thread emits, so ordering holds, and the lock never spans persistence or snapshot publication.
+"""
+
         with self._condition:
             if self._terminal_error is not None:
                 raise self._terminal_error
             if self._closed:
                 raise self._fail(DraftmancerAdapterError("Draftmancer adapter is closed."))
-            try:
-                self._event_sink(event)
-            except Exception as error:
-                message = DraftmancerAdapterError(f"Draftmancer event sink failed: {_error_text(error)}")
-                raise self._fail(message) from error
+        try:
+            self._event_sink(event)
+        except Exception as error:
+            message = DraftmancerAdapterError(f"Draftmancer event sink failed: {_error_text(error)}")
+            raise self._fail(message) from error
+        with self._condition:
+            if self._terminal_error is not None:
+                raise self._terminal_error
 
 
     def _fail(self, error: DraftmancerAdapterError) -> DraftmancerAdapterError:

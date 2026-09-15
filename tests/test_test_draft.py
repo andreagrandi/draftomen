@@ -5,11 +5,13 @@ Every assertion observes the controller's published Python contract, not plumbin
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 import gzip
 import json
 from pathlib import Path
+import tempfile
+import threading
 import zlib
 
 import pytest
@@ -48,23 +50,31 @@ from draftomen.session import (
     OperationKind,
     RequestBuild,
     SessionError,
+    SnapshotPublisher,
 )
 from draftomen.test_draft import (
+    SIMULATION_DIRECTORY_PREFIX,
     TestDraftController,
     TestDraftError,
     TestDraftInspection,
     TestDraftOfferIdentity,
     TestDraftRunResult,
+    TestDraftRuntime,
+    create_test_draft_runtime,
     run_test_draft_auto,
+    supported_test_draft_set_codes,
 )
 
 from tests.test_draftmancer import (
+    _CANCELLATION_TEXT,
     _FakeSocket,
     _config,
     _database,
     _query,
     _start_action,
+    _start_worker,
     _state,
+    _withheld_ack_action,
 )
 
 _CONTROLLER_EVENT_NAME = "QuickDraft_HOB_Draftmancer_session-1"
@@ -147,7 +157,7 @@ def _pick_actions(
             if index == len(states) - 1:
                 socket.handlers["endDraft"]()
             else:
-                socket.emit("draftState", states[index + 1])
+                socket.server_emit("draftState", states[index + 1])
             return {"code": 0}
 
         return action
@@ -247,13 +257,17 @@ def _print_state(
     }
 
 
-def _helper_socket(*, states: tuple[dict[str, object], ...]) -> _FakeSocket:
+def _helper_socket(
+    *,
+    states: tuple[dict[str, object], ...],
+    pick_actions: Iterable[Callable[[_FakeSocket], object]] | None = None,
+) -> _FakeSocket:
     """Start from the helper's own generated seat, known only to the connect query."""
 
     def start_action(socket: _FakeSocket) -> object:
         query = _query(socket)
         user_id = query["userID"][0]
-        socket.emit(
+        socket.server_emit(
             "startDraft",
             {
                 user_id: {
@@ -271,12 +285,14 @@ def _helper_socket(*, states: tuple[dict[str, object], ...]) -> _FakeSocket:
                 },
             },
         )
-        socket.emit("draftState", states[0])
+        socket.server_emit("draftState", states[0])
         return {"code": 0}
 
     return _FakeSocket(
         start_action=start_action,
-        pick_actions=_pick_actions(states=states),
+        pick_actions=(
+            _pick_actions(states=states) if pick_actions is None else pick_actions
+        ),
     )
 
 
@@ -404,6 +420,43 @@ def _run_helper(
         simulation_app_dir=sources.simulation_dir,
         socket_client=socket,
     )
+
+
+def _create_runtime(
+    *,
+    sources: _HelperSources,
+    socket: _FakeSocket,
+    timeout_seconds: float = 1.0,
+    snapshot_publisher: SnapshotPublisher | None = None,
+    simulation_app_dir: Path | None = None,
+) -> TestDraftRuntime:
+    """Create one isolated runtime over the seeded card, profile, and bulk sources."""
+
+    return create_test_draft_runtime(
+        draftmancer_dir=sources.draftmancer_dir,
+        scryfall_bulk_file=sources.bulk_path,
+        server_url="http://127.0.0.1:3000",
+        set_code=_HELPER_SET_CODE,
+        timeout_seconds=timeout_seconds,
+        source_app_dir=sources.normal_app_dir,
+        profile_manifest_url=None,
+        profile_network_policy=ProfileNetworkPolicy.OFFLINE,
+        snapshot_publisher=snapshot_publisher,
+        simulation_app_dir=simulation_app_dir,
+        socket_client=socket,
+    )
+
+
+def _draftmancer_checkout(*, root: Path, mtga_sets: object) -> Path:
+    """Write one pinned checkout advertising the given raw MTGASets capability."""
+
+    constants_path = root / "src" / "data" / "constants.json"
+    constants_path.parent.mkdir(parents=True, exist_ok=True)
+    constants_path.write_text(
+        json.dumps({"MTGASets": mtga_sets}),
+        encoding="utf-8",
+    )
+    return root
 
 
 def _arena_states() -> tuple[dict[str, object], ...]:
@@ -1016,7 +1069,7 @@ def test_unchanged_next_offer_coordinates_fail_the_ordering_check(
     def repeat_picked_pack(socket: _FakeSocket) -> object:
         # The simulator re-sends the picked pack's coordinates in a fresh
         # envelope, which the adapter rejects as an out-of-order draftState.
-        socket.emit(
+        socket.server_emit(
             "draftState",
             _state(
                 pack_number=0,
@@ -1179,6 +1232,9 @@ def test_helper_run_keeps_normal_arena_state_and_audit_untouched(
         is EnhancementAvailabilityStatus.NOT_ENHANCED
     )
     assert result.completed.enhancement_availability.enabled is False
+    # The headless runner closes through the reusable runtime, so the simulator
+    # client transport is torn down exactly once.
+    assert socket.disconnect_count == 1
 
 
 def test_helper_run_publishes_configured_feature_flags(tmp_path: Path) -> None:
@@ -1259,3 +1315,611 @@ def test_helper_run_reports_the_installed_local_profile(tmp_path: Path) -> None:
     assert result.completed.set_profile.profile_version == profile.profile_version
     assert result.completed.set_profile.phase is DataLoadPhase.READY
     assert result.completed.set_profile.set_code == "HOB"
+
+
+def test_supported_test_draft_set_codes_includes_hob_only_when_both_sources_advertise_it(
+    tmp_path: Path,
+) -> None:
+    advertise_hob = _draftmancer_checkout(
+        root=tmp_path / "with-hob",
+        mtga_sets=["HOB", "TST"],
+    )
+    assert supported_test_draft_set_codes(
+        draftmancer_dir=advertise_hob,
+        draftomen_set_codes=("hob", "TST", "omen-only"),
+    ) == ("hob", "tst")
+
+    # The same request against a checkout without HOB proves there is no HOB
+    # special case: only advertised intersections survive, case-folded.
+    without_hob = _draftmancer_checkout(
+        root=tmp_path / "tst-only",
+        mtga_sets=["TST"],
+    )
+    assert supported_test_draft_set_codes(
+        draftmancer_dir=without_hob,
+        draftomen_set_codes=("hob", "TST", "omen-only"),
+    ) == ("tst",)
+
+    not_a_list = _draftmancer_checkout(root=tmp_path / "not-a-list", mtga_sets="HOB")
+    with pytest.raises(TestDraftError) as unlisted:
+        supported_test_draft_set_codes(
+            draftmancer_dir=not_a_list,
+            draftomen_set_codes=("hob",),
+        )
+
+    assert unlisted.value.stage == "startup"
+
+    blank_entry = _draftmancer_checkout(
+        root=tmp_path / "blank-entry",
+        mtga_sets=["HOB", ""],
+    )
+    with pytest.raises(
+        TestDraftError,
+        match="Draftmancer set capability metadata is invalid:",
+    ) as malformed:
+        supported_test_draft_set_codes(
+            draftmancer_dir=blank_entry,
+            draftomen_set_codes=("hob",),
+        )
+
+    assert malformed.value.stage == "startup"
+    assert isinstance(malformed.value.__cause__, DraftmancerAdapterError)
+
+
+def test_reusable_test_draft_runtime_matches_headless_auto_contract(
+    tmp_path: Path,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    published: list[LiveSessionSnapshot] = []
+    socket = _helper_socket(states=_print_states())
+    runtime = _create_runtime(
+        sources=sources,
+        socket=socket,
+        snapshot_publisher=published.append,
+        simulation_app_dir=sources.simulation_dir,
+    )
+
+    assert runtime.session.log_path is None
+    assert runtime.simulation_app_dir == sources.simulation_dir
+    assert runtime.simulation_app_dir != sources.normal_app_dir
+
+    result = runtime.controller.run_auto()
+
+    assert result.completed.status.phase is ApplicationPhase.DRAFT_COMPLETE
+    assert result.completed.pool.total_cards == len(_HELPER_OFFERS)
+    assert len(result.steps) == len(_HELPER_OFFERS)
+    accepted: tuple[int, ...] = ()
+    for offered_grp_ids, step in zip(_HELPER_OFFERS, result.steps, strict=True):
+        before = step.before.snapshot
+        assert before.current_pack_event is not None
+        assert before.current_pack_event.offered_grp_ids == offered_grp_ids
+        assert before.pool.total_cards == len(accepted)
+        rows = before.recommendations.cards
+        assert tuple(row.rank for row in rows) == tuple(range(1, len(rows) + 1))
+        assert {row.card.grp_id for row in rows} == set(offered_grp_ids)
+        assert rows[0].card.grp_id == step.grp_id
+        accepted += (step.grp_id,)
+
+    build = result.build.build
+    assert build is not None
+    assert build.domain_pool is not None
+    assert build.domain_pool.pool_grp_ids == tuple(step.grp_id for step in result.steps)
+    assert build.domain_selection is not None
+    assert build.domain_spell_selection is not None
+    assert build.domain_mana_base is not None
+
+    states = list_draft_states(app_dir=runtime.simulation_app_dir)
+    assert len(states) == 1
+    assert states[0].completed is True
+    assert states[0].pool_grp_ids == accepted
+    records = load_draft_audit_records(
+        account_id=states[0].account_id,
+        draft_id=states[0].draft_id,
+        app_dir=runtime.simulation_app_dir,
+    )
+    assert "draft_completed" in {record["record_type"] for record in records}
+
+    runtime.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_reusable_test_draft_runtime_removes_its_implicit_simulation_directory(
+    tmp_path: Path,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    published: list[LiveSessionSnapshot] = []
+    socket = _FakeSocket()
+    runtime = _create_runtime(
+        sources=sources,
+        socket=socket,
+        snapshot_publisher=published.append,
+    )
+
+    simulation_dir = runtime.simulation_app_dir
+    assert simulation_dir.exists()
+    assert not simulation_dir.is_relative_to(sources.normal_app_dir)
+
+    runtime.close()
+
+    assert not simulation_dir.exists()
+    assert [snapshot.status.phase for snapshot in published] == [
+        ApplicationPhase.STOPPED
+    ]
+    assert socket.disconnect_count == 1
+
+    runtime.cancel()
+    runtime.close()
+
+    assert [snapshot.status.phase for snapshot in published] == [
+        ApplicationPhase.STOPPED
+    ]
+    assert socket.disconnect_count == 1
+
+
+def test_reusable_test_draft_runtime_cleans_up_partial_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    recorded = _tree_entries(root=sources.normal_app_dir)
+    temporary_root = tmp_path / "temp-root"
+    temporary_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary_root))
+    published: list[LiveSessionSnapshot] = []
+    created_directories: list[Path] = []
+    socket = _FakeSocket()
+
+    def refuse(*, session: LiveSession, adapter: DraftmancerAdapter) -> object:
+        del session, adapter
+        created_directories.extend(temporary_root.iterdir())
+        raise RuntimeError("controller construction refused")
+
+    # Only the module boundary is replaced, so the session and adapter are
+    # real and the runtime factory owns cleaning them up again.
+    monkeypatch.setattr("draftomen.test_draft.TestDraftController", refuse)
+
+    with pytest.raises(TestDraftError) as error:
+        _create_runtime(
+            sources=sources,
+            socket=socket,
+            snapshot_publisher=published.append,
+        )
+
+    assert error.value.stage == "startup"
+    assert "the test draft could not start:" in str(error.value)
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert socket.disconnect_count == 1
+    assert [snapshot.status.phase for snapshot in published] == [
+        ApplicationPhase.STOPPED
+    ]
+    # The implicit simulation directory lived under the patched temporary root
+    # while the controller was being built, and close removed it again.
+    assert len(created_directories) == 1
+    assert not created_directories[0].exists()
+    assert list(temporary_root.iterdir()) == []
+    _assert_tree_unchanged(root=sources.normal_app_dir, recorded=recorded)
+
+
+def test_reusable_test_draft_runtime_reports_implicit_directory_failure_as_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    recorded = _tree_entries(root=sources.normal_app_dir)
+    temporary_root = tmp_path / "temp-root"
+    temporary_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary_root))
+    create_directory = tempfile.TemporaryDirectory
+
+    def refuse_simulation_directory(
+        *args: object,
+        **kwargs: object,
+    ) -> tempfile.TemporaryDirectory[str]:
+        # Only the implicit simulation directory fails; every unrelated
+        # temporary directory in the call path still delegates to the real one.
+        if kwargs.get("prefix") == SIMULATION_DIRECTORY_PREFIX:
+            raise OSError("no space left on device")
+        return create_directory(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", refuse_simulation_directory)
+    socket = _FakeSocket()
+
+    with pytest.raises(TestDraftError) as error:
+        _create_runtime(sources=sources, socket=socket)
+
+    assert error.value.stage == "startup"
+    assert str(error.value).startswith("the test draft could not start:")
+    assert "no space left on device" in str(error.value)
+    assert isinstance(error.value.__cause__, OSError)
+    assert list(temporary_root.iterdir()) == []
+    assert socket.disconnect_count == 0
+    _assert_tree_unchanged(root=sources.normal_app_dir, recorded=recorded)
+
+    # The CLI handler prints its own diagnostic only for these two error types,
+    # so the same failure must not reach it as a bare OSError.
+    with pytest.raises(TestDraftError) as helper_error:
+        run_test_draft_auto(
+            draftmancer_dir=sources.draftmancer_dir,
+            scryfall_bulk_file=sources.bulk_path,
+            server_url="http://127.0.0.1:3000",
+            set_code=_HELPER_SET_CODE,
+            timeout_seconds=1.0,
+            source_app_dir=sources.normal_app_dir,
+            profile_manifest_url=None,
+            profile_network_policy=ProfileNetworkPolicy.OFFLINE,
+            socket_client=socket,
+        )
+
+    assert helper_error.value.stage == "startup"
+    assert not isinstance(helper_error.value, OSError)
+    assert isinstance(helper_error.value.__cause__, OSError)
+    assert list(temporary_root.iterdir()) == []
+    assert socket.disconnect_count == 0
+    _assert_tree_unchanged(root=sources.normal_app_dir, recorded=recorded)
+
+
+def test_reusable_test_draft_runtime_reports_explicit_directory_failure_as_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    recorded = _tree_entries(root=sources.normal_app_dir)
+    simulation_app_dir = tmp_path / "unresolvable-simulation"
+    expanduser = Path.expanduser
+
+    def refuse_unresolvable_simulation_directory(self: Path) -> Path:
+        # Only the unresolvable simulation directory fails; every other
+        # expansion in the call path still delegates to the real one.
+        if self == simulation_app_dir:
+            raise OSError("could not determine the simulation directory home")
+        return expanduser(self)
+
+    monkeypatch.setattr(Path, "expanduser", refuse_unresolvable_simulation_directory)
+    socket = _FakeSocket()
+
+    with pytest.raises(TestDraftError) as error:
+        _create_runtime(
+            sources=sources,
+            socket=socket,
+            simulation_app_dir=simulation_app_dir,
+        )
+
+    assert error.value.stage == "startup"
+    assert str(error.value).startswith("the test draft could not start:")
+    assert "could not determine the simulation directory home" in str(error.value)
+    assert isinstance(error.value.__cause__, OSError)
+    assert not simulation_app_dir.exists()
+    assert socket.disconnect_count == 0
+    _assert_tree_unchanged(root=sources.normal_app_dir, recorded=recorded)
+
+
+@pytest.mark.parametrize(
+    ("boundary", "expected_disconnects", "expected_stopped"),
+    [
+        ("draftomen.test_draft.LiveSession", 0, 0),
+        ("draftomen.test_draft.DraftmancerAdapter", 0, 1),
+    ],
+    ids=("session", "adapter"),
+)
+def test_reusable_test_draft_runtime_cleans_up_every_partial_construction_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    expected_disconnects: int,
+    expected_stopped: int,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    recorded = _tree_entries(root=sources.normal_app_dir)
+    temporary_root = tmp_path / "temp-root"
+    temporary_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary_root))
+    published: list[LiveSessionSnapshot] = []
+    created_directories: list[Path] = []
+    socket = _FakeSocket()
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        created_directories.extend(temporary_root.iterdir())
+        raise RuntimeError("construction refused")
+
+    # Only the module boundary under test is replaced, so every collaborator
+    # built before it stays real and the runtime factory must unwind it.
+    monkeypatch.setattr(boundary, refuse)
+
+    with pytest.raises(TestDraftError) as error:
+        _create_runtime(
+            sources=sources,
+            socket=socket,
+            snapshot_publisher=published.append,
+        )
+
+    assert error.value.stage == "startup"
+    assert str(error.value).startswith("the test draft could not start:")
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert socket.disconnect_count == expected_disconnects
+    assert [
+        snapshot.status.phase for snapshot in published
+    ].count(ApplicationPhase.STOPPED) == expected_stopped
+    assert len(created_directories) == 1
+    assert not created_directories[0].exists()
+    assert list(temporary_root.iterdir()) == []
+    _assert_tree_unchanged(root=sources.normal_app_dir, recorded=recorded)
+
+
+def test_runtime_cancel_wakes_blocked_start(tmp_path: Path) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    entered = threading.Event()
+    socket = _FakeSocket(start_action=_withheld_ack_action(entered=entered))
+    runtime = _create_runtime(
+        sources=sources,
+        socket=socket,
+        timeout_seconds=5.0,
+        simulation_app_dir=sources.simulation_dir,
+    )
+    workers: list[threading.Thread] = []
+    errors: list[BaseException] = []
+    done = _start_worker(
+        target=runtime.controller.start,
+        workers=workers,
+        errors=errors,
+    )
+
+    assert entered.wait(timeout=1)
+    runtime.cancel()
+
+    assert done.wait(timeout=1)
+    for worker in workers:
+        worker.join()
+
+    assert len(errors) == 1
+    error = errors[0]
+    assert isinstance(error, TestDraftError)
+    assert error.stage == "startup"
+    assert _CANCELLATION_TEXT in str(error)
+    assert isinstance(error.__cause__, DraftmancerAdapterError)
+    assert error.steps == ()
+    assert error.snapshot.status.phase is ApplicationPhase.WAITING_FOR_DRAFT
+    assert error.snapshot.pool.total_cards == 0
+
+    runtime.close()
+
+    assert socket.disconnect_count == 1
+
+    runtime.cancel()
+    runtime.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_runtime_cancel_wakes_blocked_pick(tmp_path: Path) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    states = _print_states()
+    entered = threading.Event()
+    socket = _helper_socket(
+        states=states,
+        pick_actions=[
+            _pick_actions(states=states)[0],
+            _withheld_ack_action(entered=entered),
+        ],
+    )
+    runtime = _create_runtime(
+        sources=sources,
+        socket=socket,
+        timeout_seconds=5.0,
+        simulation_app_dir=sources.simulation_dir,
+    )
+    workers: list[threading.Thread] = []
+    errors: list[BaseException] = []
+
+    runtime.controller.start()
+    first_step = runtime.controller.advance_auto()
+    inspection = runtime.controller.inspect()
+    done = _start_worker(
+        target=lambda: runtime.controller.confirm(
+            grp_id=_rank_one(inspection),
+            expected_offer=inspection.offer,
+        ),
+        workers=workers,
+        errors=errors,
+    )
+
+    assert entered.wait(timeout=1)
+    runtime.cancel()
+
+    assert done.wait(timeout=1)
+    for worker in workers:
+        worker.join()
+
+    assert len(errors) == 1
+    error = errors[0]
+    assert isinstance(error, TestDraftError)
+    assert error.stage == "drafting"
+    assert _CANCELLATION_TEXT in str(error)
+    assert isinstance(error.__cause__, DraftmancerAdapterError)
+    assert error.steps == (first_step,)
+    assert error.snapshot.status.phase is ApplicationPhase.DRAFTING
+    assert error.snapshot.pool.total_cards == 1
+
+    persisted = list_draft_states(app_dir=runtime.simulation_app_dir)
+    assert [state.chosen_pick_count for state in persisted] == [1]
+    assert persisted[0].completed is False
+    assert persisted[0].pool_grp_ids == (first_step.grp_id,)
+
+    runtime.close()
+
+    assert socket.disconnect_count == 1
+
+    runtime.cancel()
+    runtime.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_runtime_close_during_blocked_start_retires_every_resource_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    recorded = _tree_entries(root=sources.normal_app_dir)
+    temporary_root = tmp_path / "temp-root"
+    temporary_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary_root))
+    published: list[LiveSessionSnapshot] = []
+    entered = threading.Event()
+    socket = _FakeSocket(start_action=_withheld_ack_action(entered=entered))
+    runtime = _create_runtime(
+        sources=sources,
+        socket=socket,
+        timeout_seconds=5.0,
+        snapshot_publisher=published.append,
+    )
+    simulation_dir = runtime.simulation_app_dir
+    assert simulation_dir.parent == temporary_root
+    workers: list[threading.Thread] = []
+    start_errors: list[BaseException] = []
+    start_done = _start_worker(
+        target=runtime.controller.start,
+        workers=workers,
+        errors=start_errors,
+    )
+
+    assert entered.wait(timeout=1)
+    close_errors: list[BaseException] = []
+    close_done = _start_worker(
+        target=runtime.close,
+        workers=workers,
+        errors=close_errors,
+    )
+
+    # Close cancels the blocked start instead of waiting out its deadline.
+    assert close_done.wait(timeout=2)
+
+    assert start_done.wait(timeout=2)
+    for worker in workers:
+        worker.join()
+
+    assert close_errors == []
+    assert len(start_errors) == 1
+    error = start_errors[0]
+    assert isinstance(error, TestDraftError)
+    assert error.stage == "startup"
+    assert _CANCELLATION_TEXT in str(error)
+    assert isinstance(error.__cause__, DraftmancerAdapterError)
+    assert [snapshot.status.phase for snapshot in published] == [
+        ApplicationPhase.STOPPED
+    ]
+    assert socket.disconnect_count == 1
+    assert not simulation_dir.exists()
+    assert list(temporary_root.iterdir()) == []
+    _assert_tree_unchanged(root=sources.normal_app_dir, recorded=recorded)
+
+    runtime.cancel()
+    runtime.close()
+
+    assert socket.disconnect_count == 1
+
+
+def test_runtime_cancel_returns_while_snapshot_publication_is_held(
+    tmp_path: Path,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    published: list[LiveSessionSnapshot] = []
+    entered = threading.Event()
+    released = threading.Event()
+
+    def publish(snapshot: LiveSessionSnapshot) -> None:
+        published.append(snapshot)
+        # The start event's own snapshot is the first DRAFTING publication, so
+        # holding it stalls the start path before its first pack is scored.
+        if snapshot.status.phase is ApplicationPhase.DRAFTING and not entered.is_set():
+            entered.set()
+            assert released.wait(timeout=5)
+
+    socket = _helper_socket(states=_print_states())
+    runtime = _create_runtime(
+        sources=sources,
+        socket=socket,
+        timeout_seconds=5.0,
+        snapshot_publisher=publish,
+    )
+    workers: list[threading.Thread] = []
+    start_errors: list[BaseException] = []
+    start_done = _start_worker(
+        target=runtime.controller.start,
+        workers=workers,
+        errors=start_errors,
+    )
+
+    assert entered.wait(timeout=1)
+    cancel_errors: list[BaseException] = []
+    cancel_done = _start_worker(
+        target=runtime.cancel,
+        workers=workers,
+        errors=cancel_errors,
+    )
+
+    assert cancel_done.wait(timeout=1)
+    assert not released.is_set()
+
+    released.set()
+
+    assert start_done.wait(timeout=2)
+    for worker in workers:
+        worker.join()
+
+    assert cancel_errors == []
+    assert len(start_errors) == 1
+    error = start_errors[0]
+    assert isinstance(error, TestDraftError)
+    assert error.stage == "startup"
+    assert _CANCELLATION_TEXT in str(error)
+    assert isinstance(error.__cause__, DraftmancerAdapterError)
+    assert _pick_card_calls(socket) == []
+
+    runtime.close()
+
+    assert [snapshot.status.phase for snapshot in published] == [
+        ApplicationPhase.DRAFTING,
+        ApplicationPhase.STOPPED,
+    ]
+    assert socket.disconnect_count == 1
+
+
+def test_runtime_concurrent_close_retires_resources_exactly_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    recorded = _tree_entries(root=sources.normal_app_dir)
+    temporary_root = tmp_path / "temp-root"
+    temporary_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary_root))
+    published: list[LiveSessionSnapshot] = []
+    socket = _FakeSocket()
+    runtime = _create_runtime(
+        sources=sources,
+        socket=socket,
+        snapshot_publisher=published.append,
+    )
+    simulation_dir = runtime.simulation_app_dir
+    workers: list[threading.Thread] = []
+    errors: list[BaseException] = []
+    closers = [
+        _start_worker(target=runtime.close, workers=workers, errors=errors)
+        for _ in range(2)
+    ]
+
+    for closer in closers:
+        assert closer.wait(timeout=2)
+    for worker in workers:
+        worker.join()
+
+    assert errors == []
+    assert socket.disconnect_count == 1
+    assert [snapshot.status.phase for snapshot in published] == [
+        ApplicationPhase.STOPPED
+    ]
+    assert not simulation_dir.exists()
+    assert list(temporary_root.iterdir()) == []
+    _assert_tree_unchanged(root=sources.normal_app_dir, recorded=recorded)
