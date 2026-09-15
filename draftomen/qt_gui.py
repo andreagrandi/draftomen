@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from time import monotonic
 from typing import Literal, cast
@@ -54,6 +55,8 @@ SURFACES = ("live", "build", "backtest", "settings")
 ProviderName = Literal["live", "mock"]
 APPLICATION_NAME = "Draft Omen"
 DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
+TEST_DRAFT_SMOKE_SUMMARY_PREFIX = "Test Draft smoke: "
+TEST_DRAFT_SMOKE_TIMEOUT_SECONDS = 900.0
 
 
 def _configure_application_metadata(*, application: QGuiApplication) -> None:
@@ -169,6 +172,11 @@ def _parser(*, forced_provider: ProviderName | None = None) -> argparse.Argument
     )
     parser.add_argument(
         "--smoke-test-until-complete",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--test-draft-smoke",
         action="store_true",
         help=argparse.SUPPRESS,
     )
@@ -501,6 +509,88 @@ def _finish_smoke_test_when_draft_completes(
     timer.timeout.connect(finish_when_ready)
     timer.start()
 
+
+class _TestDraftSmokeDriver:
+    """Drive one unattended Test Draft journey through the live adapter.
+    Report the run summary on stdout and leave the simulated draft first.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: SessionAdapter,
+        timeout_seconds: float = TEST_DRAFT_SMOKE_TIMEOUT_SECONDS,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
+        self._provider = provider
+        self._timeout_seconds = timeout_seconds
+        self._clock = clock
+        self._started = False
+        self._leaving = False
+        self._deadline = clock() + timeout_seconds
+
+    def advance(self) -> int | None:
+        """Advance the journey once and return an exit code when it ends.
+        Return None while the simulated draft is still running.
+        """
+        test_draft = self._provider.state.get("test_draft", {})
+        phase = test_draft.get("phase")
+        if phase == "failed":
+            print(
+                f"Test Draft smoke failed: {test_draft.get('error')}",
+                file=sys.stderr,
+            )
+            return 1
+        # A capability with no set code (missing card data) never starts; report why.
+        if not self._started and test_draft.get("error"):
+            print(
+                f"Test Draft smoke failed: {test_draft['error']}",
+                file=sys.stderr,
+            )
+            return 1
+        if test_draft.get("enabled") is not True:
+            print(
+                "Test Draft smoke requires the --draftmancer-dir opt-in.",
+                file=sys.stderr,
+            )
+            return 1
+        if not self._started:
+            set_code = test_draft.get("default_set_code")
+            if set_code:
+                self._provider.startTestDraft("auto", set_code)
+                self._started = True
+        if (
+            self._started
+            and phase == "completed"
+            and self._provider.state.get("build") is not None
+            and not self._leaving
+        ):
+            build = self._provider.state["build"]
+            summary = {
+                "status": "ok",
+                "mode": test_draft.get("mode"),
+                "set_code": test_draft.get("set_code"),
+                "picks": self._provider.state["pool"]["total_cards"],
+                "deck_size": build["deck_size"],
+                "selected_pair": build["selected_pair"],
+            }
+            print(
+                f"{TEST_DRAFT_SMOKE_SUMMARY_PREFIX}"
+                f"{json.dumps(summary, separators=(',', ':'), sort_keys=True)}"
+            )
+            self._provider.leaveTestDraft()
+            self._leaving = True
+        if self._leaving and phase == "idle" and test_draft.get("active") is False:
+            return 0
+        if self._clock() >= self._deadline:
+            print(
+                f"Test Draft smoke timed out after {self._timeout_seconds:g} seconds.",
+                file=sys.stderr,
+            )
+            return 1
+        return None
+
+
 def run_gui(
     *,
     argv: Sequence[str] | None = None,
@@ -513,6 +603,15 @@ def run_gui(
     if args.verify_bundled_profile and not _preflight_bundled_profile(
         app_dir=args.app_dir,
     ):
+        return 1
+
+    if args.test_draft_smoke and (
+        args.provider != "live" or args.draftmancer_dir is None
+    ):
+        print(
+            "--test-draft-smoke requires --draftmancer-dir with the live provider.",
+            file=sys.stderr,
+        )
         return 1
 
     QQuickStyle.setStyle("Fusion")
@@ -549,7 +648,22 @@ def run_gui(
         application.aboutToQuit.connect(provider.shutdown)
         provider.start()
 
-    if args.smoke_test_until_complete:
+    if args.test_draft_smoke:
+        driver = _TestDraftSmokeDriver(provider=provider)
+        test_draft_timer = QTimer(application)
+
+        def advance_test_draft_smoke() -> None:
+            code = driver.advance()
+            if code is None:
+                return
+            test_draft_timer.stop()
+            test_draft_timer.timeout.disconnect(advance_test_draft_smoke)
+            application.exit(code)
+
+        test_draft_timer.setInterval(20)
+        test_draft_timer.timeout.connect(advance_test_draft_smoke)
+        test_draft_timer.start()
+    elif args.smoke_test_until_complete:
         _finish_smoke_test_when_draft_completes(
             engine=engine,
             application=application,

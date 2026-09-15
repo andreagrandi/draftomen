@@ -7,12 +7,15 @@ import gzip
 import hashlib
 import json
 import plistlib
+import re
 import shlex
+import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from draftomen import qt_gui
 from draftomen.set_profile import load_set_profile
 
 from tests import bundle_smoke
@@ -60,6 +63,30 @@ def _read_project_metadata() -> dict[str, object]:
         return tomllib.load(project_file)["project"]
 
 
+def _requirement_name(requirement: str) -> str:
+    match = re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*", requirement.strip())
+    assert match is not None, requirement
+    return match.group(0).lower().replace("_", "-").replace(".", "-")
+
+
+def _completed_process(
+    *,
+    command: list[str],
+    stdout: str = "",
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=command, returncode=0, stdout=stdout, stderr=""
+    )
+
+
+def _forbid_process_launch(**kwargs: object) -> None:
+    raise AssertionError(f"unexpected process launch: {kwargs}")
+
+
+def _forbid_server_probe(*, server_url: str) -> None:
+    raise AssertionError(f"unexpected server probe: {server_url}")
+
+
 def _create_macos_bundle(
     *,
     root: Path,
@@ -80,64 +107,498 @@ def test_bundle_smoke_main_configures_launch_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The smoke command uses an isolated app directory and strict timeout."""
+    """The smoke command uses isolated app directories and strict timeouts."""
 
     bundle_path = tmp_path / "Draftomen.exe"
     bundle_path.write_bytes(b"executable")
     calls: list[dict[str, object]] = []
-    app_directories: list[Path] = []
+    providers: list[str] = []
+    environments: list[dict[str, str]] = []
 
-    def fake_run(**kwargs: object) -> None:
+    monkeypatch.setenv("PYTHONHOME", "/sentinel")
+    monkeypatch.setenv("PYTHONPATH", "/sentinel")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/sentinel")
+    monkeypatch.setenv("VIRTUAL_ENV", "/sentinel")
+
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str] | None:
         command = kwargs["args"]
         assert isinstance(command, list)
-        assert command[:-1] == [
-            str(bundle_path.resolve()),
-            "--provider",
-            "mock",
-            "--smoke-test",
-            "--verify-bundled-profile",
-            "--app-dir",
-        ]
-        app_directory = Path(command[-1])
-        assert app_directory.name == "app"
+        provider = command[command.index("--provider") + 1]
+        app_directory = Path(command[command.index("--app-dir") + 1])
         assert app_directory.parent.is_dir()
-        assert app_directory.parent.name.startswith("draftomen-bundle-smoke-")
-        cache_path = app_directory / "set-profiles" / "hob-quickdraft.json"
-        assert not cache_path.exists()
-        assert not cache_path.is_symlink()
-        app_directories.append(app_directory)
+        assert not (app_directory / "set-profiles" / "hob-quickdraft.json").exists()
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        for variable in (
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "UV_PROJECT_ENVIRONMENT",
+            "VIRTUAL_ENV",
+        ):
+            assert variable not in environment
+        providers.append(provider)
+        environments.append(environment)
         calls.append(kwargs)
+        if provider == "live":
+            Path(command[command.index("--screenshot") + 1]).write_bytes(b"png")
+            return _completed_process(command=command)
+        return None
 
     monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
 
     assert bundle_smoke.main([str(bundle_path)]) == 0
     assert bundle_smoke.main([str(bundle_path), "--timeout", "300"]) == 0
-    assert [call["timeout"] for call in calls] == [60, 300]
-    assert len(app_directories) == 2
-    assert len({path.parent for path in app_directories}) == 2
+    assert [call["timeout"] for call in calls] == [60, 60, 300, 300]
+    assert providers == ["mock", "live", "mock", "live"]
+    assert environments[0] == environments[1]
+    assert environments[2] == environments[3]
 
 
+def test_bundle_smoke_main_runs_mock_then_default_live_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default smoke run proves the bundled profile and a default live start."""
+
+    bundle_path = tmp_path / "Draftomen.exe"
+    bundle_path.write_bytes(b"executable")
+    commands: list[list[str]] = []
+    live_defect: list[str | None] = [None]
+
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str] | None:
+        command = kwargs["args"]
+        assert isinstance(command, list)
+        commands.append(command)
+        provider = command[command.index("--provider") + 1]
+        app_directory = Path(command[command.index("--app-dir") + 1])
+        profile_cache_path = app_directory / "set-profiles" / "hob-quickdraft.json"
+        assert app_directory.parent.is_dir()
+        assert not profile_cache_path.exists()
+        if provider == "mock":
+            return None
+        log_path = Path(command[command.index("--log-path") + 1])
+        screenshot_path = Path(command[command.index("--screenshot") + 1])
+        assert log_path.read_bytes() == b""
+        if live_defect[0] == "player-log":
+            log_path.write_bytes(b"bundle wrote to the player log")
+        if live_defect[0] != "screenshot":
+            screenshot_path.write_bytes(b"png")
+        if live_defect[0] == "profile-cache":
+            profile_cache_path.parent.mkdir(parents=True)
+            profile_cache_path.write_bytes(b"unexpected cache entry")
+        return _completed_process(command=command)
+
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
+
+    assert bundle_smoke.main([str(bundle_path)]) == 0
+    mock_command, live_command = commands
+    mock_app_directory = Path(mock_command[mock_command.index("--app-dir") + 1])
+    live_app_directory = Path(live_command[live_command.index("--app-dir") + 1])
+    assert mock_command == [
+        str(bundle_path.resolve()),
+        "--provider",
+        "mock",
+        "--smoke-test",
+        "--verify-bundled-profile",
+        "--app-dir",
+        str(mock_app_directory),
+    ]
+    assert live_command == [
+        str(bundle_path.resolve()),
+        "--provider",
+        "live",
+        "--offline-profiles",
+        "--no-startup-scan",
+        "--smoke-test",
+        "--log-path",
+        str(live_app_directory.parent / "Player.log"),
+        "--app-dir",
+        str(live_app_directory),
+        "--screenshot",
+        str(live_app_directory.parent / "live-smoke.png"),
+    ]
+    assert mock_app_directory != live_app_directory
+    assert mock_app_directory.parent.name == "mock"
+    assert live_app_directory.parent.name == "live"
+    assert mock_app_directory.parent.parent == live_app_directory.parent.parent
+    assert mock_app_directory.parent.parent.name.startswith("draftomen-bundle-smoke-")
+    for command in commands:
+        assert "--draftmancer-dir" not in command
+        assert "--test-draft-smoke" not in command
+        assert "--test-draft-server-url" not in command
+
+    assert (
+        bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX == qt_gui.TEST_DRAFT_SMOKE_SUMMARY_PREFIX
+    )
+
+    for defect, error_fragment in (
+        ("player-log", "wrote to the isolated player log"),
+        ("profile-cache", "mutated the flat profile cache"),
+        ("screenshot", "did not render a window screenshot"),
+    ):
+        live_defect[0] = defect
+        with pytest.raises(RuntimeError, match=error_fragment):
+            bundle_smoke.main([str(bundle_path)])
+
+
+@pytest.mark.parametrize("provider", ["mock", "live"])
 def test_bundle_smoke_main_rejects_flat_profile_cache_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    provider: str,
 ) -> None:
     """A successful bundle launch must not populate the flat profile cache."""
 
     bundle_path = tmp_path / "Draftomen.exe"
     bundle_path.write_bytes(b"executable")
 
-    def fake_run(**kwargs: object) -> None:
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str] | None:
         command = kwargs["args"]
         assert isinstance(command, list)
-        app_directory = Path(command[-1])
+        if command[command.index("--provider") + 1] != provider:
+            return _completed_process(command=command)
+        app_directory = Path(command[command.index("--app-dir") + 1])
         cache_path = app_directory / "set-profiles" / "hob-quickdraft.json"
         cache_path.parent.mkdir(parents=True)
         cache_path.write_bytes(b"unexpected cache entry")
+        if provider == "live":
+            Path(command[command.index("--screenshot") + 1]).write_bytes(b"png")
+        return _completed_process(command=command)
 
     monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="mutated the flat profile cache"):
         bundle_smoke.main([str(bundle_path)])
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--draftmancer-dir",),
+        ("--scryfall-bulk-file",),
+        ("--app-dir",),
+        ("--draftmancer-dir", "--scryfall-bulk-file", "--app-dir"),
+    ],
+    ids=["draftmancer-dir", "scryfall-bulk-file", "app-dir", "every-journey-flag"],
+)
+def test_bundle_smoke_rejects_journey_flags_without_test_draft(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: tuple[str, ...],
+) -> None:
+    """Journey-only flags are refused instead of running the default launches."""
+
+    bundle_path = tmp_path / "Draftomen.exe"
+    bundle_path.write_bytes(b"executable")
+    command = [str(bundle_path)]
+    for flag in flags:
+        command.extend([flag, str(tmp_path / "journey-input")])
+
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", _forbid_process_launch)
+    monkeypatch.setattr(bundle_smoke, "_probe_draftmancer_server", _forbid_server_probe)
+
+    with pytest.raises(RuntimeError) as error:
+        bundle_smoke.main(command)
+
+    message = str(error.value)
+    for flag in flags:
+        assert flag in message
+    assert message == (
+        f"Invalid arguments: --test-draft is required for {', '.join(flags)}."
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error_fragment"),
+    [
+        (
+            {"--scryfall-bulk-file": "scryfall", "--app-dir": "app"},
+            "--draftmancer-dir",
+        ),
+        (
+            {"--draftmancer-dir": "draftmancer", "--app-dir": "app"},
+            "--scryfall-bulk-file",
+        ),
+        (
+            {"--draftmancer-dir": "draftmancer", "--scryfall-bulk-file": "scryfall"},
+            "--app-dir",
+        ),
+        (
+            {
+                "--draftmancer-dir": "draftmancer",
+                "--scryfall-bulk-file": "scryfall",
+                "--app-dir": "missing-app",
+            },
+            "--app-dir must be an existing directory",
+        ),
+    ],
+    ids=[
+        "without-draftmancer-dir",
+        "without-scryfall-bulk-file",
+        "without-app-dir",
+        "missing-app-dir",
+    ],
+)
+def test_bundle_smoke_test_draft_mode_requires_pinned_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: dict[str, str],
+    error_fragment: str,
+) -> None:
+    """The manual journey refuses to run without its pinned local inputs."""
+
+    bundle_path = tmp_path / "Draftomen.exe"
+    bundle_path.write_bytes(b"executable")
+    sources = {
+        "draftmancer": tmp_path / "Draftmancer",
+        "scryfall": tmp_path / "scryfall-default-cards.jsonl.gz",
+        "app": tmp_path / "prepared-app",
+        "missing-app": tmp_path / "missing-app",
+    }
+    sources["draftmancer"].mkdir()
+    sources["scryfall"].write_bytes(b"bulk")
+    sources["app"].mkdir()
+    command = [str(bundle_path), "--test-draft"]
+    for flag, source in arguments.items():
+        command.extend([flag, str(sources[source])])
+
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", _forbid_process_launch)
+    monkeypatch.setattr(bundle_smoke, "_probe_draftmancer_server", _forbid_server_probe)
+
+    with pytest.raises(RuntimeError, match=error_fragment):
+        bundle_smoke.main(command)
+
+
+def test_bundle_smoke_test_draft_mode_probes_the_server_and_requires_the_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The manual journey probes the pinned server around the compiled run."""
+
+    bundle_path = tmp_path / "Draftomen.exe"
+    bundle_path.write_bytes(b"executable")
+    draftmancer_dir = tmp_path / "Draftmancer"
+    draftmancer_dir.mkdir()
+    scryfall_bulk_file = tmp_path / "scryfall-default-cards.jsonl.gz"
+    scryfall_bulk_file.write_bytes(b"bulk")
+    app_dir = tmp_path / "prepared-app"
+    app_dir.mkdir()
+    journey_arguments = [
+        str(bundle_path),
+        "--test-draft",
+        "--draftmancer-dir",
+        str(draftmancer_dir),
+        "--scryfall-bulk-file",
+        str(scryfall_bulk_file),
+        "--app-dir",
+        str(app_dir),
+    ]
+    events: list[str] = []
+    commands: list[list[str]] = []
+    timeouts: list[float] = []
+    summary = {
+        "status": "ok",
+        "set_code": "hob",
+        "picks": 42,
+        "deck_size": 23,
+        "selected_pair": "UB",
+    }
+
+    def fake_probe(*, server_url: str) -> None:
+        assert server_url == bundle_smoke.DEFAULT_SERVER_URL
+        events.append("probe")
+
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = kwargs["args"]
+        assert isinstance(command, list)
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, int)
+        log_path = Path(command[command.index("--log-path") + 1])
+        assert log_path.is_file()
+        assert log_path.read_bytes() == b""
+        events.append("launch")
+        commands.append(command)
+        timeouts.append(float(timeout))
+        stdout = f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}{json.dumps(summary)}\n"
+        return _completed_process(command=command, stdout=stdout)
+
+    monkeypatch.setattr(bundle_smoke, "_probe_draftmancer_server", fake_probe)
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
+
+    assert bundle_smoke.main(journey_arguments) == 0
+    assert events == ["probe", "launch", "probe"]
+    assert len(commands) == 1
+    command = commands[0]
+    log_path = Path(command[command.index("--log-path") + 1])
+    assert log_path.name == "Player.log"
+    assert log_path.parent.name.startswith("draftomen-bundle-smoke-")
+    assert command == [
+        str(bundle_path.resolve()),
+        "--provider",
+        "live",
+        "--draftmancer-dir",
+        str(draftmancer_dir),
+        "--scryfall-bulk-file",
+        str(scryfall_bulk_file),
+        "--app-dir",
+        str(app_dir),
+        "--log-path",
+        str(log_path),
+        "--no-startup-scan",
+        "--offline-profiles",
+        "--test-draft-server-url",
+        bundle_smoke.DEFAULT_SERVER_URL,
+        "--test-draft-smoke",
+    ]
+    assert timeouts[0] > qt_gui.TEST_DRAFT_SMOKE_TIMEOUT_SECONDS
+    assert capsys.readouterr().out == (
+        json.dumps(
+            {
+                "status": "ok",
+                "bundle": str(bundle_path.resolve()),
+                "set_code": "hob",
+                "picks": 42,
+                "deck_size": 23,
+                "selected_pair": "UB",
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    def fake_run_without_summary(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = kwargs["args"]
+        assert isinstance(command, list)
+        return _completed_process(
+            command=command, stdout="no Test Draft summary here\n"
+        )
+
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run_without_summary)
+
+    with pytest.raises(RuntimeError, match=r"printed no summary line; exit code 0"):
+        bundle_smoke.main(journey_arguments)
+
+
+def test_bundle_smoke_test_draft_mode_resolves_journey_inputs_for_the_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relative journey inputs reach the bundle absolute from its own directory."""
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "Draftomen.exe").write_bytes(b"executable")
+    (tmp_path / "Draftmancer").mkdir()
+    (tmp_path / "scryfall-default-cards.jsonl.gz").write_bytes(b"bulk")
+    (tmp_path / "prepared-app").mkdir()
+    commands: list[list[str]] = []
+    summary = {
+        "status": "ok",
+        "set_code": "hob",
+        "picks": 42,
+        "deck_size": 23,
+        "selected_pair": "UB",
+    }
+
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = kwargs["args"]
+        assert isinstance(command, list)
+        commands.append(command)
+        stdout = f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}{json.dumps(summary)}\n"
+        return _completed_process(command=command, stdout=stdout)
+
+    def fake_probe(*, server_url: str) -> None:
+        assert server_url == bundle_smoke.DEFAULT_SERVER_URL
+
+    monkeypatch.setattr(bundle_smoke, "_probe_draftmancer_server", fake_probe)
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
+
+    assert (
+        bundle_smoke.main(
+            [
+                "Draftomen.exe",
+                "--test-draft",
+                "--draftmancer-dir",
+                "Draftmancer",
+                "--scryfall-bulk-file",
+                "scryfall-default-cards.jsonl.gz",
+                "--app-dir",
+                "prepared-app",
+            ]
+        )
+        == 0
+    )
+
+    command = commands[0]
+    assert command[command.index("--draftmancer-dir") + 1] == str(
+        (tmp_path / "Draftmancer").resolve()
+    )
+    assert command[command.index("--scryfall-bulk-file") + 1] == str(
+        (tmp_path / "scryfall-default-cards.jsonl.gz").resolve()
+    )
+    assert command[command.index("--app-dir") + 1] == str(
+        (tmp_path / "prepared-app").resolve()
+    )
+
+
+def test_bundle_smoke_test_draft_mode_rejects_a_dead_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned server that stops answering fails the manual journey."""
+
+    dead_server_url = "http://127.0.0.1:1"
+    with pytest.raises(RuntimeError) as dead_probe:
+        bundle_smoke._probe_draftmancer_server(server_url=dead_server_url)
+    assert dead_server_url in str(dead_probe.value)
+
+    bundle_path = tmp_path / "Draftomen.exe"
+    bundle_path.write_bytes(b"executable")
+    draftmancer_dir = tmp_path / "Draftmancer"
+    draftmancer_dir.mkdir()
+    scryfall_bulk_file = tmp_path / "scryfall-default-cards.jsonl.gz"
+    scryfall_bulk_file.write_bytes(b"bulk")
+    app_dir = tmp_path / "prepared-app"
+    app_dir.mkdir()
+    journey_arguments = [
+        str(bundle_path),
+        "--test-draft",
+        "--draftmancer-dir",
+        str(draftmancer_dir),
+        "--scryfall-bulk-file",
+        str(scryfall_bulk_file),
+        "--app-dir",
+        str(app_dir),
+    ]
+    probes: list[str] = []
+    summary = {
+        "status": "ok",
+        "set_code": "hob",
+        "picks": 42,
+        "deck_size": 23,
+        "selected_pair": "UB",
+    }
+
+    def fake_probe(*, server_url: str) -> None:
+        probes.append(server_url)
+        if len(probes) > 1:
+            raise RuntimeError(f"Draftmancer server probe failed for {server_url}")
+
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = kwargs["args"]
+        assert isinstance(command, list)
+        stdout = f"{bundle_smoke.TEST_DRAFT_SUMMARY_PREFIX}{json.dumps(summary)}\n"
+        return _completed_process(command=command, stdout=stdout)
+
+    monkeypatch.setattr(bundle_smoke, "_probe_draftmancer_server", fake_probe)
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as failure:
+        bundle_smoke.main(journey_arguments)
+
+    assert probes == [bundle_smoke.DEFAULT_SERVER_URL, bundle_smoke.DEFAULT_SERVER_URL]
+    assert bundle_smoke.DEFAULT_SERVER_URL in str(failure.value)
 
 
 def test_macos_bundle_resolution_uses_plist_executable(tmp_path: Path) -> None:
@@ -255,6 +716,55 @@ def test_native_specs_preserve_project_metadata() -> None:
             )
 
 
+def test_native_builds_sync_the_locked_draftmancer_extra_and_include_socketio() -> None:
+    """Native build inputs install the optional transport the worker imports."""
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow_sections = workflow_text.split("\n  publish-development:", maxsplit=1)
+    assert len(workflow_sections) == 2
+    build_job_text = workflow_sections[0]
+    assert "uv sync --locked --extra draftmancer" in build_job_text
+
+    run_lines = [
+        line.strip() for line in build_job_text.splitlines() if "uv run" in line
+    ]
+    smoke_lines = [line for line in run_lines if "tests/bundle_smoke.py" in line]
+    build_lines = [line for line in run_lines if "tests/bundle_smoke.py" not in line]
+    assert len(smoke_lines) == 2
+    assert all("--extra draftmancer" not in line for line in smoke_lines)
+    assert build_lines
+    assert all("--extra draftmancer" in line for line in build_lines)
+
+    project_metadata = _read_project_metadata()
+    base_dependencies = project_metadata["dependencies"]
+    assert isinstance(base_dependencies, list)
+    base_dependency_names = {_requirement_name(item) for item in base_dependencies}
+    assert not any(
+        "socketio" in name or "engineio" in name for name in base_dependency_names
+    )
+    optional_dependencies = project_metadata["optional-dependencies"]
+    assert isinstance(optional_dependencies, dict)
+    assert optional_dependencies["draftmancer"] == [
+        "python-socketio[client]>=5.16.4,<6"
+    ]
+
+    with (PROJECT_ROOT / "uv.lock").open(mode="rb") as lock_file:
+        locked_packages = tomllib.load(lock_file)["package"]
+    project_package = next(
+        package for package in locked_packages if package["name"] == "draftomen"
+    )
+    locked_extra = project_package["optional-dependencies"]["draftmancer"]
+    assert [entry["name"] for entry in locked_extra] == ["python-socketio"]
+
+    for spec_path in SPEC_PATHS.values():
+        nuitka_args = shlex.split(_read_spec(path=spec_path)["nuitka"]["extra_args"])
+        assert "--include-package=socketio" in nuitka_args
+        assert BASELINE_PROFILE_MAPPING in nuitka_args
+        assert {"--quiet", "--noinclude-qt-translations"} <= set(nuitka_args)
+
+
 def test_native_specs_enumerate_runtime_inputs() -> None:
     """Both platform specs describe the same app inputs and unsigned outputs."""
 
@@ -276,6 +786,9 @@ def test_native_specs_enumerate_runtime_inputs() -> None:
         assert (PROJECT_ROOT / app["icon"]).is_file()
         assert app["project_file"] == "pyproject.toml"
         assert python["packages"] == "Nuitka==4.1.3"
+        # Interpreter selection stays with the invoking uv environment; a build must
+        # never commit a machine-specific path that a --force run would rewrite.
+        assert python["python_path"] == ""
         assert set(qt["qml_files"].split(",")) == expected_qml_files
         assert qt["modules"].split(",") == [
             "Core",

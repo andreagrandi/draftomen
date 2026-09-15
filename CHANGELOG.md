@@ -3,6 +3,36 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Package and smoke-test the native Test Draft (#548):
+  `.github/workflows/native-bundles.yml` now syncs the locked `draftmancer` extra with
+  `uv sync --locked --extra draftmancer` and keeps `--extra draftmancer` on every build-path
+  `uv run` in the `native-bundle` job, so every command there requests the environment —
+  the base dependencies plus the optional transport — that the sync step installs before
+  Nuitka packages it, while the two
+  `tests/bundle_smoke.py` smoke steps stay extra-free so they prove the artifact in an
+  environment that does not provide the transport; both `pysidedeploy.macos.spec` and
+  `pysidedeploy.windows.spec` declare `--include-package=socketio`, so the bundle carries the
+  Socket.IO transport that `draftomen/draftmancer.py` imports lazily for the developer Test
+  Draft, while wheel, Homebrew, and source startup keep `python-socketio` optional;
+  `tests/bundle_smoke.py` now runs two ordered compiled launches inside one temporary
+  directory — the existing mock launch with `--provider mock --smoke-test
+  --verify-bundled-profile` and its isolated `--app-dir`, then a default live start with
+  `--provider live --offline-profiles --no-startup-scan --smoke-test`, its own app directory,
+  an isolated empty `Player.log`, and a screenshot that must be non-empty — and gains an
+  opt-in `--test-draft` manual journey mode that rejects those three journey flags unless
+  `--test-draft` is given, validates its pinned `--draftmancer-dir`, `--scryfall-bulk-file`,
+  and explicit `--app-dir` inputs, probes the Draftmancer endpoint before and after the run
+  without ever starting, stopping, or configuring the service, drives the compiled GUI
+  through the new hidden `--test-draft-smoke` flag, and requires the cross-process
+  `Test Draft smoke: {...}` summary before printing its own compact result, decoding
+  captured bundle output as UTF-8 so it cannot fail locale decoding;
+  `draftomen/qt_gui.py` gains the hidden `--test-draft-smoke` flag and the
+  `_TestDraftSmokeDriver`, which starts the capability's published default set code, reports
+  the completed draft and build, leaves the simulated session, and bounds the journey at
+  900 seconds, reporting a capability error immediately instead of waiting out that bound,
+  so the app gives the reason before the helper's own bound; and
+  `docs/desktop-bundles.md` documents the extra-aware build path, the two-launch helper, and
+  the manual native journey.
 - Add the developer Test Draft opt-in to the native GUI and the serialized worker
   lifecycle behind it (#547): `draftomen/qt_gui.py` accepts `--draftmancer-dir` to pin a
   Draftmancer checkout beside `--scryfall-bulk-file`, `--test-draft-server-url`, and

@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -23,6 +24,8 @@ from draftomen.pool import load_draft_state
 from draftomen.qt_gui import (
     APPLICATION_NAME,
     DEFAULT_PROFILE_MANIFEST_URL,
+    TEST_DRAFT_SMOKE_SUMMARY_PREFIX,
+    _TestDraftSmokeDriver,
     _build_provider,
     _configure_application_metadata,
     _live_session_factory,
@@ -405,6 +408,14 @@ def test_verify_bundled_profile_flag_is_hidden_and_parsed() -> None:
     assert "--verify-bundled-profile" not in parser.format_help()
 
 
+def test_test_draft_smoke_flag_is_hidden_and_parsed() -> None:
+    parser = _parser()
+
+    args = parser.parse_args(["--test-draft-smoke"])
+    assert args.test_draft_smoke is True
+    assert "--test-draft-smoke" not in parser.format_help()
+
+
 def test_bundled_profile_preflight_is_offline_and_cacheless(tmp_path: Path) -> None:
     app_dir = tmp_path / "app"
 
@@ -434,6 +445,242 @@ def test_verify_bundled_profile_failure_exits_before_gui_setup(
     monkeypatch.setattr("draftomen.qt_gui.QGuiApplication", unexpected_gui_setup)
 
     assert run_gui(argv=["--verify-bundled-profile"], forced_provider="mock") == 1
+
+
+def test_test_draft_smoke_requires_the_opt_in_before_gui_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class GuiSetupReached(AssertionError):
+        """Signal that the smoke guard let the run reach GUI setup."""
+
+    def unexpected_gui_setup(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise GuiSetupReached("the Test Draft smoke guard should run first")
+
+    class UnexpectedStyle:
+        @staticmethod
+        def setStyle(style: str) -> None:
+            del style
+            raise GuiSetupReached("the Test Draft smoke guard should run first")
+
+    monkeypatch.setattr("draftomen.qt_gui.QQuickStyle", UnexpectedStyle)
+    monkeypatch.setattr("draftomen.qt_gui.QGuiApplication", unexpected_gui_setup)
+
+    assert (
+        run_gui(
+            argv=["--test-draft-smoke", "--provider", "live"],
+            forced_provider="live",
+        )
+        == 1
+    )
+    assert (
+        run_gui(
+            argv=[
+                "--test-draft-smoke",
+                "--provider",
+                "mock",
+                "--draftmancer-dir",
+                str(tmp_path),
+            ],
+            forced_provider="mock",
+        )
+        == 1
+    )
+
+    with pytest.raises(GuiSetupReached):
+        run_gui(
+            argv=[
+                "--test-draft-smoke",
+                "--provider",
+                "live",
+                "--draftmancer-dir",
+                str(tmp_path),
+            ],
+            forced_provider="live",
+        )
+
+
+def test_test_draft_smoke_driver_starts_completes_leaves_and_reports(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class StubProvider:
+        def __init__(self) -> None:
+            self.state: dict[str, Any] = {}
+            self.start_calls: list[tuple[str, str]] = []
+            self.leave_calls = 0
+
+        def startTestDraft(self, mode: str, set_code: str) -> None:
+            self.start_calls.append((mode, set_code))
+
+        def leaveTestDraft(self) -> None:
+            self.leave_calls += 1
+
+    provider = StubProvider()
+    now = [0.0]
+    driver = _TestDraftSmokeDriver(
+        provider=provider,  # type: ignore[arg-type]
+        clock=lambda: now[0],
+    )
+
+    provider.state = {"test_draft": {"enabled": True, "phase": "idle", "active": False}}
+
+    assert driver.advance() is None
+    assert provider.start_calls == []
+
+    provider.state = {
+        "test_draft": {
+            "enabled": True,
+            "phase": "idle",
+            "active": False,
+            "default_set_code": "hob",
+        },
+        "pool": {"total_cards": 0},
+        "build": None,
+    }
+
+    assert driver.advance() is None
+    assert provider.start_calls == [("auto", "hob")]
+    assert driver.advance() is None
+    assert provider.start_calls == [("auto", "hob")]
+
+    provider.state = {
+        "test_draft": {
+            "enabled": True,
+            "phase": "drafting",
+            "active": True,
+            "mode": "auto",
+            "set_code": "hob",
+            "default_set_code": "hob",
+        },
+        "pool": {"total_cards": 12},
+        "build": None,
+    }
+
+    assert driver.advance() is None
+    assert provider.leave_calls == 0
+
+    provider.state = {
+        "test_draft": {
+            "enabled": True,
+            "phase": "completed",
+            "active": True,
+            "mode": "auto",
+            "set_code": "hob",
+            "default_set_code": "hob",
+        },
+        "pool": {"total_cards": 42},
+        "build": {"deck_size": 23, "selected_pair": "UB"},
+    }
+
+    assert driver.advance() is None
+    assert provider.start_calls == [("auto", "hob")]
+    assert provider.leave_calls == 1
+
+    summaries = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith(TEST_DRAFT_SMOKE_SUMMARY_PREFIX)
+    ]
+
+    assert len(summaries) == 1
+    assert json.loads(summaries[0][len(TEST_DRAFT_SMOKE_SUMMARY_PREFIX) :]) == {
+        "status": "ok",
+        "mode": "auto",
+        "set_code": "hob",
+        "picks": 42,
+        "deck_size": 23,
+        "selected_pair": "UB",
+    }
+
+    assert driver.advance() is None
+    assert provider.leave_calls == 1
+    assert TEST_DRAFT_SMOKE_SUMMARY_PREFIX not in capsys.readouterr().out
+
+    provider.state = {
+        "test_draft": {
+            "enabled": True,
+            "phase": "idle",
+            "active": True,
+            "mode": "auto",
+            "set_code": "hob",
+            "default_set_code": "hob",
+        },
+        "pool": {"total_cards": 42},
+        "build": {"deck_size": 23, "selected_pair": "UB"},
+    }
+
+    assert driver.advance() is None
+    assert provider.leave_calls == 1
+    assert TEST_DRAFT_SMOKE_SUMMARY_PREFIX not in capsys.readouterr().out
+
+    provider.state = {"test_draft": {"enabled": True, "phase": "idle", "active": False}}
+
+    assert driver.advance() == 0
+
+
+def test_test_draft_smoke_driver_fails_on_error_and_timeout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class StubProvider:
+        def __init__(self) -> None:
+            self.state: dict[str, Any] = {}
+            self.start_calls: list[tuple[str, str]] = []
+
+        def startTestDraft(self, mode: str, set_code: str) -> None:
+            self.start_calls.append((mode, set_code))
+
+    failed_provider = StubProvider()
+    failed_driver = _TestDraftSmokeDriver(
+        provider=failed_provider,  # type: ignore[arg-type]
+        clock=lambda: 0.0,
+    )
+    failed_provider.state = {
+        "test_draft": {
+            "enabled": True,
+            "phase": "failed",
+            "active": True,
+            "error": "boom",
+        }
+    }
+
+    assert failed_driver.advance() == 1
+    assert "boom" in capsys.readouterr().err
+
+    blocked_provider = StubProvider()
+    blocked_now = [0.0]
+    blocked_driver = _TestDraftSmokeDriver(
+        provider=blocked_provider,  # type: ignore[arg-type]
+        clock=lambda: blocked_now[0],
+    )
+    blocked_provider.state = {
+        "test_draft": {
+            "enabled": True,
+            "phase": "idle",
+            "active": False,
+            "error": "no card data for hob",
+        }
+    }
+    blocked_now[0] = 100.0
+
+    assert blocked_driver.advance() == 1
+    assert "Test Draft smoke failed: no card data for hob" in capsys.readouterr().err
+    assert blocked_provider.start_calls == []
+
+    stalled_provider = StubProvider()
+    now = [0.0]
+    stalled_driver = _TestDraftSmokeDriver(
+        provider=stalled_provider,  # type: ignore[arg-type]
+        clock=lambda: now[0],
+    )
+    stalled_provider.state = {
+        "test_draft": {"enabled": True, "phase": "idle", "active": False}
+    }
+    now[0] = 901.0
+
+    assert stalled_driver.advance() == 1
+    assert "timed out after 900 seconds" in capsys.readouterr().err
+
 
 def test_qml_settings_renders_card_and_ratings_update_fallback_and_value() -> None:
     probe = """
