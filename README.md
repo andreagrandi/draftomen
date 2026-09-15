@@ -332,6 +332,11 @@ defaults, and `--profile-manifest-url` / `--offline-profiles` behave as in
 `test-draft failed: <reason>` and exit nonzero; the command never starts,
 stops, or configures the Draftmancer service.
 
+To run the same pinned server through a compiled bundle instead of the source
+tree, see [Native Test Draft smoke
+(manual)](docs/desktop-bundles.md#native-test-draft-smoke-manual) in the desktop
+bundle guide.
+
 Live recommendations currently support Quick Draft. Windows support is best-effort.
 
 ## Local draft audit data

@@ -29,10 +29,15 @@ The checked-in platform specs are:
 - `pysidedeploy.macos.spec`: `dist-native/macos-unsigned/Draftomen-unsigned-macos.app`
 - `pysidedeploy.windows.spec`: `dist-native/windows-unsigned/Draftomen-unsigned-windows.exe`
 
-Both specs pin `Nuitka==4.1.3`. The workflow installs that exact deployment
-dependency before invoking `pyside6-deploy`; the existing `uv.lock` continues
-to select the PySide6 version. Run deployment commands from the repository root
-because the specs use repository-relative paths.
+Both specs pin `Nuitka==4.1.3` in their `[python] packages` field, and the
+workflow also installs that exact deployment dependency explicitly before
+invoking `pyside6-deploy`. That explicit install is load-bearing:
+`pyside6-deploy` fails when the pinned Nuitka is not importable, because its own
+`python -m pip install Nuitka` fallback cannot run in a uv-managed environment
+that ships no `pip`. An `uv run` never removes an already-installed package, so
+only the workflow's own `uv sync --locked --extra draftmancer` step can prune it.
+The existing `uv.lock` continues to select the PySide6 version. Run deployment
+commands from the repository root because the specs use repository-relative paths.
 
 ## Explicit bundle inputs
 
@@ -54,6 +59,16 @@ Qt inputs used by the adapter:
 
 Both specs keep PySide6's default unused QML plugin exclusions explicit:
 `QtCharts`, `QtQuick3D`, `QtSensors`, `QtTest`, and `QtWebEngine`.
+
+Both specs additionally declare `--include-package=socketio`, and both native
+builds install the locked `draftmancer` extra (`python-socketio[client]`) before
+packaging. The developer Test Draft reaches its transport through a lazy
+`import socketio` inside `draftomen/draftmancer.py`, so Nuitka cannot discover
+the package from a static import and must be told explicitly to carry it; the
+extra is the only thing that supplies it. Wheel, Homebrew, and source startup
+keep `python-socketio` optional and never require it: an installation without
+the extra simply does not offer the developer Test Draft, and the base
+dependency list stays unchanged.
 
 ### Baseline profile data-file mapping
 
@@ -87,7 +102,7 @@ Nuitka's required ad-hoc signature.
 Install the locked project dependencies and the pinned deployment dependency:
 
 ```bash
-uv sync --locked
+uv sync --locked --extra draftmancer
 uv pip install "Nuitka==4.1.3"
 ```
 
@@ -96,16 +111,23 @@ Build the platform matching the host:
 ```bash
 # macOS
 mkdir -p dist-native/macos-unsigned
-uv run pyside6-deploy --config-file pysidedeploy.macos.spec --force
+uv run --extra draftmancer pyside6-deploy --config-file pysidedeploy.macos.spec --force
 
 # Windows PowerShell
 New-Item -ItemType Directory -Force dist-native/windows-unsigned | Out-Null
-uv run pyside6-deploy --config-file pysidedeploy.windows.spec --force
+uv run --extra draftmancer pyside6-deploy --config-file pysidedeploy.windows.spec --force
 ```
 
 The deployment output directory must exist before `pyside6-deploy` finalizes
 the bundle. The native workflow creates the matrix platform's directory
 explicitly; the local commands above do the same.
+
+Every `uv run` in the build path keeps `--extra draftmancer`, so each command
+requests the same environment — the base dependencies plus the optional
+transport — that `uv sync --locked --extra draftmancer` installs. The transport
+must be importable when the build runs, and only an explicit `uv sync` prunes an
+environment, so the pinned Nuitka installed just above also survives every
+following `uv run`.
 
 On macOS, package the generated app as a Finder-native compressed DMG:
 
@@ -138,9 +160,11 @@ PySide6 plugin, the QML/assets data directories, the platform icon option, and
 the declared Qt module/plugin inputs. `--dry-run` does not produce a runnable
 bundle.
 
-The deterministic smoke helper launches the actual compiled executable. It
-does not import or run the source GUI, and it removes developer Python path and
-virtual-environment overrides before launching the bundle:
+The deterministic smoke helper launches the actual compiled executable twice
+inside one temporary directory, in this order: the mock bundled-profile launch
+first, then a default live launch. It does not import or run the source GUI, and
+it removes developer Python path and virtual-environment overrides before
+launching the bundle:
 
 ```bash
 # macOS
@@ -155,15 +179,29 @@ uv run python tests/bundle_smoke.py `
 
 The helper reads `Contents/Info.plist` and resolves the macOS executable named
 by `CFBundleExecutable`, so neighboring binaries and libraries do not affect
-selection. It uses the Windows `.exe` directly, then passes `--provider mock
---smoke-test` and an isolated temporary `--app-dir`. A successful smoke run
-exits with code 0 after the existing deterministic 800 ms GUI smoke behavior.
-The helper defaults to a 60-second process timeout. The Windows CI smoke run
-allows 300 seconds because the first launch must unpack the compressed one-file
-runtime before the application's smoke timer starts; the bounded timeout still
-fails a bundle that does not exit.
+selection. It uses the Windows `.exe` directly.
+
+The first launch passes `--provider mock --smoke-test --verify-bundled-profile`
+and an isolated temporary `--app-dir`. It proves the deterministic mock path and
+the bundled-profile preflight in one run: a successful launch exits with code 0
+after the existing deterministic 800 ms GUI smoke behavior, and the flat profile
+cache under the smoke app directory must still be absent afterwards, so the
+preflight validated the pinned resource without mutating the cache.
+
+The second launch starts the default live provider with `--provider live
+--offline-profiles --no-startup-scan --smoke-test`, its own temporary
+`--app-dir`, a `Player.log` the helper creates empty before launch, and
+`--screenshot`. The helper requires a zero exit code, a log that is still empty
+after the run, no profile-cache entry under that app directory, and a non-empty
+screenshot. This launch proves a live start renders and shuts down with no Arena
+log to follow, no profile network access, and no simulator or other service.
+
 Mock mode avoids network, Arena logs, card downloads, and machine-specific
 runtime caches, so the bundle can be visually inspected without live services.
+The helper defaults to a 60-second process timeout, which applies to each
+launch. The Windows CI smoke run passes 300 seconds because the first launch
+must unpack the compressed one-file runtime before the application's smoke
+timer starts; the bounded timeout still fails a bundle that does not exit.
 
 ### Bundled-baseline smoke
 
@@ -172,6 +210,61 @@ The smoke helper launches the actual compiled executable with the hidden
 canonical bytes, size, digest, schema, and HOB/QuickDraft identity offline, while
 asserting that no profile-cache entry is written. The native workflow runs this
 check against the final mounted macOS app and Windows executable.
+
+### Native Test Draft smoke (manual)
+
+The opt-in `--test-draft` mode of `tests/bundle_smoke.py` is the only check that
+exercises the compiled bundle's Socket.IO path end to end. It drives the bundled
+GUI through the hidden `--test-draft-smoke` flag against a real Draftmancer
+server, so an opted-in developer proves that the packaged transport publishes
+the Test Draft capability, starts the capability's default set code, completes a
+simulated draft and build, leaves the simulated session, and shuts down while
+the external server keeps running. The mode is never part of CI: the workflow
+never runs it and never requires an ambient Draftmancer service.
+
+Prerequisites:
+
+- a pinned Draftmancer checkout at
+  `df08e5ef647aae54e0b1c569e70b4b2aa5e0016c`, started in another terminal with
+  `DISABLE_PERSISTENCE=TRUE npm start`;
+- the Scryfall complete default-cards bulk source the identity mapping uses,
+  for example the development corpus cache at
+  `.draftomen/corpus-cache/sources/scryfall-default-cards.jsonl.gz`;
+- a prepared app directory containing `card-data/<set>.json.gz`, normally
+  copied from the application's own `card-data/` directory, plus the optional
+  cached set profile under `set-profiles/`.
+
+Run the helper against the compiled bundle:
+
+```bash
+uv run python tests/bundle_smoke.py \
+  --test-draft \
+  --draftmancer-dir ../Draftmancer \
+  --scryfall-bulk-file .draftomen/corpus-cache/sources/scryfall-default-cards.jsonl.gz \
+  --app-dir <prepared-dir> \
+  dist-native/macos-unsigned/Draftomen-unsigned-macos.app
+```
+
+The launched GUI prints one summary line on stdout when it has reported the
+completed draft and build and left the simulated session:
+
+```text
+Test Draft smoke: {"deck_size":..,"mode":"auto","picks":..,"selected_pair":"..","set_code":"..","status":"ok"}
+```
+
+The helper requires that line, with a `status` of `ok`, a non-empty `set_code`,
+at least one pick, and a non-empty deck, then prints its own compact
+`{"status":"ok",...}` summary and exits 0. The app gives up after 900 seconds and
+the helper after 1200 seconds by default, so the app reports the reason first;
+`--timeout` overrides the helper's own bound. `--server-url` selects a
+Draftmancer endpoint other than `http://127.0.0.1:3000`.
+
+The helper only probes that endpoint before and after the run: it never starts,
+stops, or configures Draftmancer, and the post-run probe proves the external
+server is still alive once the app has exited. It requires an explicit
+`--app-dir`, so the developer's real application data is never mutated, and it
+runs the app with `--offline-profiles` and `--no-startup-scan` so the journey
+follows no Arena log and performs no profile network request.
 
 ## GitHub Actions artifacts and tagged releases
 
