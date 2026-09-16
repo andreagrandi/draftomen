@@ -8,6 +8,7 @@ the authoritative generation marker.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import gzip
@@ -15,11 +16,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
-from typing import TYPE_CHECKING, Iterable, Mapping, TypeAlias
+from typing import TypeAlias
 import zlib
 
-from draftomen.carddb import CardDatabaseError, load_card_database
+from draftomen.carddb import CardDatabase, CardDatabaseError, load_card_database
+from draftomen.guide_client import GuideClientError, _validate_url as _validate_guide_url
 from draftomen.profile_generation import (
     DEFAULT_PROFILE_GENERATION_CONFIG,
     ProfileGenerationConfig,
@@ -29,6 +32,7 @@ from draftomen.profile_generation import (
     ProfileGenerationStage,
     ProfileEnhancementProvenance,
     generate_set_profile,
+    _requested_card_database,
 )
 from draftomen.profile_enhancement import ProfileEnhancementError
 from draftomen.profile_manifest import (
@@ -44,11 +48,14 @@ from draftomen.public_dump import (
     PublicDumpSource,
     load_public_dump_manifest,
 )
+from draftomen.semantic_enrichment import (
+    EnrichmentSources,
+    GuideSource,
+    SemanticEnrichmentArtifact,
+)
+from draftomen.semantic_enrichment_records import SemanticEnrichmentError
 from draftomen.seventeen import SeventeenLandsError, load_17lands_format_data
 from draftomen.set_profile import ProfileMaturity, SetProfile, SetProfileError
-
-if TYPE_CHECKING:
-    from draftomen.semantic_enrichment import SemanticEnrichmentArtifact
 
 
 PathInput: TypeAlias = str | os.PathLike[str]
@@ -84,6 +91,9 @@ _MATURE_EVIDENCE_ERROR = (
     "targets for every accepted color pair."
 )
 _GENERATION_FALLBACK_ERROR = "Profile generation or validation failed before publication."
+_FROZEN_GUIDE_ERROR = "The frozen guide record is inconsistent."
+_ENRICHMENT_INPUT_ERROR = "Could not load the enrichment input."
+_ENRICHMENT_ARTIFACT_NAME = re.compile(r"[0-9a-f]{64}\.json")
 
 _KNOWN_GENERATION_VALIDATION_ERRORS = frozenset(
     {
@@ -316,15 +326,21 @@ def generate_local_profile_artifacts(
     source_manifest_path: PathInput | None = None,
     draft_source_name: str | None = None,
     enrichment: SemanticEnrichmentArtifact | None = None,
+    enrichment_path: PathInput | None = None,
     profile_version: str = "1.0",
     config: ProfileGenerationConfig = DEFAULT_PROFILE_GENERATION_CONFIG,
 ) -> ProfilePublicationResult:
     """Generate and atomically publish one local profile artifact.
 
-    Inputs are loaded strictly from the paths supplied by the caller.  The
-    content-addressed gzip object is committed before ``generation.json``;
-    replacing the latter is the sole authoritative commit operation.
+    Inputs are loaded strictly from the paths supplied by the caller.  A
+    confirmed enrichment artifact supplied as a path is revalidated against the
+    requested set's frozen card data and guide.  The content-addressed gzip
+    object is committed before ``generation.json``; replacing the latter is the
+    sole authoritative commit operation.
     """
+
+    if enrichment is not None and enrichment_path is not None:
+        raise ProfilePublicationError("Supply either enrichment or enrichment_path, not both.")
 
     normalized_set = _normalize_component(value=set_code, field_name="set_code")
     normalized_format = _normalize_component(value=event_format, field_name="event_format")
@@ -362,6 +378,14 @@ def generate_local_profile_artifacts(
             UnicodeError,
         ) as error:
             raise ProfilePublicationError("Could not load the ratings input.") from error
+
+    resolved_enrichment = enrichment
+    if enrichment_path is not None:
+        resolved_enrichment = _load_enrichment_artifact(
+            path=enrichment_path,
+            set_code=normalized_set,
+            card_database=card_database,
+        )
 
     if draft_source_name is not None and source_manifest_path is None:
         raise ProfilePublicationError(
@@ -423,7 +447,7 @@ def generate_local_profile_artifacts(
             profile_version=profile_version,
             ratings=ratings,
             draft_source_name=None if selected_source is None else selected_source.name,
-            enrichment=enrichment,
+            enrichment=resolved_enrichment,
             config=config,
         )
         validated = validate_profile_generation(
@@ -484,7 +508,10 @@ def generate_local_profile_artifacts(
         generation=generation,
         artifact_path=artifact_path,
         manifest_path=manifest_path,
-        input_count=1 + int(ratings is not None) + int(selected_source is not None),
+        input_count=1
+        + int(ratings is not None)
+        + int(selected_source is not None)
+        + int(enrichment_path is not None),
     )
 
 
@@ -505,6 +532,144 @@ def _path(*, value: PathInput, field_name: str) -> Path:
     if not str(path):
         raise ProfilePublicationError(f"{field_name} must be a valid local path.")
     return path
+
+
+_GUIDE_SCHEMA_VERSION = 1
+_GUIDE_KEYS = frozenset(
+    {
+        "schema_version",
+        "requested_url",
+        "guide_id",
+        "url",
+        "text",
+        "sha256",
+        "retrieved_at",
+    }
+)
+
+
+def _strict_json(payload: bytes) -> Any:
+    """Decode strict UTF-8 JSON while rejecting duplicate keys and constants."""
+    def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON object key")
+            value[key] = item
+        return value
+
+    def constant(_value: str) -> Any:
+        raise ValueError("non-finite JSON constant")
+
+    return json.loads(
+        payload.decode("utf-8"),
+        object_pairs_hook=object_pairs,
+        parse_constant=constant,
+    )
+
+
+def _guide_freeze_record(
+    *, value: Any, guide_url: str | None, normalized_set: str
+) -> GuideSource:
+    """Validate one frozen guide record and reconstruct its source value."""
+    if not isinstance(value, dict) or set(value) != _GUIDE_KEYS:
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
+    if type(value["schema_version"]) is not int or value["schema_version"] != _GUIDE_SCHEMA_VERSION:
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
+    guide_id = f"{normalized_set}-draftsim-guide"
+    if value["guide_id"] != guide_id:
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
+    if guide_url is None:
+        # A reused record has no requested URL to compare against, so its stored
+        # request must satisfy the same acquisition rules as a fresh request.
+        try:
+            _validate_guide_url(value["requested_url"])
+        except (GuideClientError, TypeError, ValueError, UnicodeError) as error:
+            raise ProfilePublicationError(_FROZEN_GUIDE_ERROR) from error
+    elif value["requested_url"] != guide_url:
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
+    if not isinstance(value["url"], str):
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
+    try:
+        # The private import is deliberate so the reuse path cannot drift from acquisition URL rules.
+        _validate_guide_url(value["url"])
+    except (GuideClientError, TypeError, ValueError, UnicodeError) as error:
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR) from error
+    text = value["text"]
+    if not isinstance(text, str):
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
+    try:
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    except UnicodeError as error:
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR) from error
+    if value["sha256"] != digest:
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
+    try:
+        return GuideSource(
+            guide_id=guide_id,
+            url=value["url"],
+            text=text,
+            retrieved_at=value["retrieved_at"],
+        )
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR) from error
+
+
+def _load_enrichment_artifact(
+    *,
+    path: PathInput,
+    set_code: str,
+    card_database: CardDatabase,
+) -> SemanticEnrichmentArtifact:
+    """Load one confirmed enrichment artifact from its content-addressed run file."""
+
+    artifact_path = _path(value=path, field_name="enrichment_path")
+    if _ENRICHMENT_ARTIFACT_NAME.fullmatch(artifact_path.name) is None:
+        raise ProfilePublicationError(_ENRICHMENT_INPUT_ERROR)
+    try:
+        payload = artifact_path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != artifact_path.stem:
+            raise ValueError("The enrichment artifact digest does not match its file name.")
+        value = _strict_json(payload)
+        if not isinstance(value, Mapping):
+            raise ValueError("The enrichment artifact must be a JSON object.")
+        requested = _requested_card_database(card_database, set_code)
+        pins = value.get("guides")
+        if not isinstance(pins, list):
+            raise ValueError("The enrichment artifact guide pins must be a JSON array.")
+        if len(pins) > 1:
+            # One artifact may pin exactly one guide; anything else would need a
+            # source the caller never supplied.
+            raise ValueError("The enrichment artifact pins more than one guide.")
+        guides: tuple[GuideSource, ...] = ()
+        if pins:
+            guide_path = artifact_path.parent.parent / "sources" / "guide.json"
+            guide_value = _strict_json(guide_path.read_bytes())
+            try:
+                guide = _guide_freeze_record(
+                    value=guide_value,
+                    guide_url=None,
+                    normalized_set=set_code,
+                )
+            except ProfilePublicationError as error:
+                raise ProfilePublicationError(_ENRICHMENT_INPUT_ERROR) from error
+            guides = (guide,)
+        sources = EnrichmentSources(
+            set_code=set_code,
+            cards=tuple(requested.cards.values()),
+            guides=guides,
+        )
+        return SemanticEnrichmentArtifact.from_bytes(payload, sources=sources)
+    except (
+        SemanticEnrichmentError,
+        OSError,
+        RecursionError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        json.JSONDecodeError,
+    ) as error:
+        raise ProfilePublicationError(_ENRICHMENT_INPUT_ERROR) from error
 
 
 def _canonical_published_at(published_at: str | datetime) -> str:

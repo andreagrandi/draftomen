@@ -4,6 +4,7 @@ import asyncio
 import gzip
 import hashlib
 import json
+import os
 from dataclasses import replace
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -35,7 +36,21 @@ from draftomen.profile_input_cache import ProfileInputCache
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.profile_refresh_execution import load_staged_profile_build_bundle
 from draftomen.refresh_plan import LifecycleMetadata, PlannedEnvironment, RefreshPlan, write_refresh_plan
-from draftomen.semantic_enrichment_records import FindingStatus
+from draftomen.semantic_enrichment import (
+    EnrichmentSources,
+    GuideSource,
+    SemanticEnrichmentArtifact,
+    card_source_sha256,
+    set_source_sha256,
+)
+from draftomen.semantic_enrichment_records import (
+    ArtifactReview,
+    CardSourcePin,
+    FindingStatus,
+    GuideEvidence,
+    GuideSourcePin,
+)
+from draftomen.semantic_roles import Role, resolve_card_roles
 from draftomen.session import (
     BuildResult,
     CardView,
@@ -70,6 +85,14 @@ from draftomen.test_draft import (
 )
 from draftomen.tui import DraftomenTuiApp
 from draftomen.watch import PlainLogWatcher
+
+from tests.test_profile_generation import (
+    TYPED_SOURCE_CARD_ID,
+    TYPED_TARGET_CARD_ID,
+    _enrichment_run,
+    _typed_database,
+    _typed_relationship,
+)
 
 
 SCRYFALL_BULK_SAMPLE_PATH = (
@@ -2264,7 +2287,9 @@ def _run_generate_profile_cli(
     card_database_path: Path = PROFILE_GENERATION_FIXTURE_DIR / "card-database.json",
     ratings_path: Path | None = None,
     source_manifest_path: Path | None = None,
+    enrichment_path: Path | None = None,
     generated_at: str = PROFILE_GENERATION_AT,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         sys.executable,
@@ -2288,12 +2313,15 @@ def _run_generate_profile_cli(
         command.extend(["--ratings-file", str(ratings_path)])
     if source_manifest_path is not None:
         command.extend(["--source-manifest", str(source_manifest_path)])
+    if enrichment_path is not None:
+        command.extend(["--enrichment", str(enrichment_path)])
     return subprocess.run(
         command,
         cwd=CLI_REPOSITORY_ROOT,
         capture_output=True,
         check=False,
         text=True,
+        env=env,
     )
 
 
@@ -2465,6 +2493,143 @@ def test_generate_profile_cli_failure_preserves_last_valid_publication(
     assert "alpha" not in failed.stderr
     assert artifact_path.read_bytes() == artifact_bytes
     assert manifest_path.read_bytes() == manifest_bytes
+
+
+def test_generate_profile_cli_uses_a_saved_enrichment_artifact_without_network_access(
+    tmp_path: Path,
+) -> None:
+    database = _typed_database()
+    guide = GuideSource(
+        guide_id="tst-draftsim-guide",
+        url="https://draftsim.com/tst-limited-set-review/",
+        text="TST rewards going wide with support creatures.",
+        retrieved_at="2026-09-01T12:00:00Z",
+    )
+    sources = EnrichmentSources(
+        set_code="TST",
+        cards=tuple(database.cards.values()),
+        guides=(guide,),
+    )
+    relationship = replace(
+        _typed_relationship(),
+        guide_evidence=(
+            GuideEvidence(guide_id=guide.guide_id, quote="rewards going wide"),
+        ),
+    )
+    artifact = SemanticEnrichmentArtifact(
+        set_code="TST",
+        set_source_id="tst-card-data-v1",
+        set_source_sha256=set_source_sha256(sources),
+        created_at="2026-09-01T12:02:00Z",
+        cards=tuple(
+            CardSourcePin(
+                card_id=card.grp_id,
+                oracle_id=card.oracle_id,
+                collector_number=card.collector_number,
+                sha256=card_source_sha256(card),
+            )
+            for card in sources.cards
+        ),
+        guides=(
+            GuideSourcePin(
+                guide_id=guide.guide_id,
+                url=guide.url,
+                sha256=guide.text_sha256,
+                retrieved_at=guide.retrieved_at,
+            ),
+        ),
+        runs=(_enrichment_run(),),
+        oracle_facts=(),
+        guide_claims=(),
+        relationships=(relationship,),
+        rejected_findings=(),
+        review=ArtifactReview(
+            state="confirmed",
+            reviewer_id="local-review",
+            reviewed_at="2026-09-01T14:00:00Z",
+        ),
+        confirmed_relationship_ids=(relationship.finding_id,),
+        sources=sources,
+    )
+
+    artifact_bytes = artifact.to_bytes()
+    artifact_path = (
+        tmp_path
+        / "run"
+        / "artifacts"
+        / f"{hashlib.sha256(artifact_bytes).hexdigest()}.json"
+    )
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(artifact_bytes)
+    guide_path = tmp_path / "run" / "sources" / "guide.json"
+    guide_path.parent.mkdir(parents=True)
+    guide_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "requested_url": "https://draftsim.com/tst-limited-set-review",
+                "guide_id": guide.guide_id,
+                "url": guide.url,
+                "text": guide.text,
+                "sha256": guide.text_sha256,
+                "retrieved_at": guide.retrieved_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+    card_database_path = tmp_path / "cards.json"
+    card_database_path.write_text(json.dumps(database.to_json()), encoding="utf-8")
+
+    netblock = tmp_path / "netblock"
+    netblock.mkdir()
+    (netblock / "sitecustomize.py").write_text(
+        "import socket\n"
+        "\n"
+        "\n"
+        "def _fail(*args, **kwargs):\n"
+        '    raise RuntimeError("network access is forbidden in this test")\n'
+        "\n"
+        "\n"
+        "socket.socket.connect = _fail\n"
+        "socket.socket.connect_ex = _fail\n"
+        "socket.create_connection = _fail\n",
+        encoding="utf-8",
+    )
+
+    completed = _run_generate_profile_cli(
+        stage="early",
+        output_dir=tmp_path / "published",
+        card_database_path=card_database_path,
+        ratings_path=PROFILE_GENERATION_FIXTURE_DIR / "ratings.json",
+        enrichment_path=artifact_path,
+        env={**os.environ, "PYTHONPATH": str(netblock)},
+    )
+    _artifact_path, _manifest_path, published_bytes, _manifest_bytes = (
+        _assert_profile_cli_success(
+            completed=completed,
+            expected_input_count=3,
+            expected_stage="early",
+        )
+    )
+
+    profile = SetProfile.from_json(json.loads(gzip.decompress(published_bytes)))
+    assert profile.schema_version == 3
+    assert profile.role_profile is not None
+    assert profile.enhancement is not None
+    assert (
+        profile.enhancement.artifact_sha256
+        == hashlib.sha256(artifact.to_bytes()).hexdigest()
+    )
+    for card_id, role in (
+        (TYPED_SOURCE_CARD_ID, Role.TOKEN_MAKER),
+        (TYPED_TARGET_CARD_ID, Role.GO_WIDE_PAYOFF),
+    ):
+        resolved = resolve_card_roles(
+            database.cards[card_id],
+            profile=profile.role_profile,
+        )
+        assert resolved.source == "compiled_profile"
+        assert role in {assignment.role for assignment in resolved.assignments}
 
 
 @pytest.mark.parametrize(

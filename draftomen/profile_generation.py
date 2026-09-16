@@ -54,10 +54,15 @@ from draftomen.seventeen import (
     build_17lands_structure_targets_from_draft_rows,
 )
 from draftomen.semantic_roles import (
+    CompiledRoleProfile,
+    ProfileCard,
     Role,
+    RoleAssignment,
     RoleClassifier,
     compile_role_profile,
+    resolve_card_roles,
 )
+from draftomen.set_enrichment_candidates import ROLE_COMPATIBILITY_RULES
 from draftomen.set_profile import (
     AggregateEvidence,
     CardRating,
@@ -76,7 +81,7 @@ from draftomen.set_profile import (
 )
 
 
-PROFILE_GENERATOR_VERSION = "2"
+PROFILE_GENERATOR_VERSION = "3"
 PROFILE_GENERATION_SCHEMA_VERSION = 1
 
 AGGREGATE_SUPPORT_MINIMUM = PICK_ENGINE.thin_sample_minimum
@@ -87,6 +92,9 @@ _PAIR_RATE_SOURCE = "17lands:color-ratings"
 _STRUCTURE_SOURCE = "17lands:public-draft-structure"
 _ROLE_SOURCE = "17lands:public-draft-roles"
 _REMOVAL_SOURCE = "17lands:public-draft-removals"
+# This mirrors the declared enabler-to-payoff compatibility rules and must never be
+# re-declared locally: a mechanism outside the table is not reviewed role evidence.
+_ROLE_LINKS_BY_MECHANISM = {link.mechanism: link for link in ROLE_COMPATIBILITY_RULES}
 
 
 class ProfileGenerationError(ValueError):
@@ -844,6 +852,12 @@ def generate_set_profile(
                 set_code=normalized_set,
                 skip_counts=skip_counts,
             )
+            if enhancement is not None:
+                role_profile = _compile_enrichment_roles(
+                    role_profile=role_profile,
+                    enhancement=enhancement,
+                    card_database=requested_card_database,
+                )
         if normalized_stage == ProfileGenerationStage.MATURE:
             pair_profiles = _mature_pair_profiles(
                 pair_profiles=pair_profiles,
@@ -1367,6 +1381,80 @@ def _compile_roles(*, card_database: CardDatabase, set_code: str, skip_counts: C
     except (TypeError, ValueError):
         skip_counts["role_profile_compile_failed"] += 1
         return None
+
+
+def _compiled_profile_card(
+    *, card: CardInfo, role_profile: CompiledRoleProfile | None
+) -> ProfileCard | None:
+    """Return one card's existing authoritative profile entry, if any."""
+
+    if role_profile is None:
+        return None
+    resolution = resolve_card_roles(card, profile=role_profile)
+    if resolution.source != "compiled_profile":
+        return None
+    return role_profile.card(resolution.classification.card_key)
+
+
+def _compile_enrichment_roles(
+    *,
+    role_profile: CompiledRoleProfile | None,
+    enhancement: SetProfileEnhancement,
+    card_database: CardDatabase,
+) -> CompiledRoleProfile | None:
+    """Merge roles declared by confirmed projected relationships into one profile."""
+
+    cards = {} if role_profile is None else {card.key: card for card in role_profile.cards}
+    resolved: dict[str, ProfileCard | None] = {}
+    added = False
+    for relationship in enhancement.relationships:
+        projection = relationship.prerequisite_projection
+        if projection is None:
+            continue
+        link = _ROLE_LINKS_BY_MECHANISM.get(relationship.mechanism)
+        if (
+            link is None
+            or link.enabler is not projection.source.role
+            or link.payoff is not projection.target.role
+        ):
+            continue
+        for participant in (projection.source, projection.target):
+            card = card_database.cards.get(participant.card_id)
+            if card is None or card.unknown:
+                continue
+            index = profile_card_key(card)
+            if index not in resolved:
+                resolved[index] = _compiled_profile_card(card=card, role_profile=role_profile)
+            existing = resolved[index]
+            assignments = () if existing is None else existing.assignments
+            if any(assignment.role == participant.role for assignment in assignments):
+                continue
+            key = index if existing is None else existing.key
+            card_name = card.name if existing is None else (existing.card_name or card.name)
+            merged = ProfileCard(
+                key=key,
+                card_name=card_name,
+                assignments=(
+                    *assignments,
+                    RoleAssignment(
+                        role=participant.role,
+                        confidence=enhancement.confidence,
+                        provenance=("confirmed-enrichment",),
+                        evidence=(relationship.finding_id,),
+                    ),
+                ),
+            )
+            cards[key] = merged
+            resolved[index] = merged
+            added = True
+    if not added:
+        return role_profile
+    # Reuse the existing constructors so ordering, deduplication, and schema
+    # validation stay unchanged; every declared compatibility role admits a
+    # parameterless assignment.
+    if role_profile is None:
+        return CompiledRoleProfile(set_code=enhancement.set_code, cards=tuple(cards.values()))
+    return replace(role_profile, cards=tuple(cards.values()))
 
 
 def _classifications(*, card_database: CardDatabase):

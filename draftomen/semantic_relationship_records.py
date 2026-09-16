@@ -1235,6 +1235,9 @@ _CLIPPING_PHRASES: tuple[str, ...] = (
     r"up to",
     r"or more",
 )
+# An instruction or cost/effect boundary: a sentence separator, or the `, then` sequence marker
+# that begins the next instruction of an already resolved action.
+_ACTION_BOUNDARY_PATTERN = re.compile(r"[.;:]|,(?=\s*(?:and\s+)?then\b)")
 
 
 def _validate_clause_source(
@@ -1287,11 +1290,19 @@ def _clause_window(
     operation_span: tuple[int, int],
     object_span: tuple[int, int],
 ) -> tuple[str, int]:
-    """Return the clause-local source window that starts at its operation."""
+    """Return the clause-local source window that starts at its operation.
+
+    The window ends at the first action boundary at or after both selected spans. A resolved
+    instruction that follows inside the same paragraph (`, then ...`, the effect of a cost/effect
+    colon, a second sentence) therefore cannot donate its own zones, restrictions, or exclusions
+    to this clause. Boundaries before the selected spans and qualifiers that continue the clause's
+    own instruction stay inside the window, so the window is never clipped at the selected object.
+    """
     start = min(operation_span[0], object_span[0])
-    end = paragraph.find(".", object_span[1])
-    if end < 0:
-        end = len(paragraph)
+    boundary = _ACTION_BOUNDARY_PATTERN.search(
+        paragraph, max(operation_span[1], object_span[1])
+    )
+    end = len(paragraph) if boundary is None else boundary.start()
     return paragraph[start:end], start
 
 

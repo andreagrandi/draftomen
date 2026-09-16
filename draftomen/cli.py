@@ -841,6 +841,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional source name to select from --source-manifest.",
     )
     profile_parser.add_argument(
+        "--enrichment",
+        type=Path,
+        default=None,
+        help="Confirmed enrichment artifact at <run>/artifacts/<sha256>.json; uses the run's frozen guide.",
+    )
+    profile_parser.add_argument(
         "--profile-version",
         default="1.0",
         help="Profile schema version to embed (default: 1.0).",
@@ -1051,6 +1057,7 @@ def handle_generate_profile(args: argparse.Namespace) -> int:
             ratings_path=args.ratings_file,
             source_manifest_path=args.source_manifest,
             draft_source_name=args.draft_source_name,
+            enrichment_path=args.enrichment,
             profile_version=args.profile_version,
         )
     except ProfilePublicationError as error:
