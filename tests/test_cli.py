@@ -266,7 +266,7 @@ def test_refresh_profile_data_passes_app_dir_only_to_ratings_execution(
 
     def fake_execute(plan: object, **kwargs: object) -> object:
         execute_kwargs.update(kwargs)
-        return SimpleNamespace(failures=(), succeeded=True)
+        return SimpleNamespace(enrichment_conflicts=(), failures=(), succeeded=True)
 
     monkeypatch.setattr(cli, "execute_profile_data_refresh", fake_execute)
 
@@ -290,7 +290,7 @@ def test_refresh_profile_data_prints_plan_before_execution_and_flushes(
 
     def fake_execute(plan: object, **kwargs: object) -> object:
         calls.append(capsys.readouterr().out)
-        return SimpleNamespace(failures=(), succeeded=True)
+        return SimpleNamespace(enrichment_conflicts=(), failures=(), succeeded=True)
 
     monkeypatch.setattr(cli, "prepare_profile_data_refresh", fake_prepare)
     monkeypatch.setattr(cli, "execute_profile_data_refresh", fake_execute)
@@ -331,7 +331,11 @@ def test_refresh_profile_data_prints_all_failures_and_returns_nonzero(
     monkeypatch.setattr(
         cli,
         "execute_profile_data_refresh",
-        lambda plan, **kwargs: SimpleNamespace(failures=failures, succeeded=False),
+        lambda plan, **kwargs: SimpleNamespace(
+            enrichment_conflicts=(),
+            failures=failures,
+            succeeded=False,
+        ),
     )
 
     assert main(argv=["refresh-profile-data"]) == 1

@@ -1083,6 +1083,229 @@ def test_merge_rejects_duplicate_identities_and_invalid_arguments(tmp_path: Path
         )
 
 
+def _published_profile(
+    tmp_path: Path,
+    *,
+    enriched: bool,
+) -> tuple[publication.ProfilePublicationResult, ProfileManifestArtifact]:
+    """Publish one enriched or plain profile and describe it as a manifest artifact."""
+
+    root = tmp_path / ("enriched" if enriched else "plain")
+    root.mkdir()
+    card_database_path, _ = _write_inputs(root)
+    enrichment = (
+        _enrichment_artifact(load_card_database(cache_path=card_database_path))
+        if enriched
+        else None
+    )
+    result = _publish(root, stage="metadata", enrichment=enrichment)
+    artifact = publication.profile_manifest_artifact_from_publication(
+        result,
+        _object_url(result.generation.report.gzip_sha256),
+    )
+    return result, artifact
+
+
+def _published_object(profiles: Path, *, digest: str, payload: bytes) -> None:
+    """Write one published profile object under its content address."""
+
+    path = profiles / "objects" / f"{digest}.json.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+
+
+def test_filter_retains_enriched_entry_against_plain_replacement(tmp_path: Path) -> None:
+    enriched_result, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    plain_result, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = tmp_path / "profiles"
+    _published_object(
+        profiles,
+        digest=enriched_artifact.gzip_sha256,
+        payload=enriched_result.generation.gzip_bytes,
+    )
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+
+    accepted, conflicts = publication.filter_enriched_profile_downgrades(
+        manifest=manifest,
+        profiles_dir=profiles,
+        replacements=((plain_artifact, plain_result.generation.gzip_bytes),),
+    )
+
+    assert accepted == ()
+    assert len(conflicts) == 1
+    conflict = conflicts[0]
+    assert conflict.retained == enriched_artifact
+    assert conflict.rejected == plain_artifact
+    assert (conflict.set_code, conflict.event_format) == ("tst", "quickdraft")
+    assert conflict.to_json() == {
+        "event_format": "quickdraft",
+        "rejected_gzip_sha256": plain_artifact.gzip_sha256,
+        "rejected_url": plain_artifact.url,
+        "retained_gzip_sha256": enriched_artifact.gzip_sha256,
+        "retained_url": enriched_artifact.url,
+        "set_code": "tst",
+    }
+    merged = publication.merge_profile_manifest_artifacts(
+        manifest,
+        accepted,
+        published_at=GENERATED_AT + timedelta(days=1),
+    )
+    assert merged.to_bytes() == manifest.to_bytes()
+
+
+def test_filter_accepts_enriched_replacement_of_enriched_entry(tmp_path: Path) -> None:
+    enriched_result, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    profiles = tmp_path / "profiles"
+    _published_object(
+        profiles,
+        digest=enriched_artifact.gzip_sha256,
+        payload=enriched_result.generation.gzip_bytes,
+    )
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+    replacement = replace(enriched_artifact, profile_version="2.0")
+
+    accepted, conflicts = publication.filter_enriched_profile_downgrades(
+        manifest=manifest,
+        profiles_dir=profiles,
+        replacements=((replacement, enriched_result.generation.gzip_bytes),),
+    )
+
+    assert accepted == (replacement,)
+    assert conflicts == ()
+
+
+def test_filter_accepts_plain_replacement_of_plain_entry(tmp_path: Path) -> None:
+    plain_result, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = tmp_path / "profiles"
+    _published_object(
+        profiles,
+        digest=plain_artifact.gzip_sha256,
+        payload=plain_result.generation.gzip_bytes,
+    )
+    manifest = publication.build_profile_manifest((plain_artifact,), published_at=GENERATED_AT)
+    replacement = replace(plain_artifact, profile_version="2.0")
+
+    accepted, conflicts = publication.filter_enriched_profile_downgrades(
+        manifest=manifest,
+        profiles_dir=profiles,
+        replacements=((replacement, plain_result.generation.gzip_bytes),),
+    )
+
+    assert accepted == (replacement,)
+    assert conflicts == ()
+
+
+def test_filter_accepts_identical_replacement_without_decoding_payloads(tmp_path: Path) -> None:
+    _, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+
+    accepted, conflicts = publication.filter_enriched_profile_downgrades(
+        manifest=manifest,
+        profiles_dir=tmp_path / "profiles",
+        replacements=((enriched_artifact, b"not a profile payload"),),
+    )
+
+    assert accepted == (enriched_artifact,)
+    assert conflicts == ()
+
+
+def test_filter_accepts_replacement_when_retained_object_is_absent(tmp_path: Path) -> None:
+    _, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    plain_result, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = tmp_path / "profiles"
+    (profiles / "objects").mkdir(parents=True)
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+
+    accepted, conflicts = publication.filter_enriched_profile_downgrades(
+        manifest=manifest,
+        profiles_dir=profiles,
+        replacements=((plain_artifact, plain_result.generation.gzip_bytes),),
+    )
+
+    assert accepted == (plain_artifact,)
+    assert conflicts == ()
+
+
+def test_filter_fails_closed_on_unreadable_retained_object(tmp_path: Path) -> None:
+    _, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    plain_result, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = tmp_path / "profiles"
+    _published_object(
+        profiles,
+        digest=enriched_artifact.gzip_sha256,
+        payload=b"not a gzip stream",
+    )
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="Could not read the retained profile object.",
+    ):
+        publication.filter_enriched_profile_downgrades(
+            manifest=manifest,
+            profiles_dir=profiles,
+            replacements=((plain_artifact, plain_result.generation.gzip_bytes),),
+        )
+
+
+def test_filter_rejects_replacement_payload_that_is_not_a_profile_object(tmp_path: Path) -> None:
+    _, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+    replacement = replace(enriched_artifact, profile_version="2.0")
+
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="Could not read the generated profile payload.",
+    ):
+        publication.filter_enriched_profile_downgrades(
+            manifest=manifest,
+            profiles_dir=tmp_path / "profiles",
+            replacements=((replacement, gzip.compress(b"[]")),),
+        )
+
+
+def test_filter_rejects_invalid_arguments(tmp_path: Path) -> None:
+    _, plain_artifact = _published_profile(tmp_path, enriched=False)
+    manifest = publication.build_profile_manifest((plain_artifact,), published_at=GENERATED_AT)
+
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="manifest must be a ProfileManifest",
+    ):
+        publication.filter_enriched_profile_downgrades(
+            manifest=object(),  # type: ignore[arg-type]
+            profiles_dir=tmp_path,
+            replacements=(),
+        )
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="iterable of profile manifest artifacts",
+    ):
+        publication.filter_enriched_profile_downgrades(
+            manifest=manifest,
+            profiles_dir=tmp_path,
+            replacements=object(),  # type: ignore[arg-type]
+        )
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="only profile manifest artifacts and gzip bytes",
+    ):
+        publication.filter_enriched_profile_downgrades(
+            manifest=manifest,
+            profiles_dir=tmp_path,
+            replacements=(object(),),  # type: ignore[list-item]
+        )
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="only profile manifest artifacts and gzip bytes",
+    ):
+        publication.filter_enriched_profile_downgrades(
+            manifest=manifest,
+            profiles_dir=tmp_path,
+            replacements=((plain_artifact, "payload"),),  # type: ignore[list-item]
+        )
+
+
 def test_enhanced_publication_round_trips_and_validates_artifact_and_report(
     tmp_path: Path,
 ) -> None:

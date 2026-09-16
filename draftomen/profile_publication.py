@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import TypeAlias
+from typing import Any, TypeAlias
 import zlib
 
 from draftomen.carddb import CardDatabase, CardDatabaseError, load_card_database
@@ -55,7 +55,12 @@ from draftomen.semantic_enrichment import (
 )
 from draftomen.semantic_enrichment_records import SemanticEnrichmentError
 from draftomen.seventeen import SeventeenLandsError, load_17lands_format_data
-from draftomen.set_profile import ProfileMaturity, SetProfile, SetProfileError
+from draftomen.set_profile import (
+    EnhancementStatus,
+    ProfileMaturity,
+    SetProfile,
+    SetProfileError,
+)
 
 
 PathInput: TypeAlias = str | os.PathLike[str]
@@ -94,6 +99,8 @@ _GENERATION_FALLBACK_ERROR = "Profile generation or validation failed before pub
 _FROZEN_GUIDE_ERROR = "The frozen guide record is inconsistent."
 _ENRICHMENT_INPUT_ERROR = "Could not load the enrichment input."
 _ENRICHMENT_ARTIFACT_NAME = re.compile(r"[0-9a-f]{64}\.json")
+_ENRICHMENT_RETAINED_OBJECT_ERROR = "Could not read the retained profile object."
+_ENRICHMENT_REPLACEMENT_ERROR = "Could not read the generated profile payload."
 
 _KNOWN_GENERATION_VALIDATION_ERRORS = frozenset(
     {
@@ -311,6 +318,149 @@ def merge_profile_manifest_artifacts(
         return manifest
     merged = {**existing, **replacements}
     return build_profile_manifest(tuple(merged.values()), published_at=timestamp)
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichmentDowngradeConflict:
+    """One rejected attempt to replace an enriched profile with a plain one."""
+
+    set_code: str
+    event_format: str
+    retained: ProfileManifestArtifact
+    rejected: ProfileManifestArtifact
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "set_code", _normalize_component(value=self.set_code, field_name="set_code")
+        )
+        object.__setattr__(
+            self,
+            "event_format",
+            _normalize_component(value=self.event_format, field_name="event_format"),
+        )
+        if not isinstance(self.retained, ProfileManifestArtifact):
+            raise ProfilePublicationError(
+                "conflict retained artifact must be a profile manifest artifact."
+            )
+        if not isinstance(self.rejected, ProfileManifestArtifact):
+            raise ProfilePublicationError(
+                "conflict rejected artifact must be a profile manifest artifact."
+            )
+
+    def to_json(self) -> dict[str, str]:
+        """Return the canonical conflict record published in refresh reports."""
+
+        return {
+            "event_format": self.event_format,
+            "rejected_gzip_sha256": self.rejected.gzip_sha256,
+            "rejected_url": self.rejected.url,
+            "retained_gzip_sha256": self.retained.gzip_sha256,
+            "retained_url": self.retained.url,
+            "set_code": self.set_code,
+        }
+
+
+def filter_enriched_profile_downgrades(
+    *,
+    manifest: ProfileManifest,
+    profiles_dir: PathInput,
+    replacements: Iterable[tuple[ProfileManifestArtifact, bytes]],
+) -> tuple[tuple[ProfileManifestArtifact, ...], tuple[EnrichmentDowngradeConflict, ...]]:
+    """Split generated replacements into accepted artifacts and enriched downgrade conflicts.
+
+    Producers that can emit plain profiles MUST route their replacements through
+    this filter before merging, so a published enriched entry is never replaced
+    by a non-enriched artifact.  Enrichment is read from the published profile
+    object bytes, and a retained entry whose object is already absent is treated
+    as replaceable.
+    """
+
+    if not isinstance(manifest, ProfileManifest):
+        raise ProfilePublicationError("manifest must be a ProfileManifest.")
+    directory = _path(value=profiles_dir, field_name="profiles_dir")
+    try:
+        supplied = tuple(replacements)
+    except TypeError as error:
+        raise ProfilePublicationError(
+            "replacements must be an iterable of profile manifest artifacts and gzip bytes."
+        ) from error
+    accepted: list[ProfileManifestArtifact] = []
+    conflicts: list[EnrichmentDowngradeConflict] = []
+    for element in supplied:
+        artifact, payload = _replacement_pair(element=element)
+        retained = manifest.select(set_code=artifact.set_code, event_format=artifact.event_format)
+        if retained is None or retained == artifact:
+            accepted.append(artifact)
+            continue
+        replacement_fields = _decode_profile_object(
+            payload=payload, error=_ENRICHMENT_REPLACEMENT_ERROR
+        )
+        if _profile_declares_confirmed_enrichment(value=replacement_fields):
+            accepted.append(artifact)
+            continue
+        retained_fields = _published_profile_object(
+            path=directory / "objects" / f"{retained.gzip_sha256}.json.gz"
+        )
+        if retained_fields is None or not _profile_declares_confirmed_enrichment(
+            value=retained_fields
+        ):
+            accepted.append(artifact)
+            continue
+        conflicts.append(
+            EnrichmentDowngradeConflict(
+                set_code=artifact.set_code,
+                event_format=artifact.event_format,
+                retained=retained,
+                rejected=artifact,
+            )
+        )
+    return tuple(accepted), tuple(conflicts)
+
+
+def _replacement_pair(*, element: object) -> tuple[ProfileManifestArtifact, bytes]:
+    """Validate one generated replacement as an artifact and its gzip payload."""
+
+    error = "replacements must contain only profile manifest artifacts and gzip bytes."
+    try:
+        artifact, payload = element  # type: ignore[misc]
+    except (TypeError, ValueError) as cause:
+        raise ProfilePublicationError(error) from cause
+    if not isinstance(artifact, ProfileManifestArtifact) or not isinstance(payload, bytes):
+        raise ProfilePublicationError(error)
+    return artifact, payload
+
+
+def _decode_profile_object(*, payload: bytes, error: str) -> Mapping[str, Any]:
+    """Decode one canonical gzip profile object into its JSON object."""
+
+    try:
+        value = json.loads(gzip.decompress(payload).decode("utf-8"))
+    except (EOFError, OSError, TypeError, UnicodeDecodeError, ValueError, zlib.error) as cause:
+        raise ProfilePublicationError(error) from cause
+    if not isinstance(value, Mapping):
+        raise ProfilePublicationError(error)
+    return value
+
+
+def _published_profile_object(*, path: Path) -> Mapping[str, Any] | None:
+    """Decode one published gzip profile object, or return None when it is absent."""
+
+    try:
+        payload = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as cause:
+        raise ProfilePublicationError(_ENRICHMENT_RETAINED_OBJECT_ERROR) from cause
+    return _decode_profile_object(payload=payload, error=_ENRICHMENT_RETAINED_OBJECT_ERROR)
+
+
+def _profile_declares_confirmed_enrichment(*, value: Mapping[str, Any]) -> bool:
+    """Return True when decoded profile fields declare confirmed enhancement."""
+
+    return (
+        value.get("enhancement_status") == EnhancementStatus.ENHANCED.value
+        and isinstance(value.get("enhancement"), Mapping)
+    )
 
 
 # Keep the public signature explicit: callers must opt into every input source.
@@ -895,10 +1045,12 @@ def _atomic_write(*, path: Path, payload: bytes) -> None:
 
 __all__ = [
     "PROFILE_BASE_URL",
+    "EnrichmentDowngradeConflict",
     "ProfilePublicationError",
     "ProfilePublicationResult",
     "ValidatedProfileGeneration",
     "build_profile_manifest",
+    "filter_enriched_profile_downgrades",
     "generate_local_profile_artifacts",
     "merge_profile_manifest_artifacts",
     "profile_manifest_artifact_from_publication",

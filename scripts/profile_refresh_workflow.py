@@ -50,7 +50,9 @@ from draftomen.profile_manifest import (
 )
 from draftomen.profile_publication import (
     PROFILE_BASE_URL,
+    EnrichmentDowngradeConflict,
     ProfilePublicationError,
+    filter_enriched_profile_downgrades,
     merge_profile_manifest_artifacts,
     publish_profile_manifest,
     publish_profile_object,
@@ -174,6 +176,15 @@ def _pair_label(pair: Mapping[str, Any]) -> str:
     return f"{_safe_summary_text(pair.get('set_code'))} / {_safe_summary_text(pair.get('event_format'))} / {_safe_summary_text(pair.get('set_name'))}"
 
 
+def _summary_pair_key(pair: Mapping[str, Any]) -> tuple[str, str]:
+    """Return one casefolded set and format identity for summary matching."""
+
+    return (
+        str(pair.get("set_code")).casefold(),
+        str(pair.get("event_format")).casefold(),
+    )
+
+
 def render_summary(report: Mapping[str, Any]) -> str:
     """Render a bounded, escaped summary from the generation report."""
 
@@ -185,9 +196,15 @@ def render_summary(report: Mapping[str, Any]) -> str:
     selected_pairs = profiles.get("selected") if isinstance(profiles.get("selected"), list) else []
     successful_pairs = profiles.get("successful") if isinstance(profiles.get("successful"), list) else []
     successful_pair_keys = {
-        (item.get("set_code"), item.get("event_format"))
-        for item in successful_pairs
-        if isinstance(item, Mapping)
+        _summary_pair_key(item) for item in successful_pairs if isinstance(item, Mapping)
+    }
+    conflicts = (
+        profiles.get("enrichment_conflicts")
+        if isinstance(profiles.get("enrichment_conflicts"), list)
+        else []
+    )
+    conflict_pair_keys = {
+        _summary_pair_key(entry) for entry in conflicts if isinstance(entry, Mapping)
     }
     failures = report.get("failures") if isinstance(report.get("failures"), list) else []
 
@@ -232,9 +249,29 @@ def render_summary(report: Mapping[str, Any]) -> str:
     if selected_pairs:
         for pair in selected_pairs:
             if isinstance(pair, Mapping):
-                key = (pair.get("set_code"), pair.get("event_format"))
-                outcome = "successful" if key in successful_pair_keys else "failed"
+                key = _summary_pair_key(pair)
+                outcome = (
+                    "successful"
+                    if key in successful_pair_keys
+                    else "retained-enriched"
+                    if key in conflict_pair_keys
+                    else "failed"
+                )
                 lines.append(f"- {_pair_label(pair)}: {_safe_summary_text(outcome)}")
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "### Retained enriched profiles", ""])
+    if conflicts:
+        for entry in conflicts:
+            if not isinstance(entry, Mapping):
+                continue
+            lines.append(
+                f"- {_safe_summary_text(entry.get('set_code'))} / "
+                f"{_safe_summary_text(entry.get('event_format'))}: retained "
+                f"{_safe_summary_text(entry.get('retained_gzip_sha256'))}, rejected "
+                f"{_safe_summary_text(entry.get('rejected_gzip_sha256'))}"
+            )
     else:
         lines.append("- None")
 
@@ -384,11 +421,11 @@ def _materialize_profiles(
     command_now: datetime,
     candidates: Sequence[tuple[Pair, Any]],
     failures: list[dict[str, str]],
-) -> tuple[list[Pair], bool]:
+) -> tuple[list[Pair], bool, tuple[EnrichmentDowngradeConflict, ...]]:
     """Publish validated objects, then atomically merge one manifest."""
 
     if not candidates:
-        return [], False
+        return [], False, ()
     manifest_path = profiles_dir / "manifest.json"
     try:
         existing_manifest = load_profile_manifest(manifest_path)
@@ -402,7 +439,7 @@ def _materialize_profiles(
                     event_format=pair.event_format,
                 )
             )
-        return [], False
+        return [], False, ()
 
     prepared: list[tuple[Pair, ProfileManifestArtifact, bytes, Path]] = []
     for pair, result in candidates:
@@ -432,8 +469,31 @@ def _materialize_profiles(
                 )
             )
 
+    try:
+        accepted, conflicts = filter_enriched_profile_downgrades(
+            manifest=existing_manifest,
+            profiles_dir=profiles_dir,
+            replacements=[
+                (artifact, payload) for _pair, artifact, payload, _path in prepared
+            ],
+        )
+    except (OSError, ProfilePublicationError):
+        for pair, _artifact, _payload, _path in prepared:
+            failures.append(
+                _failure(
+                    stage="profile-execution",
+                    category="manifest-publish-failed",
+                    set_code=pair.set_code,
+                    event_format=pair.event_format,
+                )
+            )
+        return [], False, ()
+
+    accepted_identities = {(artifact.set_code, artifact.event_format) for artifact in accepted}
     published: list[tuple[Pair, ProfileManifestArtifact]] = []
     for pair, artifact, payload, object_path in prepared:
+        if (artifact.set_code, artifact.event_format) not in accepted_identities:
+            continue
         try:
             # Reuse the existing content-addressed publication primitive.  It
             # preserves prior identities when a conflicting object is found.
@@ -451,7 +511,7 @@ def _materialize_profiles(
         published.append((pair, artifact))
 
     if not published:
-        return [], False
+        return [], False, conflicts
 
     published_pairs = [pair for pair, _artifact in published]
     try:
@@ -462,8 +522,8 @@ def _materialize_profiles(
         )
         if merged_manifest is not existing_manifest:
             publish_profile_manifest(manifest_path, merged_manifest)
-            return published_pairs, True
-        return published_pairs, False
+            return published_pairs, True, conflicts
+        return published_pairs, False, conflicts
     except (OSError, ProfileManifestError, ProfilePublicationError, TypeError, ValueError):
         for pair in published_pairs:
             failures.append(
@@ -474,7 +534,7 @@ def _materialize_profiles(
                     event_format=pair.event_format,
                 )
             )
-        return [], False
+        return [], False, ()
 
 
 def _base_bytes(repo_root: Path, base_commit: str, relative_path: str) -> bytes | None:
@@ -621,6 +681,7 @@ def generate_website(
             "selected": [],
             "successful": [],
             "manifest_changed": False,
+            "enrichment_conflicts": [],
         },
         "failures": [],
         "generated_assets": [],
@@ -874,7 +935,7 @@ def generate_website(
                         )
                     )
 
-            successful_pairs, manifest_changed = _materialize_profiles(
+            successful_pairs, manifest_changed, conflicts = _materialize_profiles(
                 profiles_dir=profiles_dir,
                 command_now=command_now,
                 candidates=candidates,
@@ -884,6 +945,9 @@ def generate_website(
                 pair.to_json() for pair in successful_pairs
             ]
             report["profiles"]["manifest_changed"] = manifest_changed
+            report["profiles"]["enrichment_conflicts"] = [
+                conflict.to_json() for conflict in conflicts
+            ]
 
     try:
         report["generated_assets"] = _collect_assets(

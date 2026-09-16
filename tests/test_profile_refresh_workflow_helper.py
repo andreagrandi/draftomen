@@ -55,6 +55,10 @@ from draftomen.seventeen import (
     fetch_17lands_format_data,
 )
 
+from tests.test_profile_publication import (
+    _database as _enrichment_database,
+    _enrichment_artifact,
+)
 from tests.test_set_enrichment_workflow import (
     _Completion as EnrichmentCompletion,
     _run as run_enrichment_analysis,
@@ -182,6 +186,62 @@ def _manifest(root: Path) -> None:
     objects = profiles / "objects"
     objects.mkdir()
     (objects / f"{report.gzip_sha256}.json.gz").write_bytes(generation.gzip_bytes)
+
+
+def _enriched_profile_artifact(
+    *,
+    set_code: str,
+    event_format: str,
+) -> tuple[ProfileManifestArtifact, bytes]:
+    """Generate one enriched metadata profile and its manifest artifact."""
+
+    database = CardDatabase(
+        cards={
+            card_id: replace(card, set_code=set_code)
+            for card_id, card in _enrichment_database().cards.items()
+        }
+    )
+    generation = generate_set_profile(
+        set_code=set_code,
+        event_format=event_format,
+        stage="metadata",
+        card_database=database,
+        generated_at=NOW,
+        enrichment=_enrichment_artifact(database, set_code=set_code),
+    )
+    report = generation.report
+    artifact = ProfileManifestArtifact(
+        set_code=report.set_code,
+        event_format=report.event_format,
+        set_profile_schema_version=report.set_profile_schema_version,
+        profile_version=generation.profile.profile_version,
+        generated_at=report.generated_at,
+        url=f"https://www.draftomen.com/profiles/objects/{report.gzip_sha256}.json.gz",
+        gzip_bytes=report.gzip_bytes,
+        profile_bytes=report.profile_bytes,
+        gzip_sha256=report.gzip_sha256,
+        profile_sha256=report.profile_sha256,
+        maturity=generation.profile.maturity,
+    )
+    return artifact, generation.gzip_bytes
+
+
+def _enriched_manifest(root: Path) -> tuple[ProfileManifestArtifact, bytes]:
+    """Seed the manifest with the plain fixture entry plus one enriched entry."""
+
+    _manifest(root)
+    profiles = root / "website/public/profiles"
+    artifact, payload = _enriched_profile_artifact(set_code="new", event_format="QuickDraft")
+    manifest_path = profiles / "manifest.json"
+    seeded = load_profile_manifest(manifest_path)
+    manifest_path.write_bytes(
+        ProfileManifest(
+            artifacts=(*seeded.artifacts, artifact),
+            published_at=seeded.published_at,
+        ).to_bytes()
+    )
+    (profiles / "objects" / f"{artifact.gzip_sha256}.json.gz").write_bytes(payload)
+    return artifact, payload
 
 
 def _fixture_adapters(
@@ -678,11 +738,16 @@ def test_generate_uses_real_producers_and_preserves_valid_static(
     assert report["static"]["selected"] == [{"set_code": "new", "set_name": "New Set"}]
     assert report["profiles"]["selected"][0]["set_code"] == "new"
     assert report["profiles"]["successful"][0]["event_format"] == "PremierDraft"
+    assert report["profiles"]["enrichment_conflicts"] == []
     assert old.read_bytes() == old_bytes
     assert old.stat().st_mtime_ns == old_mtime
     assert public_calls == []
     assert (bundle / "generated/website/public/card-data/new.json.gz").is_file()
     assert (bundle / "generated/website/public/profiles/manifest.json").is_file()
+    assert (
+        "### Retained enriched profiles\n\n- None"
+        in (bundle / "summary.md").read_text(encoding="utf-8")
+    )
     assert calls == ["https://www.17lands.com/data/filters"]
     assert json.loads((bundle / "result.json").read_text(encoding="utf-8"))["schema_version"] == 1
 
@@ -1000,6 +1065,8 @@ def test_failed_static_write_keeps_profile_pair_selected_and_evidence(
 
 
 def test_summary_escapes_report_metadata_and_lists_selected_work() -> None:
+    retained_sha256 = "1" * 64
+    rejected_sha256 = "2" * 64
     summary = workflow.render_summary(
         {
             "status": "failed",
@@ -1015,10 +1082,25 @@ def test_summary_escapes_report_metadata_and_lists_selected_work() -> None:
             "profiles": {
                 "planning_complete": True,
                 "selected": [
-                    {"set_code": "new", "set_name": "<New>", "event_format": "PremierDraft"}
+                    {"set_code": "new", "set_name": "<New>", "event_format": "PremierDraft"},
+                    {"set_code": "new", "set_name": "<New>", "event_format": "QuickDraft"},
                 ],
                 "successful": [],
                 "manifest_changed": False,
+                "enrichment_conflicts": [
+                    {
+                        "set_code": "new",
+                        "event_format": "quickdraft",
+                        "retained_gzip_sha256": retained_sha256,
+                        "retained_url": (
+                            f"https://www.draftomen.com/profiles/objects/{retained_sha256}.json.gz"
+                        ),
+                        "rejected_gzip_sha256": rejected_sha256,
+                        "rejected_url": (
+                            f"https://www.draftomen.com/profiles/objects/{rejected_sha256}.json.gz"
+                        ),
+                    }
+                ],
             },
             "failures": [
                 {"stage": "profile-execution", "category": "<unsafe>", "set_code": "new"}
@@ -1030,6 +1112,15 @@ def test_summary_escapes_report_metadata_and_lists_selected_work() -> None:
     assert "<unsafe>" not in summary
     assert "Card data from 17Lands" in summary
     assert "new / PremierDraft /" in summary
+    assert "### Retained enriched profiles" in summary
+    assert (
+        f"- new / quickdraft: retained {retained_sha256}, rejected {rejected_sha256}"
+        in summary
+    )
+    assert [
+        line for line in summary.splitlines() if "QuickDraft" in line
+    ] == ["- new / QuickDraft / &lt;New&gt;: retained\\-enriched"]
+    assert "draftomen.com" not in summary
 
 
 def test_cli_rejects_invalid_selector_combinations(tmp_path: Path) -> None:
@@ -1766,3 +1857,97 @@ def test_manually_published_enrichment_survives_refresh_and_reaches_profile_clie
     assert cached.source == "local-metadata-only"
     assert cached.profile == profile
     assert offline_calls == []
+
+
+def test_refresh_retains_enriched_profile_and_reports_downgrade_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import draftomen.card_data_export as card_export
+
+    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
+    monkeypatch.setattr(workflow, "_base_bytes", lambda *args, **kwargs: None)
+    root = tmp_path / "checkout"
+    _static(root / "website/public/card-data", set_code="new", set_name="New Set")
+    inventory, bulk = _source(tmp_path)
+    enriched_artifact, enriched_bytes = _enriched_manifest(root)
+    profiles = root / "website/public/profiles"
+    enriched_object_path = profiles / "objects" / f"{enriched_artifact.gzip_sha256}.json.gz"
+    seeded_profile = SetProfile.from_json(json.loads(gzip.decompress(enriched_bytes)))
+    assert seeded_profile.enhancement_status is EnhancementStatus.ENHANCED
+    card_adapter, ratings_adapter, public_adapter, _, public_calls = _fixture_adapters()
+
+    def fetch_json(url: str, timeout: int) -> dict[str, Any]:
+        del timeout
+        assert url == "https://www.17lands.com/data/filters"
+        return {
+            "formats_by_expansion": {"NEW": ["PremierDraft", "QuickDraft"]},
+            "live_formats_by_expansion": {},
+        }
+
+    bundle = tmp_path / "bundle"
+    report = workflow.generate_website(
+        base_commit="base",
+        selection_mode="one",
+        selector="new",
+        repo_root=root,
+        bundle_dir=bundle,
+        cache_dir=tmp_path / "cache",
+        inventory_file=inventory,
+        bulk_file=bulk,
+        fetch_json=fetch_json,
+        clock=lambda: NOW,
+        card_metadata_adapter=card_adapter,
+        ratings_adapter=ratings_adapter,
+        public_draft_adapter=public_adapter,
+    )
+
+    assert report["status"] == "success"
+    assert report["failures"] == []
+    assert report["profiles"]["selected"] == [
+        {"set_code": "new", "set_name": "New Set", "event_format": "PremierDraft"},
+        {"set_code": "new", "set_name": "New Set", "event_format": "QuickDraft"},
+    ]
+    assert report["profiles"]["successful"] == [
+        {"set_code": "new", "set_name": "New Set", "event_format": "PremierDraft"}
+    ]
+    assert report["profiles"]["manifest_changed"] is True
+    conflicts = report["profiles"]["enrichment_conflicts"]
+    assert len(conflicts) == 1
+    conflict = conflicts[0]
+    assert set(conflict) == {
+        "event_format",
+        "rejected_gzip_sha256",
+        "rejected_url",
+        "retained_gzip_sha256",
+        "retained_url",
+        "set_code",
+    }
+    assert conflict["set_code"] == "new"
+    assert conflict["event_format"] == "quickdraft"
+    assert conflict["retained_gzip_sha256"] == enriched_artifact.gzip_sha256
+    assert conflict["retained_url"] == enriched_artifact.url
+    rejected_sha256 = conflict["rejected_gzip_sha256"]
+    assert rejected_sha256 != enriched_artifact.gzip_sha256
+    assert conflict["rejected_url"] == (
+        f"https://www.draftomen.com/profiles/objects/{rejected_sha256}.json.gz"
+    )
+    assert not (profiles / "objects" / f"{rejected_sha256}.json.gz").exists()
+
+    refreshed = load_profile_manifest(profiles / "manifest.json")
+    assert refreshed.select(set_code="new", event_format="QuickDraft") == enriched_artifact
+    assert enriched_object_path.read_bytes() == enriched_bytes
+    premier = refreshed.select(set_code="new", event_format="PremierDraft")
+    assert premier is not None
+    premier_object_path = profiles / "objects" / f"{premier.gzip_sha256}.json.gz"
+    assert (
+        hashlib.sha256(premier_object_path.read_bytes()).hexdigest() == premier.gzip_sha256
+    )
+
+    summary = (bundle / "summary.md").read_text(encoding="utf-8")
+    assert (
+        f"- new / quickdraft: retained {enriched_artifact.gzip_sha256}, "
+        f"rejected {rejected_sha256}" in summary
+    )
+    assert "new / QuickDraft / New Set: retained\\-enriched" in summary
+    assert public_calls == []
