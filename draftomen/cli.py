@@ -57,7 +57,6 @@ from draftomen.profile_data_refresh import (
     execute_profile_data_refresh,
     prepare_profile_data_refresh,
 )
-from draftomen.profile_generation import ProfileGenerationStage
 from draftomen.corpus import (
     CorpusError,
     DEFAULT_ARTIFACT_DIR,
@@ -1016,8 +1015,8 @@ def build_parser() -> argparse.ArgumentParser:
         name="republish-enrichment",
         help="Re-publish a profile from a saved confirmed enrichment artifact.",
         description=(
-            "Recompile and publish one metadata-stage profile from a confirmed enrichment "
-            "artifact already on disk, without freezing a guide and without any model call."
+            "Recompile and publish one profile from a confirmed enrichment artifact "
+            "already on disk, without freezing a guide and without any model call."
         ),
     )
     republish_parser.add_argument(
@@ -1027,6 +1026,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--format",
         default="QuickDraft",
         help="Profile format to publish (default: QuickDraft).",
+    )
+    republish_parser.add_argument(
+        "--stage",
+        default="metadata",
+        choices=("metadata", "early", "mature"),
+        help=(
+            "Explicit generation stage for the recovered profile. The default "
+            "metadata produces a metadata-only profile, which the runtime "
+            "AI-enhanced suggestions gate does not accept; a role-bearing "
+            "early or mature profile needs its empirical inputs."
+        ),
+    )
+    republish_parser.add_argument(
+        "--ratings-file",
+        type=Path,
+        default=None,
+        help="Optional local 17Lands ratings JSON cache for the requested set and format.",
+    )
+    republish_parser.add_argument(
+        "--source-manifest",
+        type=Path,
+        default=None,
+        help="Optional manifest selecting a pinned local draft-data source.",
+    )
+    republish_parser.add_argument(
+        "--draft-source-name",
+        default=None,
+        help="Optional source name to select from --source-manifest.",
     )
     republish_parser.add_argument(
         "--artifact",
@@ -2352,7 +2379,7 @@ def handle_enrich_set(args: argparse.Namespace) -> int:
 
 def handle_republish_enrichment(args: argparse.Namespace) -> int:
     """Re-publish one profile from a saved confirmed enrichment artifact.
-    No guide is frozen and no model provider is contacted.
+    No guide is frozen and no model provider is contacted; the stage and every empirical input are explicit.
     """
 
     store_dir = args.store_dir or (app_data_dir() / "set-enrichment")
@@ -2379,10 +2406,13 @@ def handle_republish_enrichment(args: argparse.Namespace) -> int:
         publication = generate_local_profile_artifacts(
             set_code=summary.set_code,
             event_format=args.format,
-            stage=ProfileGenerationStage.METADATA,
+            stage=args.stage,
             generated_at=generated_at,
             card_database_path=card_database_path,
             output_dir=output_dir,
+            ratings_path=args.ratings_file,
+            source_manifest_path=args.source_manifest,
+            draft_source_name=args.draft_source_name,
             enrichment_path=summary.path,
             profile_version=args.profile_version,
         )

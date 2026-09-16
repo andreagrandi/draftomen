@@ -304,11 +304,16 @@ a profile does not update an already-installed native application.
 
 #### Re-publishing a saved confirmation
 
-`republish-enrichment` recompiles and publishes one metadata-stage profile from
-an already-saved confirmed artifact, with no guide freeze, no card-data download
+`republish-enrichment` recompiles and publishes one profile from an
+already-saved confirmed artifact, with no guide freeze, no card-data download
 and no model call. It is the recovery path for already-paid work. It selects the
 newest confirmed artifact for the requested set unless `--artifact` pins an
-exact digest or `--run` restricts the search to one run directory.
+exact digest or `--run` restricts the search to one run directory. The
+generation stage is explicit and defaults to `metadata`: metadata recovery keeps
+its display-only purpose, while the runtime AI-enhanced suggestions gate needs a
+role-bearing `early` or `mature` stage, because it accepts a profile only when
+that profile carries both a compiled role profile and a compatible projected
+relationship.
 
 ```sh
 uv run draftomen-tui republish-enrichment HOB \
@@ -316,15 +321,48 @@ uv run draftomen-tui republish-enrichment HOB \
   --profiles-dir website/public/profiles
 ```
 
+A role-bearing recovery recompiles the confirmed artifact with its empirical
+evidence:
+
+```sh
+RUN="$HOME/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943"
+SMOKE="$(mktemp -d)"
+mkdir -p "$SMOKE/profiles/objects"
+cp website/public/profiles/manifest.json "$SMOKE/profiles/manifest.json"
+uv run draftomen-tui republish-enrichment HOB \
+  --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft" \
+  --artifact edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84 \
+  --stage early \
+  --ratings-file "$HOME/.draftomen/17lands/HOB-QuickDraft.json" \
+  --profiles-dir "$SMOKE/profiles" \
+  --output-dir "$SMOKE/recovered"
+```
+
 The default `--store-dir` is `<app data directory>/set-enrichment`, the shared
 store layout. Runs created by the desktop `enrich-set` live under a
 profile-keyed store such as `$HOME/.draftomen/set-enrichment/hob-quickdraft`, so
 pass `--store-dir` explicitly to reach them. The selected run must still hold its
 frozen `sources/card-database.json`, because the artifact is revalidated against
-that card data and its frozen guide exactly as `--enrichment` does. A truncated
-or foreign run therefore fails before any repository file changes. Success
-prints `set_code`, `format`, `artifact`, `artifact_sha256`, `run_id`, `maturity`,
-`gzip_sha256`, `object`, `manifest`, `manifest_changed`, and `publications`.
+that card data and its frozen guide exactly as `--enrichment` does.
+
+The command takes the same explicit stage and empirical-input flags as
+`generate-profile`: `--stage {metadata,early,mature}` (default `metadata`, never
+inferred), `--ratings-file PATH` for a local 17Lands ratings cache,
+`--source-manifest PATH` with `--draft-source-name NAME` for a pinned local
+draft-data source. A role-bearing stage needs empirical evidence: either ratings
+or accepted draft evidence satisfies `early`.
+
+There is no fallback to a weaker stage. A role-bearing stage with no usable
+empirical input fails with `republish-enrichment failed: Early profile generation requires empirical ratings or accepted draft evidence.`,
+and an unusable input such as a ratings cache for another set or format fails
+with `republish-enrichment failed: Could not load the ratings input.`; both
+exit `1` before any object, manifest entry, or publication record is written, so
+a truncated or foreign run also fails before any repository file changes.
+
+Success prints `set_code`, `format`, `artifact`, `artifact_sha256`, `run_id`,
+`maturity`, `gzip_sha256`, `object`, `manifest`, `manifest_changed`, and
+`publications`; `maturity` is `metadata-only` for the default stage and names the
+role-bearing stage (`early` or `mature`) otherwise.
 
 #### Listing local enrichment work
 

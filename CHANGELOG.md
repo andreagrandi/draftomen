@@ -3,6 +3,13 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Recover role-bearing enrichment offline. `republish-enrichment` takes the explicit
+  generation `--stage` plus the same optional `--ratings-file`, `--source-manifest`, and
+  `--draft-source-name` inputs as `generate-profile`, so a confirmed artifact recompiles at
+  `early` with its empirical evidence into a schema-3 profile that carries both the enhancement
+  and a compiled role profile. The default `--stage metadata` keeps its metadata-only purpose,
+  and a role-bearing recovery with missing or unusable inputs exits `1` before any object,
+  manifest entry, or publication record is written. (#571)
 - Fail `list-enrichment` instead of printing a smaller inventory when a published
   profile object under `<profiles>/objects` exists but cannot be read: the
   per-object read is separated from gzip/JSON decoding in
