@@ -14,6 +14,12 @@ import pytest
 import draftomen.profile_publication as publication
 from draftomen.carddb import CardDatabase, CardInfo, load_card_database
 from draftomen.config import COLOR_PAIRS, DeckBuilderConfig
+from draftomen.enrichment_publications import (
+    READ_ERROR,
+    EnrichmentPublication,
+    EnrichmentPublicationError,
+    record_enrichment_publication,
+)
 from draftomen.profile_generation import ProfileGenerationConfig
 from draftomen.public_dump import PublicDumpManifest, PublicDumpSource
 from draftomen.profile_statistics import BetaPrior
@@ -1248,6 +1254,128 @@ def test_filter_fails_closed_on_unreadable_retained_object(tmp_path: Path) -> No
         )
 
 
+def _record_enriched_publication(
+    profiles: Path,
+    *,
+    result: publication.ProfilePublicationResult,
+    gzip_sha256: str,
+) -> Path:
+    """Record one published tst/quickdraft identity compiled from a real artifact."""
+
+    enhancement = result.generation.report.enhancement
+    assert enhancement is not None
+    return record_enrichment_publication(
+        profiles_dir=profiles,
+        publication=EnrichmentPublication(
+            set_code="TST",
+            event_format="QuickDraft",
+            artifact_sha256=enhancement.artifact_sha256,
+            run_id="run-1",
+            reviewed_at=ENRICHMENT_REVIEWED_AT,
+            published_at=GENERATED_AT.isoformat(),
+            profile_gzip_sha256=gzip_sha256,
+        ),
+    )
+
+
+def test_filter_conflicts_with_recorded_publication_when_object_is_absent(
+    tmp_path: Path,
+) -> None:
+    enriched_result, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    plain_result, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = tmp_path / "profiles"
+    (profiles / "objects").mkdir(parents=True)
+    _record_enriched_publication(
+        profiles,
+        result=enriched_result,
+        gzip_sha256=enriched_artifact.gzip_sha256,
+    )
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+
+    accepted, conflicts = publication.filter_enriched_profile_downgrades(
+        manifest=manifest,
+        profiles_dir=profiles,
+        replacements=((plain_artifact, plain_result.generation.gzip_bytes),),
+    )
+
+    assert accepted == ()
+    assert len(conflicts) == 1
+    assert conflicts[0].retained == enriched_artifact
+    assert conflicts[0].rejected == plain_artifact
+
+
+def test_filter_conflicts_with_recorded_publication_when_object_is_corrupt(
+    tmp_path: Path,
+) -> None:
+    enriched_result, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    plain_result, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = tmp_path / "profiles"
+    _published_object(
+        profiles,
+        digest=enriched_artifact.gzip_sha256,
+        payload=b"not a gzip stream",
+    )
+    _record_enriched_publication(
+        profiles,
+        result=enriched_result,
+        gzip_sha256=enriched_artifact.gzip_sha256,
+    )
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+
+    accepted, conflicts = publication.filter_enriched_profile_downgrades(
+        manifest=manifest,
+        profiles_dir=profiles,
+        replacements=((plain_artifact, plain_result.generation.gzip_bytes),),
+    )
+
+    assert accepted == ()
+    assert len(conflicts) == 1
+    assert conflicts[0].retained == enriched_artifact
+    assert conflicts[0].rejected == plain_artifact
+
+
+def test_filter_accepts_replacement_when_record_names_another_publication(
+    tmp_path: Path,
+) -> None:
+    enriched_result, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    plain_result, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = tmp_path / "profiles"
+    (profiles / "objects").mkdir(parents=True)
+    _record_enriched_publication(
+        profiles,
+        result=enriched_result,
+        gzip_sha256="c" * 64,
+    )
+    manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
+
+    accepted, conflicts = publication.filter_enriched_profile_downgrades(
+        manifest=manifest,
+        profiles_dir=profiles,
+        replacements=((plain_artifact, plain_result.generation.gzip_bytes),),
+    )
+
+    assert accepted == (plain_artifact,)
+    assert conflicts == ()
+
+
+def test_filter_fails_closed_on_invalid_publication_record(tmp_path: Path) -> None:
+    _, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "enrichment-publications.json").write_bytes(b"{not a publication record")
+    manifest = publication.build_profile_manifest((plain_artifact,), published_at=GENERATED_AT)
+
+    with pytest.raises(publication.ProfilePublicationError) as caught:
+        publication.filter_enriched_profile_downgrades(
+            manifest=manifest,
+            profiles_dir=profiles,
+            replacements=(),
+        )
+
+    assert str(caught.value) == READ_ERROR
+    assert isinstance(caught.value.__cause__, EnrichmentPublicationError)
+
+
 def test_filter_rejects_replacement_payload_that_is_not_a_profile_object(tmp_path: Path) -> None:
     _, enriched_artifact = _published_profile(tmp_path, enriched=True)
     manifest = publication.build_profile_manifest((enriched_artifact,), published_at=GENERATED_AT)
@@ -1304,6 +1432,149 @@ def test_filter_rejects_invalid_arguments(tmp_path: Path) -> None:
             profiles_dir=tmp_path,
             replacements=((plain_artifact, "payload"),),  # type: ignore[list-item]
         )
+
+
+def _profiles_tree(tmp_path: Path) -> Path:
+    """Create one repository profiles tree whose manifest names a single other entry."""
+
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    _, sibling = _manifest_artifacts(tmp_path)
+    publication.publish_profile_manifest(
+        profiles / "manifest.json",
+        publication.build_profile_manifest((sibling,), published_at=GENERATED_AT),
+    )
+    return profiles
+
+
+def test_publish_profile_publication_installs_object_manifest_and_record(
+    tmp_path: Path,
+) -> None:
+    enriched_result, enriched_artifact = _published_profile(tmp_path, enriched=True)
+    profiles = _profiles_tree(tmp_path)
+    published_at = GENERATED_AT + timedelta(days=1)
+
+    installed = publication.publish_profile_publication(
+        publication=enriched_result,
+        profiles_dir=profiles,
+        published_at=published_at,
+        run_id="run-1",
+    )
+
+    assert installed.artifact == enriched_artifact
+    assert installed.object_path == (
+        profiles / "objects" / f"{enriched_artifact.gzip_sha256}.json.gz"
+    )
+    assert installed.object_path.read_bytes() == enriched_result.generation.gzip_bytes
+    assert installed.manifest_path == profiles / "manifest.json"
+    assert installed.manifest_changed is True
+    assert installed.publications_path == profiles / "enrichment-publications.json"
+    assert load_profile_manifest(profiles / "manifest.json").select(
+        set_code="TST",
+        event_format="QuickDraft",
+    ) == enriched_artifact
+    enhancement = enriched_result.generation.report.enhancement
+    assert enhancement is not None
+    assert json.loads(installed.publications_path.read_text(encoding="utf-8")) == {
+        "publications": [
+            {
+                "artifact_sha256": enhancement.artifact_sha256,
+                "event_format": "quickdraft",
+                "profile_gzip_sha256": enriched_artifact.gzip_sha256,
+                "published_at": published_at.isoformat(),
+                "reviewed_at": ENRICHMENT_REVIEWED_AT,
+                "run_id": "run-1",
+                "set_code": "tst",
+            }
+        ],
+        "schema_version": 1,
+    }
+
+
+def test_publish_profile_publication_leaves_plain_profiles_unrecorded(tmp_path: Path) -> None:
+    plain_result, plain_artifact = _published_profile(tmp_path, enriched=False)
+    profiles = _profiles_tree(tmp_path)
+    record_path = record_enrichment_publication(
+        profiles_dir=profiles,
+        publication=EnrichmentPublication(
+            set_code="ELD",
+            event_format="PremierDraft",
+            artifact_sha256="d" * 64,
+            run_id="eld-run",
+            reviewed_at=ENRICHMENT_REVIEWED_AT,
+            published_at=GENERATED_AT.isoformat(),
+            profile_gzip_sha256="b" * 64,
+        ),
+    )
+    record_before = record_path.read_bytes()
+
+    installed = publication.publish_profile_publication(
+        publication=plain_result,
+        profiles_dir=profiles,
+        published_at=GENERATED_AT,
+    )
+
+    assert installed.artifact == plain_artifact
+    assert installed.manifest_changed is True
+    assert installed.publications_path is None
+    assert record_path.read_bytes() == record_before
+
+
+def test_publish_profile_publication_creates_no_record_for_plain_profiles(
+    tmp_path: Path,
+) -> None:
+    plain_result, _ = _published_profile(tmp_path, enriched=False)
+    profiles = _profiles_tree(tmp_path)
+
+    installed = publication.publish_profile_publication(
+        publication=plain_result,
+        profiles_dir=profiles,
+        published_at=GENERATED_AT,
+    )
+
+    assert installed.publications_path is None
+    assert not (profiles / "enrichment-publications.json").exists()
+
+
+def test_publish_profile_publication_fails_closed_on_an_invalid_record(
+    tmp_path: Path,
+) -> None:
+    enriched_result, _ = _published_profile(tmp_path, enriched=True)
+    profiles = _profiles_tree(tmp_path)
+    manifest_path = profiles / "manifest.json"
+    manifest_before = manifest_path.read_bytes()
+    record_path = profiles / "enrichment-publications.json"
+    record_path.write_bytes(b"{not a publication record")
+
+    with pytest.raises(publication.ProfilePublicationError) as caught:
+        publication.publish_profile_publication(
+            publication=enriched_result,
+            profiles_dir=profiles,
+            published_at=GENERATED_AT,
+            run_id="run-1",
+        )
+
+    assert str(caught.value) == READ_ERROR
+    assert isinstance(caught.value.__cause__, EnrichmentPublicationError)
+    assert manifest_path.read_bytes() == manifest_before
+    assert record_path.read_bytes() == b"{not a publication record"
+
+
+def test_publish_profile_publication_requires_the_run_identity(tmp_path: Path) -> None:
+    enriched_result, _ = _published_profile(tmp_path, enriched=True)
+    profiles = _profiles_tree(tmp_path)
+
+    with pytest.raises(
+        publication.ProfilePublicationError,
+        match="A published enrichment profile requires its run identity.",
+    ):
+        publication.publish_profile_publication(
+            publication=enriched_result,
+            profiles_dir=profiles,
+            published_at=GENERATED_AT,
+        )
+
+    assert not (profiles / "enrichment-publications.json").exists()
 
 
 def test_enhanced_publication_round_trips_and_validates_artifact_and_report(

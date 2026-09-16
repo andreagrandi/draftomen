@@ -3,6 +3,18 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Recover already-paid enrichment work offline. `republish-enrichment` recompiles
+  and publishes one metadata-stage profile from a saved confirmed artifact without
+  freezing a guide and without any model call, selecting the newest confirmed
+  artifact for the set unless an exact `--artifact` digest or `--run` identity is
+  given, and `draftomen/enrichment_publications.py` records `artifact_sha256`,
+  `run_id`, `reviewed_at`, `published_at`, and `profile_gzip_sha256` per
+  `(set, format)` in `website/public/profiles/enrichment-publications.json`, which no
+  website data refresh rewrites or deletes. `filter_enriched_profile_downgrades` now
+  reads that record, so an identity whose recorded publication matches its retained
+  manifest entry is protected from a plain regeneration even when its retained object
+  is missing or unreadable, a record entry that does not describe the retained entry
+  never blocks a legitimate replacement, and an unreadable record fails closed. (#566)
 - Retain published enriched profiles when an automated website data refresh would
   replace them with plain ones. `draftomen/profile_publication.py` adds
   `filter_enriched_profile_downgrades`, which splits generated replacements into

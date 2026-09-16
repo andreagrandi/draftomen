@@ -51,11 +51,13 @@ from draftomen.profile_client import (
 from draftomen.profile_publication import (
     ProfilePublicationError,
     generate_local_profile_artifacts,
+    publish_profile_publication,
 )
 from draftomen.profile_data_refresh import (
     execute_profile_data_refresh,
     prepare_profile_data_refresh,
 )
+from draftomen.profile_generation import ProfileGenerationStage
 from draftomen.corpus import (
     CorpusError,
     DEFAULT_ARTIFACT_DIR,
@@ -74,9 +76,11 @@ from draftomen.deckbuilder import (
     load_pool_file,
 )
 from draftomen.draftmancer import DraftmancerAdapterError
+from draftomen.enrichment_inventory import EnrichmentInventoryError, select_confirmed_artifact
+from draftomen.enrichment_publications import EnrichmentPublicationError
 from draftomen.events import DraftLogParseError
 from draftomen.logfollow import LogFollowError
-from draftomen.paths import UnsupportedPlatformError, resolve_player_log_path
+from draftomen.paths import UnsupportedPlatformError, app_data_dir, resolve_player_log_path
 from draftomen.pool import DraftPoolError
 from draftomen.ranking import DEFAULT_RANKING_MODE, RANKING_MODES
 from draftomen.refresh_plan import (
@@ -1001,6 +1005,63 @@ def build_parser() -> argparse.ArgumentParser:
         help="Caller-selected set-enrichment output directory.",
     )
     enrich_set_parser.set_defaults(handler=handle_enrich_set)
+    republish_parser = subparsers.add_parser(
+        name="republish-enrichment",
+        help="Re-publish a profile from a saved confirmed enrichment artifact.",
+        description=(
+            "Recompile and publish one metadata-stage profile from a confirmed enrichment "
+            "artifact already on disk, without freezing a guide and without any model call."
+        ),
+    )
+    republish_parser.add_argument(
+        "set", metavar="SET", help="Exact set code (case-insensitive)."
+    )
+    republish_parser.add_argument(
+        "--format",
+        default="QuickDraft",
+        help="Profile format to publish (default: QuickDraft).",
+    )
+    republish_parser.add_argument(
+        "--artifact",
+        default=None,
+        help="Exact confirmed artifact SHA-256 to re-publish.",
+    )
+    republish_parser.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        help="Restrict selection to one run identity.",
+    )
+    republish_parser.add_argument(
+        "--store-dir",
+        type=Path,
+        default=None,
+        help="Set-enrichment store (default: the app data directory's set-enrichment).",
+    )
+    republish_parser.add_argument(
+        "--profiles-dir",
+        type=Path,
+        default=Path("website/public/profiles"),
+        help="Published profiles tree to update.",
+    )
+    republish_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Local artifact directory (default: <store-dir>/<set>-<format>).",
+    )
+    republish_parser.add_argument(
+        "--generated-at",
+        type=_parse_generated_at,
+        default=None,
+        help="Override the profile timestamp (default: the artifact's review timestamp).",
+    )
+    republish_parser.add_argument(
+        "--profile-version",
+        default="1.0",
+        help="Profile schema version to embed (default: 1.0).",
+    )
+    republish_parser.set_defaults(handler=handle_republish_enrichment)
     return parser
 
 
@@ -2252,6 +2313,76 @@ def handle_enrich_set(args: argparse.Namespace) -> int:
     print(f"profile_sha256={publication.generation.report.profile_sha256}")
     print(f"gzip_sha256={publication.generation.report.gzip_sha256}")
     print(f"profile_manifest={review.published_manifest_path}")
+    return 0
+
+
+def handle_republish_enrichment(args: argparse.Namespace) -> int:
+    """Re-publish one profile from a saved confirmed enrichment artifact.
+    No guide is frozen and no model provider is contacted.
+    """
+
+    store_dir = args.store_dir or (app_data_dir() / "set-enrichment")
+    try:
+        summary = select_confirmed_artifact(
+            store_dir=store_dir,
+            set_code=args.set,
+            artifact_sha256=args.artifact,
+            run_id=args.run_id,
+        )
+        card_database_path = summary.path.parent.parent / "sources" / "card-database.json"
+        if not card_database_path.is_file():
+            raise EnrichmentInventoryError(
+                "The selected enrichment run is missing its frozen card data."
+            )
+        if args.generated_at is None and summary.reviewed_at is None:
+            raise EnrichmentInventoryError(
+                "The selected enrichment artifact has no review timestamp."
+            )
+        generated_at = args.generated_at or datetime.fromisoformat(summary.reviewed_at)
+        output_dir = args.output_dir or (
+            Path(store_dir) / f"{summary.set_code}-{args.format.casefold()}"
+        )
+        publication = generate_local_profile_artifacts(
+            set_code=summary.set_code,
+            event_format=args.format,
+            stage=ProfileGenerationStage.METADATA,
+            generated_at=generated_at,
+            card_database_path=card_database_path,
+            output_dir=output_dir,
+            enrichment_path=summary.path,
+            profile_version=args.profile_version,
+        )
+        installed = publish_profile_publication(
+            publication=publication,
+            profiles_dir=args.profiles_dir,
+            published_at=generated_at,
+            run_id=summary.run_id,
+        )
+    except (
+        EnrichmentInventoryError,
+        EnrichmentPublicationError,
+        ProfilePublicationError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as error:
+        print(f"republish-enrichment failed: {error}", file=sys.stderr)
+        return 1
+
+    published_record = installed.publications_path
+    print(f"set_code={summary.set_code}")
+    print(f"format={publication.generation.profile.event_format}")
+    print(f"artifact={summary.path}")
+    print(f"artifact_sha256={summary.sha256}")
+    print(f"run_id={summary.run_id}")
+    print(f"maturity={publication.generation.profile.maturity.value}")
+    print(f"gzip_sha256={publication.generation.report.gzip_sha256}")
+    print(f"object={installed.object_path}")
+    print(f"manifest={installed.manifest_path}")
+    print(f"manifest_changed={installed.manifest_changed}")
+    print(
+        f"publications={'not-recorded' if published_record is None else published_record}"
+    )
     return 0
 
 

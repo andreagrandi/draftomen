@@ -102,8 +102,8 @@ coalesce, and `watch --plain` has no command UI.
 
 For a terminal workflow, use the stable `draftomen-tui` command. It preserves
 the watch, replay, build, backtest, benchmark, data-refresh,
-`export-set-data`, local `generate-profile`, `refresh-profile`, and interactive
-`enrich-set` subcommands:
+`export-set-data`, local `generate-profile`, `refresh-profile`,
+`republish-enrichment`, and interactive `enrich-set` subcommands:
 
 ```bash
 draftomen-tui
@@ -152,6 +152,17 @@ draftomen-tui enrich-set LCI \
   --guide-url https://draftsim.com/mtg-lci-draft-guide/ \
   --output-dir "$HOME/.draftomen/set-enrichment"
 ```
+
+Use `republish-enrichment` to recover work that is already paid for: it
+recompiles and publishes a profile from a saved confirmed artifact without
+freezing a guide and without any model call, selecting the newest confirmed
+artifact for the set unless `--artifact` pins an exact SHA-256 or `--run`
+restricts the search to one run directory. Publication also records the source
+artifact SHA-256, run identity, and review timestamp per set and format in
+`website/public/profiles/enrichment-publications.json`, which survives every
+website data refresh and protects the entry from a later plain regeneration.
+See [saved confirmed enrichment](docs/set-profiles.md#saved-confirmed-enrichment)
+for the command and the run layout it reads.
 
 ### Static set card data
 
