@@ -25,6 +25,7 @@ from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import CardDatabase, build_card_database_from_bulk_file
 from draftomen.cli import build_parser, main
 from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
+from draftomen.enrichment_inventory import ARTIFACT_ERROR, PUBLICATION_ERROR
 from draftomen.pool import DraftState, load_draft_state, save_draft_state
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_input_acquisition import (
@@ -165,6 +166,7 @@ def test_tui_parser_uses_tui_command_name(
         ("export-set-data", "Export"),
         ("enrich-set", "Freeze"),
         ("republish-enrichment", "Recompile"),
+        ("list-enrichment", "Report every local enrichment run"),
     ],
 )
 def test_subcommands_are_registered_with_help_text(
@@ -4423,4 +4425,235 @@ def test_republish_enrichment_requires_the_frozen_card_data(
         f"republish-enrichment failed: {REPUBLISH_MISSING_CARD_DATA_ERROR}\n"
     )
     assert not profiles_dir.exists()
+
+
+LIST_ENRICHMENT_CONFIRMED_SET = "hob"
+LIST_ENRICHMENT_CONFIRMED_RUN_ID = "9574d202eef14943"
+LIST_ENRICHMENT_PENDING_SET = "lci"
+LIST_ENRICHMENT_PENDING_RUN_ID = "da5336b1f2ceac32"
+LIST_ENRICHMENT_CREATED_AT = "2026-08-30T09:00:00+00:00"
+LIST_ENRICHMENT_REVIEWED_AT = "2026-09-01T10:00:00+00:00"
+LIST_ENRICHMENT_PROFILE_GZIP_SHA256 = "f" * 64
+
+
+def _write_list_enrichment_artifact(
+    *,
+    store_dir: Path,
+    set_code: str,
+    run_id: str,
+    review_state: str,
+    reviewed_at: str | None,
+    created_at: str | None,
+    relationships: int,
+    confirmed: int,
+) -> Path:
+    """Write one saved enrichment artifact into a local store layout."""
+
+    payload = {
+        "set_code": set_code,
+        "created_at": created_at,
+        "review": {"state": review_state, "reviewed_at": reviewed_at},
+        "relationships": [
+            {"finding_id": f"finding-{index}"} for index in range(relationships)
+        ],
+        "confirmed_relationship_ids": [
+            f"finding-{index}" for index in range(confirmed)
+        ],
+    }
+    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    artifacts_dir = store_dir / "enrichment-runs" / set_code / run_id / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    path = artifacts_dir / f"{hashlib.sha256(payload_bytes).hexdigest()}.json"
+    path.write_bytes(payload_bytes)
+    return path
+
+
+def _write_list_enrichment_store(*, store_dir: Path) -> tuple[Path, Path]:
+    """Write one confirmed HOB artifact and one pending LCI artifact into a store."""
+
+    confirmed_path = _write_list_enrichment_artifact(
+        store_dir=store_dir,
+        set_code=LIST_ENRICHMENT_CONFIRMED_SET,
+        run_id=LIST_ENRICHMENT_CONFIRMED_RUN_ID,
+        review_state="confirmed",
+        reviewed_at=LIST_ENRICHMENT_REVIEWED_AT,
+        created_at=LIST_ENRICHMENT_CREATED_AT,
+        relationships=3,
+        confirmed=2,
+    )
+    pending_path = _write_list_enrichment_artifact(
+        store_dir=store_dir,
+        set_code=LIST_ENRICHMENT_PENDING_SET,
+        run_id=LIST_ENRICHMENT_PENDING_RUN_ID,
+        review_state="pending",
+        reviewed_at=None,
+        created_at=None,
+        relationships=0,
+        confirmed=0,
+    )
+    return confirmed_path, pending_path
+
+
+def _write_list_enrichment_profiles(*, profiles_dir: Path, artifact_sha256: str) -> None:
+    """Write an orphaned enriched HOB object beside a manifest holding another set."""
+
+    _write_republish_profiles(profiles_dir=profiles_dir)
+    objects_dir = profiles_dir / "objects"
+    objects_dir.mkdir()
+    (objects_dir / f"{LIST_ENRICHMENT_PROFILE_GZIP_SHA256}.json.gz").write_bytes(
+        gzip.compress(
+            json.dumps(
+                {
+                    "set_code": LIST_ENRICHMENT_CONFIRMED_SET,
+                    "format": "quickdraft",
+                    "enhancement_status": "enhanced",
+                    "enhancement": {"artifact_sha256": artifact_sha256},
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+    )
+
+
+def test_list_enrichment_prints_runs_artifacts_and_publication_state(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store_dir = tmp_path / "set-enrichment"
+    confirmed_path, pending_path = _write_list_enrichment_store(store_dir=store_dir)
+    confirmed_sha256 = hashlib.sha256(confirmed_path.read_bytes()).hexdigest()
+    pending_sha256 = hashlib.sha256(pending_path.read_bytes()).hexdigest()
+    profiles_dir = tmp_path / "profiles"
+    _write_list_enrichment_profiles(
+        profiles_dir=profiles_dir,
+        artifact_sha256=confirmed_sha256,
+    )
+    manifest_bytes = (profiles_dir / "manifest.json").read_bytes()
+
+    exit_code = main(
+        argv=[
+            "list-enrichment",
+            "--store-dir",
+            str(store_dir),
+            "--profiles-dir",
+            str(profiles_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+    assert captured.out == (
+        f"run {LIST_ENRICHMENT_CONFIRMED_SET} {LIST_ENRICHMENT_CONFIRMED_RUN_ID}"
+        " artifacts=1\n"
+        f"  artifact {LIST_ENRICHMENT_CONFIRMED_SET} {LIST_ENRICHMENT_CONFIRMED_RUN_ID}"
+        f" {confirmed_sha256} created={LIST_ENRICHMENT_CREATED_AT}"
+        f" reviewed={LIST_ENRICHMENT_REVIEWED_AT}"
+        " state=confirmed relationships=3 confirmed=2"
+        " published=hob/quickdraft:orphaned\n"
+        f"run {LIST_ENRICHMENT_PENDING_SET} {LIST_ENRICHMENT_PENDING_RUN_ID}"
+        " artifacts=1\n"
+        f"  artifact {LIST_ENRICHMENT_PENDING_SET} {LIST_ENRICHMENT_PENDING_RUN_ID}"
+        f" {pending_sha256} created=unknown reviewed=unknown state=pending"
+        " relationships=0 confirmed=0 published=none\n"
+        "list-enrichment: runs=2 artifacts=2 confirmed=1 published=1 orphaned=1\n"
+    )
+    assert (profiles_dir / "manifest.json").read_bytes() == manifest_bytes
+    assert not (profiles_dir / "enrichment-publications.json").exists()
+
+
+def test_list_enrichment_filters_runs_by_set_code(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store_dir = tmp_path / "set-enrichment"
+    confirmed_path, pending_path = _write_list_enrichment_store(store_dir=store_dir)
+    profiles_dir = tmp_path / "profiles"
+    _write_list_enrichment_profiles(
+        profiles_dir=profiles_dir,
+        artifact_sha256=hashlib.sha256(confirmed_path.read_bytes()).hexdigest(),
+    )
+
+    exit_code = main(
+        argv=[
+            "list-enrichment",
+            "--set",
+            "LCI",
+            "--store-dir",
+            str(store_dir),
+            "--profiles-dir",
+            str(profiles_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+    # The filter selects one set code for the printed runs and for every count.
+    assert captured.out == (
+        f"run {LIST_ENRICHMENT_PENDING_SET} {LIST_ENRICHMENT_PENDING_RUN_ID}"
+        " artifacts=1\n"
+        f"  artifact {LIST_ENRICHMENT_PENDING_SET} {LIST_ENRICHMENT_PENDING_RUN_ID}"
+        f" {hashlib.sha256(pending_path.read_bytes()).hexdigest()}"
+        " created=unknown reviewed=unknown state=pending relationships=0 confirmed=0"
+        " published=none\n"
+        "list-enrichment: runs=1 artifacts=1 confirmed=0 published=0 orphaned=0\n"
+    )
+
+
+def test_list_enrichment_reports_an_unreadable_store(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store_dir = tmp_path / "set-enrichment"
+    _write_list_enrichment_store(store_dir=store_dir)
+    runs_dir = store_dir / "enrichment-runs"
+    runs_dir.chmod(0o000)
+    profiles_dir = tmp_path / "profiles"
+
+    try:
+        exit_code = main(
+            argv=[
+                "list-enrichment",
+                "--store-dir",
+                str(store_dir),
+                "--profiles-dir",
+                str(profiles_dir),
+            ]
+        )
+    finally:
+        runs_dir.chmod(0o700)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == f"list-enrichment failed: {ARTIFACT_ERROR}\n"
+
+
+def test_list_enrichment_reports_an_unreadable_manifest(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store_dir = tmp_path / "set-enrichment"
+    _write_list_enrichment_store(store_dir=store_dir)
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    (profiles_dir / "manifest.json").write_bytes(b"{not json")
+
+    exit_code = main(
+        argv=[
+            "list-enrichment",
+            "--store-dir",
+            str(store_dir),
+            "--profiles-dir",
+            str(profiles_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == f"list-enrichment failed: {PUBLICATION_ERROR}\n"
 

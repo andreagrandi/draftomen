@@ -326,6 +326,43 @@ or foreign run therefore fails before any repository file changes. Success
 prints `set_code`, `format`, `artifact`, `artifact_sha256`, `run_id`, `maturity`,
 `gzip_sha256`, `object`, `manifest`, `manifest_changed`, and `publications`.
 
+#### Listing local enrichment work
+
+`list-enrichment` reports every local run and every saved artifact with its set,
+run identity, created and reviewed timestamps, review state, relationship and
+confirmed counts, artifact SHA-256, and the profiles it was published as. It
+reads local files only — no network request and no model call — and writes
+nothing.
+
+```sh
+uv run draftomen-tui list-enrichment --set hob \
+  --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft"
+```
+
+```text
+run hob 1a7229377cb30f6d artifacts=0
+run hob 9574d202eef14943 artifacts=2
+  artifact hob 9574d202eef14943 bb00b761b8c1489bb560c6ea233c7d5eb70bb3c6bd52ef484313f12dc0957cae created=2026-09-14T18:25:30.788004Z reviewed=unknown state=pending relationships=685 confirmed=0 published=none
+  artifact hob 9574d202eef14943 edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84 created=2026-09-14T18:25:30.788004Z reviewed=2026-09-14T18:34:09.071794Z state=confirmed relationships=685 confirmed=685 published=hob/quickdraft:orphaned
+list-enrichment: runs=2 artifacts=2 confirmed=1 published=1 orphaned=1
+```
+
+Each artifact line ends with every publication recorded for its digest, joined
+by commas, or `none`. An identity is `referenced` when the manifest's entry for
+that set and format still selects the published object and `orphaned` when it no
+longer does, so work that was published and then replaced stays visible instead
+of silent. The summary counts runs, artifacts, confirmed artifacts, distinct
+publications, and distinct orphaned publications.
+
+The default `--store-dir` is `<app data directory>/set-enrichment`, the shared
+store layout. Runs created by the desktop `enrich-set` live under a
+profile-keyed store such as `$HOME/.draftomen/set-enrichment/hob-quickdraft`, so
+pass `--store-dir` explicitly to see them. `--set` restricts the printed runs and
+every count to one set code, and `--profiles-dir` selects the published profiles
+tree used to resolve publication state (default `website/public/profiles`).
+Pending and cancelled artifacts are listed too, because an inventory that hides a
+run's non-confirmed artifacts cannot explain where a set's work went.
+
 #### Durable publication provenance
 
 Every publication of an enriched profile records `artifact_sha256`, `run_id`,
