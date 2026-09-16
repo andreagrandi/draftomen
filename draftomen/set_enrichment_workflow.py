@@ -24,7 +24,7 @@ from draftomen.card_data_client import (
     card_data_cache_path,
 )
 from draftomen.carddb import CardDatabase, CardDatabaseError, save_card_database
-from draftomen.guide_client import GuideClient, GuideClientError, GuideDocument, _validate_url as _validate_guide_url
+from draftomen.guide_client import GuideClient, GuideClientError, GuideDocument
 from draftomen.profile_generation import ProfileGenerationStage
 from draftomen.profile_manifest import ProfileManifestError, load_profile_manifest
 from draftomen.profile_publication import (
@@ -36,6 +36,9 @@ from draftomen.profile_publication import (
     profile_manifest_artifact_from_publication,
     publish_profile_manifest,
     publish_profile_object,
+    _GUIDE_SCHEMA_VERSION,
+    _guide_freeze_record,
+    _strict_json,
 )
 from draftomen.semantic_capability_records import CardCapability
 from draftomen.semantic_enrichment import (
@@ -187,19 +190,6 @@ REVIEW_ORDER_ERROR = "reviewed_at must not precede the artifact creation time."
 REVIEW_PUBLICATION_ERROR = "Set-enrichment review artifact publication failed."
 NO_PUBLISHABLE_ERROR = "Set enrichment has no publishable confirmed findings."
 PROFILE_PUBLICATION_ERROR = "Set enrichment profile publication failed."
-
-_GUIDE_SCHEMA_VERSION = 1
-_GUIDE_KEYS = frozenset(
-    {
-        "schema_version",
-        "requested_url",
-        "guide_id",
-        "url",
-        "text",
-        "sha256",
-        "retrieved_at",
-    }
-)
 
 # The structured local matcher is a decision surface of its own, so it publishes one zero-cost run
 # instead of borrowing the identity of a paid request that never produced these verdicts.
@@ -372,62 +362,6 @@ def _install_exclusive(path: Path, payload: bytes, root: Path) -> bool:
                 pass
 
 
-def _strict_json(payload: bytes) -> Any:
-    """Decode strict UTF-8 JSON while rejecting duplicate keys and constants."""
-    def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError("duplicate JSON object key")
-            value[key] = item
-        return value
-
-    def constant(_value: str) -> Any:
-        raise ValueError("non-finite JSON constant")
-
-    return json.loads(
-        payload.decode("utf-8"),
-        object_pairs_hook=object_pairs,
-        parse_constant=constant,
-    )
-
-
-def _guide_freeze_record(*, value: Any, guide_url: str, normalized_set: str) -> GuideSource:
-    """Validate one frozen guide record and reconstruct its source value."""
-    if not isinstance(value, dict) or set(value) != _GUIDE_KEYS:
-        raise _workflow_error(GUIDE_FREEZE_ERROR)
-    if type(value["schema_version"]) is not int or value["schema_version"] != _GUIDE_SCHEMA_VERSION:
-        raise _workflow_error(GUIDE_FREEZE_ERROR)
-    guide_id = f"{normalized_set}-draftsim-guide"
-    if value["requested_url"] != guide_url or value["guide_id"] != guide_id:
-        raise _workflow_error(GUIDE_FREEZE_ERROR)
-    if not isinstance(value["url"], str):
-        raise _workflow_error(GUIDE_FREEZE_ERROR)
-    try:
-        # The private import is deliberate so the reuse path cannot drift from acquisition URL rules.
-        _validate_guide_url(value["url"])
-    except (GuideClientError, TypeError, ValueError, UnicodeError) as error:
-        raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
-    text = value["text"]
-    if not isinstance(text, str):
-        raise _workflow_error(GUIDE_FREEZE_ERROR)
-    try:
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    except UnicodeError as error:
-        raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
-    if value["sha256"] != digest:
-        raise _workflow_error(GUIDE_FREEZE_ERROR)
-    try:
-        return GuideSource(
-            guide_id=guide_id,
-            url=value["url"],
-            text=text,
-            retrieved_at=value["retrieved_at"],
-        )
-    except (TypeError, ValueError, UnicodeError) as error:
-        raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
-
-
 def _freeze_guide(
     *,
     guide_path: Path,
@@ -445,9 +379,13 @@ def _freeze_guide(
     if present:
         try:
             value = _strict_json(guide_path.read_bytes())
+            return _guide_freeze_record(
+                value=value, guide_url=guide_url, normalized_set=normalized_set
+            )
+        except ProfilePublicationError as error:
+            raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
         except (OSError, UnicodeDecodeError, TypeError, ValueError, RecursionError) as error:
             raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
-        return _guide_freeze_record(value=value, guide_url=guide_url, normalized_set=normalized_set)
 
     try:
         document = guide_client.fetch(url=guide_url)
@@ -498,6 +436,8 @@ def _freeze_guide(
             return guide
         value = _strict_json(guide_path.read_bytes())
         return _guide_freeze_record(value=value, guide_url=guide_url, normalized_set=normalized_set)
+    except ProfilePublicationError as error:
+        raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
     except (OSError, TypeError, ValueError, UnicodeError) as error:
         raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
 

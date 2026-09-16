@@ -3,6 +3,16 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Generate usable profiles from saved confirmed enrichment without new model
+  calls. `generate-profile --enrichment PATH` validates the artifact digest,
+  frozen guide and card sources, then produces schema-3 profiles with compiled
+  roles at the selected evidence-backed stage. Generation recovers eligible
+  typed projections from retained local capability facts, preserves the source
+  artifact digest and review, and keeps unsupported relationships unchanged.
+  Unrepresented conditions fail closed. Clause validation now separates a
+  following instruction or activated ability effect from the current clause's
+  zones without dropping same-instruction restrictions. Generator version 3
+  records the changed deterministic output. (#560)
 - Add the simulator-backed native Manual Test Draft acceptance journey (#553):
   `draftomen/qt_gui.py` turns the hidden `--test-draft-smoke` flag into a journey
   selector whose bare form still selects the existing Auto journey while `manual`

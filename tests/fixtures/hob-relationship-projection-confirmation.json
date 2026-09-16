@@ -1,0 +1,882 @@
+{
+  "cards": [
+    {
+      "arena_id": 103381,
+      "collector_number": "13",
+      "colors": [
+        "W"
+      ],
+      "faces": [],
+      "grp_id": 103381,
+      "image_uri": "https://cards.scryfall.io/normal/front/5/7/573f67b0-6ce8-4857-a703-4a5728640736.jpg?1785496934",
+      "keywords": [
+        "Recruit"
+      ],
+      "layout": "normal",
+      "mana_cost": "{4}{W}",
+      "mana_value": 5.0,
+      "name": "Esgaroth Garrison",
+      "oracle_id": "84597236-2cfc-4654-b126-a8ee252f4d14",
+      "oracle_text": "Esgaroth Garrison's power is equal to the number of creatures you control.\nWhen this creature enters, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+      "power": "*",
+      "produced_mana": [],
+      "rarity": "common",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Human",
+        "Soldier"
+      ],
+      "toughness": "5",
+      "type_line": "Creature — Human Soldier",
+      "types": [
+        "Creature — Human Soldier"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": 103422,
+      "collector_number": "49",
+      "colors": [
+        "U"
+      ],
+      "faces": [
+        {
+          "colors": [],
+          "keywords": [],
+          "mana_cost": "{U}",
+          "mana_value": null,
+          "name": "Most Decrepit Old Bird",
+          "oracle_text": "Flying\nThreshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.",
+          "power": "1",
+          "produced_mana": [],
+          "subtypes": [
+            "Bird"
+          ],
+          "toughness": "1",
+          "type_line": "Creature — Bird"
+        },
+        {
+          "colors": [],
+          "keywords": [],
+          "mana_cost": "{1}{U}",
+          "mana_value": null,
+          "name": "Speak Secrets",
+          "oracle_text": "Mill four cards, then put an instant or sorcery card from among them into your hand.",
+          "power": null,
+          "produced_mana": [],
+          "subtypes": [
+            "Adventure"
+          ],
+          "toughness": null,
+          "type_line": "Sorcery — Adventure"
+        }
+      ],
+      "grp_id": 103422,
+      "image_uri": "https://cards.scryfall.io/normal/front/2/d/2d838feb-89f2-4cdb-a5ab-ec880f28d873.jpg?1785236659",
+      "keywords": [
+        "Flying",
+        "Threshold",
+        "Mill"
+      ],
+      "layout": "adventure",
+      "mana_cost": "{U} // {1}{U}",
+      "mana_value": 1.0,
+      "name": "Most Decrepit Old Bird // Speak Secrets",
+      "oracle_id": "34d34f2c-06ff-4acf-8f2f-ff867774b777",
+      "oracle_text": "Flying\nThreshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard. // Mill four cards, then put an instant or sorcery card from among them into your hand.",
+      "power": "1",
+      "produced_mana": [],
+      "rarity": "rare",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Bird",
+        "Adventure"
+      ],
+      "toughness": "1",
+      "type_line": "Creature — Bird // Sorcery — Adventure",
+      "types": [
+        "Creature — Bird // Sorcery — Adventure"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": 103442,
+      "collector_number": "68",
+      "colors": [
+        "B"
+      ],
+      "faces": [],
+      "grp_id": 103442,
+      "image_uri": "https://cards.scryfall.io/normal/front/2/c/2ce066be-e5ad-4b93-8245-1b5018990d03.jpg?1784733910",
+      "keywords": [
+        "Amass"
+      ],
+      "layout": "normal",
+      "mana_cost": "{3}{B}",
+      "mana_value": 4.0,
+      "name": "Gathering of Darkness",
+      "oracle_id": "85e1556d-c4da-4979-a5db-4ce3842c7797",
+      "oracle_text": "Return up to one target creature card from your graveyard to your hand.\nAmass Goblins 3. (Put three +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+      "power": null,
+      "produced_mana": [],
+      "rarity": "uncommon",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [],
+      "toughness": null,
+      "type_line": "Sorcery",
+      "types": [
+        "Sorcery"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": 103546,
+      "collector_number": "166",
+      "colors": [
+        "U",
+        "G"
+      ],
+      "faces": [
+        {
+          "colors": [],
+          "keywords": [],
+          "mana_cost": "{2}{G/U}{G/U}",
+          "mana_value": null,
+          "name": "Thranduil, Sindarin Liege",
+          "oracle_text": "Other Elves you control get +1/+1.\nLandfall — Whenever a land you control enters, create a 1/1 green Elf creature token.",
+          "power": "2",
+          "produced_mana": [],
+          "subtypes": [
+            "Elf",
+            "Noble"
+          ],
+          "toughness": "3",
+          "type_line": "Legendary Creature — Elf Noble"
+        },
+        {
+          "colors": [],
+          "keywords": [],
+          "mana_cost": "{1}{G/U}{G/U}",
+          "mana_value": null,
+          "name": "Silvan Rally",
+          "oracle_text": "Mill four cards, then put up to two land cards from among them into your hand. (Then exile this card. You may cast the creature later from exile.)",
+          "power": null,
+          "produced_mana": [],
+          "subtypes": [
+            "Adventure"
+          ],
+          "toughness": null,
+          "type_line": "Sorcery — Adventure"
+        }
+      ],
+      "grp_id": 103546,
+      "image_uri": "https://cards.scryfall.io/normal/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.jpg?1785412747",
+      "keywords": [
+        "Mill",
+        "Landfall"
+      ],
+      "layout": "adventure",
+      "mana_cost": "{2}{G/U}{G/U} // {1}{G/U}{G/U}",
+      "mana_value": 4.0,
+      "name": "Thranduil, Sindarin Liege // Silvan Rally",
+      "oracle_id": "f6771d32-395e-4832-b33d-cbc12dff1516",
+      "oracle_text": "Other Elves you control get +1/+1.\nLandfall — Whenever a land you control enters, create a 1/1 green Elf creature token. // Mill four cards, then put up to two land cards from among them into your hand. (Then exile this card. You may cast the creature later from exile.)",
+      "power": "2",
+      "produced_mana": [],
+      "rarity": "uncommon",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Elf",
+        "Noble",
+        "Adventure"
+      ],
+      "toughness": "3",
+      "type_line": "Legendary Creature — Elf Noble // Sorcery — Adventure",
+      "types": [
+        "Legendary Creature — Elf Noble // Sorcery — Adventure"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": null,
+      "collector_number": null,
+      "colors": [
+        "B"
+      ],
+      "faces": [],
+      "grp_id": 990001,
+      "image_uri": null,
+      "keywords": [],
+      "layout": "normal",
+      "mana_cost": "{3}{B}",
+      "mana_value": 4.0,
+      "name": "Fixture Trailing Sorcery",
+      "oracle_text": "Mill four cards if you control a Dwarf.",
+      "oracle_id": null,
+      "power": null,
+      "produced_mana": [],
+      "rarity": "common",
+      "set": "hob",
+      "source_provenance": [],
+      "subtypes": [],
+      "toughness": null,
+      "type_line": "Sorcery",
+      "types": [
+        "Sorcery"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": null,
+      "collector_number": null,
+      "colors": [
+        "B"
+      ],
+      "faces": [],
+      "grp_id": 990002,
+      "image_uri": null,
+      "keywords": [],
+      "layout": "normal",
+      "mana_cost": "{3}{B}",
+      "mana_value": 4.0,
+      "name": "Fixture Next-Action Sorcery",
+      "oracle_text": "Mill four cards, then if you control a Dwarf, draw a card.",
+      "oracle_id": null,
+      "power": null,
+      "produced_mana": [],
+      "rarity": "common",
+      "set": "hob",
+      "source_provenance": [],
+      "subtypes": [],
+      "toughness": null,
+      "type_line": "Sorcery",
+      "types": [
+        "Sorcery"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": null,
+      "collector_number": null,
+      "colors": [
+        "B"
+      ],
+      "faces": [],
+      "grp_id": 990003,
+      "image_uri": null,
+      "keywords": [],
+      "layout": "normal",
+      "mana_cost": "{3}{B}",
+      "mana_value": 4.0,
+      "name": "Fixture Army Maker",
+      "oracle_text": "Create a 0/0 black Goblin Army creature token.",
+      "oracle_id": null,
+      "power": null,
+      "produced_mana": [],
+      "rarity": "common",
+      "set": "hob",
+      "source_provenance": [],
+      "subtypes": [],
+      "toughness": null,
+      "type_line": "Sorcery",
+      "types": [
+        "Sorcery"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": null,
+      "collector_number": null,
+      "colors": [
+        "G"
+      ],
+      "faces": [],
+      "grp_id": 990010,
+      "image_uri": null,
+      "keywords": [],
+      "layout": "normal",
+      "mana_cost": "{1}{G}",
+      "mana_value": 2.0,
+      "name": "Fixture Wide Payoff",
+      "oracle_text": "Threshold — This creature gets +1/+1 as long as there are seven or more creatures you control.",
+      "oracle_id": null,
+      "power": null,
+      "produced_mana": [],
+      "rarity": "common",
+      "set": "hob",
+      "source_provenance": [],
+      "subtypes": [],
+      "toughness": null,
+      "type_line": "Creature",
+      "types": [
+        "Creature"
+      ],
+      "unknown": false
+    }
+  ],
+  "artifact": {
+    "schema_version": 1,
+    "set_code": "hob",
+    "set_source_id": "draftomen-card-data-v1-hob",
+    "set_source_sha256": "27b1cb782d87584221b4e69550db222c304f2a734100c981cd484b0e18dc9208",
+    "created_at": "2026-09-14T18:25:30.788004Z",
+    "cards": [
+      {
+        "card_id": 103381,
+        "oracle_id": "84597236-2cfc-4654-b126-a8ee252f4d14",
+        "collector_number": "13",
+        "sha256": "d9135085761c434017226d332e57d217f7e6bb8e43533582255f72e11acb8235"
+      },
+      {
+        "card_id": 103422,
+        "oracle_id": "34d34f2c-06ff-4acf-8f2f-ff867774b777",
+        "collector_number": "49",
+        "sha256": "ffcfeae56f71e47b4af070a35daaf2f8e51c252721b08f65185a3fcdded484de"
+      },
+      {
+        "card_id": 103442,
+        "oracle_id": "85e1556d-c4da-4979-a5db-4ce3842c7797",
+        "collector_number": "68",
+        "sha256": "70f13f57df7206ee962ca1eb85d6b2af8ee8ed65378e5cab51ddbc48240d52eb"
+      },
+      {
+        "card_id": 103546,
+        "oracle_id": "f6771d32-395e-4832-b33d-cbc12dff1516",
+        "collector_number": "166",
+        "sha256": "8cf58c8a1ada0b5d6b6520b1d340aa23eadc6ec2aa78ed16208850856a926c89"
+      },
+      {
+        "card_id": 990001,
+        "oracle_id": null,
+        "collector_number": null,
+        "sha256": "0677d276dabaea39225417ed54dc13bc15b79fcdd9347ee58f3a3587b1ca54fc"
+      },
+      {
+        "card_id": 990002,
+        "oracle_id": null,
+        "collector_number": null,
+        "sha256": "bd85cbd754d8ceb07bfdc8b7ef2ec2cfd90157c0bb87f9adafaf58b44fed31e6"
+      },
+      {
+        "card_id": 990003,
+        "oracle_id": null,
+        "collector_number": null,
+        "sha256": "663343ceecef15045960394c45f970b45feaf8fb70cb26dcee159bc775c2f791"
+      },
+      {
+        "card_id": 990010,
+        "oracle_id": null,
+        "collector_number": null,
+        "sha256": "dd17f87d2fafb2026940662590de167fb9baea5e004d802232cc1ed7a56ad73e"
+      }
+    ],
+    "guides": [],
+    "runs": [
+      {
+        "run_id": "fixture-projection-facts",
+        "provider": "draftomen",
+        "model": "fixture-grammar",
+        "reasoning": {
+          "enabled": null,
+          "effort": null,
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-fixture-projection-facts-v1",
+        "prompt_sha256": "7016b8e0790c4e524ed641dacd520f5be1b165c7e756081fcffd6c98bd489e23",
+        "response_schema_id": "draftomen-fixture-projection-facts-response-v1",
+        "response_schema_sha256": "36e4976af7e08cc0b1e179f898785461d06d2c974499e664daf88f203a5462f3",
+        "started_at": "2026-09-14T18:20:00Z",
+        "completed_at": "2026-09-14T18:20:01Z",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": "0"
+      },
+      {
+        "run_id": "local-c7a4f08030a1bfb7",
+        "provider": "draftomen",
+        "model": "local-pair-matcher-v1",
+        "reasoning": {
+          "enabled": null,
+          "effort": null,
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-local-pair-matcher-v1",
+        "prompt_sha256": "814624ef1545ba330b8268de99eed6e85fd24f245254f362eaf206e15e1c4557",
+        "response_schema_id": "draftomen-local-pair-resolution-v1",
+        "response_schema_sha256": "58303fcd3ce09b7d682f81ea261491fe4df98b9b5d72bcf19f8f732c1d588ea3",
+        "started_at": "2026-09-14T18:25:30.788004Z",
+        "completed_at": "2026-09-14T18:25:30.788004Z",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": "0"
+      },
+      {
+        "run_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "ce106baecb281b19f7a8d56269ccc193e77ed2f4455345f7b542204e0774c472",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T18:24:56.640236Z",
+        "completed_at": "2026-09-14T18:25:30.788004Z",
+        "input_tokens": 3003,
+        "output_tokens": 2987,
+        "reasoning_tokens": 1929,
+        "cost_usd": "0.0039716"
+      },
+      {
+        "run_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "65edfa799f5a7062c9f75da3fabdc17f2c8599dcd1903b7d263550a6f54d17c6",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T13:31:26.941508Z",
+        "completed_at": "2026-09-14T13:31:44.003196Z",
+        "input_tokens": 3011,
+        "output_tokens": 1614,
+        "reasoning_tokens": 804,
+        "cost_usd": "0.002326"
+      },
+      {
+        "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "c710f541af63a04779e370aec9cb8e246b55af693ee52a6bf35958ed9fb15a61",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T14:12:03.209602Z",
+        "completed_at": "2026-09-14T14:12:31.835314Z",
+        "input_tokens": 3154,
+        "output_tokens": 2888,
+        "reasoning_tokens": 1552,
+        "cost_usd": "0.00389055"
+      },
+      {
+        "run_id": "work-d6ecb2cef8ae51a45631412a6c72d54ed4cf20161247ca4aa26c8a634272a9d9",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "2748e3ac6a0473857cad951f2bc6b09b935d7b6677a148f5fb85a2b4e91474b4",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T13:25:28.939023Z",
+        "completed_at": "2026-09-14T13:25:48.462138Z",
+        "input_tokens": 3094,
+        "output_tokens": 1955,
+        "reasoning_tokens": 1034,
+        "cost_usd": "0.00275595"
+      }
+    ],
+    "oracle_facts": [
+      {
+        "finding_id": "fixture-projection-facts:990001-fixture-trailing-mill",
+        "card_id": 990001,
+        "kind": "self_mill",
+        "claim": "{\"action\":\"mill\",\"card_name\":\"Fixture Trailing Sorcery\",\"destination_zone\":\"graveyard\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":4},\"role\":\"self_mill\",\"source_zone\":\"library\",\"timing\":\"as this spell resolves\",\"zone\":\"graveyard\"}",
+        "evidence": [
+          {
+            "card_id": 990001,
+            "face_index": null,
+            "quote": "Mill four cards if you control a Dwarf."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "fixture fact requires review."
+        },
+        "run_id": "fixture-projection-facts"
+      },
+      {
+        "finding_id": "fixture-projection-facts:990002-fixture-next-action-mill",
+        "card_id": 990002,
+        "kind": "self_mill",
+        "claim": "{\"action\":\"mill\",\"card_name\":\"Fixture Next-Action Sorcery\",\"destination_zone\":\"graveyard\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":4},\"role\":\"self_mill\",\"source_zone\":\"library\",\"timing\":\"as this spell resolves\",\"zone\":\"graveyard\"}",
+        "evidence": [
+          {
+            "card_id": 990002,
+            "face_index": null,
+            "quote": "Mill four cards, then if you control a Dwarf, draw a card."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "fixture fact requires review."
+        },
+        "run_id": "fixture-projection-facts"
+      },
+      {
+        "finding_id": "fixture-projection-facts:990003-fixture-army-maker",
+        "card_id": 990003,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Fixture Army Maker\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"goblin\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 990003,
+            "face_index": null,
+            "quote": "Create a 0/0 black Goblin Army creature token."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "fixture fact requires review."
+        },
+        "run_id": "fixture-projection-facts"
+      },
+      {
+        "finding_id": "fixture-projection-facts:990010-fixture-wide-payoff",
+        "card_id": 990010,
+        "kind": "go_wide_payoff",
+        "claim": "{\"action\":\"other\",\"card_name\":\"Fixture Wide Payoff\",\"destination_zone\":null,\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":990010,\"face_index\":null,\"quote\":\"Threshold \\u2014 This creature gets +1/+1 as long as there are seven or more creatures you control.\"},\"kind\":\"condition\",\"quantity\":{\"relation\":\"at_least\",\"value\":7},\"source_zone\":\"battlefield\",\"timing\":\"as long as\"}],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":\"as long as\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 990010,
+            "face_index": null,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more creatures you control."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "fixture fact requires review."
+        },
+        "run_id": "fixture-projection-facts"
+      },
+      {
+        "finding_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d:103381-go-wide-power",
+        "card_id": 103381,
+        "kind": "go_wide_payoff",
+        "claim": "{\"action\":\"count\",\"card_name\":\"Esgaroth Garrison\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103381,
+            "face_index": null,
+            "quote": "Esgaroth Garrison's power is equal to the number of creatures you control."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d"
+      },
+      {
+        "finding_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07:103442-amass-goblin-army-token",
+        "card_id": 103442,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Gathering of Darkness\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103442,\"face_index\":null,\"quote\":\"If you don't control an Army, create a 0/0 black Goblin Army creature token first.\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"goblin army\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103442,
+            "face_index": null,
+            "quote": "Amass Goblins 3. (Put three +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)"
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07"
+      },
+      {
+        "finding_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07:103442-return-creature-card",
+        "card_id": 103442,
+        "kind": "recursion",
+        "claim": "{\"action\":\"return\",\"card_name\":\"Gathering of Darkness\",\"destination_zone\":\"hand\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"at_most\",\"value\":1},\"role\":\"recursion\",\"source_zone\":\"graveyard\",\"timing\":null,\"zone\":\"hand\"}",
+        "evidence": [
+          {
+            "card_id": 103442,
+            "face_index": null,
+            "quote": "Return up to one target creature card from your graveyard to your hand."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07"
+      },
+      {
+        "finding_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9:103546-f1-self-mill",
+        "card_id": 103546,
+        "kind": "self_mill",
+        "claim": "{\"action\":\"mill\",\"card_name\":\"Thranduil, Sindarin Liege // Silvan Rally\",\"destination_zone\":\"graveyard\",\"face_index\":1,\"face_name\":\"Silvan Rally\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":4},\"role\":\"self_mill\",\"source_zone\":\"library\",\"timing\":\"as this spell resolves\",\"zone\":\"graveyard\"}",
+        "evidence": [
+          {
+            "card_id": 103546,
+            "face_index": 1,
+            "quote": "Mill four cards, then put up to two land cards from among them into your hand."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9"
+      },
+      {
+        "finding_id": "work-d6ecb2cef8ae51a45631412a6c72d54ed4cf20161247ca4aa26c8a634272a9d9:103422-0-threshold-graveyard-payoff",
+        "card_id": 103422,
+        "kind": "graveyard_payoff",
+        "claim": "{\"action\":\"other\",\"card_name\":\"Most Decrepit Old Bird // Speak Secrets\",\"destination_zone\":null,\"face_index\":0,\"face_name\":\"Most Decrepit Old Bird\",\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103422,\"face_index\":0,\"quote\":\"Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.\"},\"kind\":\"condition\",\"quantity\":{\"relation\":\"at_least\",\"value\":7},\"source_zone\":\"graveyard\",\"timing\":\"as long as\"}],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"graveyard_payoff\",\"source_zone\":\"battlefield\",\"timing\":\"as long as\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103422,
+            "face_index": 0,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-d6ecb2cef8ae51a45631412a6c72d54ed4cf20161247ca4aa26c8a634272a9d9"
+      }
+    ],
+    "guide_claims": [],
+    "relationships": [
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103546:103546-f1-self-mill:103422:103422-0-threshold-graveyard-payoff",
+        "mechanism": "mill-graveyard-payoff",
+        "participants": [
+          103422,
+          103546
+        ],
+        "claim": "Thranduil, Sindarin Liege // Silvan Rally supports Most Decrepit Old Bird // Speak Secrets through mill-graveyard-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103422,
+            "face_index": 0,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+          },
+          {
+            "card_id": 103546,
+            "face_index": 1,
+            "quote": "Mill four cards, then put up to two land cards from among them into your hand."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:990001:990001-fixture-trailing-mill:103422:103422-0-threshold-graveyard-payoff",
+        "mechanism": "mill-graveyard-payoff",
+        "participants": [
+          103422,
+          990001
+        ],
+        "claim": "Fixture trailing-condition mill supports the counted state.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103422,
+            "face_index": 0,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+          },
+          {
+            "card_id": 990001,
+            "face_index": null,
+            "quote": "Mill four cards if you control a Dwarf."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:990002:990002-fixture-next-action-mill:103422:103422-0-threshold-graveyard-payoff",
+        "mechanism": "mill-graveyard-payoff",
+        "participants": [
+          103422,
+          990002
+        ],
+        "claim": "Fixture next-action-condition mill supports the counted state.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103422,
+            "face_index": 0,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+          },
+          {
+            "card_id": 990002,
+            "face_index": null,
+            "quote": "Mill four cards, then if you control a Dwarf, draw a card."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff",
+        "mechanism": "recursion-graveyard-payoff",
+        "participants": [
+          103422,
+          103442
+        ],
+        "claim": "Gathering of Darkness supports Most Decrepit Old Bird // Speak Secrets through recursion-graveyard-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103422,
+            "face_index": 0,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+          },
+          {
+            "card_id": 103442,
+            "face_index": null,
+            "quote": "Return up to one target creature card from your graveyard to your hand."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103442:103442-amass-goblin-army-token:103381:103381-go-wide-power",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103381,
+          103442
+        ],
+        "claim": "Gathering of Darkness supports Esgaroth Garrison through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103381,
+            "face_index": null,
+            "quote": "Esgaroth Garrison's power is equal to the number of creatures you control."
+          },
+          {
+            "card_id": 103442,
+            "face_index": null,
+            "quote": "Amass Goblins 3. (Put three +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)"
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:990003:990003-fixture-army-maker:990010:990010-fixture-wide-payoff",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          990003,
+          990010
+        ],
+        "claim": "Fixture Army maker supports the fixture wide payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 990003,
+            "face_index": null,
+            "quote": "Create a 0/0 black Goblin Army creature token."
+          },
+          {
+            "card_id": 990010,
+            "face_index": null,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more creatures you control."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      }
+    ],
+    "rejected_findings": [],
+    "review": {
+      "state": "confirmed",
+      "reviewer_id": "draftomen-tui",
+      "reviewed_at": "2026-09-14T18:34:09.071794Z"
+    },
+    "confirmed_relationship_ids": [
+      "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103546:103546-f1-self-mill:103422:103422-0-threshold-graveyard-payoff",
+      "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:990001:990001-fixture-trailing-mill:103422:103422-0-threshold-graveyard-payoff",
+      "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:990002:990002-fixture-next-action-mill:103422:103422-0-threshold-graveyard-payoff",
+      "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103442:103442-amass-goblin-army-token:103381:103381-go-wide-power",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:990003:990003-fixture-army-maker:990010:990010-fixture-wide-payoff"
+    ]
+  }
+}

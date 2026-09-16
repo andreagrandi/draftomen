@@ -12,6 +12,7 @@ import pytest
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DeckBuilderConfig
 from draftomen.pickengine import PickEngine
+from draftomen.pool_ledger import relationship_enhancement_is_compatible
 from draftomen.profile_enhancement import ProfileEnhancementError
 from draftomen.profile_generation import (
     ProfileEnhancementProvenance,
@@ -65,7 +66,7 @@ from draftomen.semantic_relationship_records import (
     RelationshipTiming,
     RelationshipZone,
 )
-from draftomen.semantic_roles import Role
+from draftomen.semantic_roles import Role, resolve_card_roles
 from draftomen.set_profile import (
     EnhancementCardData,
     EnhancementStatus,
@@ -2533,3 +2534,86 @@ def test_typed_enrichment_set_and_card_data_mismatches_are_rejected() -> None:
         with pytest.raises(ProfileEnhancementError) as raised:
             _enhanced_generation(enrichment=artifact, card_database=generation_database)
         assert str(raised.value) == expected_error
+
+
+def test_confirmed_projection_roles_missing_from_the_classifier_survive_generated_profile_loading(
+    tmp_path: Path,
+) -> None:
+    # Production card data carries the canonical lowercase set code, and the runtime
+    # gate compares every card's set code with the casefolded profile set code.
+    database = CardDatabase(
+        cards={
+            card_id: replace(card, set_code="tst")
+            for card_id, card in _typed_database().cards.items()
+        }
+    )
+    artifact = _typed_enrichment_artifact(sources=_enrichment_sources(cards=database))
+    generated = _enhanced_generation(enrichment=artifact, card_database=database)
+    profile = generated.profile
+    assert profile.schema_version == 3
+    assert profile.enhancement is not None
+    assert profile.role_profile is not None
+
+    classifier_only = resolve_card_roles(database.cards[TYPED_TARGET_CARD_ID])
+    assert classifier_only.source == "local_classifier"
+    assert Role.GO_WIDE_PAYOFF not in {
+        assignment.role for assignment in classifier_only.assignments
+    }
+
+    def assert_merged_roles(set_profile: SetProfile) -> None:
+        enhancement = set_profile.enhancement
+        assert enhancement is not None
+        target = resolve_card_roles(
+            database.cards[TYPED_TARGET_CARD_ID],
+            profile=set_profile.role_profile,
+        )
+        assert target.source == "compiled_profile"
+        target_roles = {assignment.role: assignment for assignment in target.assignments}
+        assert Role.GO_WIDE_PAYOFF in target_roles
+        assert Role.TYPAL_MEMBER in target_roles
+        assert "compiled_profile" in target_roles[Role.TYPAL_MEMBER].provenance
+        assert "confirmed-enrichment" not in target_roles[Role.TYPAL_MEMBER].provenance
+        payoff = target_roles[Role.GO_WIDE_PAYOFF]
+        assert payoff.provenance == ("confirmed-enrichment",)
+        assert payoff.evidence == ("relationship:token-go-wide-payoff:301:11",)
+        assert payoff.parameters is None
+        assert payoff.confidence == enhancement.confidence
+
+        source = resolve_card_roles(
+            database.cards[TYPED_SOURCE_CARD_ID],
+            profile=set_profile.role_profile,
+        )
+        assert source.source == "compiled_profile"
+        assert any(assignment.role is Role.TOKEN_MAKER for assignment in source.assignments)
+
+    assert_merged_roles(profile)
+
+    path = tmp_path / "enrichment-roles-profile.json"
+    dump_set_profile(profile, path)
+    loaded = load_set_profile(path, expected_set_code="TST", expected_format="QuickDraft")
+    assert_merged_roles(loaded)
+    assert (
+        relationship_enhancement_is_compatible(set_profile=loaded, card_database=database)
+        is True
+    )
+
+
+def test_unprojected_relationship_adds_no_enrichment_roles() -> None:
+    enriched = _enhanced_generation(enrichment=_enrichment_artifact())
+    plain = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=_database(),
+        ratings=_ratings(),
+        generated_at=GENERATED_AT,
+        config=_config(),
+    )
+    role_profile = enriched.profile.role_profile
+    assert role_profile is not None
+    assert role_profile == plain.profile.role_profile
+    assert not any(
+        "confirmed-enrichment" in assignment.provenance
+        for card in role_profile.cards
+        for assignment in card.assignments
+    )

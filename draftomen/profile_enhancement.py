@@ -2,7 +2,10 @@
 
 The compiler is the only schema-three writer: it validates one already-decoded
 artifact against the exact generation inputs and maps it onto the profile-side
-enhancement vocabulary without inventing content.
+enhancement vocabulary without inventing content. Confirmed relationships may
+gain deterministic typed projections compiled from the retained capability
+facts of that same artifact; the recorded digest, review, runs, pins, and every
+stored finding stay exactly as the reviewed artifact supplied them.
 """
 
 from __future__ import annotations
@@ -11,6 +14,9 @@ import hashlib
 import re
 
 from draftomen.carddb import CardDatabase
+from draftomen.profile_relationship_projection import (
+    compile_confirmed_relationship_projections,
+)
 from draftomen.semantic_enrichment import (
     EnrichmentSources,
     SemanticEnrichmentArtifact,
@@ -66,7 +72,15 @@ def compile_profile_enhancement(
     set_code: str,
     card_database: CardDatabase,
 ) -> SetProfileEnhancement:
-    """Compile one confirmed artifact against the generation inputs."""
+    """Compile one confirmed artifact against the generation inputs.
+
+    The source artifact stays authoritative: its digest, review, provenance, and
+    stored findings are copied verbatim. Confirmed relationships are the one
+    compiled surface: eligible relationships gain a deterministic typed
+    projection derived only from the retained capability facts of this artifact
+    and the pinned card database, while every other relationship is returned
+    exactly as reviewed.
+    """
 
     if not isinstance(artifact, SemanticEnrichmentArtifact):
         raise ProfileEnhancementError(ARTIFACT_TYPE_ERROR)
@@ -97,7 +111,10 @@ def compile_profile_enhancement(
         for claim in artifact.guide_claims
         if claim.category == "mechanic" and claim.review.status is FindingStatus.ACCEPTED
     )
-    relationships = artifact.confirmed_relationships
+    relationships = compile_confirmed_relationship_projections(
+        artifact=artifact,
+        card_database=card_database,
+    )
     if not mechanics and not relationships:
         raise ProfileEnhancementError(NO_FINDINGS_ERROR)
     referenced_runs = {item.run_id for item in (*mechanics, *relationships)}

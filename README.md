@@ -124,6 +124,16 @@ card-database, and output paths. The producer and cache workflow, including
 remote manifest fields, validation, refresh, recovery, and explicit provider
 ingestion, is documented in [set profiles](docs/set-profiles.md).
 
+A confirmed enrichment run can be fed back into staged generation without
+repeating any analysis or making a model request: pass
+`--enrichment "$RUN/artifacts/<sha256>.json"` with `--stage early` and a pinned
+ratings file to generate one schema-3 profile that carries the confirmed
+enhancement and compiled roles. Generation also recovers eligible typed
+relationship projections from the artifact's retained capability facts.
+It preserves the saved artifact and leaves unsupported relationships intact.
+See [saved confirmed enrichment](docs/set-profiles.md#saved-confirmed-enrichment)
+for the offline command and validation requirements.
+
 To enrich one set from a published draft guide, use the interactive
 `enrich-set` command. It freezes the given guide URL and the pinned card data
 under the selected output directory, streams per-phase progress with running

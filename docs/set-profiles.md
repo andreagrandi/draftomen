@@ -184,6 +184,9 @@ The optional input and metadata options are:
 - `--draft-source-name NAME`: the exact source name to select from the
   manifest. It is required when the manifest contains more than one source
   and is not needed when it contains exactly one.
+- `--enrichment PATH`: a confirmed enrichment artifact at
+  `<run>/artifacts/<sha256>.json`. It uses the run's frozen guide and changes
+  nothing else about the selected stage.
 - `--profile-version VERSION`: the non-empty profile artifact version. It
   defaults to `1.0`.
 
@@ -216,6 +219,88 @@ Compute the digest over the exact file before replacing the placeholder (on
 macOS, `shasum -a 256 "$DUMP_FILE"` prints it). Keep the attribution and
 license entries accurate for the source you use; the generator records them
 but does not determine or grant rights.
+
+### Saved confirmed enrichment
+
+`--enrichment` feeds an already-reviewed enrichment run into staged generation
+without repeating any analysis and without a model or network request. The
+command itself never decodes the artifact and never searches a cache: it hands
+the path to the publication layer, which re-validates it against the requested
+set's card data before profile bytes exist.
+
+```sh
+RUN="$HOME/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943"
+SMOKE="$(mktemp -d)"
+uv run draftomen-tui generate-profile \
+  --set-code HOB \
+  --format QuickDraft \
+  --stage early \
+  --generated-at 2026-09-16T00:00:00Z \
+  --card-database-file "$RUN/sources/card-database.json" \
+  --ratings-file "$HOME/.draftomen/17lands/HOB-QuickDraft.json" \
+  --enrichment "$RUN/artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json" \
+  --output-dir "$SMOKE/generated"
+```
+
+The loader accepts only the run's own frozen inputs. The artifact file name
+must be the SHA-256 of its exact bytes; malformed UTF-8 or JSON, duplicate
+object keys, non-finite constants, and a digest that does not match the name
+are rejected. Card pins, guide quotes, Oracle quotes, relationship projections,
+and the review must all bind to the requested set's pinned card data through
+`_requested_card_database`: the artifact's `set_source_sha256` must equal the
+semantic digest of those cards. When the artifact pins exactly one guide, the
+loader reads `<run>/sources/guide.json` and validates the frozen record's
+schema, guide identity, requested and final URL, retrieval timestamp, and text
+hash; an artifact that pins no guide reads no guide file, and one that pins
+more than one is rejected rather than guessing or fetching a source. An
+unconfirmed or cancelled review is rejected by the compiler, exactly as for an
+in-process artifact. Invalid inputs exit `1` before new profile artifacts or
+the generation marker are written, so the last valid generation stays
+authoritative. Loader failures use a bounded message without source text.
+Supplying both the in-process artifact argument and
+`--enrichment` is rejected instead of picking an implicit precedence.
+
+An explicitly supplied `--enrichment` counts as one input in `input_count`. The
+path never enters the generation report; the enhancement provenance already
+records the artifact's canonical digest, and publication reconciles it against
+the published block.
+
+For confirmed local-matcher relationships, generation can compile missing
+typed projections from the capability facts already stored in the artifact.
+It needs neither the work-response directory nor another model request.
+Each compiled clause must bind to the pinned Oracle text, retain the
+capability's prerequisites, and pass the existing source and role checks.
+Missing or ambiguous evidence and unrepresented conditions leave the
+relationship unprojected. For example, generation must not turn conditional
+Amass token creation into an unconditional token source.
+
+This is a generated representation of the confirmed input, not a new review.
+The original artifact bytes, canonical digest, review and confidence remain
+unchanged. Existing projections and all confirmed relationships are retained;
+additional evidence consists only of exact spans from the frozen sources.
+The profile records the original artifact digest and generator version.
+No relationship is silently removed because it cannot be projected.
+
+Because the artifact is compiled into a schema-3 profile, the generated profile
+carries a role profile at `early` and `mature` even when the artifact supplies
+no draft dump: the compiled roles of every confirmed relationship that carries
+a projection matching the declared enabler-to-payoff rules are merged into the
+generated role profile, so participants the local classifier misses still
+resolve. Existing classifier assignments keep their confidence, parameters,
+provenance, and evidence. A relationship that still has no projection contributes
+no additional role or typed relationship support. `metadata` still omits the
+role profile. The runtime compatibility gate is unchanged and still requires
+a source-compatible projected relationship; preserving a relationship alone
+does not make it usable for scoring.
+
+The command writes only below the fresh `$SMOKE` directory. It does not
+overwrite the saved confirmation, install a user profile, or publish a website
+manifest. Verify the generated profile through `load_scoring_profile` and a
+`LiveSession` before installing it; the required availability state is
+`available`. A profile can retain every confirmed relationship while only a
+subset has sufficiently complete evidence for typed scoring.
+Use the updated Draft Omen checkout or build for this verification. Generating
+a profile does not update an already-installed native application.
 
 ### Lifecycle stages
 
@@ -1664,11 +1749,12 @@ Provider-qualified identifiers such as `openai/gpt-5.6-luna` stay valid. The
 key is absent — with byte-identical report output — when no artifact is
 compiled. Publication reconciles that provenance against the published block
 during validation.
-`generate-profile` has no artifact input flag yet, so the CLI keeps publishing
-schema 1 or schema 2 until the interactive enrichment review workflow supplies
-the artifact in process. The generic fallback never carries enhancement data;
-the profile fingerprint, the SHA-256 of the canonical bytes, covers the block's
-content and provenance.
+`generate-profile --enrichment` is the artifact input path for the CLI, so a
+refresh can reproduce an enriched publication from the stored run without a
+bespoke script; without it the CLI keeps publishing schema 1 or schema 2, and
+the interactive enrichment review workflow supplies the artifact in process.
+The generic fallback never carries enhancement data; the profile fingerprint,
+the SHA-256 of the canonical bytes, covers the block's content and provenance.
 
 The block reuses the semantic-enrichment record types (`CardSourcePin`,
 `GuideSourcePin`, `ModelRun`, `GuideClaim`, `CardRelationship`,
@@ -1706,6 +1792,13 @@ reused for v2 requests.
 The optional `role_profile` object carries compiled per-card semantic roles. It
 uses the existing semantic-role vocabulary and assignment types, and declares
 `schema_version`, `role_schema_version`, `classifier_version`, and `cards`.
+Generated profiles compile the local classifier, and an enhanced generation
+additionally merges the roles declared by every confirmed relationship that
+carries a projection matching the declared compatibility rules. A merged
+`confirmed-enrichment` assignment records the relationship's finding identity
+as evidence and the artifact's review confidence, and never replaces an
+existing assignment for the same role; the runtime resolver therefore reads
+both the classifier's assignments and the confirmed ones.
 Unknown optional fields are ignored so producers can add fields without making
 older readers unsafe. Required fields, field types, finite numeric values,
 color-pair coverage where supplied, role assignments, maturity evidence
@@ -2002,6 +2095,12 @@ unchanged to `RoleClassifier.resolve`, which performs the compatibility check
 and falls back to local classification. An incompatible profile therefore falls
 back wholly to the local classifier; roles are never merged across versions.
 Missing empirical sections do not remove a valid semantic role profile.
+
+Resolution precedence inside one compatible profile is unchanged: a compiled
+entry for a card wins over the classifier, and a card the profile does not
+cover falls back to local classification. Confirmed-projection roles compiled
+into a generated profile are ordinary compiled assignments, so they take that
+same precedence and are subject to the same version check.
 
 ## Deliberate exclusions
 

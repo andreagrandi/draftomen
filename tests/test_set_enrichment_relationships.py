@@ -2926,28 +2926,40 @@ RECORD_FODDER_CARD_NAME = "Record Fodder"
 RECORD_FODDER_SACRIFICE_PARAGRAPH = "Sacrifice this creature: Draw a card."
 RECORD_FODDER_RETURN_PARAGRAPH = "Return this card from your graveyard to your hand."
 RECORD_FODDER_DIES_PARAGRAPH = "Whenever this creature dies, draw a card."
+RECORD_MILL_THEN_PARAGRAPH = (
+    "Mill four cards, then put up to two land cards from among them into your hand. "
+    "(Then exile this card. You may cast the creature later from exile.)"
+)
+RECORD_COST_EFFECT_PARAGRAPH = (
+    "Sacrifice an artifact or creature: Return this card from your graveyard to your hand."
+)
+RECORD_RETURN_TRAILING_PARAGRAPH = "Return target creature card from your graveyard to your hand."
 
 
 def _record_self_prerequisite(
     *,
     paragraph: str,
     kind: PrerequisiteKind = PrerequisiteKind.CONDITION,
+    subject: str = "participant",
     operation: str = "sacrifice",
     operation_quote: str | None = None,
     object_kind: str = "permanent",
     card_types: tuple[str, ...] = ("creature",),
+    type_operator: str = "all_of",
     object_quote: str = "this creature",
+    quantity: CapabilityQuantity | None = None,
     source_zone: RelationshipZone | None = None,
     destination_zone: RelationshipZone | None = None,
+    required_card_id: int | None = RECORD_FODDER_CARD_ID,
 ) -> RelationshipPrerequisite:
-    """Build one self-bound clause of a sacrifice-fodder participant."""
+    """Build one clause of a single-clause record participant."""
     return RelationshipPrerequisite(
         kind=kind,
-        subject="participant",
+        subject=subject,
         operation=operation,
         object_kind=object_kind,
         card_types=card_types,
-        type_operator="all_of",
+        type_operator=type_operator,
         token_restriction="unrestricted",
         exclusion="none",
         subtype=None,
@@ -2955,11 +2967,11 @@ def _record_self_prerequisite(
         colors=(),
         controller="you",
         owner="not_applicable",
-        quantity=None,
+        quantity=quantity,
         source_zone=source_zone,
         destination_zone=destination_zone,
         timing=_record_timing(),
-        required_card_id=RECORD_FODDER_CARD_ID,
+        required_card_id=required_card_id,
         evidence=OracleEvidence(
             card_id=RECORD_FODDER_CARD_ID,
             face_index=None,
@@ -2973,8 +2985,12 @@ def _record_self_prerequisite(
     )
 
 
-def _record_fodder_participant(clause: RelationshipPrerequisite) -> RelationshipParticipant:
-    """Build one sacrifice-fodder participant carrying a single self-bound clause."""
+def _record_source_participant(
+    clause: RelationshipPrerequisite,
+    *,
+    role: Role = Role.SACRIFICE_FODDER,
+) -> RelationshipParticipant:
+    """Build one record source participant carrying a single clause in the given role."""
     return RelationshipParticipant(
         card_id=RECORD_FODDER_CARD_ID,
         capability_id="capability-record-fodder",
@@ -2984,7 +3000,7 @@ def _record_fodder_participant(clause: RelationshipPrerequisite) -> Relationship
         card_source_sha256=card_source_sha256(
             _card(RECORD_FODDER_CARD_ID, RECORD_FODDER_CARD_NAME, clause.evidence.quote)
         ),
-        role=Role.SACRIFICE_FODDER,
+        role=role,
         capability_prerequisites=(),
         prerequisites=(clause,),
     )
@@ -3011,25 +3027,116 @@ def test_prerequisite_record_sacrifice_fodder_anchor_requires_a_self_bound_claus
         destination_zone=_record_zone(zone=CapabilityZone.GRAVEYARD, player="owner"),
     )
 
-    assert role_anchor_covered(participant=_record_fodder_participant(sacrifice)) is True
-    assert role_anchor_covered(participant=_record_fodder_participant(returned)) is True
-    assert role_anchor_covered(participant=_record_fodder_participant(dies)) is False
+    assert role_anchor_covered(participant=_record_source_participant(sacrifice)) is True
+    assert role_anchor_covered(participant=_record_source_participant(returned)) is True
+    assert role_anchor_covered(participant=_record_source_participant(dies)) is False
 
     for clause in (sacrifice, returned):
         validate_prerequisite_projection(
             projection=_record_projection(
-                source=_record_fodder_participant(clause),
+                source=_record_source_participant(clause),
                 target=_record_target_participant(),
             )
         )
 
     with pytest.raises(PrerequisiteProjectionError) as anchor_error:
         _record_projection(
-            source=_record_fodder_participant(dies),
+            source=_record_source_participant(dies),
             target=_record_target_participant(),
         )
 
     assert anchor_error.value.code == "incomplete"
+
+
+def test_prerequisite_record_clause_window_stops_at_the_next_instruction() -> None:
+    """The `, then` instruction cannot claim the mill clause's zones; a wrong declared zone fails."""
+    mill = _record_self_prerequisite(
+        paragraph=RECORD_MILL_THEN_PARAGRAPH,
+        subject="event",
+        operation="mill",
+        operation_quote="Mill four cards",
+        object_kind="card",
+        card_types=(),
+        type_operator="unrestricted",
+        object_quote="four cards",
+        quantity=CapabilityQuantity(value=4, relation=QuantityRelation.EXACTLY),
+        source_zone=_record_zone(zone=CapabilityZone.LIBRARY, player="you"),
+        destination_zone=_record_zone(zone=CapabilityZone.GRAVEYARD, player="you"),
+        required_card_id=None,
+    )
+
+    validate_prerequisite_projection(
+        projection=_record_projection(
+            source=_record_source_participant(mill, role=Role.SELF_MILL),
+            target=_record_target_participant(),
+        )
+    )
+
+    with pytest.raises(PrerequisiteProjectionError) as zone_error:
+        validate_prerequisite_projection(
+            projection=_record_projection(
+                source=_record_source_participant(
+                    replace(
+                        mill,
+                        destination_zone=_record_zone(zone=CapabilityZone.HAND, player="you"),
+                    ),
+                    role=Role.SELF_MILL,
+                ),
+                target=_record_target_participant(),
+            )
+        )
+
+    assert zone_error.value.code == "contradiction"
+
+
+def test_prerequisite_record_clause_window_stops_at_the_cost_effect_colon() -> None:
+    """The effect of a cost/effect colon cannot claim the cost clause's source zone."""
+    cost = _record_self_prerequisite(
+        paragraph=RECORD_COST_EFFECT_PARAGRAPH,
+        kind=PrerequisiteKind.COST,
+        subject="input",
+        operation="sacrifice",
+        operation_quote="Sacrifice",
+        object_quote="an artifact or creature",
+        card_types=("artifact", "creature"),
+        type_operator="any_of",
+        quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
+        source_zone=_record_zone(zone=CapabilityZone.BATTLEFIELD, player="you"),
+        destination_zone=_record_zone(zone=CapabilityZone.GRAVEYARD, player="owner"),
+        required_card_id=None,
+    )
+
+    validate_prerequisite_projection(
+        projection=_record_projection(
+            source=_record_source_participant(cost, role=Role.SACRIFICE_OUTLET),
+            target=_record_target_participant(),
+        )
+    )
+
+
+def test_prerequisite_record_clause_window_keeps_a_trailing_zone_of_the_same_instruction() -> None:
+    """A zone stated after the object inside its own instruction still contradicts the record."""
+    returned = _record_self_prerequisite(
+        paragraph=RECORD_RETURN_TRAILING_PARAGRAPH,
+        subject="output",
+        operation="return",
+        operation_quote="Return",
+        object_kind="card",
+        object_quote="target creature card from your graveyard",
+        source_zone=_record_zone(zone=CapabilityZone.GRAVEYARD, player="you"),
+        destination_zone=_record_zone(zone=CapabilityZone.BATTLEFIELD, player="you"),
+        required_card_id=None,
+    )
+
+    with pytest.raises(PrerequisiteProjectionError) as zone_error:
+        validate_prerequisite_projection(
+            projection=_record_projection(
+                source=_record_source_participant(returned, role=Role.RECURSION),
+                target=_record_target_participant(),
+            )
+        )
+
+    assert zone_error.value.code == "contradiction"
 
 
 TYPED_SOURCE_ID = 301
