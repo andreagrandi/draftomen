@@ -435,6 +435,43 @@ Item {
                     }
                 }
             }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: developerLayout.implicitHeight + 32
+                color: Theme.surfaceLow
+                border.color: Theme.outline
+                border.width: 1
+                radius: Theme.radius
+
+                ColumnLayout {
+                    id: developerLayout
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 12
+                    Label { text: "DEVELOPER"; color: Theme.primary; font.pixelSize: Theme.textPixelSize(10); font.bold: true; font.letterSpacing: 1.1 }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Label { text: "Mocked Draft"; color: Theme.text; font.bold: true }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "Run a simulated draft against a pinned Draftmancer checkout and server."
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.textPixelSize(11)
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        SettingsSwitch {
+                            objectName: "settingsMockedDraftSwitch"
+                            checked: root.displayPreferences.mockedDraftEnabled
+                            Accessible.name: "Mocked Draft"
+                            Accessible.description: "Run a simulated draft against a pinned Draftmancer checkout and server. Saved for this desktop application."
+                            onToggled: root.displayPreferences.setMockedDraftEnabled(checked)
+                        }
+                    }
+                }
+            }
             Item { Layout.preferredHeight: 12 }
         }
     }

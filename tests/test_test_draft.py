@@ -25,6 +25,7 @@ from draftomen.draftmancer import (
     DraftmancerConfig,
 )
 from draftomen.events import PackOfferedEvent
+from draftomen.paths import app_data_dir
 from draftomen.pool import (
     DraftPick,
     DraftState,
@@ -64,6 +65,8 @@ from draftomen.test_draft import (
     TestDraftRunResult,
     TestDraftRuntime,
     create_test_draft_runtime,
+    default_test_draft_bulk_file,
+    default_test_draft_checkout_dir,
     run_test_draft_auto,
     supported_test_draft_set_codes,
 )
@@ -1965,3 +1968,25 @@ def test_runtime_concurrent_close_retires_resources_exactly_once(
     assert not simulation_dir.exists()
     assert list(temporary_root.iterdir()) == []
     _assert_tree_unchanged(root=sources.normal_app_dir, recorded=recorded)
+
+
+def test_default_test_draft_checkout_dir_composes_under_the_application_data_directory(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app-data"
+
+    assert default_test_draft_checkout_dir(app_dir=app_dir) == app_dir / "draftmancer"
+    assert default_test_draft_checkout_dir() == app_data_dir() / "draftmancer"
+
+
+def test_default_test_draft_bulk_file_composes_under_the_application_data_directory(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app-data"
+
+    assert default_test_draft_bulk_file(app_dir=app_dir) == (
+        app_dir / "corpus-cache" / "sources" / "scryfall-default-cards.jsonl.gz"
+    )
+    assert default_test_draft_bulk_file() == (
+        app_data_dir() / "corpus-cache" / "sources" / "scryfall-default-cards.jsonl.gz"
+    )

@@ -110,8 +110,8 @@ Rectangle {
             objectName: "testDraftButton"
             visible: root.testDraft !== null && root.testDraft.enabled === true
             accented: root.testDraft !== null && root.testDraft.active === true
-            text: "Test Draft"
-            Accessible.name: "Open Test Draft controls"
+            text: "Mocked Draft"
+            Accessible.name: "Open Mocked Draft controls"
             Accessible.description: "Start or leave a developer simulated draft."
             onClicked: root.testDraftRequested(testDraftButton)
         }

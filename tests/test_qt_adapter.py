@@ -31,7 +31,11 @@ from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cardimages import CardImageService
 from draftomen.mock_session import MockLiveSession
 from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
-from draftomen.preferences import GuiDisplayPreferences, save_gui_preferences
+from draftomen.preferences import (
+    GuiDisplayPreferences,
+    gui_preferences_path,
+    save_gui_preferences,
+)
 from draftomen.profile_client import (
     ProfileClient,
     ProfileNetworkPolicy,
@@ -1710,6 +1714,67 @@ def test_gui_preferences_adapter_persists_display_choices_independently(
     finally:
         adapter.shutdown()
 
+
+def test_gui_preferences_adapter_persists_mocked_draft_toggle_once(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_calls: list[GuiDisplayPreferences] = []
+
+    def recording_save(
+        *,
+        preferences: GuiDisplayPreferences,
+        app_dir: str | PathLike[str] | None,
+    ) -> str | None:
+        save_calls.append(preferences)
+        return save_gui_preferences(preferences=preferences, app_dir=app_dir)
+
+    monkeypatch.setattr("draftomen.qt_adapter.save_gui_preferences", recording_save)
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(parents=True)
+    # A schema v1 file written before the Mocked Draft setting existed.
+    gui_preferences_path(app_dir=app_dir).write_text(
+        json.dumps({"version": 1, "display": {"secondary_stats": False}}),
+        encoding="utf-8",
+    )
+    adapter = GuiPreferencesAdapter(app_dir=app_dir)
+    changes: list[bool] = []
+    adapter.mockedDraftEnabledChanged.connect(changes.append)
+
+    try:
+        assert adapter.mockedDraftEnabled is False
+        assert adapter.secondaryStats is False
+        assert adapter.preferences.mocked_draft_checkout_dir == ""
+        assert adapter.preferences.mocked_draft_server_url == ""
+
+        adapter.setMockedDraftEnabled(True)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.persistenceMessage == "Saved",
+            description="the persisted Mocked Draft setting",
+        )
+        assert changes == [True]
+        assert len(save_calls) == 1
+        assert save_calls[0].mocked_draft_enabled is True
+
+        adapter.setMockedDraftEnabled(True)
+        repeat_deadline = time.monotonic() + 0.1
+        while time.monotonic() < repeat_deadline:
+            qcore_application.processEvents()
+            time.sleep(0.001)
+        assert changes == [True]
+        assert len(save_calls) == 1
+
+        reloaded = GuiPreferencesAdapter(app_dir=app_dir)
+        try:
+            assert reloaded.mockedDraftEnabled is True
+        finally:
+            reloaded.shutdown()
+    finally:
+        adapter.shutdown()
+
+
 def test_gui_preferences_adapter_exposes_saving_and_ignores_stale_completion(
     qcore_application: QCoreApplication,
     tmp_path: Path,
@@ -2678,12 +2743,14 @@ class _RecordingTestDraftFactory:
         self.create_error = create_error
         self.supported_error = supported_error
         self.supported_calls = 0
+        self.supported_thread_ids: list[int] = []
         self.create_calls: list[dict[str, object]] = []
         self.create_thread_ids: list[int] = []
         self.publishers: list[SnapshotPublisher] = []
 
     def supported_set_codes(self) -> tuple[str, ...]:
         self.supported_calls += 1
+        self.supported_thread_ids.append(threading.get_ident())
         if self.supported_error is not None:
             raise self.supported_error
         return self.set_codes
@@ -3214,6 +3281,235 @@ def test_live_adapter_start_failure_keeps_arena_authoritative(
         assert adapter.state["test_draft"]["offer_generation"] == 0
         assert len(factory.create_calls) == 1
         assert session.commands == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_installs_mocked_draft_factory_without_restart(
+    qcore_application: QCoreApplication,
+) -> None:
+    gui_thread_id = threading.get_ident()
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    factory = _RecordingTestDraftFactory(set_codes=("lci", "hob"))
+    adapter = LiveSessionAdapter(session_factory=session_factory, poll_interval_ms=5)
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        assert adapter.state["test_draft"] == _DISABLED_TEST_DRAFT_STATE
+
+        adapter.setTestDraftFactory(cast("TestDraftFactory", factory))
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["enabled"] is True,
+            description="the installed Mocked Draft capability",
+        )
+        assert adapter.state["test_draft"]["supported_set_codes"] == ["lci", "hob"]
+        assert adapter.state["test_draft"]["default_set_code"] == "hob"
+        assert adapter.state["test_draft"]["phase"] == "idle"
+        assert adapter.state["test_draft"]["active"] is False
+        assert adapter.state["test_draft"]["error"] is None
+        assert factory.supported_calls == 1
+        assert factory.supported_thread_ids[0] != gui_thread_id
+        assert factory.create_calls == []
+        arena = arenas[0]
+        assert arena.commands == []
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_clearing_mocked_draft_factory_restores_arena_authority(
+    qcore_application: QCoreApplication,
+) -> None:
+    runtime = _FakeTestDraftRuntime()
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        # A long interval keeps Arena polls countable: only explicit polls run.
+        poll_interval_ms=600_000,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        arena = arenas[0]
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        assert adapter.state["test_draft"]["active"] is True
+        assert adapter.state["pool"]["total_cards"] == _SIMULATED_POOL_TOTAL_CARDS
+        adapter.setContextualScoringEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: runtime.session.commands
+            == [ChangeContextualScoring(enabled=False)],
+            description="the preference change inside the simulated draft",
+        )
+        assert arena.commands == []
+        polls_before_clear = len(arena.poll_thread_ids)
+
+        adapter.setTestDraftFactory(None)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]
+            == _DISABLED_TEST_DRAFT_STATE,
+            description="the cleared Mocked Draft capability",
+        )
+        assert len(arena.poll_thread_ids) == polls_before_clear + 1
+        assert runtime.cancel_calls == 1
+        assert runtime.close_calls == 1
+        assert adapter.state["errors"] == []
+        assert adapter.state["status"]["phase"] != "error"
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+        assert arena.commands == [ChangeContextualScoring(enabled=False)]
+        assert adapter.state["contextual_adjustments_enabled"] is False
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_applies_mocked_draft_toggle_after_a_blocked_start(
+    qcore_application: QCoreApplication,
+) -> None:
+    gui_thread_id = threading.get_ident()
+    controller = _FakeTestDraftController(start_blocks=True)
+    runtime = _FakeTestDraftRuntime(controller=controller)
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    ticks = _GuiTickCounter()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: controller.started.is_set()
+            and adapter.state["test_draft"]["phase"] == "starting",
+            description="the blocked Test Draft start",
+        )
+        assert controller.start_thread_ids[0] != gui_thread_id
+
+        adapter.setTestDraftFactory(None)
+        ticks_before_release = ticks.ticks
+        blocked_deadline = time.monotonic() + 0.2
+        while time.monotonic() < blocked_deadline:
+            qcore_application.processEvents()
+            time.sleep(0.001)
+        # The toggle waits behind the blocked start while both threads run on.
+        assert ticks.ticks > ticks_before_release
+        assert adapter.state["test_draft"]["enabled"] is True
+        assert runtime.close_calls == 0
+
+        controller.release.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]
+            == _DISABLED_TEST_DRAFT_STATE,
+            description="the Mocked Draft toggle applied after the blocked start",
+        )
+        assert runtime.close_calls == 1
+        assert adapter.state["errors"] == []
+        arena = arenas[0]
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(arena.poll_thread_ids) >= 2,
+            description="Arena polling after the cleared Mocked Draft capability",
+        )
+        assert len(factory.create_calls) == 1
+    finally:
+        ticks.stop()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_ignores_reinstalling_the_same_mocked_draft_factory(
+    qcore_application: QCoreApplication,
+) -> None:
+    controller = _FakeTestDraftController()
+    runtime = _FakeTestDraftRuntime(controller=controller)
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        active_state = dict(adapter.state["test_draft"])
+
+        adapter.setTestDraftFactory(cast("TestDraftFactory", factory))
+        repeat_deadline = time.monotonic() + 0.1
+        while time.monotonic() < repeat_deadline:
+            qcore_application.processEvents()
+            time.sleep(0.001)
+        assert adapter.state["test_draft"] == active_state
+        assert adapter.state["test_draft"]["active"] is True
+        assert adapter.state["test_draft"]["offer_generation"] == 1
+        assert factory.supported_calls == 1
+        assert runtime.close_calls == 0
+        assert controller.cancelled.is_set() is False
     finally:
         adapter.shutdown()
         adapter.wait_for_shutdown()

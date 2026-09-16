@@ -21,6 +21,7 @@ from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.profile_client import ProfileClient, ProfileNetworkPolicy
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.pool import load_draft_state
+from draftomen.preferences import GuiDisplayPreferences
 from draftomen.qt_gui import (
     APPLICATION_NAME,
     DEFAULT_PROFILE_MANIFEST_URL,
@@ -39,6 +40,11 @@ from draftomen.qt_gui import (
 from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_mock import MockSessionAdapter
 from draftomen.set_profile import load_set_profile
+from draftomen.test_draft import (
+    DEFAULT_TEST_DRAFT_SERVER_URL,
+    default_test_draft_bulk_file,
+    default_test_draft_checkout_dir,
+)
 
 
 FIXTURE_ACCOUNT_ID = "FIXTURECLIENTID1234567890"
@@ -202,7 +208,7 @@ def test_mock_gui_provider_does_not_construct_live_profile_client(
 
     provider = _build_provider(
         args=args,
-        contextual_adjustments_enabled=True,
+        preferences=GuiDisplayPreferences(contextual_adjustments_enabled=True),
     )
 
     assert isinstance(provider, MockSessionAdapter)
@@ -225,7 +231,10 @@ def test_live_gui_rejects_nonpositive_poll_interval_before_live_construction(
         ValueError,
         match=r"^--poll-interval must be greater than zero\.$",
     ):
-        _build_provider(args=args, contextual_adjustments_enabled=True)
+        _build_provider(
+            args=args,
+            preferences=GuiDisplayPreferences(contextual_adjustments_enabled=True),
+        )
 
 
 
@@ -281,7 +290,7 @@ def test_live_gui_profile_flags_use_cached_provider_state_without_network(
     )
     provider = _build_provider(
         args=args,
-        contextual_adjustments_enabled=True,
+        preferences=GuiDisplayPreferences(contextual_adjustments_enabled=True),
     )
     assert isinstance(provider, LiveSessionAdapter)
 
@@ -320,7 +329,7 @@ def test_live_gui_profile_flags_use_cached_provider_state_without_network(
     )
     fallback_provider = _build_provider(
         args=fallback_args,
-        contextual_adjustments_enabled=True,
+        preferences=GuiDisplayPreferences(contextual_adjustments_enabled=True),
     )
     fallback_session = fallback_provider._session_factory(  # type: ignore[attr-defined]
         lambda snapshot: None
@@ -349,21 +358,88 @@ def test_gui_provider_exposes_test_draft_capability_only_with_the_opt_in(
         "--no-startup-scan",
     ]
 
-    arena_only = _build_provider(
+    configured_checkout = tmp_path / "Draftmancer"
+    checkout_configured = _build_provider(
         args=_parser().parse_args(base_args),
-        contextual_adjustments_enabled=False,
-    )
-
-    assert arena_only.state["test_draft"]["enabled"] is False
-
-    opted_in = _build_provider(
-        args=_parser().parse_args(
-            [*base_args, "--draftmancer-dir", str(tmp_path / "Draftmancer")]
+        preferences=GuiDisplayPreferences(
+            mocked_draft_checkout_dir=str(configured_checkout)
         ),
-        contextual_adjustments_enabled=False,
     )
 
-    assert opted_in.state["test_draft"]["enabled"] is True
+    assert checkout_configured.state["test_draft"]["enabled"] is False
+
+    flagged = _build_provider(
+        args=_parser().parse_args(
+            [*base_args, "--draftmancer-dir", str(configured_checkout)]
+        ),
+        preferences=GuiDisplayPreferences(),
+    )
+
+    assert flagged.state["test_draft"]["enabled"] is True
+
+    setting_enabled = _build_provider(
+        args=_parser().parse_args(base_args),
+        preferences=GuiDisplayPreferences(mocked_draft_enabled=True),
+    )
+
+    assert setting_enabled.state["test_draft"]["enabled"] is True
+
+
+def test_gui_mocked_draft_resolves_application_data_defaults_and_flag_precedence(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    base_args = [
+        "--provider",
+        "live",
+        "--app-dir",
+        str(app_dir),
+        "--log-path",
+        str(tmp_path / "Player.log"),
+        "--poll-interval",
+        "0.01",
+        "--no-startup-scan",
+    ]
+
+    defaulted = _build_provider(
+        args=_parser().parse_args(base_args),
+        preferences=GuiDisplayPreferences(mocked_draft_enabled=True),
+    )
+    defaulted_factory = defaulted._test_draft_factory  # type: ignore[attr-defined]
+
+    assert defaulted_factory is not None
+    assert defaulted_factory._draftmancer_dir == default_test_draft_checkout_dir(
+        app_dir=app_dir,
+    )
+    assert defaulted_factory._scryfall_bulk_file == default_test_draft_bulk_file(
+        app_dir=app_dir,
+    )
+    assert defaulted_factory._server_url == DEFAULT_TEST_DRAFT_SERVER_URL
+
+    overridden = _build_provider(
+        args=_parser().parse_args(
+            [
+                *base_args,
+                "--draftmancer-dir",
+                str(tmp_path / "flagged-checkout"),
+                "--scryfall-bulk-file",
+                str(tmp_path / "flagged-cards.jsonl.gz"),
+                "--test-draft-server-url",
+                "http://127.0.0.1:3999",
+            ]
+        ),
+        preferences=GuiDisplayPreferences(
+            mocked_draft_enabled=True,
+            mocked_draft_checkout_dir=str(tmp_path / "persisted-checkout"),
+            mocked_draft_server_url="http://127.0.0.1:3888",
+        ),
+    )
+    overridden_factory = overridden._test_draft_factory  # type: ignore[attr-defined]
+
+    assert overridden_factory is not None
+    assert overridden_factory._draftmancer_dir == tmp_path / "flagged-checkout"
+    assert overridden_factory._scryfall_bulk_file == tmp_path / "flagged-cards.jsonl.gz"
+    assert overridden_factory._server_url == "http://127.0.0.1:3999"
 
 
 def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
@@ -394,7 +470,7 @@ def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
                 "--no-startup-scan",
             ]
         ),
-        contextual_adjustments_enabled=False,
+        preferences=GuiDisplayPreferences(contextual_adjustments_enabled=False),
     )
 
     factory = provider._test_draft_factory  # type: ignore[attr-defined]
@@ -458,6 +534,7 @@ def test_verify_bundled_profile_failure_exits_before_gui_setup(
 def test_test_draft_smoke_requires_the_opt_in_before_gui_setup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     class GuiSetupReached(AssertionError):
         """Signal that the smoke guard let the run reach GUI setup."""
@@ -475,12 +552,23 @@ def test_test_draft_smoke_requires_the_opt_in_before_gui_setup(
     monkeypatch.setattr("draftomen.qt_gui.QQuickStyle", UnexpectedStyle)
     monkeypatch.setattr("draftomen.qt_gui.QGuiApplication", unexpected_gui_setup)
 
+    disabled_app_dir = tmp_path / "disabled-app"
     assert (
         run_gui(
-            argv=["--test-draft-smoke", "--provider", "live"],
+            argv=[
+                "--test-draft-smoke",
+                "--provider",
+                "live",
+                "--app-dir",
+                str(disabled_app_dir),
+            ],
             forced_provider="live",
         )
         == 1
+    )
+    assert (
+        "--test-draft-smoke requires --draftmancer-dir or an enabled Mocked Draft "
+        "setting with the live provider." in capsys.readouterr().err
     )
     assert (
         run_gui(
@@ -496,6 +584,24 @@ def test_test_draft_smoke_requires_the_opt_in_before_gui_setup(
         == 1
     )
 
+    enabled_app_dir = tmp_path / "enabled-app"
+    enabled_app_dir.mkdir()
+    (enabled_app_dir / "gui-preferences.json").write_text(
+        json.dumps({"version": 1, "display": {"mocked_draft_enabled": True}}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GuiSetupReached):
+        run_gui(
+            argv=[
+                "--test-draft-smoke",
+                "--provider",
+                "live",
+                "--app-dir",
+                str(enabled_app_dir),
+            ],
+            forced_provider="live",
+        )
     with pytest.raises(GuiSetupReached):
         run_gui(
             argv=[
@@ -1728,7 +1834,7 @@ def startup_case(*, name, contextual_enabled, legacy):
         assert args.startup_scan is True
         provider = qt_gui._build_provider(
             args=args,
-            contextual_adjustments_enabled=preferences.contextualAdjustmentsEnabled,
+            preferences=preferences.preferences,
         )
         assert isinstance(provider, LiveSessionAdapter)
         assert provider._startup_scan is True
@@ -6692,6 +6798,36 @@ with TemporaryDirectory() as preferences_dir:
     assert accessible_persistence.text(QAccessible.Text.Name) == "Saved"
     assert accessible_persistence.text(QAccessible.Text.Description)
     assert persistence_message.width() <= status_strip.width()
+    mocked_draft_switch = root.findChild(QObject, "settingsMockedDraftSwitch")
+    assert mocked_draft_switch is not None
+    assert mocked_draft_switch.property("checked") is False
+    assert preferences.mockedDraftEnabled is False
+    accessible_mocked_draft = QAccessible.queryAccessibleInterface(
+        mocked_draft_switch
+    )
+    assert accessible_mocked_draft is not None
+    assert accessible_mocked_draft.text(QAccessible.Text.Name) == "Mocked Draft"
+    assert accessible_mocked_draft.text(QAccessible.Text.Description) == (
+        "Run a simulated draft against a pinned Draftmancer checkout and server. "
+        "Saved for this desktop application."
+    )
+    mocked_draft_switch.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    application.processEvents()
+    assert mocked_draft_switch.property("checked") is True
+    assert preferences.mockedDraftEnabled is True
+    wait_for_saved(preferences)
+    persisted_mocked_draft_preferences = GuiPreferencesAdapter(
+        app_dir=preferences_dir
+    )
+    try:
+        assert persisted_mocked_draft_preferences.mockedDraftEnabled is True
+    finally:
+        persisted_mocked_draft_preferences.shutdown()
+    QTest.keyClick(root, Qt.Key_Space)
+    application.processEvents()
+    assert mocked_draft_switch.property("checked") is False
+    assert preferences.mockedDraftEnabled is False
     names = (
         "settingsSplashSwitch",
         "settingsShowBacktestSwitch",
@@ -6702,6 +6838,7 @@ with TemporaryDirectory() as preferences_dir:
         "settingsCardPreviewSwitch",
         "settingsDetailedBuildContextSwitch",
         "settingsSystemTextScalingSwitch",
+        "settingsMockedDraftSwitch",
     )
     switches = [root.findChild(QObject, name) for name in names]
     assert all(switch is not None for switch in switches)
@@ -6713,7 +6850,7 @@ with TemporaryDirectory() as preferences_dir:
         switch for switch in switches if not switch.property("checked")
     ]
     assert len(checked_switches) == 7
-    assert len(unchecked_switches) == 2
+    assert len(unchecked_switches) == 3
     for switch in switches:
         is_checked = switch.property("checked") is True
         assert switch.property("visualChecked") is is_checked
@@ -6910,9 +7047,11 @@ with TemporaryDirectory() as preferences_dir:
     persisted_preferences.setSystemTextScaling(False)
     persisted_preferences.setShowBacktest(True)
     persisted_preferences.setContextualAdjustmentsEnabled(True)
+    persisted_preferences.setMockedDraftEnabled(True)
     assert persisted_preferences.systemTextScaling is False
     assert persisted_preferences.showBacktest is True
     assert persisted_preferences.contextualAdjustmentsEnabled is True
+    assert persisted_preferences.mockedDraftEnabled is True
     wait_for_saved(persisted_preferences)
     preferences.shutdown()
     del root
@@ -6952,6 +7091,11 @@ with TemporaryDirectory() as preferences_dir:
     )
     assert reloaded_contextual_switch is not None
     assert reloaded_contextual_switch.property("checked") is True
+    reloaded_mocked_draft_switch = root.findChild(
+        QObject, "settingsMockedDraftSwitch"
+    )
+    assert reloaded_mocked_draft_switch is not None
+    assert reloaded_mocked_draft_switch.property("checked") is True
     reloaded_inherited_font_control = root.findChild(
         QObject, "settingsRatingsDownloadButton"
     )
@@ -7158,6 +7302,114 @@ assert error_label.isVisible() is False
     assert completed.returncode == 0, completed.stderr
 
 
+def test_qml_mocked_draft_toggle_publishes_capability_without_restart_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubMockedDraftFactory:
+    pass
+
+
+class StubMockedDraftProvider(MockSessionAdapter):
+    def __init__(self) -> None:
+        self.installed: list[object] = []
+        super().__init__(session=MockLiveSession(scenario="ready"))
+
+    def setTestDraftFactory(self, test_draft_factory) -> None:
+        self.installed.append(test_draft_factory)
+        self._replace_state(
+            state=self.state
+            | {"test_draft": {"enabled": test_draft_factory is not None}}
+        )
+
+
+def apply_mocked_draft_enabled(enabled: bool) -> None:
+    provider.setTestDraftFactory(StubMockedDraftFactory() if enabled else None)
+
+
+def wait_for_saved(preferences: GuiPreferencesAdapter) -> None:
+    for _ in range(100):
+        application.processEvents()
+        if preferences.persistenceMessage == "Saved":
+            return
+        QTest.qWait(10)
+    assert preferences.persistenceMessage == "Saved"
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubMockedDraftProvider()
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+preferences.mockedDraftEnabledChanged.connect(apply_mocked_draft_enabled)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "settings")
+context.setContextProperty("initialWindowWidth", 900)
+context.setContextProperty("initialWindowHeight", 760)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+switch = root.findChild(QObject, "settingsMockedDraftSwitch")
+test_draft_button = root.findChild(QObject, "testDraftButton")
+assert switch is not None
+assert test_draft_button is not None
+assert switch.property("checked") is False
+assert test_draft_button.property("visible") is False
+assert test_draft_button.isVisible() is False
+assert provider.installed == []
+
+switch.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert switch.property("checked") is True
+assert preferences.mockedDraftEnabled is True
+assert len(provider.installed) == 1
+assert isinstance(provider.installed[0], StubMockedDraftFactory)
+assert test_draft_button.property("visible") is True
+assert test_draft_button.isVisible() is True
+
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert switch.property("checked") is False
+assert preferences.mockedDraftEnabled is False
+assert len(provider.installed) == 2
+assert provider.installed[1] is None
+assert test_draft_button.property("visible") is False
+assert test_draft_button.isVisible() is False
+
+wait_for_saved(preferences)
+preferences.shutdown()
+del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_qml_test_draft_dialog_offers_supported_sets_and_modes_offscreen() -> None:
     probe = """
 from pathlib import Path
@@ -7254,7 +7506,9 @@ manual_button = root.findChild(QObject, "testDraftManualModeButton")
 auto_button = root.findChild(QObject, "testDraftAutoModeButton")
 start_button = root.findChild(QObject, "testDraftStartButton")
 assert test_draft_button is not None and test_draft_button.isVisible()
+assert test_draft_button.property("text") == "Mocked Draft"
 assert dialog is not None
+assert dialog.property("title") == "Mocked Draft"
 assert selector is not None
 assert manual_button is not None
 assert auto_button is not None
@@ -7391,7 +7645,7 @@ application.processEvents()
 indicator = root.findChild(QObject, "testDraftIndicator")
 pick_button = root.findChild(QObject, "testDraftPickButton")
 assert indicator is not None and indicator.isVisible()
-assert indicator.property("text") == "Test Draft · manual · HOB"
+assert indicator.property("text") == "Mocked Draft · manual · HOB"
 assert pick_button is not None and pick_button.isVisible()
 assert pick_button.property("enabled") is True
 

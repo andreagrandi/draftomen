@@ -41,9 +41,11 @@ from draftomen.session import (
 
 DRAFTMANCER_TEST_USER_NAME = "Draft Omen test draft"
 SIMULATION_DIRECTORY_PREFIX = "draftomen-test-draft-"
+SCRYFALL_DEFAULT_CARDS_BULK_FILE_NAME = "scryfall-default-cards.jsonl.gz"
 DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE = (
-    DEFAULT_CACHE_DIR / "sources" / "scryfall-default-cards.jsonl.gz"
+    DEFAULT_CACHE_DIR / "sources" / SCRYFALL_DEFAULT_CARDS_BULK_FILE_NAME
 )
+DEFAULT_TEST_DRAFT_CHECKOUT_DIRECTORY_NAME = "draftmancer"
 DEFAULT_TEST_DRAFT_SERVER_URL = "http://127.0.0.1:3000"
 DEFAULT_TEST_DRAFT_SET_CODE = "HOB"
 DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS = 10.0
@@ -859,6 +861,25 @@ def _resolved_app_dir(*, app_dir: Path | None) -> Path:
 
     root = app_data_dir() if app_dir is None else app_dir
     return Path(root).expanduser().resolve(strict=False)
+
+
+def default_test_draft_checkout_dir(*, app_dir: Path | None = None) -> Path:
+    """Return the pinned Draftmancer checkout inside the application data directory."""
+
+    return _resolved_app_dir(app_dir=app_dir) / DEFAULT_TEST_DRAFT_CHECKOUT_DIRECTORY_NAME
+
+
+def default_test_draft_bulk_file(*, app_dir: Path | None = None) -> Path:
+    """Return the Scryfall bulk source inside the application data directory.
+    The layout mirrors the developer corpus cache without its working-directory prefix.
+    """
+
+    return (
+        _resolved_app_dir(app_dir=app_dir)
+        / "corpus-cache"
+        / "sources"
+        / SCRYFALL_DEFAULT_CARDS_BULK_FILE_NAME
+    )
 
 
 def _load_supported_set_codes(*, draftmancer_dir: Path) -> tuple[str, ...]:

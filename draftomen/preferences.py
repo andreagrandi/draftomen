@@ -162,11 +162,12 @@ def save_tui_preferences(
 
 GUI_PREFERENCES_FILE_NAME = "gui-preferences.json"
 GUI_PREFERENCES_SCHEMA_VERSION = 1
+GUI_TEXT_FIELDS = frozenset({"mocked_draft_checkout_dir", "mocked_draft_server_url"})
 
 
 @dataclass(frozen=True)
 class GuiDisplayPreferences:
-    """User-controlled desktop display choices and contextual-scoring selection are persisted.
+    """User-controlled desktop display choices, contextual-scoring selection, and the developer Mocked Draft setting are persisted.
     Functional changes still reach the live session through explicit commands.
     """
 
@@ -177,6 +178,9 @@ class GuiDisplayPreferences:
     system_text_scaling: bool = True
     show_backtest: bool = False
     contextual_adjustments_enabled: bool = False
+    mocked_draft_enabled: bool = False
+    mocked_draft_checkout_dir: str = ""
+    mocked_draft_server_url: str = ""
 
 
 def gui_preferences_path(*, app_dir: PathInput | None = None) -> Path:
@@ -229,7 +233,11 @@ def load_gui_preferences(
     invalid_fields: list[str] = []
     for field_name, default_value in values.items():
         value = display.get(field_name, default_value)
-        if type(value) is not bool:
+        if field_name in GUI_TEXT_FIELDS:
+            if not isinstance(value, str):
+                invalid_fields.append(field_name)
+                continue
+        elif type(value) is not bool:
             invalid_fields.append(field_name)
             continue
         values[field_name] = value
