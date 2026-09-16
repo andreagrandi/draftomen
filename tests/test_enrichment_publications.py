@@ -12,8 +12,11 @@ from draftomen.enrichment_publications import (
     EnrichmentPublication,
     EnrichmentPublicationError,
     EnrichmentPublications,
+    commit_enrichment_candidate,
     load_enrichment_publications,
-    record_enrichment_publication,
+    publish_enrichment_publications,
+    resolve_enrichment_candidates,
+    write_enrichment_candidate,
 )
 
 
@@ -53,13 +56,23 @@ def _raw_publication(**overrides: object) -> dict[str, object]:
     return value
 
 
+_OMITTED = object()
+
+
 def _raw_record(
     *,
-    schema_version: object = 1,
+    schema_version: object = 2,
     publications: object = (),
+    candidates: object = _OMITTED,
     **extra: object,
 ) -> bytes:
-    value = {"publications": publications, "schema_version": schema_version, **extra}
+    value: dict[str, object] = {
+        "publications": publications,
+        "schema_version": schema_version,
+        **extra,
+    }
+    if candidates is not _OMITTED:
+        value["candidates"] = candidates
     return json.dumps(value).encode("utf-8")
 
 
@@ -159,6 +172,7 @@ def test_record_round_trip_is_canonical_and_sorted() -> None:
         ("hob", "quickdraft"),
         ("zzz", "premierdraft"),
     ]
+    assert record.candidates == ()
 
     payload = record.to_bytes()
     assert payload == record.to_bytes()
@@ -170,13 +184,25 @@ def test_record_round_trip_is_canonical_and_sorted() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8") + b"\n"
-    assert payload.decode("utf-8").startswith('{"publications":[')
+    assert payload.decode("utf-8").startswith('{"candidates":[]')
+    assert set(json.loads(payload.decode("utf-8"))) == {
+        "candidates",
+        "publications",
+        "schema_version",
+    }
     assert EnrichmentPublications.from_bytes(payload) == record
 
 
 def test_record_rejects_duplicate_identities() -> None:
     with pytest.raises(EnrichmentPublicationError, match="duplicate identity"):
         EnrichmentPublications(publications=(_publication(), _publication(" hob ", "QUICKDRAFT")))
+
+
+def test_record_rejects_duplicate_candidate_identities() -> None:
+    with pytest.raises(EnrichmentPublicationError, match="duplicate candidate identity"):
+        EnrichmentPublications(
+            candidates=(_publication(profile_gzip_sha256="c" * 64), _publication())
+        )
 
 
 def test_merged_replaces_one_identity_and_keeps_the_sort_order() -> None:
@@ -223,8 +249,12 @@ def test_load_returns_an_empty_record_when_the_file_is_absent(tmp_path: Path) ->
         b"not json",
         b"\xff\xfe\x00",
         b"[1, 2, 3]",
-        _raw_record(schema_version=2),
+        _raw_record(schema_version=3),
         _raw_record(schema_version="1"),
+        _raw_record(),
+        _raw_record(schema_version=1, candidates=[]),
+        _raw_record(candidates={}),
+        _raw_record(candidates=[_raw_publication(), _raw_publication()]),
         _raw_record(unexpected=True),
         _raw_record(publications=[{"set_code": "hob"}]),
         _raw_record(publications={"hob": {}}),
@@ -239,50 +269,162 @@ def test_load_fails_closed_on_unusable_record_bytes(tmp_path: Path, payload: byt
         load_enrichment_publications(profiles_dir=tmp_path)
 
 
-def test_record_enrichment_publication_writes_once_and_reuses_identical_bytes(
-    tmp_path: Path,
-) -> None:
+def test_load_accepts_a_version_1_record_without_candidates(tmp_path: Path) -> None:
+    publication = _publication()
+    (tmp_path / ENRICHMENT_PUBLICATIONS_FILE_NAME).write_bytes(
+        _raw_record(schema_version=1, publications=[publication.to_json()])
+    )
+
+    record = load_enrichment_publications(profiles_dir=tmp_path)
+
+    assert record == EnrichmentPublications(publications=(publication,))
+    assert record.candidates == ()
+
+
+def test_write_enrichment_candidate_records_only_a_candidate(tmp_path: Path) -> None:
     publication = _publication()
 
-    path = record_enrichment_publication(profiles_dir=tmp_path, publication=publication)
+    path = write_enrichment_candidate(profiles_dir=tmp_path, publication=publication)
 
     assert path == tmp_path / ENRICHMENT_PUBLICATIONS_FILE_NAME
-    assert path.read_bytes() == EnrichmentPublications(publications=(publication,)).to_bytes()
     assert load_enrichment_publications(profiles_dir=tmp_path) == EnrichmentPublications(
-        publications=(publication,)
+        candidates=(publication,)
     )
+    assert json.loads(path.read_bytes().decode("utf-8")) == {
+        "candidates": [publication.to_json()],
+        "publications": [],
+        "schema_version": 2,
+    }
     first_payload = path.read_bytes()
     first_modified = path.stat().st_mtime_ns
 
-    assert record_enrichment_publication(profiles_dir=tmp_path, publication=publication) == path
+    assert write_enrichment_candidate(profiles_dir=tmp_path, publication=publication) == path
 
     assert path.read_bytes() == first_payload
     assert path.stat().st_mtime_ns == first_modified
     assert [item.name for item in tmp_path.iterdir()] == [ENRICHMENT_PUBLICATIONS_FILE_NAME]
 
 
-def test_record_enrichment_publication_rewrites_a_changed_identity(tmp_path: Path) -> None:
-    hob = _publication()
+def test_commit_enrichment_candidate_promotes_and_drops_the_candidate(tmp_path: Path) -> None:
+    committed = _publication()
     lci = _publication(
         "lci",
         "PremierDraft",
         artifact_sha256="c" * 64,
         profile_gzip_sha256="d" * 64,
     )
-    record_enrichment_publication(profiles_dir=tmp_path, publication=hob)
-    path = record_enrichment_publication(profiles_dir=tmp_path, publication=lci)
-    before = path.read_bytes()
-
-    replacement = _publication(
-        artifact_sha256="e" * 64,
-        profile_gzip_sha256="f" * 64,
-        published_at="2026-09-03T09:00:00+00:00",
+    candidate = _publication(artifact_sha256="e" * 64, profile_gzip_sha256="f" * 64)
+    publish_enrichment_publications(
+        profiles_dir=tmp_path,
+        record=EnrichmentPublications(publications=(committed, lci), candidates=(candidate,)),
     )
-    assert record_enrichment_publication(profiles_dir=tmp_path, publication=replacement) == path
 
-    assert path.read_bytes() != before
+    path = commit_enrichment_candidate(
+        profiles_dir=tmp_path,
+        set_code="HOB",
+        event_format="QuickDraft",
+    )
+
+    assert load_enrichment_publications(profiles_dir=tmp_path) == EnrichmentPublications(
+        publications=(candidate, lci)
+    )
     assert json.loads(path.read_bytes().decode("utf-8")) == {
-        "publications": [replacement.to_json(), lci.to_json()],
-        "schema_version": 1,
+        "candidates": [],
+        "publications": [candidate.to_json(), lci.to_json()],
+        "schema_version": 2,
     }
+    committed_payload = path.read_bytes()
+    committed_modified = path.stat().st_mtime_ns
+
+    assert (
+        commit_enrichment_candidate(
+            profiles_dir=tmp_path,
+            set_code="hob",
+            event_format="quickdraft",
+        )
+        == path
+    )
+
+    assert path.read_bytes() == committed_payload
+    assert path.stat().st_mtime_ns == committed_modified
+
+
+def test_resolve_enrichment_candidates_promotes_and_drops(tmp_path: Path) -> None:
+    committed = _publication(profile_gzip_sha256="a" * 64)
+    lci = _publication(
+        "lci",
+        "PremierDraft",
+        artifact_sha256="c" * 64,
+        profile_gzip_sha256="d" * 64,
+    )
+    promoted = _publication(artifact_sha256="e" * 64, profile_gzip_sha256="f" * 64)
+    dropped_digest_mismatch = _publication(
+        "zzz",
+        "PremierDraft",
+        artifact_sha256="1" * 64,
+        profile_gzip_sha256="2" * 64,
+    )
+    dropped_unselected_identity = _publication(
+        "lci",
+        "QuickDraft",
+        artifact_sha256="3" * 64,
+        profile_gzip_sha256="4" * 64,
+    )
+    record = EnrichmentPublications(
+        publications=(committed, lci),
+        candidates=(promoted, dropped_digest_mismatch, dropped_unselected_identity),
+    )
+    path = publish_enrichment_publications(
+        profiles_dir=tmp_path,
+        record=EnrichmentPublications(publications=(committed, lci)),
+    )
+    untouched = path.stat().st_mtime_ns
+
+    assert (
+        resolve_enrichment_candidates(
+            profiles_dir=tmp_path,
+            selected={("hob", "quickdraft"): committed.profile_gzip_sha256},
+        )
+        is None
+    )
+    assert path.stat().st_mtime_ns == untouched
+
+    publish_enrichment_publications(profiles_dir=tmp_path, record=record)
+
+    assert (
+        resolve_enrichment_candidates(
+            profiles_dir=tmp_path,
+            selected={("HOB", "QuickDraft"): promoted.profile_gzip_sha256},
+        )
+        == path
+    )
+
+    assert load_enrichment_publications(profiles_dir=tmp_path) == EnrichmentPublications(
+        publications=(promoted, lci)
+    )
+    assert json.loads(path.read_bytes().decode("utf-8")) == {
+        "candidates": [],
+        "publications": [promoted.to_json(), lci.to_json()],
+        "schema_version": 2,
+    }
+
+
+def test_record_protects_a_retained_digest_through_either_entry() -> None:
+    record = EnrichmentPublications(
+        publications=(_publication(profile_gzip_sha256="a" * 64),),
+        candidates=(_publication(profile_gzip_sha256="b" * 64),),
+    )
+
+    def protects(digest: str, *, set_code: str = "hob", event_format: str = "quickdraft") -> bool:
+        return record.protects(
+            set_code=set_code,
+            event_format=event_format,
+            profile_gzip_sha256=digest,
+        )
+
+    assert protects("a" * 64) is True
+    assert protects("b" * 64) is True
+    assert protects("c" * 64) is False
+    assert protects("a" * 64, set_code="LCI") is False
+    assert protects("not-a-digest") is False
 

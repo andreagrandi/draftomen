@@ -367,27 +367,36 @@ run's non-confirmed artifacts cannot explain where a set's work went.
 
 Every publication of an enriched profile records `artifact_sha256`, `run_id`,
 `reviewed_at`, `published_at`, and `profile_gzip_sha256` per `(set, format)` in
-`website/public/profiles/enrichment-publications.json` (schema `1`). The record
-lives in the repository beside `manifest.json`, because the refresh CI job runs
-from a checkout with no local store. The website data refresh allowlist covers
-`card-data/*`, `profiles/manifest.json`, and `profiles/objects/*.json.gz`, and it
-never rewrites or deletes unrelated files, so the record survives every refresh.
+`website/public/profiles/enrichment-publications.json` (schema `2`). The record
+holds one committed entry per `(set, format)` identity plus at most one
+candidate, which describes a publication whose manifest entry is not written
+yet. The record lives in the repository beside `manifest.json`, because the
+refresh CI job runs from a checkout with no local store. The website data
+refresh allowlist covers `card-data/*`, `profiles/manifest.json`, and
+`profiles/objects/*.json.gz`, and it never rewrites or deletes unrelated files,
+so the record survives every refresh.
 
-The refresh preservation check reads the record before merging generated
-profiles. An identity whose recorded profile digest matches its retained
-manifest entry counts as enriched even when its published object file has been
-removed or is unreadable, so a refresh can no longer replace an enriched entry
-by losing its object, and a record entry left behind by a superseded or
-unsuccessful publication never blocks a replacement it does not describe. Each
-new publication replaces that identity's entry, so the record names the
-enrichment behind the currently published profile.
+A publication writes the candidate first, then the manifest entry that names the
+new profile, and only then commits the candidate as that identity's entry.
+Writing the manifest entry is the commit point, so an interrupted publication
+leaves the previously selected publication's entry authoritative while its own
+candidate still protects a manifest that already selected it. The refresh
+preservation check reads the record before merging generated profiles: an
+identity counts as enriched when its committed entry or its candidate carries
+the retained manifest entry's digest, even when the retained object file has
+been removed or is unreadable, so a refresh can no longer replace an enriched
+entry by losing its object, and a record entry left behind by a superseded or
+unsuccessful publication never blocks a replacement it does not describe. The
+next enriched publication resolves a leftover candidate by promoting it when the
+manifest selects its digest and dropping it when it does not, so re-running the
+publication command is the recovery action after an interruption.
 
-Allowing a deliberate downgrade therefore takes both steps: delete the
-identity's entry from the record and remove the retained enriched object at
-`profiles/objects/<gzip_sha256>.json.gz`. Removing only the record entry leaves
-the retained-object check in force, and the refresh keeps reporting the
-identity as a retained enriched profile with its existing object and manifest
-entry untouched.
+Allowing a deliberate downgrade therefore takes deleting the identity's
+committed entry and any candidate from the record, plus removing the retained
+enriched object at `profiles/objects/<gzip_sha256>.json.gz`. Removing only the
+record entries leaves the retained-object check in force, and the refresh keeps
+reporting the identity as a retained enriched profile with its existing object
+and manifest entry untouched.
 
 ### Lifecycle stages
 

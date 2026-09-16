@@ -19,7 +19,8 @@ from draftomen.enrichment_publications import (
     READ_ERROR,
     EnrichmentPublication,
     EnrichmentPublicationError,
-    record_enrichment_publication,
+    EnrichmentPublications,
+    publish_enrichment_publications,
 )
 from draftomen.profile_manifest import (
     ProfileManifest,
@@ -77,6 +78,25 @@ def _write_artifact(
     return path
 
 
+def _record_entry(
+    *,
+    set_code: str,
+    event_format: str,
+    artifact_sha256: str,
+    profile_gzip_sha256: str,
+) -> EnrichmentPublication:
+    """Build one durable record entry for a synthetic publication."""
+    return EnrichmentPublication(
+        set_code=set_code,
+        event_format=event_format,
+        artifact_sha256=artifact_sha256,
+        run_id=CONFIRMED_RUN_ID,
+        reviewed_at=REVIEWED_AT,
+        published_at=REVIEWED_AT,
+        profile_gzip_sha256=profile_gzip_sha256,
+    )
+
+
 def _write_record_publication(
     *,
     profiles_dir: Path,
@@ -85,17 +105,18 @@ def _write_record_publication(
     artifact_sha256: str,
     profile_gzip_sha256: str,
 ) -> None:
-    """Record one enriched publication in the durable publication record."""
-    record_enrichment_publication(
+    """Record one enriched publication as a committed entry of the durable record."""
+    publish_enrichment_publications(
         profiles_dir=profiles_dir,
-        publication=EnrichmentPublication(
-            set_code=set_code,
-            event_format=event_format,
-            artifact_sha256=artifact_sha256,
-            run_id=CONFIRMED_RUN_ID,
-            reviewed_at=REVIEWED_AT,
-            published_at=REVIEWED_AT,
-            profile_gzip_sha256=profile_gzip_sha256,
+        record=EnrichmentPublications(
+            publications=(
+                _record_entry(
+                    set_code=set_code,
+                    event_format=event_format,
+                    artifact_sha256=artifact_sha256,
+                    profile_gzip_sha256=profile_gzip_sha256,
+                ),
+            )
         ),
     )
 
@@ -437,6 +458,60 @@ def test_published_states_include_record_publications(tmp_path: Path) -> None:
         event_format="quickdraft",
         artifact_sha256=RECORD_ARTIFACT_SHA256,
         profile_gzip_sha256=RECORD_PROFILE_GZIP_SHA256,
+    )
+    _write_manifest(
+        profiles_dir=profiles_dir,
+        artifacts=(
+            _manifest_artifact(
+                set_code="hob",
+                event_format="quickdraft",
+                profile_gzip_sha256=RECORD_PROFILE_GZIP_SHA256,
+            ),
+        ),
+    )
+
+    states = published_enrichment_states(profiles_dir=profiles_dir)
+
+    assert states == (
+        EnrichmentPublicationState(
+            set_code="hob",
+            event_format="quickdraft",
+            artifact_sha256=RECORD_ARTIFACT_SHA256,
+            profile_gzip_sha256=RECORD_PROFILE_GZIP_SHA256,
+            referenced=True,
+            source="record",
+        ),
+    )
+
+
+def test_published_states_ignore_candidates(tmp_path: Path) -> None:
+    profiles_dir = tmp_path / PROFILES_DIRECTORY
+    publish_enrichment_publications(
+        profiles_dir=profiles_dir,
+        record=EnrichmentPublications(
+            publications=(
+                _record_entry(
+                    set_code="hob",
+                    event_format="quickdraft",
+                    artifact_sha256=RECORD_ARTIFACT_SHA256,
+                    profile_gzip_sha256=RECORD_PROFILE_GZIP_SHA256,
+                ),
+            ),
+            candidates=(
+                _record_entry(
+                    set_code="hob",
+                    event_format="quickdraft",
+                    artifact_sha256=RECORD_ARTIFACT_SHA256,
+                    profile_gzip_sha256=STALE_PROFILE_GZIP_SHA256,
+                ),
+                _record_entry(
+                    set_code="lci",
+                    event_format="quickdraft",
+                    artifact_sha256=ORPHAN_ARTIFACT_SHA256,
+                    profile_gzip_sha256=ORPHAN_PROFILE_GZIP_SHA256,
+                ),
+            ),
+        ),
     )
     _write_manifest(
         profiles_dir=profiles_dir,
