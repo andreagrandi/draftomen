@@ -27,6 +27,7 @@ from draftomen.cli import build_parser, main
 from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
 from draftomen.enrichment_inventory import ARTIFACT_ERROR, PUBLICATION_ERROR
 from draftomen.pool import DraftState, load_draft_state, save_draft_state
+from draftomen.pool_ledger import relationship_enhancement_is_compatible
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_input_acquisition import (
     CardMetadataAdapter,
@@ -91,6 +92,7 @@ from tests.test_profile_generation import (
     TYPED_SOURCE_CARD_ID,
     TYPED_TARGET_CARD_ID,
     _enrichment_run,
+    _ratings,
     _typed_database,
     _typed_relationship,
 )
@@ -4197,10 +4199,21 @@ def _republish_enrichment_artifact(
     )
 
 
+def _republish_card_database() -> CardDatabase:
+    """Build the store's frozen card data with production's lowercase set code."""
+
+    return CardDatabase(
+        cards={
+            card_id: replace(card, set_code="tst")
+            for card_id, card in _typed_database().cards.items()
+        }
+    )
+
+
 def _write_republish_store(*, store_dir: Path) -> Path:
     """Write one confirmed artifact and its frozen run sources into a local store."""
 
-    database = _typed_database()
+    database = _republish_card_database()
     guide = _republish_guide()
     artifact_bytes = _republish_enrichment_artifact(
         database=database,
@@ -4233,6 +4246,13 @@ def _write_republish_store(*, store_dir: Path) -> Path:
         encoding="utf-8",
     )
     return artifact_path
+
+
+def _write_republish_ratings(*, path: Path) -> Path:
+    """Write the TST QuickDraft ratings cache the recovery command reads."""
+
+    path.write_text(json.dumps(_ratings().to_json()), encoding="utf-8")
+    return path
 
 
 def _write_republish_profiles(*, profiles_dir: Path) -> None:
@@ -4426,6 +4446,146 @@ def test_republish_enrichment_requires_the_frozen_card_data(
         f"republish-enrichment failed: {REPUBLISH_MISSING_CARD_DATA_ERROR}\n"
     )
     assert not profiles_dir.exists()
+
+
+def test_republish_enrichment_recovers_a_role_bearing_profile(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store_dir = tmp_path / "set-enrichment"
+    artifact_path = _write_republish_store(store_dir=store_dir)
+    ratings_path = _write_republish_ratings(
+        path=tmp_path / "tst-quickdraft-ratings.json"
+    )
+    profiles_dir = tmp_path / "profiles"
+    _write_republish_profiles(profiles_dir=profiles_dir)
+
+    exit_code = main(
+        argv=[
+            "republish-enrichment",
+            "tst",
+            "--store-dir",
+            str(store_dir),
+            "--profiles-dir",
+            str(profiles_dir),
+            "--stage",
+            "early",
+            "--ratings-file",
+            str(ratings_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    printed = dict(line.split("=", 1) for line in captured.out.splitlines())
+    artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert printed["maturity"] == "early"
+    assert printed["artifact_sha256"] == artifact_sha256
+
+    profile_bytes = (
+        profiles_dir / "objects" / f"{printed['gzip_sha256']}.json.gz"
+    ).read_bytes()
+    published_profile = json.loads(gzip.decompress(profile_bytes))
+
+    assert published_profile["schema_version"] == 3
+    assert published_profile["enhancement_status"] == "enhanced"
+    assert published_profile["enhancement"]["artifact_sha256"] == artifact_sha256
+    assert published_profile["role_profile"]["cards"]
+
+    loaded = SetProfile.from_json(published_profile)
+    assert (
+        relationship_enhancement_is_compatible(
+            set_profile=loaded,
+            card_database=_republish_card_database(),
+        )
+        is True
+    )
+
+
+def test_republish_enrichment_requires_empirical_inputs_for_a_role_bearing_stage(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store_dir = tmp_path / "set-enrichment"
+    _write_republish_store(store_dir=store_dir)
+    profiles_dir = tmp_path / "profiles"
+    _write_republish_profiles(profiles_dir=profiles_dir)
+
+    exit_code = main(
+        argv=[
+            "republish-enrichment",
+            "tst",
+            "--store-dir",
+            str(store_dir),
+            "--profiles-dir",
+            str(profiles_dir),
+            "--stage",
+            "early",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == (
+        "republish-enrichment failed: Early profile generation requires "
+        "empirical ratings or accepted draft evidence.\n"
+    )
+    assert not (store_dir / "tst-quickdraft").exists()
+    assert not (profiles_dir / "objects").exists()
+    assert not (profiles_dir / "enrichment-publications.json").exists()
+    manifest = ProfileManifest.from_bytes((profiles_dir / "manifest.json").read_bytes())
+    assert manifest.select(set_code="tst", event_format="quickdraft") is None
+    assert manifest.select(set_code="oth", event_format="quickdraft") is not None
+
+
+def test_republish_enrichment_rejects_an_unusable_ratings_input(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store_dir = tmp_path / "set-enrichment"
+    _write_republish_store(store_dir=store_dir)
+    profiles_dir = tmp_path / "profiles"
+    _write_republish_profiles(profiles_dir=profiles_dir)
+    ratings_path = _write_republish_ratings(
+        path=tmp_path / "tst-quickdraft-ratings.json"
+    )
+    payload = json.loads(ratings_path.read_text(encoding="utf-8"))
+    payload["set_code"] = "OTH"
+    ratings_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    for ratings_input in (ratings_path, tmp_path / "missing-ratings.json"):
+        exit_code = main(
+            argv=[
+                "republish-enrichment",
+                "tst",
+                "--store-dir",
+                str(store_dir),
+                "--profiles-dir",
+                str(profiles_dir),
+                "--stage",
+                "early",
+                "--ratings-file",
+                str(ratings_input),
+            ]
+        )
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert captured.out == ""
+        assert captured.err == (
+            "republish-enrichment failed: Could not load the ratings input.\n"
+        )
+        assert not (store_dir / "tst-quickdraft").exists()
+        assert not (profiles_dir / "objects").exists()
+        assert not (profiles_dir / "enrichment-publications.json").exists()
+        manifest = ProfileManifest.from_bytes(
+            (profiles_dir / "manifest.json").read_bytes()
+        )
+        assert manifest.select(set_code="tst", event_format="quickdraft") is None
+        assert manifest.select(set_code="oth", event_format="quickdraft") is not None
 
 
 LIST_ENRICHMENT_CONFIRMED_SET = "hob"

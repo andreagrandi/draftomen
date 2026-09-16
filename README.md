@@ -158,8 +158,12 @@ Use `republish-enrichment` to recover work that is already paid for: it
 recompiles and publishes a profile from a saved confirmed artifact without
 freezing a guide and without any model call, selecting the newest confirmed
 artifact for the set unless `--artifact` pins an exact SHA-256 or `--run`
-restricts the search to one run directory. Publication also records the source
-artifact SHA-256, run identity, and review timestamp per set and format in
+restricts the search to one run directory. It takes the same explicit `--stage`
+and `--ratings-file`/`--source-manifest`/`--draft-source-name` inputs as
+`generate-profile`, so a role-bearing recovery publishes a profile the runtime
+gate accepts while the default metadata recovery stays metadata-only.
+Publication also records the source artifact SHA-256, run identity, and review
+timestamp per set and format in
 `website/public/profiles/enrichment-publications.json`, which survives every
 website data refresh and protects the entry from a later plain regeneration, and
 an interrupted publication cannot lose that protection: the record keeps the
