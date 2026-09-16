@@ -13,6 +13,11 @@ import pytest
 import draftomen.profile_data_refresh as refresh
 import draftomen.profile_publication as publication
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.enrichment_publications import (
+    EnrichmentPublication,
+    EnrichmentPublications,
+    publish_enrichment_publications,
+)
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_manifest import (
     ProfileManifest,
@@ -197,6 +202,7 @@ def _write_enriched_manifest_object(
     *,
     set_code: str,
     event_format: str,
+    generated_at: datetime = NOW,
 ) -> tuple[ProfileManifest, Path, bytes]:
     """Publish one confirmed-enrichment metadata profile and its manifest entry."""
 
@@ -212,7 +218,7 @@ def _write_enriched_manifest_object(
         event_format=event_format,
         stage="metadata",
         card_database=database,
-        generated_at=NOW,
+        generated_at=generated_at,
         enrichment=enrichment,
     )
     report = generation.report
@@ -1011,3 +1017,113 @@ def test_execute_retains_enriched_identity_and_reports_downgrade_conflict(
         "retained_url",
         "set_code",
     }
+
+
+def test_execute_retains_enriched_identity_protected_by_a_pending_candidate(
+    tmp_path: Path,
+) -> None:
+    card_dir = tmp_path / "card-data"
+    first_path = _write_card_artifact(card_dir, set_code="aaa", set_name="Alpha Set")
+    second_path = _write_card_artifact(card_dir, set_code="bbb", set_name="Beta Set")
+    plan = refresh.Plan(
+        pairs=(
+            refresh.Pair("aaa", "Alpha Set", "QuickDraft", first_path),
+            refresh.Pair("bbb", "Beta Set", "QuickDraft", second_path),
+        )
+    )
+    cache_dir = tmp_path / "cache"
+    for set_code in ("aaa", "bbb"):
+        save_17lands_format_data(
+            _ratings(
+                set_code=set_code,
+                event_format="QuickDraft",
+                fetched_at=NOW - timedelta(hours=23),
+            ),
+            app_dir=cache_dir,
+        )
+    profiles_dir = tmp_path / "profiles"
+    committed_manifest, _, _ = _write_enriched_manifest_object(
+        profiles_dir,
+        set_code="aaa",
+        event_format="QuickDraft",
+    )
+    committed_artifact = committed_manifest.select(set_code="aaa", event_format="QuickDraft")
+    assert committed_artifact is not None
+    candidate_manifest, _, _ = _write_enriched_manifest_object(
+        tmp_path / "candidate",
+        set_code="aaa",
+        event_format="QuickDraft",
+        generated_at=NOW + timedelta(days=1),
+    )
+    candidate_artifact = candidate_manifest.select(set_code="aaa", event_format="QuickDraft")
+    assert candidate_artifact is not None
+    assert candidate_artifact.gzip_sha256 != committed_artifact.gzip_sha256
+    plain_manifest = _manifest_for_profile(set_code="bbb", event_format="QuickDraft")
+    manifest = ProfileManifest(
+        artifacts=(candidate_artifact, *plain_manifest.artifacts),
+        published_at=NOW.isoformat(),
+    )
+    manifest_path = _write_manifest(profiles_dir, manifest)
+    _write_manifest_object(
+        profiles_dir,
+        manifest=plain_manifest,
+        set_code="bbb",
+        event_format="QuickDraft",
+    )
+    publish_enrichment_publications(
+        profiles_dir=profiles_dir,
+        record=EnrichmentPublications(
+            publications=(
+                EnrichmentPublication(
+                    set_code="aaa",
+                    event_format="QuickDraft",
+                    artifact_sha256="a" * 64,
+                    run_id="run-committed",
+                    reviewed_at=NOW.isoformat(),
+                    published_at=NOW.isoformat(),
+                    profile_gzip_sha256=committed_artifact.gzip_sha256,
+                ),
+            ),
+            candidates=(
+                EnrichmentPublication(
+                    set_code="aaa",
+                    event_format="QuickDraft",
+                    artifact_sha256="b" * 64,
+                    run_id="run-candidate",
+                    reviewed_at=NOW.isoformat(),
+                    published_at=NOW.isoformat(),
+                    profile_gzip_sha256=candidate_artifact.gzip_sha256,
+                ),
+            ),
+        ),
+    )
+    calls: list[str] = []
+
+    def offline_fetcher(url: str, _timeout: int) -> Any:
+        calls.append(url)
+        raise SeventeenLandsError("network should not be used")
+
+    result = refresh.execute_profile_data_refresh(
+        plan,
+        profiles_dir=profiles_dir,
+        cache_dir=cache_dir,
+        fetch_json=offline_fetcher,
+        clock=FrozenClock(NOW),
+    )
+
+    assert [
+        (conflict.set_code, conflict.event_format) for conflict in result.enrichment_conflicts
+    ] == [("aaa", "quickdraft")]
+    conflict = result.enrichment_conflicts[0]
+    assert conflict.retained.gzip_sha256 == candidate_artifact.gzip_sha256
+    assert conflict.rejected.gzip_sha256 != candidate_artifact.gzip_sha256
+    assert [(pair.set_code, pair.event_format) for pair in result.successful_pairs] == [
+        ("bbb", "QuickDraft")
+    ]
+    assert result.failures == ()
+    merged = ProfileManifest.from_bytes(manifest_path.read_bytes())
+    assert merged.select(set_code="aaa", event_format="QuickDraft") == candidate_artifact
+    assert not (
+        profiles_dir / "objects" / f"{conflict.rejected.gzip_sha256}.json.gz"
+    ).exists()
+    assert calls == []

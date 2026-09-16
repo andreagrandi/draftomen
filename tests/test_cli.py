@@ -4311,6 +4311,7 @@ def test_republish_enrichment_publishes_a_saved_confirmed_artifact(
         (profiles_dir / "enrichment-publications.json").read_text(encoding="utf-8")
     )
     assert record == {
+        "candidates": [],
         "publications": [
             {
                 "artifact_sha256": artifact_sha256,
@@ -4322,7 +4323,7 @@ def test_republish_enrichment_publishes_a_saved_confirmed_artifact(
                 "set_code": "tst",
             }
         ],
-        "schema_version": 1,
+        "schema_version": 2,
     }
 
     manifest = ProfileManifest.from_bytes((profiles_dir / "manifest.json").read_bytes())

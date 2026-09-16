@@ -161,7 +161,9 @@ artifact for the set unless `--artifact` pins an exact SHA-256 or `--run`
 restricts the search to one run directory. Publication also records the source
 artifact SHA-256, run identity, and review timestamp per set and format in
 `website/public/profiles/enrichment-publications.json`, which survives every
-website data refresh and protects the entry from a later plain regeneration.
+website data refresh and protects the entry from a later plain regeneration, and
+an interrupted publication cannot lose that protection: the record keeps the
+selected publication's entry until the replacement's manifest entry is durable.
 See [saved confirmed enrichment](docs/set-profiles.md#saved-confirmed-enrichment)
 for the command and the run layout it reads.
 

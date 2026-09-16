@@ -25,8 +25,10 @@ from draftomen.carddb import CardDatabase, CardDatabaseError, load_card_database
 from draftomen.enrichment_publications import (
     EnrichmentPublication,
     EnrichmentPublicationError,
+    commit_enrichment_candidate,
     load_enrichment_publications,
-    record_enrichment_publication,
+    resolve_enrichment_candidates,
+    write_enrichment_candidate,
 )
 from draftomen.guide_client import GuideClientError, _validate_url as _validate_guide_url
 from draftomen.profile_generation import (
@@ -348,12 +350,17 @@ def publish_profile_publication(
     """Install one validated local publication and record its enrichment provenance.
 
     The manifest is loaded before any repository write, the immutable object is
-    installed before the provenance record, and the record is written before the
-    manifest entry that names it, so a manifest consumer never observes an
-    enriched entry whose provenance is missing while a record naming a
-    not-yet-published identity stays harmless.  An identical republication
-    rewrites neither the object nor the manifest, and a manifest failure leaves
-    the previous manifest authoritative.  Every failure, including an unusable
+    installed before anything names it, and an enriched publication is recorded
+    as a candidate in the durable publication record before the manifest entry
+    that names it.  Writing that manifest entry is the commit point: only then
+    is the candidate promoted to the identity's committed entry.  An
+    interrupted publication therefore leaves the previously selected
+    publication's entry untouched while its own candidate still protects a
+    manifest that already selects it, and the next enriched publication
+    resolves a leftover candidate against the manifest it finds.  An identical
+    republication rewrites neither the object nor the manifest, a manifest
+    failure leaves the previous manifest authoritative, and a plain publication
+    never reads or writes the record.  Every failure, including an unusable
     provenance record, is reported as :class:`ProfilePublicationError` so
     callers keep one publication error taxonomy.
     """
@@ -368,6 +375,37 @@ def publish_profile_publication(
         f"{PROFILE_BASE_URL}{report.gzip_sha256}.json.gz",
     )
     existing_manifest = load_profile_manifest(profiles / "manifest.json")
+    enhancement = report.enhancement
+    provenance: EnrichmentPublication | None = None
+    if enhancement is not None:
+        if not isinstance(run_id, str) or not run_id:
+            raise ProfilePublicationError(
+                "A published enrichment profile requires its run identity."
+            )
+        reviewed_at = enhancement.reviewed_at
+        if not reviewed_at:
+            raise ProfilePublicationError(
+                "A published enrichment profile requires its review timestamp."
+            )
+        provenance = EnrichmentPublication(
+            set_code=report.set_code,
+            event_format=report.event_format,
+            artifact_sha256=enhancement.artifact_sha256,
+            run_id=run_id,
+            reviewed_at=reviewed_at,
+            published_at=timestamp,
+            profile_gzip_sha256=report.gzip_sha256,
+        )
+        try:
+            resolve_enrichment_candidates(
+                profiles_dir=profiles,
+                selected={
+                    (entry.set_code, entry.event_format): entry.gzip_sha256
+                    for entry in existing_manifest.artifacts
+                },
+            )
+        except EnrichmentPublicationError as cause:
+            raise ProfilePublicationError(str(cause)) from cause
     payload = publication.artifact_path.read_bytes()
     if hashlib.sha256(payload).hexdigest() != report.gzip_sha256:
         raise ProfilePublicationError(
@@ -384,29 +422,9 @@ def publish_profile_publication(
         payload=payload,
     )
     publications_path: Path | None = None
-    if report.enhancement is not None:
-        if not isinstance(run_id, str) or not run_id:
-            raise ProfilePublicationError(
-                "A published enrichment profile requires its run identity."
-            )
-        reviewed_at = report.enhancement.reviewed_at
-        if not reviewed_at:
-            raise ProfilePublicationError(
-                "A published enrichment profile requires its review timestamp."
-            )
+    if provenance is not None:
         try:
-            publications_path = record_enrichment_publication(
-                profiles_dir=profiles,
-                publication=EnrichmentPublication(
-                    set_code=report.set_code,
-                    event_format=report.event_format,
-                    artifact_sha256=report.enhancement.artifact_sha256,
-                    run_id=run_id,
-                    reviewed_at=reviewed_at,
-                    published_at=timestamp,
-                    profile_gzip_sha256=report.gzip_sha256,
-                ),
-            )
+            write_enrichment_candidate(profiles_dir=profiles, publication=provenance)
         except EnrichmentPublicationError as cause:
             raise ProfilePublicationError(str(cause)) from cause
     manifest_path = (
@@ -414,6 +432,15 @@ def publish_profile_publication(
         if manifest_changed
         else profiles / "manifest.json"
     )
+    if provenance is not None:
+        try:
+            publications_path = commit_enrichment_candidate(
+                profiles_dir=profiles,
+                set_code=provenance.set_code,
+                event_format=provenance.event_format,
+            )
+        except EnrichmentPublicationError as cause:
+            raise ProfilePublicationError(str(cause)) from cause
     return PublishedProfilePublication(
         artifact=artifact,
         object_path=object_path,
@@ -474,15 +501,17 @@ def filter_enriched_profile_downgrades(
     Producers that can emit plain profiles MUST route their replacements through
     this filter before merging, so a published enriched entry is never replaced
     by a non-enriched artifact.  A durable publication record protects only the
-    publication it names: the identity counts as enriched when the record
-    selects it and that entry's ``profile_gzip_sha256`` is the retained
-    artifact's digest, or, when no such entry exists, when the retained profile
-    object declares confirmed enrichment.  A record naming a different digest is
-    not a claim about the retained entry -- an unsuccessful or superseded
-    publication can leave one behind -- so the retained-object read decides that
-    case.  Because the record is consulted before the object, a matching entry
-    protects an entry even once its object file was removed, and a corrupt
-    retained object no longer masks a recorded publication.
+    publications it describes: the identity counts as enriched when the record's
+    committed entry or its pending candidate carries the retained artifact's
+    digest, or, when the record protects that digest through neither, when the
+    retained profile object declares confirmed enrichment.  A record naming a
+    different digest is not a claim about the retained entry -- an unsuccessful
+    or superseded publication can leave one behind -- so the retained-object read
+    decides that case.  Because the record is consulted before the object, a
+    matching entry protects an entry even once its object file was removed, which
+    is what keeps a publication interrupted before its manifest entry was
+    durable from being downgraded, and a corrupt retained object no longer masks
+    a recorded publication.
     Enriched-to-enriched replacement, unpublished identities, identical
     artifacts, and non-enriched entries are unaffected.  A missing record file
     keeps the retained-object behaviour, while an unreadable or invalid record
@@ -516,10 +545,11 @@ def filter_enriched_profile_downgrades(
         if _profile_declares_confirmed_enrichment(value=replacement_fields):
             accepted.append(artifact)
             continue
-        recorded = published_enrichment.select(
-            set_code=artifact.set_code, event_format=artifact.event_format
-        )
-        if recorded is not None and recorded.profile_gzip_sha256 == retained.gzip_sha256:
+        if published_enrichment.protects(
+            set_code=artifact.set_code,
+            event_format=artifact.event_format,
+            profile_gzip_sha256=retained.gzip_sha256,
+        ):
             conflicts.append(
                 EnrichmentDowngradeConflict(
                     set_code=artifact.set_code,

@@ -2042,6 +2042,7 @@ def test_confirm_selects_all_accepted_relationships_and_publishes_metadata_profi
     record = load_enrichment_publications(profiles_dir=profiles)
     assert record_path.is_file()
     assert len(record.publications) == 1
+    assert record.candidates == ()
     provenance = record.publications[0]
     assert provenance.set_code == result.set_code
     assert provenance.event_format == QUICK_DRAFT_FORMAT.casefold()
@@ -2242,6 +2243,11 @@ def test_confirm_repository_publication_boundary_failure_is_fail_closed(
         payload = object_path.read_bytes()
         assert payload == error.review_result.publication.artifact_path.read_bytes()
         assert hashlib.sha256(payload).hexdigest() == report.gzip_sha256
+        record = load_enrichment_publications(profiles_dir=profiles)
+        assert record.publications == ()
+        assert tuple(entry.profile_gzip_sha256 for entry in record.candidates) == (
+            report.gzip_sha256,
+        )
     else:
         assert not object_path.exists()
         assert _tree_snapshot(profiles) == profiles_before

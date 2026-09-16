@@ -3,6 +3,16 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Keep enrichment publication provenance across a failed or interrupted publication. The
+  durable record in `draftomen/enrichment_publications.py` is written as schema 2 with one
+  committed entry per `(set, format)` identity plus at most one pending candidate:
+  `publish_profile_publication` records the candidate, writes the manifest entry that names
+  the new profile, and only then promotes the candidate, so a failed manifest write or a
+  killed process no longer overwrites the provenance of the profile the manifest still
+  serves, `filter_enriched_profile_downgrades` protects the retained digest through either
+  entry, and a fresh process resolves the leftover candidate against the manifest it finds,
+  promoting it when that manifest selects its digest and dropping it when it does not. Plain
+  publications never read or write the record, and a schema-1 record still loads. (#570)
 - List local enrichment work and where it was published. `list-enrichment` reports
   every run and saved artifact under a store directory with its set, run identity,
   created and reviewed timestamps, review state, relationship and confirmed counts,
