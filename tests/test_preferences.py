@@ -209,6 +209,60 @@ def test_load_gui_preferences_defaults_contextual_adjustments_for_existing_v1_fi
     assert warning is None
 
 
+def test_load_gui_preferences_defaults_mocked_draft_for_existing_v1_file(
+    tmp_path: Path,
+) -> None:
+    path = gui_preferences_path(app_dir=tmp_path / "app")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "display": {
+                    "secondary_stats": False,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    preferences, warning = load_gui_preferences(app_dir=path.parent)
+
+    assert preferences == GuiDisplayPreferences(secondary_stats=False)
+    assert preferences.mocked_draft_enabled is False
+    assert preferences.mocked_draft_checkout_dir == ""
+    assert preferences.mocked_draft_server_url == ""
+    assert warning is None
+
+
+@pytest.mark.parametrize("invalid_text", [None, 7, True, []])
+def test_load_gui_preferences_uses_defaults_for_invalid_mocked_draft_text_fields(
+    tmp_path: Path,
+    invalid_text: object,
+) -> None:
+    path = gui_preferences_path(app_dir=tmp_path / "app")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "display": {
+                    "mocked_draft_checkout_dir": invalid_text,
+                    "mocked_draft_server_url": invalid_text,
+                    "secondary_stats": False,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    preferences, warning = load_gui_preferences(app_dir=path.parent)
+
+    assert preferences == GuiDisplayPreferences(secondary_stats=False)
+    assert warning is not None
+    assert "mocked_draft_checkout_dir, mocked_draft_server_url" in warning
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_gui_preferences_round_trip_contextual_adjustments(
     tmp_path: Path,
@@ -234,6 +288,9 @@ def test_gui_preferences_round_trip_and_isolate_display_choices(
         detailed_build_context=False,
         system_text_scaling=False,
         show_backtest=True,
+        mocked_draft_enabled=True,
+        mocked_draft_checkout_dir="/opt/Draftmancer",
+        mocked_draft_server_url="http://127.0.0.1:3100",
     )
 
     assert save_gui_preferences(preferences=expected, app_dir=app_dir) is None
@@ -247,6 +304,9 @@ def test_gui_preferences_round_trip_and_isolate_display_choices(
             "compact_density": True,
             "contextual_adjustments_enabled": False,
             "detailed_build_context": False,
+            "mocked_draft_checkout_dir": "/opt/Draftmancer",
+            "mocked_draft_enabled": True,
+            "mocked_draft_server_url": "http://127.0.0.1:3100",
             "secondary_stats": False,
             "show_backtest": True,
             "system_text_scaling": False,

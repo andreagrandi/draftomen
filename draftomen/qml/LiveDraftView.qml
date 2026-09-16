@@ -233,7 +233,7 @@ Item {
                     // The capability may be absent from the published state, so the
                     // binding must not read through a null record.
                     text: root.testDraft
-                        ? "Test Draft · " + String(root.testDraft.mode) + " · "
+                        ? "Mocked Draft · " + String(root.testDraft.mode) + " · "
                             + String(root.testDraft.set_code).toUpperCase()
                         : ""
                     color: Theme.primary
@@ -259,7 +259,7 @@ Item {
                 accented: true
                 text: "Pick"
                 Layout.alignment: Qt.AlignVCenter
-                Accessible.name: "Confirm Test Draft pick"
+                Accessible.name: "Confirm Mocked Draft pick"
                 Accessible.description: "Submit the selected card to the simulated draft."
                 onClicked: sessionProvider.pickTestDraft(
                     root.selectedRecommendation.card.grp_id, root.testDraftOfferGeneration

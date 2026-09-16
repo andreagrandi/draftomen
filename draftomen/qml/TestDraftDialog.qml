@@ -30,7 +30,7 @@ Dialog {
     modal: true
     focus: true
     closePolicy: Popup.CloseOnEscape
-    title: "Test Draft"
+    title: "Mocked Draft"
     width: Math.min(460, Math.max(320, parent ? parent.width - 32 : 460))
     x: parent ? Math.max(16, Math.round((parent.width - width) / 2)) : 16
     y: parent ? Math.max(16, Math.round((parent.height - height) / 2)) : 16
@@ -106,7 +106,7 @@ Dialog {
                 }
                 return 0
             }
-            Accessible.name: "Test Draft set"
+            Accessible.name: "Mocked Draft set"
             Accessible.description: "Choose the simulated draft set."
         }
 
@@ -188,7 +188,7 @@ Dialog {
             activeFocusOnTab: true
             focusPolicy: Qt.StrongFocus
             Accessible.role: Accessible.Button
-            Accessible.name: "Start Test Draft"
+            Accessible.name: "Start Mocked Draft"
             onClicked: sessionProvider.startTestDraft(
                 root.selectedMode, root.selectedSetCode
             )
@@ -196,7 +196,7 @@ Dialog {
 
         DimensionalButton {
             objectName: "testDraftLeaveButton"
-            text: "Leave test draft"
+            text: "Leave mocked draft"
             accented: false
             visible: root.active
             enabled: !root.pending
@@ -204,7 +204,7 @@ Dialog {
             activeFocusOnTab: true
             focusPolicy: Qt.StrongFocus
             Accessible.role: Accessible.Button
-            Accessible.name: "Leave Test Draft"
+            Accessible.name: "Leave Mocked Draft"
             onClicked: sessionProvider.leaveTestDraft()
         }
 
@@ -216,7 +216,7 @@ Dialog {
             activeFocusOnTab: true
             focusPolicy: Qt.StrongFocus
             Accessible.role: Accessible.Button
-            Accessible.name: "Close Test Draft dialog"
+            Accessible.name: "Close Mocked Draft dialog"
             onClicked: root.close()
         }
     }

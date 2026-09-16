@@ -3,6 +3,13 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Persist Mocked Draft as an off-by-default desktop developer setting with the
+  Draftmancer checkout location and server URL. The settings surface exposes it as a
+  DEVELOPER toggle that installs or clears the simulated-draft capability live, the
+  app-bar action and dialog read "Mocked Draft", `--draftmancer-dir` stays a
+  per-launch override, and the in-app path resolves the checkout, card data, and
+  Scryfall bulk source from configured or application-data locations instead of the
+  process working directory. (#557)
 - Serve the confirmed HOB enrichment as a role-bearing profile. Recompiling the
   confirmed artifact `edc7d166…` at the `early` stage publishes
   `objects/75132bf4…json.gz` (schema 3, `enhancement_status=enhanced`, a 138-card

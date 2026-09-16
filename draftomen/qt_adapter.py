@@ -350,6 +350,7 @@ class GuiPreferencesAdapter(QObject):
     persistenceChanged = Signal()
     applicationFontPixelSizeChanged = Signal()
     contextualAdjustmentsEnabledChanged = Signal(bool)
+    mockedDraftEnabledChanged = Signal(bool)
 
     def __init__(
         self,
@@ -383,6 +384,12 @@ class GuiPreferencesAdapter(QObject):
             self.applicationFontPixelSizeChanged.emit()
         return False
 
+    @property
+    def preferences(self) -> GuiDisplayPreferences:
+        """Return the immutable preferences the adapter currently publishes."""
+
+        return self._preferences
+
     @Property(bool, notify=preferencesChanged)
     def compactDensity(self) -> bool:
         return self._preferences.compact_density
@@ -410,6 +417,10 @@ class GuiPreferencesAdapter(QObject):
     @Property(bool, notify=contextualAdjustmentsEnabledChanged)
     def contextualAdjustmentsEnabled(self) -> bool:
         return self._preferences.contextual_adjustments_enabled
+
+    @Property(bool, notify=mockedDraftEnabledChanged)
+    def mockedDraftEnabled(self) -> bool:
+        return self._preferences.mocked_draft_enabled
 
     @Property(int, notify=applicationFontPixelSizeChanged)
     def applicationFontPixelSize(self) -> int:
@@ -454,6 +465,10 @@ class GuiPreferencesAdapter(QObject):
     @Slot(bool)
     def setContextualAdjustmentsEnabled(self, enabled: bool) -> None:
         self._replace_preferences(contextual_adjustments_enabled=enabled)
+
+    @Slot(bool)
+    def setMockedDraftEnabled(self, enabled: bool) -> None:
+        self._replace_preferences(mocked_draft_enabled=enabled)
 
     @Slot()
     def shutdown(self) -> None:
@@ -511,6 +526,8 @@ class GuiPreferencesAdapter(QObject):
             self.contextualAdjustmentsEnabledChanged.emit(
                 updated.contextual_adjustments_enabled
             )
+        if updated.mocked_draft_enabled != previous.mocked_draft_enabled:
+            self.mockedDraftEnabledChanged.emit(updated.mocked_draft_enabled)
         self._ensure_save_thread().enqueue(
             generation=generation,
             preferences=updated,
@@ -642,6 +659,11 @@ class SessionAdapter(QObject):
     @Slot()
     def leaveTestDraft(self) -> None:
         return
+
+    def setTestDraftFactory(self, test_draft_factory: TestDraftFactory | None) -> None:
+        """Ignore a Mocked Draft factory change for frontends without the capability."""
+
+        del test_draft_factory
 
     def _dispatch(self, *, command: LiveSessionCommand) -> None:
         raise NotImplementedError
@@ -948,19 +970,7 @@ class _LiveSessionWorker(QObject):
             self._timer.timeout.connect(self._poll)
             self._timer.start()
             if self._test_draft_factory is not None and not self._stop_requested:
-                try:
-                    self._test_draft_supported_set_codes = (
-                        self._test_draft_factory.supported_set_codes()
-                    )
-                    default_code = DEFAULT_TEST_DRAFT_SET_CODE.casefold()
-                    if default_code in self._test_draft_supported_set_codes:
-                        self._test_draft_default_set_code = default_code
-                    elif self._test_draft_supported_set_codes:
-                        self._test_draft_default_set_code = (
-                            self._test_draft_supported_set_codes[0]
-                        )
-                except Exception as error:
-                    self._test_draft_error = str(error)
+                self._refresh_test_draft_capability()
                 self._publish_test_draft_state()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             if not self._stop_requested:
@@ -1330,16 +1340,40 @@ class _LiveSessionWorker(QObject):
 
         if self._stop_requested:
             return
-        if self._test_draft_runtime is not None:
-            switched = self._authoritative_source == "test-draft"
-            self._close_test_draft_runtime()
-            if switched:
-                self._switch_source(source="arena")
-                try:
-                    self._restore_arena_preferences()
-                except Exception as error:
-                    self.failed.emit(str(error))
-                self._poll()
+        self._release_test_draft_runtime()
+        self._reset_test_draft_progress()
+        self._publish_test_draft_state()
+
+    @Slot(object)
+    def set_test_draft_factory(self, test_draft_factory: TestDraftFactory | None) -> None:
+        """Install or clear the developer Mocked Draft capability on the worker thread."""
+
+        if self._stop_requested:
+            return
+        self._test_draft_factory = test_draft_factory
+        self._release_test_draft_runtime()
+        self._reset_test_draft_progress()
+        self._refresh_test_draft_capability()
+        self._publish_test_draft_state()
+
+    def _release_test_draft_runtime(self) -> None:
+        """Close the owned simulated runtime and restore Arena authority."""
+
+        if self._test_draft_runtime is None:
+            return
+        switched = self._authoritative_source == "test-draft"
+        self._close_test_draft_runtime()
+        if switched:
+            self._switch_source(source="arena")
+            try:
+                self._restore_arena_preferences()
+            except Exception as error:
+                self.failed.emit(str(error))
+            self._poll()
+
+    def _reset_test_draft_progress(self) -> None:
+        """Clear the published simulated-draft mode, offer, phase, and error."""
+
         self._test_draft_mode = None
         self._test_draft_set_code = None
         self._test_draft_offer = None
@@ -1347,7 +1381,26 @@ class _LiveSessionWorker(QObject):
         self._test_draft_phase = "idle"
         self._test_draft_error = None
         self._test_draft_leaving = False
-        self._publish_test_draft_state()
+
+    def _refresh_test_draft_capability(self) -> None:
+        """Publish the installed factory's supported set codes and default set."""
+
+        factory = self._test_draft_factory
+        self._test_draft_supported_set_codes = ()
+        self._test_draft_default_set_code = None
+        if factory is None:
+            return
+        try:
+            supported_codes = factory.supported_set_codes()
+        except Exception as error:
+            self._test_draft_error = str(error)
+            return
+        self._test_draft_supported_set_codes = supported_codes
+        default_code = DEFAULT_TEST_DRAFT_SET_CODE.casefold()
+        if default_code in supported_codes:
+            self._test_draft_default_set_code = default_code
+        elif supported_codes:
+            self._test_draft_default_set_code = supported_codes[0]
 
     def _close_test_draft_runtime(self) -> None:
         runtime = self._test_draft_runtime
@@ -1429,6 +1482,7 @@ class LiveSessionAdapter(SessionAdapter):
     _testDraftStartRequested = Signal(str, str)
     _testDraftPickRequested = Signal(int, int)
     _testDraftLeaveRequested = Signal()
+    _testDraftFactoryChanged = Signal(object)
 
     def __init__(
         self,
@@ -1480,6 +1534,10 @@ class LiveSessionAdapter(SessionAdapter):
         )
         self._testDraftLeaveRequested.connect(
             worker.leave_test_draft,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._testDraftFactoryChanged.connect(
+            worker.set_test_draft_factory,
             Qt.ConnectionType.QueuedConnection,
         )
         worker.snapshotReady.connect(
@@ -1541,6 +1599,23 @@ class LiveSessionAdapter(SessionAdapter):
         # Unblock a blocked start or pick before the queued leave slot runs.
         worker.request_test_draft_stop()
         self._testDraftLeaveRequested.emit()
+
+    def setTestDraftFactory(self, test_draft_factory: TestDraftFactory | None) -> None:
+        """Install or clear the developer Mocked Draft capability at runtime."""
+
+        if self._test_draft_factory is test_draft_factory:
+            return
+        self._test_draft_factory = test_draft_factory
+        worker = self._worker
+        if worker is not None:
+            self._testDraftFactoryChanged.emit(test_draft_factory)
+            return
+        # A toggle between engine.load and provider.start(): the worker publishes
+        # the authoritative capability as soon as it starts.
+        self._test_draft_state = _to_qml_value(
+            TestDraftSessionState(enabled=test_draft_factory is not None)
+        )
+        self._replace_state(state=self._state | {"test_draft": self._test_draft_state})
 
     @Slot(object)
     def _apply_test_draft_state(self, state: TestDraftSessionState) -> None:

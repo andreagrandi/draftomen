@@ -9,6 +9,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, Protocol, cast
@@ -26,6 +27,7 @@ from draftomen.carddb import build_card_database_from_bulk_file
 from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.mock_session import MOCK_SCENARIOS, MockLiveSession, MockScenario
 from draftomen.paths import resolve_player_log_path
+from draftomen.preferences import GuiDisplayPreferences, load_gui_preferences
 from draftomen.qt_adapter import (
     GuiPreferencesAdapter,
     LiveSessionAdapter,
@@ -36,11 +38,12 @@ from draftomen.qt_adapter import (
 from draftomen.qt_mock import MockSessionAdapter
 from draftomen.session import LiveSession, SnapshotPublisher
 from draftomen.test_draft import (
-    DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
     DEFAULT_TEST_DRAFT_SERVER_URL,
     DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
     TestDraftRuntime,
     create_test_draft_runtime,
+    default_test_draft_bulk_file,
+    default_test_draft_checkout_dir,
     supported_test_draft_set_codes,
 )
 from draftomen.profile_client import (
@@ -154,15 +157,25 @@ def _parser(*, forced_provider: ProviderName | None = None) -> argparse.Argument
         "--draftmancer-dir",
         type=Path,
         default=None,
-        help="Enable the developer Test Draft with a pinned Draftmancer checkout.",
+        help=(
+            "Enable the developer Mocked Draft with a pinned Draftmancer checkout; "
+            "overrides the persisted setting."
+        ),
     )
     parser.add_argument(
         "--scryfall-bulk-file",
         type=Path,
-        default=DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
-        help="Scryfall JSONL bulk source used to resolve simulated printing identities.",
+        default=None,
+        help=(
+            "Scryfall JSONL bulk source used to resolve simulated printing identities "
+            "(default: the application data directory)."
+        ),
     )
-    parser.add_argument("--test-draft-server-url", default=DEFAULT_TEST_DRAFT_SERVER_URL)
+    parser.add_argument(
+        "--test-draft-server-url",
+        default=None,
+        help=f"Draftmancer server URL (default: {DEFAULT_TEST_DRAFT_SERVER_URL}).",
+    )
     parser.add_argument(
         "--test-draft-timeout",
         type=float,
@@ -297,27 +310,86 @@ def _live_session_factory(
     return factory
 
 
-def _test_draft_runtime_factory(
+def _resolved_profile_access(
     *,
-    draftmancer_dir: Path,
-    scryfall_bulk_file: Path,
-    server_url: str,
-    timeout_seconds: float,
-    app_dir: Path | None,
-    profile_manifest_url: str | None,
-    profile_network_policy: ProfileNetworkPolicy,
-    simulation_app_dir: Path | None = None,
-) -> TestDraftFactory:
-    """Create the developer Test Draft factory behind the explicit opt-in."""
-    return _GuiTestDraftFactory(
-        draftmancer_dir=draftmancer_dir,
+    args: argparse.Namespace,
+) -> tuple[str, ProfileNetworkPolicy]:
+    """Resolve the hosted profile manifest URL and the network policy the GUI uses."""
+
+    manifest_url = getattr(args, "profile_manifest_url", None)
+    network_policy = (
+        ProfileNetworkPolicy.OFFLINE
+        if getattr(args, "offline_profiles", False)
+        else ProfileNetworkPolicy.ALLOWED
+    )
+    return (
+        DEFAULT_PROFILE_MANIFEST_URL if manifest_url is None else manifest_url,
+        network_policy,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _MockedDraftSources:
+    """Resolve the developer Mocked Draft inputs outside the process working directory."""
+
+    checkout_dir: Path
+    scryfall_bulk_file: Path
+    server_url: str
+
+
+def _mocked_draft_sources(
+    *,
+    args: argparse.Namespace,
+    preferences: GuiDisplayPreferences,
+) -> _MockedDraftSources:
+    """Resolve Mocked Draft inputs from explicit flags, persisted settings, or application data."""
+
+    # Per-launch input precedence: explicit flag, then persisted setting, then application-data
+    # default. The simulated runtime state stays in its own temporary directory.
+    checkout_value = args.draftmancer_dir or preferences.mocked_draft_checkout_dir
+    checkout_dir = (
+        Path(checkout_value).expanduser()
+        if checkout_value
+        else default_test_draft_checkout_dir(app_dir=args.app_dir)
+    )
+    scryfall_bulk_file = (
+        Path(args.scryfall_bulk_file).expanduser()
+        if args.scryfall_bulk_file is not None
+        else default_test_draft_bulk_file(app_dir=args.app_dir)
+    )
+    server_url = (
+        args.test_draft_server_url
+        or preferences.mocked_draft_server_url
+        or DEFAULT_TEST_DRAFT_SERVER_URL
+    )
+    return _MockedDraftSources(
+        checkout_dir=checkout_dir,
         scryfall_bulk_file=scryfall_bulk_file,
         server_url=server_url,
+    )
+
+
+def _mocked_draft_factory(
+    *,
+    args: argparse.Namespace,
+    preferences: GuiDisplayPreferences,
+) -> TestDraftFactory:
+    """Build the developer Mocked Draft factory from resolved sources."""
+
+    sources = _mocked_draft_sources(args=args, preferences=preferences)
+    timeout_seconds = args.test_draft_timeout
+    if not 0 < timeout_seconds < float("inf"):
+        raise ValueError("--test-draft-timeout must be finite and positive.")
+    manifest_url, network_policy = _resolved_profile_access(args=args)
+    return _GuiTestDraftFactory(
+        draftmancer_dir=sources.checkout_dir,
+        scryfall_bulk_file=sources.scryfall_bulk_file,
+        server_url=sources.server_url,
         timeout_seconds=timeout_seconds,
-        app_dir=app_dir,
-        profile_manifest_url=profile_manifest_url,
-        profile_network_policy=profile_network_policy,
-        simulation_app_dir=simulation_app_dir,
+        app_dir=args.app_dir,
+        profile_manifest_url=manifest_url,
+        profile_network_policy=network_policy,
+        simulation_app_dir=None,
     )
 
 
@@ -389,7 +461,7 @@ class _GuiTestDraftFactory:
 def _build_provider(
     *,
     args: argparse.Namespace,
-    contextual_adjustments_enabled: bool,
+    preferences: GuiDisplayPreferences,
 ) -> SessionAdapter:
     if args.provider == "mock":
         return MockSessionAdapter(
@@ -397,56 +469,26 @@ def _build_provider(
         )
     if args.poll_interval <= 0:
         raise ValueError("--poll-interval must be greater than zero.")
-    profile_manifest_url = getattr(args, "profile_manifest_url", None)
-    profile_network_policy = (
-        ProfileNetworkPolicy.OFFLINE
-        if getattr(args, "offline_profiles", False)
-        else ProfileNetworkPolicy.ALLOWED
-    )
-    resolved_profile_manifest_url = (
-        DEFAULT_PROFILE_MANIFEST_URL
-        if profile_manifest_url is None
-        else profile_manifest_url
+    resolved_profile_manifest_url, profile_network_policy = _resolved_profile_access(
+        args=args
     )
     profile_client = ProfileClient(
         app_dir=args.app_dir,
         manifest_url=resolved_profile_manifest_url,
         network_policy=profile_network_policy,
     )
+    # Startup enablement: the launch flag or the persisted Mocked Draft setting. A later
+    # settings toggle replaces this choice with the user's live selection.
     test_draft_factory: TestDraftFactory | None = None
-    draftmancer_dir = getattr(args, "draftmancer_dir", None)
-    if draftmancer_dir is not None:
-        test_draft_timeout = getattr(
-            args,
-            "test_draft_timeout",
-            DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
-        )
-        if not 0 < test_draft_timeout < float("inf"):
-            raise ValueError("--test-draft-timeout must be finite and positive.")
-        test_draft_factory = _test_draft_runtime_factory(
-            draftmancer_dir=draftmancer_dir,
-            scryfall_bulk_file=getattr(
-                args,
-                "scryfall_bulk_file",
-                DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
-            ),
-            server_url=getattr(
-                args,
-                "test_draft_server_url",
-                DEFAULT_TEST_DRAFT_SERVER_URL,
-            ),
-            timeout_seconds=test_draft_timeout,
-            app_dir=args.app_dir,
-            profile_manifest_url=resolved_profile_manifest_url,
-            profile_network_policy=profile_network_policy,
-        )
+    if args.draftmancer_dir is not None or preferences.mocked_draft_enabled:
+        test_draft_factory = _mocked_draft_factory(args=args, preferences=preferences)
     return LiveSessionAdapter(
         session_factory=_live_session_factory(
             log_path=args.log_path,
             app_dir=args.app_dir,
             bulk_file=args.bulk_file,
             poll_interval=args.poll_interval,
-            contextual_adjustments_enabled=contextual_adjustments_enabled,
+            contextual_adjustments_enabled=preferences.contextual_adjustments_enabled,
             profile_manifest_url=resolved_profile_manifest_url,
             profile_network_policy=profile_network_policy,
             profile_client=profile_client,
@@ -982,10 +1024,15 @@ def run_gui(
         return 1
 
     if args.test_draft_smoke and (
-        args.provider != "live" or args.draftmancer_dir is None
+        args.provider != "live"
+        or (
+            args.draftmancer_dir is None
+            and not load_gui_preferences(app_dir=args.app_dir)[0].mocked_draft_enabled
+        )
     ):
         print(
-            "--test-draft-smoke requires --draftmancer-dir with the live provider.",
+            "--test-draft-smoke requires --draftmancer-dir or an enabled Mocked Draft "
+            "setting with the live provider.",
             file=sys.stderr,
         )
         return 1
@@ -995,10 +1042,27 @@ def run_gui(
     _configure_application_metadata(application=application)
 
     preferences = GuiPreferencesAdapter(app_dir=args.app_dir, parent=application)
-    provider = _build_provider(
-        args=args,
-        contextual_adjustments_enabled=preferences.contextualAdjustmentsEnabled,
-    )
+    provider = _build_provider(args=args, preferences=preferences.preferences)
+
+    def apply_mocked_draft_enabled(enabled: bool) -> None:
+        """Install or clear the developer Mocked Draft capability in the running application."""
+
+        # After any toggle the user's live choice governs; the launch flag is no longer consulted.
+        if not enabled:
+            provider.setTestDraftFactory(None)
+            return
+        try:
+            factory = _mocked_draft_factory(
+                args=args,
+                preferences=preferences.preferences,
+            )
+        except ValueError as error:
+            print(f"Mocked Draft could not be enabled: {error}", file=sys.stderr)
+            provider.setTestDraftFactory(None)
+            return
+        provider.setTestDraftFactory(factory)
+
+    preferences.mockedDraftEnabledChanged.connect(apply_mocked_draft_enabled)
     preferences.contextualAdjustmentsEnabledChanged.connect(
         provider.setContextualScoringEnabled
     )
