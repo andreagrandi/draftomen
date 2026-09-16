@@ -76,7 +76,14 @@ from draftomen.deckbuilder import (
     load_pool_file,
 )
 from draftomen.draftmancer import DraftmancerAdapterError
-from draftomen.enrichment_inventory import EnrichmentInventoryError, select_confirmed_artifact
+from draftomen.enrichment_inventory import (
+    EnrichmentArtifactSummary,
+    EnrichmentInventoryError,
+    EnrichmentPublicationState,
+    inventory_enrichment_runs,
+    published_enrichment_states,
+    select_confirmed_artifact,
+)
 from draftomen.enrichment_publications import EnrichmentPublicationError
 from draftomen.events import DraftLogParseError
 from draftomen.logfollow import LogFollowError
@@ -1062,6 +1069,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Profile schema version to embed (default: 1.0).",
     )
     republish_parser.set_defaults(handler=handle_republish_enrichment)
+    list_parser = subparsers.add_parser(
+        name="list-enrichment",
+        help="List local enrichment runs, artifacts, and their publication state.",
+        description=(
+            "Report every local enrichment run and saved artifact with its review state, "
+            "counts, and the profiles it was published as, using local files only."
+        ),
+    )
+    list_parser.add_argument(
+        "--store-dir",
+        type=Path,
+        default=None,
+        help="Set-enrichment store (default: the app data directory's set-enrichment).",
+    )
+    list_parser.add_argument(
+        "--profiles-dir",
+        type=Path,
+        default=Path("website/public/profiles"),
+        help="Published profiles tree used to resolve publication state.",
+    )
+    list_parser.add_argument(
+        "--set",
+        dest="set_code",
+        default=None,
+        help="Restrict the listing to one set code.",
+    )
+    list_parser.set_defaults(handler=handle_list_enrichment)
     return parser
 
 
@@ -2384,6 +2418,73 @@ def handle_republish_enrichment(args: argparse.Namespace) -> int:
         f"publications={'not-recorded' if published_record is None else published_record}"
     )
     return 0
+
+
+def handle_list_enrichment(args: argparse.Namespace) -> int:
+    """Report local enrichment runs, their artifacts, and publication state.
+    The --set filter selects one set code for both the printed runs and the counts.
+    """
+
+    store_dir = args.store_dir or (app_data_dir() / "set-enrichment")
+    try:
+        runs = inventory_enrichment_runs(store_dir=store_dir)
+        states = published_enrichment_states(profiles_dir=args.profiles_dir)
+        if args.set_code is not None:
+            expected_set_code = args.set_code.casefold()
+            runs = tuple(
+                run for run in runs if run.set_code.casefold() == expected_set_code
+            )
+            states = tuple(
+                state for state in states if state.set_code == expected_set_code
+            )
+    except (
+        EnrichmentInventoryError,
+        EnrichmentPublicationError,
+        ProfilePublicationError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as error:
+        print(f"list-enrichment failed: {error}", file=sys.stderr)
+        return 1
+
+    for run in runs:
+        print(f"run {run.set_code} {run.run_id} artifacts={len(run.artifacts)}")
+        for artifact in run.artifacts:
+            print(
+                "  artifact"
+                f" {artifact.set_code} {artifact.run_id} {artifact.sha256}"
+                f" created={artifact.created_at or 'unknown'}"
+                f" reviewed={artifact.reviewed_at or 'unknown'}"
+                f" state={artifact.review_state}"
+                f" relationships={artifact.relationship_count}"
+                f" confirmed={artifact.confirmed_relationship_count}"
+                f" published={_published_state_entries(states=states, artifact=artifact)}"
+            )
+
+    artifacts = tuple(artifact for run in runs for artifact in run.artifacts)
+    print(
+        f"list-enrichment: runs={len(runs)} artifacts={len(artifacts)}"
+        f" confirmed={sum(1 for artifact in artifacts if artifact.review_state == 'confirmed')}"
+        f" published={len(states)} orphaned={sum(1 for state in states if not state.referenced)}"
+    )
+    return 0
+
+
+def _published_state_entries(
+    *,
+    states: tuple[EnrichmentPublicationState, ...],
+    artifact: EnrichmentArtifactSummary,
+) -> str:
+    """Return the publication states naming one saved artifact as a comma-joined list."""
+
+    entries = [
+        f"{state.set_code}/{state.event_format}:"
+        f"{'referenced' if state.referenced else 'orphaned'}"
+        for state in states
+        if state.artifact_sha256 == artifact.sha256
+    ]
+    return ",".join(entries) if entries else "none"
 
 
 def main(argv: Sequence[str] | None = None) -> int:

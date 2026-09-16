@@ -3,6 +3,14 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- List local enrichment work and where it was published. `list-enrichment` reports
+  every run and saved artifact under a store directory with its set, run identity,
+  created and reviewed timestamps, review state, relationship and confirmed counts,
+  and artifact SHA-256, plus the profiles each artifact was published as, marking an
+  identity `orphaned` when the manifest no longer selects the published object, so a
+  replaced publication is visible instead of silent. It reads local files only, makes
+  no network request and no model call, and defaults to the shared
+  `<app data directory>/set-enrichment` store. (#567)
 - Recover already-paid enrichment work offline. `republish-enrichment` recompiles
   and publishes one metadata-stage profile from a saved confirmed artifact without
   freezing a guide and without any model call, selecting the newest confirmed

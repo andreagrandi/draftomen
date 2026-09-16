@@ -103,7 +103,8 @@ coalesce, and `watch --plain` has no command UI.
 For a terminal workflow, use the stable `draftomen-tui` command. It preserves
 the watch, replay, build, backtest, benchmark, data-refresh,
 `export-set-data`, local `generate-profile`, `refresh-profile`,
-`republish-enrichment`, and interactive `enrich-set` subcommands:
+`list-enrichment`, `republish-enrichment`, and interactive `enrich-set`
+subcommands:
 
 ```bash
 draftomen-tui
@@ -163,6 +164,17 @@ artifact SHA-256, run identity, and review timestamp per set and format in
 website data refresh and protects the entry from a later plain regeneration.
 See [saved confirmed enrichment](docs/set-profiles.md#saved-confirmed-enrichment)
 for the command and the run layout it reads.
+
+Use `list-enrichment` to see what enrichment work is on disk before recovering
+it. It reports every run and saved artifact with its set, run identity, created
+and reviewed timestamps, review state, relationship and confirmed counts, and
+artifact SHA-256, plus the profiles each artifact was published as, marking an
+identity `orphaned` when the manifest no longer selects the published object. It
+reads local files only and makes no network request and no model call:
+
+```bash
+draftomen-tui list-enrichment --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft"
+```
 
 ### Static set card data
 

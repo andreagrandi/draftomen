@@ -3,21 +3,33 @@
 The inventory is a read-only view of one on-disk set-enrichment store.  It
 decodes saved artifacts defensively instead of validating them, so a run written
 by a different build is still visible, and it selects the confirmed artifact
-that offline profile re-publication compiles from.
+that offline profile re-publication compiles from.  It also resolves where each
+confirmed artifact was published by reading the durable publication record and
+the published profile objects of a repository profiles tree.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+import gzip
 import json
 import os
 from pathlib import Path
 from typing import Any, TypeAlias
+import zlib
+
+from draftomen.enrichment_publications import load_enrichment_publications
+from draftomen.profile_manifest import ProfileManifestError, load_profile_manifest
 
 
 ENRICHMENT_RUNS_DIRECTORY = "enrichment-runs"
 ENRICHMENT_ARTIFACTS_DIRECTORY = "artifacts"
 ARTIFACT_ERROR = "Could not read a saved enrichment artifact."
+PROFILE_OBJECTS_DIRECTORY = "objects"
+PROFILE_MANIFEST_FILE_NAME = "manifest.json"
+PROFILE_OBJECT_SUFFIX = ".json.gz"
+PUBLICATION_ERROR = "Could not read the published enrichment profiles."
 
 PathInput: TypeAlias = str | os.PathLike[str]
 
@@ -49,6 +61,18 @@ class EnrichmentRunSummary:
     run_id: str
     path: Path
     artifacts: tuple[EnrichmentArtifactSummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichmentPublicationState:
+    """One identity in which an enrichment artifact was published."""
+
+    set_code: str
+    event_format: str
+    artifact_sha256: str
+    profile_gzip_sha256: str
+    referenced: bool
+    source: str  # "record" or "object"
 
 
 def inventory_enrichment_runs(*, store_dir: PathInput) -> tuple[EnrichmentRunSummary, ...]:
@@ -97,6 +121,157 @@ def select_confirmed_artifact(
             "No confirmed enrichment artifact is available for the requested set."
         )
     return max(candidates, key=lambda artifact: (artifact.reviewed_at or "", artifact.sha256))
+
+
+def published_enrichment_states(
+    *, profiles_dir: PathInput
+) -> tuple[EnrichmentPublicationState, ...]:
+    """Return every publication of an enrichment-backed profile and its manifest reference.
+
+    A publication is described twice on disk: by the durable record written when
+    a confirmed artifact was published, and by the content-addressed profile
+    objects themselves, which are the only trace of a publication that predates
+    the record.  A publication both sources describe is reported once, from the
+    record, because the record names the artifact behind the published object.
+    """
+    directory = Path(profiles_dir).expanduser()
+    manifest_digests = _manifest_digests(profiles_dir=directory)
+    publications: dict[tuple[str, str, str], EnrichmentPublicationState] = {}
+    for state in (
+        *_record_states(profiles_dir=directory, manifest_digests=manifest_digests),
+        *_object_states(profiles_dir=directory, manifest_digests=manifest_digests),
+    ):
+        publications.setdefault(_state_key(state), state)
+    return tuple(sorted(publications.values(), key=_state_key))
+
+
+def _manifest_digests(*, profiles_dir: Path) -> dict[tuple[str, str], str]:
+    """Return the gzip digest the manifest currently selects per identity.
+
+    A missing manifest references nothing; a path that exists but cannot be
+    read or parsed is a failure of the profiles tree.
+    """
+    manifest_path = profiles_dir / PROFILE_MANIFEST_FILE_NAME
+    try:
+        manifest_path.stat()
+        manifest = load_profile_manifest(manifest_path)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ProfileManifestError) as error:
+        raise EnrichmentInventoryError(PUBLICATION_ERROR) from error
+    return {
+        (artifact.set_code, artifact.event_format): artifact.gzip_sha256
+        for artifact in manifest.artifacts
+    }
+
+
+def _record_states(
+    *,
+    profiles_dir: Path,
+    manifest_digests: Mapping[tuple[str, str], str],
+) -> tuple[EnrichmentPublicationState, ...]:
+    """Return one state per entry of the durable publication record."""
+    record = load_enrichment_publications(profiles_dir=profiles_dir)
+    return tuple(
+        EnrichmentPublicationState(
+            set_code=item.set_code,
+            event_format=item.event_format,
+            artifact_sha256=item.artifact_sha256,
+            profile_gzip_sha256=item.profile_gzip_sha256,
+            referenced=_referenced(
+                manifest_digests=manifest_digests,
+                set_code=item.set_code,
+                event_format=item.event_format,
+                profile_gzip_sha256=item.profile_gzip_sha256,
+            ),
+            source="record",
+        )
+        for item in record.publications
+    )
+
+
+def _object_states(
+    *,
+    profiles_dir: Path,
+    manifest_digests: Mapping[tuple[str, str], str],
+) -> tuple[EnrichmentPublicationState, ...]:
+    """Return one state per enhanced profile object held under its content address."""
+    states: list[EnrichmentPublicationState] = []
+    for path in _object_files(directory=profiles_dir / PROFILE_OBJECTS_DIRECTORY):
+        document = _published_profile(path=path)
+        if document is None or document.get("enhancement_status") != "enhanced":
+            continue
+        enhancement = document.get("enhancement")
+        if not isinstance(enhancement, Mapping):
+            continue
+        set_code = _text(document.get("set_code"))
+        event_format = _text(document.get("format"))
+        artifact_sha256 = _text(enhancement.get("artifact_sha256"))
+        if not set_code or not event_format or not artifact_sha256:
+            continue
+        profile_gzip_sha256 = path.name.removesuffix(PROFILE_OBJECT_SUFFIX)
+        normalized_set = set_code.casefold()
+        normalized_format = event_format.casefold()
+        states.append(
+            EnrichmentPublicationState(
+                set_code=normalized_set,
+                event_format=normalized_format,
+                artifact_sha256=artifact_sha256,
+                profile_gzip_sha256=profile_gzip_sha256,
+                referenced=_referenced(
+                    manifest_digests=manifest_digests,
+                    set_code=normalized_set,
+                    event_format=normalized_format,
+                    profile_gzip_sha256=profile_gzip_sha256,
+                ),
+                source="object",
+            )
+        )
+    return tuple(states)
+
+
+def _referenced(
+    *,
+    manifest_digests: Mapping[tuple[str, str], str],
+    set_code: str,
+    event_format: str,
+    profile_gzip_sha256: str,
+) -> bool:
+    """Return True when the manifest selects this publication of one identity."""
+    return manifest_digests.get((set_code, event_format)) == profile_gzip_sha256
+
+
+def _state_key(state: EnrichmentPublicationState) -> tuple[str, str, str]:
+    """Return the publication identity one resolved state is deduplicated by."""
+    return (state.set_code, state.event_format, state.profile_gzip_sha256)
+
+
+def _object_files(*, directory: Path) -> tuple[Path, ...]:
+    """Return the profile object files of one objects directory in name order.
+
+    A missing objects directory holds no objects; one that exists but cannot be
+    listed is a failure of the profiles tree, not an empty history.
+    """
+    try:
+        entries = tuple(
+            entry
+            for entry in directory.iterdir()
+            if entry.name.endswith(PROFILE_OBJECT_SUFFIX) and not entry.is_dir()
+        )
+    except FileNotFoundError:
+        return ()
+    except OSError as error:
+        raise EnrichmentInventoryError(PUBLICATION_ERROR) from error
+    return tuple(sorted(entries, key=lambda entry: entry.name))
+
+
+def _published_profile(*, path: Path) -> Mapping[str, Any] | None:
+    """Decode one published gzip profile object, or None when it cannot be read."""
+    try:
+        document = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    except (EOFError, OSError, TypeError, UnicodeDecodeError, ValueError, zlib.error):
+        return None
+    return document if isinstance(document, Mapping) else None
 
 
 def _subdirectories(*, directory: Path) -> tuple[Path, ...]:
@@ -182,10 +357,16 @@ __all__ = [
     "ARTIFACT_ERROR",
     "ENRICHMENT_ARTIFACTS_DIRECTORY",
     "ENRICHMENT_RUNS_DIRECTORY",
+    "PROFILE_MANIFEST_FILE_NAME",
+    "PROFILE_OBJECTS_DIRECTORY",
+    "PROFILE_OBJECT_SUFFIX",
+    "PUBLICATION_ERROR",
     "EnrichmentArtifactSummary",
     "EnrichmentInventoryError",
+    "EnrichmentPublicationState",
     "EnrichmentRunSummary",
     "inventory_enrichment_runs",
+    "published_enrichment_states",
     "select_confirmed_artifact",
 ]
 
