@@ -3,6 +3,19 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Retain published enriched profiles when an automated website data refresh would
+  replace them with plain ones. `draftomen/profile_publication.py` adds
+  `filter_enriched_profile_downgrades`, which splits generated replacements into
+  accepted artifacts and `EnrichmentDowngradeConflict` records by reading the
+  published profile object bytes, and both plain-profile producers —
+  `execute_profile_data_refresh` and the refresh workflow's `_materialize_profiles` —
+  route every replacement through it before merging, so a downgraded identity keeps
+  its manifest entry and object bytes, its object is never rewritten, and the run
+  still succeeds; `refresh-profile-data` prints one retained line per conflict,
+  `generate_website` records them under `profiles.enrichment_conflicts` and in a
+  `### Retained enriched profiles` summary block, and the bundle validator accepts and
+  re-validates the new records. Enriched-to-enriched replacement and replacement of a
+  non-enriched entry are unchanged. (#561)
 - Generate usable profiles from saved confirmed enrichment without new model
   calls. `generate-profile --enrichment PATH` validates the artifact digest,
   frozen guide and card sources, then produces schema-3 profiles with compiled

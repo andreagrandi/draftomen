@@ -1152,6 +1152,13 @@ def handle_refresh_profile_data(args: argparse.Namespace) -> int:
             f"{failure.pair.event_format}: {failure.category}",
             file=sys.stderr,
         )
+    for conflict in result.enrichment_conflicts:
+        print(
+            "refresh-profile-data retained enriched profile: "
+            f"{conflict.set_code.upper()} / {conflict.event_format}: "
+            f"kept {conflict.retained.gzip_sha256}, rejected {conflict.rejected.gzip_sha256}",
+            flush=True,
+        )
     return 0 if result.succeeded else 1
 
 

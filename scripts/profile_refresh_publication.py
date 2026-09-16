@@ -199,7 +199,7 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
     profiles = _mapping(report["profiles"], label="profiles")
     _exact_keys(
         profiles,
-        {"planning_complete", "selected", "successful", "manifest_changed"},
+        {"planning_complete", "selected", "successful", "manifest_changed", "enrichment_conflicts"},
         label="profiles",
     )
     if not isinstance(profiles["planning_complete"], bool) or not isinstance(profiles["manifest_changed"], bool):
@@ -222,6 +222,45 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
         if identity in successful_pairs or identity not in selected_pairs or selected_pairs[identity] != name:
             _fail("profiles.successful contains an unselected or duplicate identity")
         successful_pairs.add(identity)
+
+    # Retained enriched identities are reported evidence, not failures: a run
+    # whose only profile outcome is a downgrade still validates as successful.
+    if not isinstance(profiles["enrichment_conflicts"], list):
+        _fail("profiles.enrichment_conflicts must be an array")
+    conflict_pairs: set[tuple[str, str]] = set()
+    for index, conflict_value in enumerate(profiles["enrichment_conflicts"]):
+        label = f"profiles.enrichment_conflicts[{index}]"
+        conflict = _mapping(conflict_value, label=label)
+        _exact_keys(
+            conflict,
+            {
+                "set_code",
+                "event_format",
+                "retained_gzip_sha256",
+                "retained_url",
+                "rejected_gzip_sha256",
+                "rejected_url",
+            },
+            label=label,
+        )
+        code = _safe_code(conflict["set_code"], label=f"{label}.set_code")
+        event_format = _nonempty_string(conflict["event_format"], label=f"{label}.event_format")
+        if _SAFE_FIELD.fullmatch(event_format) is None:
+            _fail(f"{label}.event_format is not a safe identifier")
+        identity = (code, event_format.casefold())
+        if identity in conflict_pairs:
+            _fail("profiles.enrichment_conflicts contains duplicate identities")
+        if identity not in selected_pairs:
+            _fail(f"{label} refers to an unselected profile identity")
+        conflict_pairs.add(identity)
+        for key in ("retained_gzip_sha256", "rejected_gzip_sha256"):
+            digest = conflict[key]
+            if not isinstance(digest, str) or _HEX64.fullmatch(digest) is None:
+                _fail(f"{label}.{key} must be lowercase SHA-256")
+        for key in ("retained_url", "rejected_url"):
+            url = _nonempty_string(conflict[key], label=f"{label}.{key}")
+            if not url.startswith("https://") or "\\" in url:
+                _fail(f"{label}.{key} is not an https URL")
 
     failures = report["failures"]
     if not isinstance(failures, list):

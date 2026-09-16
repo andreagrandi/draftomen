@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import gzip
 import hashlib
@@ -29,6 +30,10 @@ from draftomen.seventeen import (
     seventeen_lands_cache_path,
 )
 from draftomen.set_card_data import SetCardData
+from tests.test_profile_publication import (
+    _database as _enrichment_database,
+    _enrichment_artifact,
+)
 
 
 NOW = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
@@ -185,6 +190,57 @@ def _write_manifest_object(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     return path, payload
+
+
+def _write_enriched_manifest_object(
+    profiles_dir: Path,
+    *,
+    set_code: str,
+    event_format: str,
+) -> tuple[ProfileManifest, Path, bytes]:
+    """Publish one confirmed-enrichment metadata profile and its manifest entry."""
+
+    database = CardDatabase(
+        cards={
+            card_id: replace(card, set_code=set_code)
+            for card_id, card in _enrichment_database().cards.items()
+        }
+    )
+    enrichment = _enrichment_artifact(database, set_code=set_code)
+    generation = generate_set_profile(
+        set_code=set_code,
+        event_format=event_format,
+        stage="metadata",
+        card_database=database,
+        generated_at=NOW,
+        enrichment=enrichment,
+    )
+    report = generation.report
+    manifest = ProfileManifest(
+        artifacts=(
+            ProfileManifestArtifact(
+                set_code=report.set_code,
+                event_format=report.event_format,
+                set_profile_schema_version=report.set_profile_schema_version,
+                profile_version=generation.profile.profile_version,
+                generated_at=report.generated_at,
+                url=(
+                    "https://www.draftomen.com/profiles/objects/"
+                    f"{report.gzip_sha256}.json.gz"
+                ),
+                gzip_bytes=report.gzip_bytes,
+                profile_bytes=report.profile_bytes,
+                gzip_sha256=report.gzip_sha256,
+                profile_sha256=report.profile_sha256,
+                maturity=generation.profile.maturity,
+            ),
+        ),
+        published_at=NOW.isoformat(),
+    )
+    object_path = profiles_dir / "objects" / f"{report.gzip_sha256}.json.gz"
+    object_path.parent.mkdir(parents=True, exist_ok=True)
+    object_path.write_bytes(generation.gzip_bytes)
+    return manifest, object_path, generation.gzip_bytes
 
 
 def test_prepare_selects_supported_formats_in_set_and_format_order(
@@ -868,3 +924,90 @@ def test_published_profile_preserves_empirical_17lands_sources_and_attribution(
     } == {"17lands:color-ratings"}
     ratings = _ratings(set_code="aaa", event_format="QuickDraft")
     assert ratings.attribution == SEVENTEEN_LANDS_ATTRIBUTION
+
+
+def test_execute_retains_enriched_identity_and_reports_downgrade_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_dir = tmp_path / "card-data"
+    first_path = _write_card_artifact(card_dir, set_code="aaa", set_name="Alpha Set")
+    second_path = _write_card_artifact(card_dir, set_code="bbb", set_name="Beta Set")
+    plan = refresh.Plan(
+        pairs=(
+            refresh.Pair("aaa", "Alpha Set", "QuickDraft", first_path),
+            refresh.Pair("bbb", "Beta Set", "QuickDraft", second_path),
+        )
+    )
+    profiles_dir = tmp_path / "profiles"
+    enriched_manifest, enriched_object_path, enriched_object_bytes = (
+        _write_enriched_manifest_object(
+            profiles_dir,
+            set_code="aaa",
+            event_format="QuickDraft",
+        )
+    )
+    enriched_artifact = enriched_manifest.select(
+        set_code="aaa",
+        event_format="QuickDraft",
+    )
+    assert enriched_artifact is not None
+    plain_manifest_b = _manifest_for_profile(set_code="bbb", event_format="QuickDraft")
+    old_manifest = ProfileManifest(
+        artifacts=enriched_manifest.artifacts + plain_manifest_b.artifacts,
+        published_at=NOW.isoformat(),
+    )
+    manifest_path = _write_manifest(profiles_dir, old_manifest)
+    _write_manifest_object(
+        profiles_dir,
+        manifest=old_manifest,
+        set_code="bbb",
+        event_format="QuickDraft",
+    )
+    monkeypatch.setattr(
+        refresh,
+        "load_or_refresh_17lands_format_data",
+        lambda **kwargs: _ratings(
+            set_code=kwargs["set_code"],
+            event_format=kwargs["event_format"],
+        ),
+    )
+
+    result = refresh.execute_profile_data_refresh(
+        plan,
+        profiles_dir=profiles_dir,
+        cache_dir=tmp_path / "cache",
+        clock=FrozenClock(NOW),
+    )
+
+    assert [
+        (conflict.set_code, conflict.event_format) for conflict in result.enrichment_conflicts
+    ] == [("aaa", "quickdraft")]
+    conflict = result.enrichment_conflicts[0]
+    assert conflict.retained.gzip_sha256 == enriched_artifact.gzip_sha256
+    assert conflict.rejected.gzip_sha256 != enriched_artifact.gzip_sha256
+    assert [(pair.set_code, pair.event_format) for pair in result.successful_pairs] == [
+        ("bbb", "QuickDraft")
+    ]
+    assert result.failures == ()
+    merged = ProfileManifest.from_bytes(manifest_path.read_bytes())
+    assert merged.select(set_code="aaa", event_format="QuickDraft") == enriched_artifact
+    assert enriched_object_path.read_bytes() == enriched_object_bytes
+    refreshed_b = merged.select(set_code="bbb", event_format="QuickDraft")
+    assert refreshed_b is not None
+    assert refreshed_b != plain_manifest_b.select(set_code="bbb", event_format="QuickDraft")
+    refreshed_b_object = profiles_dir / "objects" / f"{refreshed_b.gzip_sha256}.json.gz"
+    assert (
+        hashlib.sha256(refreshed_b_object.read_bytes()).hexdigest() == refreshed_b.gzip_sha256
+    )
+    assert not (
+        profiles_dir / "objects" / f"{conflict.rejected.gzip_sha256}.json.gz"
+    ).exists()
+    assert set(result.to_json()["enrichment_conflicts"][0]) == {
+        "event_format",
+        "rejected_gzip_sha256",
+        "rejected_url",
+        "retained_gzip_sha256",
+        "retained_url",
+        "set_code",
+    }

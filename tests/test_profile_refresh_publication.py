@@ -195,6 +195,111 @@ def test_prepare_rejects_malformed_report_fields(
         )
 
 
+def _retained_conflict_record(report: dict[str, Any]) -> dict[str, str]:
+    pair = report["profiles"]["selected"][0]
+    retained = hashlib.sha256(b"retained enriched profile object").hexdigest()
+    rejected = hashlib.sha256(b"rejected plain profile object").hexdigest()
+    return {
+        "set_code": pair["set_code"],
+        "event_format": pair["event_format"].casefold(),
+        "retained_gzip_sha256": retained,
+        "retained_url": f"https://www.draftomen.com/profiles/objects/{retained}.json.gz",
+        "rejected_gzip_sha256": rejected,
+        "rejected_url": f"https://www.draftomen.com/profiles/objects/{rejected}.json.gz",
+    }
+
+
+def _inject_retained_conflicts(bundle: Path, conflicts: list[dict[str, str]]) -> None:
+    result = json.loads((bundle / "result.json").read_text(encoding="utf-8"))
+    result["profiles"]["enrichment_conflicts"] = conflicts
+    (bundle / "result.json").write_text(json.dumps(result), encoding="utf-8")
+
+
+def test_prepare_accepts_retained_enrichment_conflict_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
+    assert report["status"] == "success"
+    assert report["profiles"]["enrichment_conflicts"] == []
+    conflict = _retained_conflict_record(report)
+    _inject_retained_conflicts(bundle, [conflict])
+
+    returned = publication.prepare_publication(
+        bundle_dir=bundle,
+        repo_root=candidate,
+        expected_base=report["base_commit"],
+        master_commit=report["base_commit"],
+    )
+
+    assert returned["status"] == "success"
+    assert returned["profiles"]["enrichment_conflicts"] == [conflict]
+    assert (candidate / "website/public/card-data/new.json.gz").is_file()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("retained_url", None, id="missing-key"),
+        pytest.param("retained_gzip_sha256", "A" * 64, id="uppercase-digest"),
+        pytest.param("retained_gzip_sha256", "0" * 63, id="short-digest"),
+        pytest.param("retained_gzip_sha256", "not-a-sha256-digest", id="non-hex-digest"),
+        pytest.param(
+            "retained_url",
+            "http://www.draftomen.com/profiles/objects/retained.json.gz",
+            id="insecure-url",
+        ),
+        pytest.param(
+            "rejected_url",
+            "https://www.draftomen.com\\profiles\\objects\\rejected.json.gz",
+            id="backslash-url",
+        ),
+        pytest.param("set_code", "NEW", id="unsafe-set-code"),
+        pytest.param("event_format", "premier draft", id="unsafe-event-format"),
+        pytest.param("set_code", "zzz", id="unselected-identity"),
+    ],
+)
+def test_prepare_rejects_malformed_enrichment_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: str | None,
+) -> None:
+    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
+    conflict = _retained_conflict_record(report)
+    if value is None:
+        del conflict[field]
+    else:
+        conflict[field] = value
+    _inject_retained_conflicts(bundle, [conflict])
+
+    with pytest.raises(publication.ProfileRefreshPublicationError, match="enrichment_conflicts"):
+        publication.prepare_publication(
+            bundle_dir=bundle,
+            repo_root=candidate,
+            expected_base=report["base_commit"],
+            master_commit=report["base_commit"],
+        )
+    assert not (candidate / "website/public/card-data/new.json.gz").exists()
+
+
+def test_prepare_rejects_duplicate_enrichment_conflict_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
+    conflict = _retained_conflict_record(report)
+    _inject_retained_conflicts(bundle, [conflict, dict(conflict)])
+
+    with pytest.raises(publication.ProfileRefreshPublicationError, match="duplicate"):
+        publication.prepare_publication(
+            bundle_dir=bundle,
+            repo_root=candidate,
+            expected_base=report["base_commit"],
+            master_commit=report["base_commit"],
+        )
+
+
 def test_prepare_rejects_traversal_and_undeclared_generated_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
