@@ -3,6 +3,16 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Serve the confirmed HOB enrichment as a role-bearing profile. Recompiling the
+  confirmed artifact `edc7d166…` at the `early` stage publishes
+  `objects/75132bf4…json.gz` (schema 3, `enhancement_status=enhanced`, a 138-card
+  role profile and 685 relationships) and selects it for `hob/quickdraft`,
+  superseding the metadata-only `fd236b38…` object, which stays committed. The
+  publication record names the artifact, run, and profile digest, and the
+  automated profile refresh reports a retained-enrichment conflict for that
+  identity instead of downgrading it, while unrelated identities still refresh.
+  The LCI identity is unchanged: its confirmed artifact stores pre-v2 capability
+  facts, so no relationship can be projected for it yet. (#573)
 - Recover role-bearing enrichment offline. `republish-enrichment` takes the explicit
   generation `--stage` plus the same optional `--ratings-file`, `--source-manifest`, and
   `--draft-source-name` inputs as `generate-profile`, so a confirmed artifact recompiles at
