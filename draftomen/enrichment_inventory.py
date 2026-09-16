@@ -266,9 +266,18 @@ def _object_files(*, directory: Path) -> tuple[Path, ...]:
 
 
 def _published_profile(*, path: Path) -> Mapping[str, Any] | None:
-    """Decode one published gzip profile object, or None when it cannot be read."""
+    """Decode one published gzip profile object, or None when its content is unusable.
+
+    An object that cannot be read is a failure of the profiles tree, not an
+    absent publication; malformed gzip, text, or JSON is a legacy payload and
+    is skipped.
+    """
     try:
-        document = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+        payload = path.read_bytes()
+    except OSError as error:
+        raise EnrichmentInventoryError(PUBLICATION_ERROR) from error
+    try:
+        document = json.loads(gzip.decompress(payload).decode("utf-8"))
     except (EOFError, OSError, TypeError, UnicodeDecodeError, ValueError, zlib.error):
         return None
     return document if isinstance(document, Mapping) else None

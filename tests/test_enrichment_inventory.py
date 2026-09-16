@@ -791,6 +791,35 @@ def test_published_states_raise_for_an_unreadable_objects_directory(tmp_path: Pa
     assert str(raised.value) == PUBLICATION_ERROR
 
 
+def test_published_states_raise_for_an_unreadable_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profiles_dir = tmp_path / PROFILES_DIRECTORY
+    _objects_directory(profiles_dir=profiles_dir)
+    unreadable = _write_profile_object(
+        profiles_dir=profiles_dir,
+        profile_gzip_sha256=ORPHAN_PROFILE_GZIP_SHA256,
+        document=_published_document(
+            set_code="lci",
+            artifact_sha256=ORPHAN_ARTIFACT_SHA256,
+        ),
+    )
+
+    real_read_bytes = Path.read_bytes
+
+    def fail_read_bytes(path: Path) -> bytes:
+        if path == unreadable:
+            raise OSError("read failed")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    with pytest.raises(EnrichmentInventoryError) as raised:
+        published_enrichment_states(profiles_dir=profiles_dir)
+
+    assert str(raised.value) == PUBLICATION_ERROR
+
+
 def test_published_states_raise_for_a_malformed_manifest(tmp_path: Path) -> None:
     profiles_dir = tmp_path / PROFILES_DIRECTORY
     _objects_directory(profiles_dir=profiles_dir)

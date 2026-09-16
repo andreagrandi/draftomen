@@ -4498,7 +4498,8 @@ def _write_list_enrichment_store(*, store_dir: Path) -> tuple[Path, Path]:
 
 
 def _write_list_enrichment_profiles(*, profiles_dir: Path, artifact_sha256: str) -> None:
-    """Write an orphaned enriched HOB object beside a manifest holding another set."""
+    """Write an orphaned enriched HOB object beside a manifest holding another set
+    and legacy non-profile payloads."""
 
     _write_republish_profiles(profiles_dir=profiles_dir)
     objects_dir = profiles_dir / "objects"
@@ -4516,6 +4517,11 @@ def _write_list_enrichment_profiles(*, profiles_dir: Path, artifact_sha256: str)
             ).encode("utf-8")
         )
     )
+    # Legacy non-profile payloads under a content address stay skippable.
+    (objects_dir / "not-gzip.json.gz").write_bytes(b"{not a gzip stream")
+    (objects_dir / "not-utf8.json.gz").write_bytes(gzip.compress(b"\x80\x81"))
+    (objects_dir / "not-json.json.gz").write_bytes(gzip.compress(b"{not json"))
+    (objects_dir / "not-a-profile.json.gz").write_bytes(gzip.compress(b"[1, 2, 3]"))
 
 
 def test_list_enrichment_prints_runs_artifacts_and_publication_state(
@@ -4642,6 +4648,47 @@ def test_list_enrichment_reports_an_unreadable_manifest(
     profiles_dir = tmp_path / "profiles"
     profiles_dir.mkdir()
     (profiles_dir / "manifest.json").write_bytes(b"{not json")
+
+    exit_code = main(
+        argv=[
+            "list-enrichment",
+            "--store-dir",
+            str(store_dir),
+            "--profiles-dir",
+            str(profiles_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == f"list-enrichment failed: {PUBLICATION_ERROR}\n"
+
+
+def test_list_enrichment_reports_an_unreadable_profile_object(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_dir = tmp_path / "set-enrichment"
+    confirmed_path, _ = _write_list_enrichment_store(store_dir=store_dir)
+    profiles_dir = tmp_path / "profiles"
+    _write_list_enrichment_profiles(
+        profiles_dir=profiles_dir,
+        artifact_sha256=hashlib.sha256(confirmed_path.read_bytes()).hexdigest(),
+    )
+    object_path = (
+        profiles_dir / "objects" / f"{LIST_ENRICHMENT_PROFILE_GZIP_SHA256}.json.gz"
+    )
+
+    real_read_bytes = Path.read_bytes
+
+    def fail_read_bytes(path: Path) -> bytes:
+        if path == object_path:
+            raise PermissionError("read denied")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
 
     exit_code = main(
         argv=[

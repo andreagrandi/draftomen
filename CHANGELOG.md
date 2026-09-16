@@ -3,6 +3,13 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Fail `list-enrichment` instead of printing a smaller inventory when a published
+  profile object under `<profiles>/objects` exists but cannot be read: the
+  per-object read is separated from gzip/JSON decoding in
+  `draftomen/enrichment_inventory.py`, so a permission or I/O error exits 1 with
+  `list-enrichment failed: Could not read the published enrichment profiles.`,
+  while malformed gzip, invalid text or JSON, and non-profile payloads remain
+  skippable. (#572)
 - Keep enrichment publication provenance across a failed or interrupted publication. The
   durable record in `draftomen/enrichment_publications.py` is written as schema 2 with one
   committed entry per `(set, format)` identity plus at most one pending candidate:
