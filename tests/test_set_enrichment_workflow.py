@@ -17,10 +17,15 @@ import gzip
 
 import pytest
 
+import draftomen.profile_publication as profile_publication
 import draftomen.set_enrichment as set_enrichment_engine
 import draftomen.set_enrichment_workflow as workflow
 from draftomen.card_data_client import CardDataClient, card_data_cache_path
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.enrichment_publications import (
+    ENRICHMENT_PUBLICATIONS_FILE_NAME,
+    load_enrichment_publications,
+)
 from draftomen.guide_client import GuideClient
 from draftomen.openrouter_client import OpenRouterResponse
 from draftomen.profile_manifest import (
@@ -1955,6 +1960,7 @@ def test_cancel_publishes_only_cancelled_review_artifact(tmp_path: Path) -> None
     assert review.artifact_path != pending_path
     assert not _profile_marker(result.output_dir).exists()
     assert pending_path.exists()
+    assert not (profiles / ENRICHMENT_PUBLICATIONS_FILE_NAME).exists()
     assert _tree_snapshot(profiles) == profiles_before
 
     second = _run(tmp_path, completion=_Completion(interrupt_after=0))
@@ -2031,6 +2037,22 @@ def test_confirm_selects_all_accepted_relationships_and_publishes_metadata_profi
     assert entry.maturity is ProfileMaturity.METADATA_ONLY
     retained = [item for item in manifest.artifacts if item.set_code == UNRELATED_SET_CODE]
     assert retained == [_unrelated_manifest_artifact()]
+
+    record_path = profiles / ENRICHMENT_PUBLICATIONS_FILE_NAME
+    record = load_enrichment_publications(profiles_dir=profiles)
+    assert record_path.is_file()
+    assert len(record.publications) == 1
+    provenance = record.publications[0]
+    assert provenance.set_code == result.set_code
+    assert provenance.event_format == QUICK_DRAFT_FORMAT.casefold()
+    assert provenance.artifact_sha256 == hashlib.sha256(
+        review.artifact_path.read_bytes()
+    ).hexdigest()
+    assert provenance.run_id == result.run_dir.name
+    assert provenance.reviewed_at == report.enhancement.reviewed_at
+    assert datetime.fromisoformat(provenance.reviewed_at) == reviewed_at
+    assert provenance.published_at == reviewed_at.isoformat()
+    assert provenance.profile_gzip_sha256 == report.gzip_sha256
 
 
 def test_confirm_publishes_into_the_relative_default_repository_tree(
@@ -2115,6 +2137,34 @@ def test_confirm_fails_closed_without_an_existing_repository_manifest(tmp_path: 
     assert _tree_snapshot(profiles) == absent
 
 
+def test_confirm_fails_closed_on_an_invalid_publication_record(tmp_path: Path) -> None:
+    profiles = _seed_profiles_dir(tmp_path)
+    record_path = profiles / ENRICHMENT_PUBLICATIONS_FILE_NAME
+    record_path.write_bytes(b"{not a publication record")
+    manifest_before = (profiles / "manifest.json").read_bytes()
+    result = _run(tmp_path, completion=_Completion())
+
+    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
+        workflow.finalize_set_enrichment(
+            analysis=result,
+            decision=workflow.EnrichmentReviewDecision.CONFIRM,
+            reviewer_id="operator",
+            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
+            profiles_dir=profiles,
+        )
+
+    error = raised.value
+    assert str(error) == workflow.PROFILE_PUBLICATION_ERROR
+    assert error.review_result is not None
+    assert error.review_result.artifact.review.state == "confirmed"
+    assert error.review_result.artifact_path.exists()
+    assert error.review_result.publication is not None
+    assert error.review_result.published_object_path is None
+    assert error.review_result.published_manifest_path is None
+    assert record_path.read_bytes() == b"{not a publication record"
+    assert (profiles / "manifest.json").read_bytes() == manifest_before
+
+
 def test_confirm_rejects_a_local_run_identity_without_repository_mutation(
     tmp_path: Path,
 ) -> None:
@@ -2166,7 +2216,8 @@ def test_confirm_repository_publication_boundary_failure_is_fail_closed(
     def fail_publication(*_: object, **__: object) -> object:
         raise OSError("boom")
 
-    monkeypatch.setattr(workflow, boundary, fail_publication)
+    # The repository installation boundary lives in the shared publisher the workflow delegates to.
+    monkeypatch.setattr(profile_publication, boundary, fail_publication)
     with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
         workflow.finalize_set_enrichment(
             analysis=result,

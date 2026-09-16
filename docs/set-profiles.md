@@ -302,6 +302,56 @@ subset has sufficiently complete evidence for typed scoring.
 Use the updated Draft Omen checkout or build for this verification. Generating
 a profile does not update an already-installed native application.
 
+#### Re-publishing a saved confirmation
+
+`republish-enrichment` recompiles and publishes one metadata-stage profile from
+an already-saved confirmed artifact, with no guide freeze, no card-data download
+and no model call. It is the recovery path for already-paid work. It selects the
+newest confirmed artifact for the requested set unless `--artifact` pins an
+exact digest or `--run` restricts the search to one run directory.
+
+```sh
+uv run draftomen-tui republish-enrichment HOB \
+  --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft" \
+  --profiles-dir website/public/profiles
+```
+
+The default `--store-dir` is `<app data directory>/set-enrichment`, the shared
+store layout. Runs created by the desktop `enrich-set` live under a
+profile-keyed store such as `$HOME/.draftomen/set-enrichment/hob-quickdraft`, so
+pass `--store-dir` explicitly to reach them. The selected run must still hold its
+frozen `sources/card-database.json`, because the artifact is revalidated against
+that card data and its frozen guide exactly as `--enrichment` does. A truncated
+or foreign run therefore fails before any repository file changes. Success
+prints `set_code`, `format`, `artifact`, `artifact_sha256`, `run_id`, `maturity`,
+`gzip_sha256`, `object`, `manifest`, `manifest_changed`, and `publications`.
+
+#### Durable publication provenance
+
+Every publication of an enriched profile records `artifact_sha256`, `run_id`,
+`reviewed_at`, `published_at`, and `profile_gzip_sha256` per `(set, format)` in
+`website/public/profiles/enrichment-publications.json` (schema `1`). The record
+lives in the repository beside `manifest.json`, because the refresh CI job runs
+from a checkout with no local store. The website data refresh allowlist covers
+`card-data/*`, `profiles/manifest.json`, and `profiles/objects/*.json.gz`, and it
+never rewrites or deletes unrelated files, so the record survives every refresh.
+
+The refresh preservation check reads the record before merging generated
+profiles. An identity whose recorded profile digest matches its retained
+manifest entry counts as enriched even when its published object file has been
+removed or is unreadable, so a refresh can no longer replace an enriched entry
+by losing its object, and a record entry left behind by a superseded or
+unsuccessful publication never blocks a replacement it does not describe. Each
+new publication replaces that identity's entry, so the record names the
+enrichment behind the currently published profile.
+
+Allowing a deliberate downgrade therefore takes both steps: delete the
+identity's entry from the record and remove the retained enriched object at
+`profiles/objects/<gzip_sha256>.json.gz`. Removing only the record entry leaves
+the retained-object check in force, and the refresh keeps reporting the
+identity as a retained enriched profile with its existing object and manifest
+entry untouched.
+
 ### Lifecycle stages
 
 Use the same explicit set, format, timestamp, card database, and output

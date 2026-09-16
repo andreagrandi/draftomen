@@ -26,16 +26,12 @@ from draftomen.card_data_client import (
 from draftomen.carddb import CardDatabase, CardDatabaseError, save_card_database
 from draftomen.guide_client import GuideClient, GuideClientError, GuideDocument
 from draftomen.profile_generation import ProfileGenerationStage
-from draftomen.profile_manifest import ProfileManifestError, load_profile_manifest
+from draftomen.profile_manifest import ProfileManifestError
 from draftomen.profile_publication import (
-    PROFILE_BASE_URL,
     ProfilePublicationError,
     ProfilePublicationResult,
     generate_local_profile_artifacts,
-    merge_profile_manifest_artifacts,
-    profile_manifest_artifact_from_publication,
-    publish_profile_manifest,
-    publish_profile_object,
+    publish_profile_publication,
     _GUIDE_SCHEMA_VERSION,
     _guide_freeze_record,
     _strict_json,
@@ -1347,6 +1343,7 @@ def finalize_set_enrichment(
         publication=publication,
         profiles_dir=profiles_dir,
         published_at=normalized_reviewed_at,
+        run_id=analysis.run_dir.name,
         review_result=SetEnrichmentReviewResult(
             decision=decision,
             artifact=reviewed,
@@ -1361,42 +1358,23 @@ def _publish_confirmed_profile(
     publication: ProfilePublicationResult,
     profiles_dir: PathInput,
     published_at: datetime,
+    run_id: str,
     review_result: SetEnrichmentReviewResult,
 ) -> SetEnrichmentReviewResult:
-    """Install one confirmed profile object and merge the repository manifest.
+    """Install one confirmed profile in the repository and keep the review result intact.
 
-    The manifest is loaded before any repository write and the immutable object is
-    installed before the manifest, so an identical republication rewrites neither
-    while a manifest failure leaves the previous manifest authoritative.
+    Every repository write belongs to ``publish_profile_publication``, which loads
+    the manifest before writing anything, installs the immutable object before the
+    provenance record, and the record before the manifest entry that names it.
+    This wrapper only attaches the installation paths to the confirmed review
+    result and maps any boundary failure onto the workflow error taxonomy.
     """
     try:
-        profiles = Path(profiles_dir)
-        manifest_path = profiles / "manifest.json"
-        existing_manifest = load_profile_manifest(manifest_path)
-        report = publication.generation.report
-        artifact = profile_manifest_artifact_from_publication(
-            publication,
-            f"{PROFILE_BASE_URL}{report.gzip_sha256}.json.gz",
-        )
-        merged = merge_profile_manifest_artifacts(
-            existing_manifest,
-            (artifact,),
+        installed = publish_profile_publication(
+            publication=publication,
+            profiles_dir=profiles_dir,
             published_at=published_at,
-        )
-        manifest_changed = merged is not existing_manifest
-        payload = publication.artifact_path.read_bytes()
-        if hashlib.sha256(payload).hexdigest() != report.gzip_sha256:
-            raise ProfilePublicationError(
-                "The published profile object does not match its validated gzip digest."
-            )
-        published_object = publish_profile_object(
-            path=profiles / "objects" / f"{report.gzip_sha256}.json.gz",
-            payload=payload,
-        )
-        published_manifest = (
-            publish_profile_manifest(manifest_path, merged)
-            if manifest_changed
-            else manifest_path
+            run_id=run_id,
         )
     except (
         OSError,
@@ -1416,8 +1394,8 @@ def _publish_confirmed_profile(
         artifact=review_result.artifact,
         artifact_path=review_result.artifact_path,
         publication=publication,
-        published_object_path=published_object,
-        published_manifest_path=published_manifest,
+        published_object_path=installed.object_path,
+        published_manifest_path=installed.manifest_path,
     )
 
 

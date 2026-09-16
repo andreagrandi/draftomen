@@ -22,6 +22,12 @@ from typing import Any, TypeAlias
 import zlib
 
 from draftomen.carddb import CardDatabase, CardDatabaseError, load_card_database
+from draftomen.enrichment_publications import (
+    EnrichmentPublication,
+    EnrichmentPublicationError,
+    load_enrichment_publications,
+    record_enrichment_publication,
+)
 from draftomen.guide_client import GuideClientError, _validate_url as _validate_guide_url
 from draftomen.profile_generation import (
     DEFAULT_PROFILE_GENERATION_CONFIG,
@@ -39,6 +45,7 @@ from draftomen.profile_manifest import (
     ProfileManifest,
     ProfileManifestArtifact,
     ProfileManifestError,
+    load_profile_manifest,
     _timestamp as _manifest_timestamp,
 )
 from draftomen.public_dump import (
@@ -321,6 +328,102 @@ def merge_profile_manifest_artifacts(
 
 
 @dataclass(frozen=True, slots=True)
+class PublishedProfilePublication:
+    """One validated local publication installed in the repository profiles tree."""
+
+    artifact: ProfileManifestArtifact
+    object_path: Path
+    manifest_path: Path
+    manifest_changed: bool
+    publications_path: Path | None
+
+
+def publish_profile_publication(
+    *,
+    publication: ProfilePublicationResult,
+    profiles_dir: PathInput,
+    published_at: str | datetime,
+    run_id: str | None = None,
+) -> PublishedProfilePublication:
+    """Install one validated local publication and record its enrichment provenance.
+
+    The manifest is loaded before any repository write, the immutable object is
+    installed before the provenance record, and the record is written before the
+    manifest entry that names it, so a manifest consumer never observes an
+    enriched entry whose provenance is missing while a record naming a
+    not-yet-published identity stays harmless.  An identical republication
+    rewrites neither the object nor the manifest, and a manifest failure leaves
+    the previous manifest authoritative.  Every failure, including an unusable
+    provenance record, is reported as :class:`ProfilePublicationError` so
+    callers keep one publication error taxonomy.
+    """
+
+    if not isinstance(publication, ProfilePublicationResult):
+        raise ProfilePublicationError("publication must be a ProfilePublicationResult.")
+    profiles = _path(value=profiles_dir, field_name="profiles_dir")
+    timestamp = _canonical_published_at(published_at)
+    report = publication.generation.report
+    artifact = profile_manifest_artifact_from_publication(
+        publication,
+        f"{PROFILE_BASE_URL}{report.gzip_sha256}.json.gz",
+    )
+    existing_manifest = load_profile_manifest(profiles / "manifest.json")
+    payload = publication.artifact_path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != report.gzip_sha256:
+        raise ProfilePublicationError(
+            "The published profile object does not match its validated gzip digest."
+        )
+    merged = merge_profile_manifest_artifacts(
+        existing_manifest,
+        (artifact,),
+        published_at=timestamp,
+    )
+    manifest_changed = merged is not existing_manifest
+    object_path = publish_profile_object(
+        path=profiles / "objects" / f"{report.gzip_sha256}.json.gz",
+        payload=payload,
+    )
+    publications_path: Path | None = None
+    if report.enhancement is not None:
+        if not isinstance(run_id, str) or not run_id:
+            raise ProfilePublicationError(
+                "A published enrichment profile requires its run identity."
+            )
+        reviewed_at = report.enhancement.reviewed_at
+        if not reviewed_at:
+            raise ProfilePublicationError(
+                "A published enrichment profile requires its review timestamp."
+            )
+        try:
+            publications_path = record_enrichment_publication(
+                profiles_dir=profiles,
+                publication=EnrichmentPublication(
+                    set_code=report.set_code,
+                    event_format=report.event_format,
+                    artifact_sha256=report.enhancement.artifact_sha256,
+                    run_id=run_id,
+                    reviewed_at=reviewed_at,
+                    published_at=timestamp,
+                    profile_gzip_sha256=report.gzip_sha256,
+                ),
+            )
+        except EnrichmentPublicationError as cause:
+            raise ProfilePublicationError(str(cause)) from cause
+    manifest_path = (
+        publish_profile_manifest(profiles / "manifest.json", merged)
+        if manifest_changed
+        else profiles / "manifest.json"
+    )
+    return PublishedProfilePublication(
+        artifact=artifact,
+        object_path=object_path,
+        manifest_path=manifest_path,
+        manifest_changed=manifest_changed,
+        publications_path=publications_path,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class EnrichmentDowngradeConflict:
     """One rejected attempt to replace an enriched profile with a plain one."""
 
@@ -370,14 +473,29 @@ def filter_enriched_profile_downgrades(
 
     Producers that can emit plain profiles MUST route their replacements through
     this filter before merging, so a published enriched entry is never replaced
-    by a non-enriched artifact.  Enrichment is read from the published profile
-    object bytes, and a retained entry whose object is already absent is treated
-    as replaceable.
+    by a non-enriched artifact.  A durable publication record protects only the
+    publication it names: the identity counts as enriched when the record
+    selects it and that entry's ``profile_gzip_sha256`` is the retained
+    artifact's digest, or, when no such entry exists, when the retained profile
+    object declares confirmed enrichment.  A record naming a different digest is
+    not a claim about the retained entry -- an unsuccessful or superseded
+    publication can leave one behind -- so the retained-object read decides that
+    case.  Because the record is consulted before the object, a matching entry
+    protects an entry even once its object file was removed, and a corrupt
+    retained object no longer masks a recorded publication.
+    Enriched-to-enriched replacement, unpublished identities, identical
+    artifacts, and non-enriched entries are unaffected.  A missing record file
+    keeps the retained-object behaviour, while an unreadable or invalid record
+    fails closed with ``READ_ERROR``.
     """
 
     if not isinstance(manifest, ProfileManifest):
         raise ProfilePublicationError("manifest must be a ProfileManifest.")
     directory = _path(value=profiles_dir, field_name="profiles_dir")
+    try:
+        published_enrichment = load_enrichment_publications(profiles_dir=directory)
+    except EnrichmentPublicationError as cause:
+        raise ProfilePublicationError(str(cause)) from cause
     try:
         supplied = tuple(replacements)
     except TypeError as error:
@@ -397,6 +515,19 @@ def filter_enriched_profile_downgrades(
         )
         if _profile_declares_confirmed_enrichment(value=replacement_fields):
             accepted.append(artifact)
+            continue
+        recorded = published_enrichment.select(
+            set_code=artifact.set_code, event_format=artifact.event_format
+        )
+        if recorded is not None and recorded.profile_gzip_sha256 == retained.gzip_sha256:
+            conflicts.append(
+                EnrichmentDowngradeConflict(
+                    set_code=artifact.set_code,
+                    event_format=artifact.event_format,
+                    retained=retained,
+                    rejected=artifact,
+                )
+            )
             continue
         retained_fields = _published_profile_object(
             path=directory / "objects" / f"{retained.gzip_sha256}.json.gz"
@@ -1048,6 +1179,7 @@ __all__ = [
     "EnrichmentDowngradeConflict",
     "ProfilePublicationError",
     "ProfilePublicationResult",
+    "PublishedProfilePublication",
     "ValidatedProfileGeneration",
     "build_profile_manifest",
     "filter_enriched_profile_downgrades",
@@ -1056,6 +1188,7 @@ __all__ = [
     "profile_manifest_artifact_from_publication",
     "publish_profile_manifest",
     "publish_profile_object",
+    "publish_profile_publication",
     "validate_profile_generation",
 ]
 
