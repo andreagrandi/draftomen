@@ -5,6 +5,7 @@ Translate Arena grpIds into display-ready card facts for replay and scoring.
 from __future__ import annotations
 
 import gzip
+import http.client
 import io
 import json
 import os
@@ -13,7 +14,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from os import PathLike
@@ -43,6 +44,7 @@ ARENA_PRODUCED_MANA_FIELDS = (
     "manaProduced",
 )
 HTTP_TIMEOUT_SECONDS = 60
+_BULK_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 COLOR_ORDER = ("W", "U", "B", "R", "G")
 ARENA_COLOR_ID_MAP = {1: "W", 2: "U", 3: "B", 4: "R", 5: "G"}
 ARENA_RARITY_ID_MAP = {
@@ -630,6 +632,64 @@ def iter_scryfall_default_cards(
         url=download_uri,
         timeout_seconds=timeout_seconds,
     )
+
+
+def download_scryfall_default_cards_bulk_file(
+    *,
+    destination: PathInput,
+    timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
+    should_stop: Callable[[], bool] | None = None,
+    progress: Callable[[int, int | None], None] | None = None,
+) -> Path:
+    """Download Scryfall's default-cards bulk source into one atomically replaced path.
+    The compressed JSONL streams through a sibling temporary file, so a failed
+    download never replaces an existing source and never installs a partial file.
+    """
+
+    target = Path(destination).expanduser()
+    download_uri = _default_cards_download_uri(
+        bulk_items=_fetch_bulk_data_items(timeout_seconds=timeout_seconds)
+    )
+    request = _request(url=download_uri)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: str | None = None
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response, tempfile.NamedTemporaryFile(
+            dir=target.parent, prefix=f".{target.name}.", delete=False
+        ) as temporary:
+            temporary_name = temporary.name
+            total = _response_content_length(response=response)
+            completed = 0
+            while True:
+                if should_stop is not None and should_stop():
+                    raise CardDatabaseError("Scryfall default-cards download was cancelled.")
+                chunk = response.read(_BULK_DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                temporary.write(chunk)
+                completed += len(chunk)
+                if progress is not None:
+                    progress(completed, total)
+            if total is not None and completed != total:
+                raise CardDatabaseError(
+                    "Failed to download Scryfall default-cards bulk data: "
+                    f"expected {total} bytes, received {completed}."
+                )
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        _require_gzip_bulk(path=Path(temporary_name))
+        os.replace(temporary_name, target)
+        temporary_name = None
+    except CardDatabaseError:
+        raise
+    except (OSError, http.client.HTTPException) as error:
+        raise CardDatabaseError(
+            f"Failed to download Scryfall default-cards bulk data: {error}"
+        ) from error
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+    return target
 
 
 def build_card_database_from_bulk_file(*, path: PathInput) -> CardDatabase:
@@ -2451,6 +2511,31 @@ def _request(*, url: str) -> urllib.request.Request:
             "User-Agent": SCRYFALL_USER_AGENT,
         },
     )
+
+
+def _response_content_length(*, response: Any) -> int | None:
+    """Report one response's declared body length when it is trustworthy."""
+
+    if getattr(response, "chunked", False):
+        return None
+    headers = getattr(response, "headers", None)
+    value = headers.get("Content-Length") if headers is not None else None
+    try:
+        length = int(value)
+    except (TypeError, ValueError):
+        return None
+    return length if length >= 0 else None
+
+
+def _require_gzip_bulk(*, path: Path) -> None:
+    """Reject a default-cards payload that is not the gzip JSONL Scryfall serves."""
+
+    with path.open("rb") as stream:
+        magic = stream.read(2)
+    if magic != b"\x1f\x8b":
+        raise CardDatabaseError(
+            "Scryfall default-cards download is not a gzip JSONL file."
+        )
 
 
 def _color_tuple(value: Any, *, field_name: str) -> tuple[str, ...]:

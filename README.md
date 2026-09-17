@@ -379,8 +379,18 @@ three source values live in Settings → DEVELOPER next to the Mocked Draft swit
 the Draftmancer checkout directory, the Draftmancer server URL, and the Scryfall
 bulk file — each prefilled with the application-data location, editable in the
 running app, and still overridden by `--draftmancer-dir`, `--test-draft-server-url`,
-and `--scryfall-bulk-file`. The native app journeys need the enabled setting
-instead of a manually managed server:
+and `--scryfall-bulk-file`.
+
+Mocked Draft reads that Scryfall bulk file for printed card identities, and it does
+not ship with the file. When the file is missing, the dialog offers **Download
+Scryfall data**: the application fetches Scryfall's `default_cards` bulk JSONL (about
+80 MB, gzip) from `https://api.scryfall.com/bulk-data` and installs it as
+`corpus-cache/sources/scryfall-default-cards.jsonl.gz` under the application data
+directory — the path the Scryfall bulk file setting shows. The download runs in the
+background with progress, never installs a partial file over an existing one, and
+leaves the dialog ready without a restart. Nothing is downloaded automatically.
+
+The native app journeys need the enabled setting instead of a manually managed server:
 
 ```bash
 uv run --extra draftmancer draftomen

@@ -15,6 +15,14 @@ Dialog {
     readonly property string phase: root.testDraft ? String(root.testDraft.phase) : "idle"
     readonly property string error: root.testDraft && root.testDraft.error
         ? String(root.testDraft.error) : ""
+    readonly property bool bulkFileMissing: root.testDraft !== null
+        && root.testDraft.bulk_file_missing === true
+    readonly property bool bulkDownloading: root.testDraft !== null
+        && root.testDraft.bulk_file_downloading === true
+    readonly property int bulkDownloadPercent: {
+        const value = root.testDraft ? root.testDraft.bulk_file_download_percent : null
+        return value === null || value === undefined ? -1 : Math.round(Number(value))
+    }
     readonly property var supportedSetCodes: root.testDraft && root.testDraft.supported_set_codes
         ? root.testDraft.supported_set_codes : []
     readonly property string selectedSetCode: root.supportedSetCodes.length > 0
@@ -146,12 +154,28 @@ Dialog {
             }
         }
 
+        ProgressBar {
+            objectName: "testDraftDownloadProgress"
+            Layout.fillWidth: true
+            visible: root.bulkDownloading
+            from: 0
+            to: 100
+            value: root.bulkDownloadPercent >= 0 ? root.bulkDownloadPercent : 0
+            indeterminate: root.bulkDownloadPercent < 0
+            Accessible.name: "Scryfall card data download progress"
+        }
+
         Label {
             objectName: "testDraftMessage"
             Layout.fillWidth: true
             text: {
                 if (root.error.length > 0)
                     return root.error
+                if (root.bulkDownloading) {
+                    return root.bulkDownloadPercent >= 0
+                        ? "Downloading Scryfall card data… " + root.bulkDownloadPercent + "%"
+                        : "Downloading Scryfall card data…"
+                }
                 if (root.phase === "starting")
                     return "Starting the simulated draft…"
                 if (root.phase === "drafting" && root.active) {
@@ -161,11 +185,30 @@ Dialog {
                 }
                 if (root.phase === "completed")
                     return "The simulated draft is complete."
+                if (root.bulkFileMissing)
+                    return "The Scryfall card data Mocked Draft needs is missing. "
+                        + "Download it to continue."
                 return "Choose a set and mode, then start."
             }
             color: root.error.length > 0 ? Theme.error : Theme.text
             wrapMode: Text.WordWrap
             Accessible.name: text
+        }
+
+        DimensionalButton {
+            objectName: "testDraftDownloadButton"
+            Layout.fillWidth: true
+            text: "Download Scryfall data"
+            accented: false
+            visible: root.bulkFileMissing && !root.active
+            enabled: !root.pending
+            activeFocusOnTab: true
+            focusPolicy: Qt.StrongFocus
+            Accessible.role: Accessible.Button
+            Accessible.name: "Download Scryfall card data"
+            Accessible.description: "Download Scryfall's default-cards bulk file into "
+                + "the configured Mocked Draft bulk file location."
+            onClicked: sessionProvider.downloadTestDraftBulkFile()
         }
     }
 
