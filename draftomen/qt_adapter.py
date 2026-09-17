@@ -91,12 +91,26 @@ class TestDraftSessionState:
     pending: bool = False
     offer_generation: int = 0
     error: str | None = None
+    bulk_file_missing: bool = False
+    bulk_file_downloading: bool = False
+    bulk_file_download_percent: int | None = None
 
 
 class TestDraftFactory(Protocol):
-    """Serve simulated drafts, create their runtimes, and report the supported set codes."""
+    """Serve simulated drafts and their sources, create their runtimes, and report the supported set codes."""
 
     def supported_set_codes(self) -> tuple[str, ...]:
+        ...
+
+    def bulk_file_missing(self) -> bool:
+        ...
+
+    def download_bulk_file(
+        self,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+        progress: Callable[[int, int | None], None] | None = None,
+    ) -> Path:
         ...
 
     def ensure_server(self, *, should_stop: Callable[[], bool] | None = None) -> str:
@@ -122,6 +136,9 @@ _ImageRequestKind: TypeAlias = Literal["selected", "recommendation", "recent"]
 _OMITTED_SNAPSHOT_FIELDS = frozenset(("current_pack_event", "current_scored_pack"))
 
 _DEFAULT_APPLICATION_FONT_PIXEL_SIZE = 13
+
+
+_TEST_DRAFT_DOWNLOAD_PROGRESS_BYTES = 4 * 1024 * 1024
 
 
 _WORKER_ERROR_ID = "qt-worker-error"
@@ -720,6 +737,10 @@ class SessionAdapter(QObject):
     def leaveTestDraft(self) -> None:
         return
 
+    @Slot()
+    def downloadTestDraftBulkFile(self) -> None:
+        return
+
     def setTestDraftFactory(self, test_draft_factory: TestDraftFactory | None) -> None:
         """Ignore a Mocked Draft factory change for frontends without the capability."""
 
@@ -870,6 +891,10 @@ class _LiveSessionWorker(QObject):
         self._test_draft_error: str | None = None
         self._test_draft_supported_set_codes: tuple[str, ...] = ()
         self._test_draft_default_set_code: str | None = None
+        self._test_draft_bulk_file_missing = False
+        self._test_draft_bulk_downloading = False
+        self._test_draft_bulk_download_percent: int | None = None
+        self._test_draft_bulk_download_completed = 0
         self._authoritative_source: TestDraftSource = "arena"
         self._source_generation = 0
         self._runtime_generation = 0
@@ -1263,6 +1288,9 @@ class _LiveSessionWorker(QObject):
                 pending=self._test_draft_pending,
                 offer_generation=self._test_draft_offer_generation,
                 error=self._test_draft_error,
+                bulk_file_missing=self._test_draft_bulk_file_missing,
+                bulk_file_downloading=self._test_draft_bulk_downloading,
+                bulk_file_download_percent=self._test_draft_bulk_download_percent,
             )
         )
 
@@ -1355,6 +1383,71 @@ class _LiveSessionWorker(QObject):
         finally:
             self._test_draft_pending = False
             self._publish_test_draft_state()
+
+    @Slot()
+    def download_test_draft_bulk_file(self) -> None:
+        """Download the Mocked Draft Scryfall bulk source off the GUI thread."""
+
+        factory = self._test_draft_factory
+        if (
+            factory is None
+            or self._stop_requested
+            or self._test_draft_leaving
+            or self._test_draft_pending
+            or self._test_draft_runtime is not None
+        ):
+            return
+        self._test_draft_pending = True
+        self._test_draft_phase = "idle"
+        self._test_draft_error = None
+        self._test_draft_bulk_downloading = True
+        self._test_draft_bulk_download_completed = 0
+        self._test_draft_bulk_download_percent = None
+        self._publish_test_draft_state()
+        try:
+            factory.download_bulk_file(
+                should_stop=self._test_draft_interrupted,
+                progress=self._test_draft_bulk_download_progress,
+            )
+        except Exception as error:
+            if self._test_draft_interrupted():
+                return
+            self._test_draft_phase = "failed"
+            self._test_draft_error = str(error)
+        else:
+            self._test_draft_phase = "idle"
+            self._test_draft_error = None
+        finally:
+            self._test_draft_pending = False
+            self._test_draft_bulk_downloading = False
+            self._test_draft_bulk_download_percent = None
+            if not self._test_draft_interrupted():
+                self._refresh_test_draft_capability()
+            self._publish_test_draft_state()
+
+    def _test_draft_bulk_download_progress(
+        self, completed: int, total: int | None
+    ) -> None:
+        """Publish a throttled Mocked Draft bulk-download progress update."""
+
+        if self._stop_requested:
+            return
+        percent = (
+            None
+            if total is None or total <= 0
+            else min(100, completed * 100 // total)
+        )
+        if percent is not None:
+            if percent == self._test_draft_bulk_download_percent:
+                return
+        elif (
+            completed - self._test_draft_bulk_download_completed
+            < _TEST_DRAFT_DOWNLOAD_PROGRESS_BYTES
+        ):
+            return
+        self._test_draft_bulk_download_completed = completed
+        self._test_draft_bulk_download_percent = percent
+        self._publish_test_draft_state()
 
     def _fail_test_draft(self, *, message: str) -> None:
         """Report one Test Draft failure without disturbing an untouched Arena."""
@@ -1472,14 +1565,17 @@ class _LiveSessionWorker(QObject):
         factory = self._test_draft_factory
         self._test_draft_supported_set_codes = ()
         self._test_draft_default_set_code = None
+        self._test_draft_bulk_file_missing = False
         if factory is None:
             return
         try:
             supported_codes = factory.supported_set_codes()
+            bulk_file_missing = factory.bulk_file_missing()
         except Exception as error:
             self._test_draft_error = str(error)
             return
         self._test_draft_supported_set_codes = supported_codes
+        self._test_draft_bulk_file_missing = bulk_file_missing
         default_code = DEFAULT_TEST_DRAFT_SET_CODE.casefold()
         if default_code in supported_codes:
             self._test_draft_default_set_code = default_code
@@ -1574,6 +1670,7 @@ class LiveSessionAdapter(SessionAdapter):
     _testDraftStartRequested = Signal(str, str)
     _testDraftPickRequested = Signal(int, int)
     _testDraftLeaveRequested = Signal()
+    _testDraftDownloadRequested = Signal()
     _testDraftFactoryChanged = Signal(object)
 
     def __init__(
@@ -1626,6 +1723,10 @@ class LiveSessionAdapter(SessionAdapter):
         )
         self._testDraftLeaveRequested.connect(
             worker.leave_test_draft,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._testDraftDownloadRequested.connect(
+            worker.download_test_draft_bulk_file,
             Qt.ConnectionType.QueuedConnection,
         )
         self._testDraftFactoryChanged.connect(
@@ -1691,6 +1792,12 @@ class LiveSessionAdapter(SessionAdapter):
         # Unblock a blocked start or pick before the queued leave slot runs.
         worker.request_test_draft_stop()
         self._testDraftLeaveRequested.emit()
+
+    @Slot()
+    def downloadTestDraftBulkFile(self) -> None:
+        if self._test_draft_state.get("enabled") is not True or self._worker is None:
+            return
+        self._testDraftDownloadRequested.emit()
 
     def setTestDraftFactory(self, test_draft_factory: TestDraftFactory | None) -> None:
         """Install or clear the developer Mocked Draft capability at runtime."""

@@ -23,7 +23,10 @@ from PySide6.QtTest import QTest
 
 from draftomen import __version__
 from draftomen.card_data_client import CardDataClient, cached_card_data_set_codes
-from draftomen.carddb import build_card_database_from_bulk_file
+from draftomen.carddb import (
+    build_card_database_from_bulk_file,
+    download_scryfall_default_cards_bulk_file,
+)
 from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.draftmancer_server import MockedDraftServer
 from draftomen.mock_session import MOCK_SCENARIOS, MockLiveSession, MockScenario
@@ -452,6 +455,25 @@ class _GuiTestDraftFactory:
         return supported_test_draft_set_codes(
             draftmancer_dir=self._draftmancer_dir,
             draftomen_set_codes=cached_card_data_set_codes(app_dir=self._app_dir),
+        )
+
+    def bulk_file_missing(self) -> bool:
+        """Report whether the resolved Scryfall bulk source still needs a download."""
+
+        return not self._scryfall_bulk_file.is_file()
+
+    def download_bulk_file(
+        self,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+        progress: Callable[[int, int | None], None] | None = None,
+    ) -> Path:
+        """Download the Scryfall default-cards bulk source into its resolved path."""
+
+        return download_scryfall_default_cards_bulk_file(
+            destination=self._scryfall_bulk_file,
+            should_stop=should_stop,
+            progress=progress,
         )
 
     def ensure_server(self, *, should_stop: Callable[[], bool] | None = None) -> str:

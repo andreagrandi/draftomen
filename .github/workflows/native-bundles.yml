@@ -52,13 +52,13 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync --locked --extra draftmancer
+        run: uv sync --locked
 
       - name: Install pinned Nuitka deployment dependency
         run: uv pip install "Nuitka==4.1.3"
 
       - name: Verify bundled profile provenance before build
-        run: uv run --extra draftmancer pytest -q tests/test_desktop_bundle.py::test_bundled_profile_provenance_and_packaging_are_deterministic
+        run: uv run pytest -q tests/test_desktop_bundle.py::test_bundled_profile_provenance_and_packaging_are_deterministic
 
       - name: Seed verified Dependency Walker
         if: matrix.platform == 'windows'
@@ -96,11 +96,11 @@ jobs:
 
       - name: Create bundle output directory
         run: >-
-          uv run --extra draftmancer python -c
+          uv run python -c
           "from pathlib import Path; Path('dist-native/${{ matrix.platform }}-unsigned').mkdir(parents=True, exist_ok=True)"
 
       - name: Build unsigned bundle
-        run: uv run --extra draftmancer pyside6-deploy --config-file "${{ matrix.config }}" --force
+        run: uv run pyside6-deploy --config-file "${{ matrix.config }}" --force
 
       - name: Create macOS unsigned development DMG
         if: matrix.platform == 'macos'

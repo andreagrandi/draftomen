@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import gzip
+import http.client
 import io
 import json
+import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from draftomen.carddb import (
+    SCRYFALL_BULK_DATA_URL,
+    SCRYFALL_USER_AGENT,
     CardDatabase,
     CardDatabaseCacheMissingError,
     CardDatabaseError,
@@ -20,6 +25,7 @@ from draftomen.carddb import (
     build_card_database_from_arena_cards,
     build_card_database_from_bulk_file,
     build_card_database_from_scryfall_cards,
+    download_scryfall_default_cards_bulk_file,
     iter_scryfall_default_cards,
     card_database_cache_path,
     load_card_database,
@@ -1127,3 +1133,207 @@ def test_scryfall_default_card_iterator_remote_uses_one_metadata_and_download_re
         ("https://example.invalid/default.jsonl.gz", 17),
     ]
     assert list(source) == []
+
+
+_SCRYFALL_BULK_METADATA_PAYLOAD = json.dumps(
+    {
+        "data": [
+            {
+                "type": "default_cards",
+                "jsonl_download_uri": "https://example.invalid/default.jsonl.gz",
+            }
+        ]
+    }
+).encode("utf-8")
+_SCRYFALL_DEFAULT_CARDS_URL = "https://example.invalid/default.jsonl.gz"
+
+
+class _BulkDownloadResponse(io.BytesIO):
+    def __init__(self, body: bytes, *, headers: dict[str, str] | None = None) -> None:
+        super().__init__(body)
+        self.headers: dict[str, str] = {} if headers is None else headers
+
+    def __enter__(self) -> "_BulkDownloadResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+
+def _bulk_download_urlopen(
+    *,
+    download_response: io.BytesIO,
+    requests: list[urllib.request.Request],
+) -> Callable[..., io.BytesIO]:
+    def fake_urlopen(request: urllib.request.Request, timeout: int) -> io.BytesIO:
+        requests.append(request)
+        if request.full_url == SCRYFALL_BULK_DATA_URL:
+            return _BulkDownloadResponse(_SCRYFALL_BULK_METADATA_PAYLOAD)
+        if request.full_url == _SCRYFALL_DEFAULT_CARDS_URL:
+            return download_response
+        raise AssertionError(f"unexpected URL: {request.full_url}")
+
+    return fake_urlopen
+
+
+def test_download_scryfall_bulk_file_streams_bytes_with_scryfall_headers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = gzip.compress(b'{"arena_id": 1}\n')
+    destination = tmp_path / "sources" / "scryfall-default-cards.jsonl.gz"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"previous bulk file")
+    requests: list[urllib.request.Request] = []
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        _bulk_download_urlopen(
+            download_response=_BulkDownloadResponse(payload),
+            requests=requests,
+        ),
+    )
+
+    result = download_scryfall_default_cards_bulk_file(destination=destination)
+
+    assert result == destination
+    assert destination.read_bytes() == payload
+    assert [entry.name for entry in destination.parent.iterdir()] == [destination.name]
+    assert [request.full_url for request in requests] == [
+        SCRYFALL_BULK_DATA_URL,
+        _SCRYFALL_DEFAULT_CARDS_URL,
+    ]
+    assert [request.get_header("User-agent") for request in requests] == [
+        SCRYFALL_USER_AGENT,
+        SCRYFALL_USER_AGENT,
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [OSError("connection reset"), http.client.IncompleteRead(b"", 10)],
+    ids=["oserror", "incomplete-read"],
+)
+def test_download_scryfall_bulk_file_keeps_the_previous_file_when_the_stream_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    previous = gzip.compress(b'{"arena_id": 1}\n')
+    destination = tmp_path / "scryfall-default-cards.jsonl.gz"
+    destination.write_bytes(previous)
+    requests: list[urllib.request.Request] = []
+
+    class FailingResponse(_BulkDownloadResponse):
+        def read(self, size: int = -1) -> bytes:
+            chunk = super().read(size)
+            if chunk:
+                return chunk
+            raise failure
+
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        _bulk_download_urlopen(
+            download_response=FailingResponse(gzip.compress(b'{"arena_id": 2}\n')),
+            requests=requests,
+        ),
+    )
+
+    with pytest.raises(
+        CardDatabaseError,
+        match="Failed to download Scryfall default-cards bulk data",
+    ):
+        download_scryfall_default_cards_bulk_file(destination=destination)
+
+    assert destination.read_bytes() == previous
+    assert tuple(destination.parent.glob(f".{destination.name}.*")) == ()
+
+
+def test_download_scryfall_bulk_file_keeps_the_previous_file_when_the_body_is_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = gzip.compress(b'{"arena_id": 1}\n')
+    destination = tmp_path / "scryfall-default-cards.jsonl.gz"
+    destination.write_bytes(previous)
+    body = gzip.compress(b'{"arena_id": 2}\n')
+    requests: list[urllib.request.Request] = []
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        _bulk_download_urlopen(
+            download_response=_BulkDownloadResponse(
+                body,
+                headers={"Content-Length": str(len(body) + 1024)},
+            ),
+            requests=requests,
+        ),
+    )
+
+    with pytest.raises(
+        CardDatabaseError,
+        match="Failed to download Scryfall default-cards bulk data",
+    ):
+        download_scryfall_default_cards_bulk_file(destination=destination)
+
+    assert destination.read_bytes() == previous
+    assert tuple(destination.parent.glob(f".{destination.name}.*")) == ()
+
+
+def test_download_scryfall_bulk_file_rejects_a_non_gzip_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "sources" / "scryfall-default-cards.jsonl.gz"
+    requests: list[urllib.request.Request] = []
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        _bulk_download_urlopen(
+            download_response=_BulkDownloadResponse(b'[{"id": "abc"}]'),
+            requests=requests,
+        ),
+    )
+
+    with pytest.raises(CardDatabaseError, match="is not a gzip JSONL file"):
+        download_scryfall_default_cards_bulk_file(destination=destination)
+
+    assert not destination.exists()
+    assert tuple(destination.parent.glob(f".{destination.name}.*")) == ()
+
+
+def test_download_scryfall_bulk_file_reports_progress_and_cancels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = gzip.compress(b'{"arena_id": 1}\n')
+    destination = tmp_path / "sources" / "scryfall-default-cards.jsonl.gz"
+    requests: list[urllib.request.Request] = []
+    monkeypatch.setattr(
+        "draftomen.carddb.urllib.request.urlopen",
+        _bulk_download_urlopen(
+            download_response=_BulkDownloadResponse(
+                payload,
+                headers={"Content-Length": str(len(payload))},
+            ),
+            requests=requests,
+        ),
+    )
+    updates: list[tuple[int, int | None]] = []
+    stop_calls = 0
+
+    def record_progress(completed: int, total: int | None) -> None:
+        updates.append((completed, total))
+
+    def should_stop() -> bool:
+        nonlocal stop_calls
+        stop_calls += 1
+        return stop_calls >= 2
+
+    with pytest.raises(CardDatabaseError, match="was cancelled"):
+        download_scryfall_default_cards_bulk_file(
+            destination=destination,
+            should_stop=should_stop,
+            progress=record_progress,
+        )
+
+    assert updates == [(len(payload), len(payload))]
+    assert not destination.exists()
+    assert tuple(destination.parent.glob(f".{destination.name}.*")) == ()

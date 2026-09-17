@@ -35,7 +35,7 @@ invoking `pyside6-deploy`. That explicit install is load-bearing:
 `pyside6-deploy` fails when the pinned Nuitka is not importable, because its own
 `python -m pip install Nuitka` fallback cannot run in a uv-managed environment
 that ships no `pip`. An `uv run` never removes an already-installed package, so
-only the workflow's own `uv sync --locked --extra draftmancer` step can prune it.
+only the workflow's own `uv sync --locked` step can prune it.
 The existing `uv.lock` continues to select the PySide6 version. Run deployment
 commands from the repository root because the specs use repository-relative paths.
 
@@ -60,15 +60,14 @@ Qt inputs used by the adapter:
 Both specs keep PySide6's default unused QML plugin exclusions explicit:
 `QtCharts`, `QtQuick3D`, `QtSensors`, `QtTest`, and `QtWebEngine`.
 
-Both specs additionally declare `--include-package=socketio`, and both native
-builds install the locked `draftmancer` extra (`python-socketio[client]`) before
-packaging. The developer Test Draft reaches its transport through a lazy
-`import socketio` inside `draftomen/draftmancer.py`, so Nuitka cannot discover
-the package from a static import and must be told explicitly to carry it; the
-extra is the only thing that supplies it. Wheel, Homebrew, and source startup
-keep `python-socketio` optional and never require it: an installation without
-the extra simply does not offer the developer Test Draft, and the base
-dependency list stays unchanged.
+Both specs additionally declare `--include-package=socketio`. The Socket.IO
+transport (`python-socketio[client]`) is a required base dependency, so it is
+always importable: wheel, Homebrew, source startup, and both native builds
+install it, and the developer Test Draft is always available. The specs still
+hand Nuitka the transport as an explicit packaging input — the developer Test
+Draft reaches it through `draftomen/draftmancer.py`, and the pinned
+`--include-package=socketio` keeps the bundled package declared instead of
+depending on what Nuitka's import analysis discovers.
 
 ### Baseline profile data-file mapping
 
@@ -102,7 +101,7 @@ Nuitka's required ad-hoc signature.
 Install the locked project dependencies and the pinned deployment dependency:
 
 ```bash
-uv sync --locked --extra draftmancer
+uv sync --locked
 uv pip install "Nuitka==4.1.3"
 ```
 
@@ -111,23 +110,22 @@ Build the platform matching the host:
 ```bash
 # macOS
 mkdir -p dist-native/macos-unsigned
-uv run --extra draftmancer pyside6-deploy --config-file pysidedeploy.macos.spec --force
+uv run pyside6-deploy --config-file pysidedeploy.macos.spec --force
 
 # Windows PowerShell
 New-Item -ItemType Directory -Force dist-native/windows-unsigned | Out-Null
-uv run --extra draftmancer pyside6-deploy --config-file pysidedeploy.windows.spec --force
+uv run pyside6-deploy --config-file pysidedeploy.windows.spec --force
 ```
 
 The deployment output directory must exist before `pyside6-deploy` finalizes
 the bundle. The native workflow creates the matrix platform's directory
 explicitly; the local commands above do the same.
 
-Every `uv run` in the build path keeps `--extra draftmancer`, so each command
-requests the same environment — the base dependencies plus the optional
-transport — that `uv sync --locked --extra draftmancer` installs. The transport
-must be importable when the build runs, and only an explicit `uv sync` prunes an
-environment, so the pinned Nuitka installed just above also survives every
-following `uv run`.
+Every `uv run` in the build path uses the environment `uv sync --locked`
+installs, and the base dependencies already include the transport, so no
+command needs an extra flag. The transport must be importable when the build
+runs, and only an explicit `uv sync` prunes an environment, so the pinned
+Nuitka installed just above also survives every following `uv run`.
 
 On macOS, package the generated app as a Finder-native compressed DMG:
 

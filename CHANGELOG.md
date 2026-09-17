@@ -3,6 +3,16 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Download the Mocked Draft Scryfall bulk source from the dialog. When the resolved
+  `scryfall-default-cards.jsonl.gz` is missing the dialog says so and offers **Download
+  Scryfall data**, and the click streams Scryfall's `default_cards` bulk JSONL into the
+  resolved path through a sibling temporary file with `os.replace`, so progress is
+  published as an indeterminate or percentage bar on the existing Mocked Draft state
+  channel, a failed or cancelled download never replaces an existing source or installs a
+  partial file, the capability re-resolves when the download lands so the dialog is ready
+  without a restart, and Start is not gated on the missing file, so it still reports the
+  real missing-file error until the download lands.
+  (#583)
 - Edit and persist the three Mocked Draft sources from the DEVELOPER settings
   section: the Draftmancer checkout directory, the server URL, and the Scryfall
   bulk file each prefill with the effective location, the capability rebuilds on

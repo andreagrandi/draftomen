@@ -26,12 +26,10 @@ classifiers = [
 ]
 dependencies = [
     "pyside6>=6.9,<7",
+    "python-socketio[client]>=5.16.4,<6",
     "textual>=8.2.8",
     "textual-image>=0.13.2",
 ]
-
-[project.optional-dependencies]
-draftmancer = ["python-socketio[client]>=5.16.4,<6"]
 
 [project.scripts]
 draftomen-gui-mockup = "draftomen.qt_mock:main"

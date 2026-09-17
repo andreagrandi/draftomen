@@ -28,6 +28,7 @@ from draftomen.qt_gui import (
     TEST_DRAFT_MANUAL_PICK_COUNT,
     TEST_DRAFT_SMOKE_SUMMARY_PREFIX,
     TEST_DRAFT_SMOKE_TIMEOUT_SECONDS,
+    _GuiTestDraftFactory,
     _TestDraftManualSmokeDriver,
     _TestDraftSmokeDriver,
     _build_provider,
@@ -572,6 +573,65 @@ def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
 
     assert factory is not None
     assert factory.supported_set_codes() == ("hob",)
+
+
+def test_gui_mocked_draft_bulk_file_state_and_download_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bulk_file = (
+        tmp_path / "corpus-cache" / "sources" / "scryfall-default-cards.jsonl.gz"
+    )
+    factory = _GuiTestDraftFactory(
+        draftmancer_dir=tmp_path / "Draftmancer",
+        scryfall_bulk_file=bulk_file,
+        server_url=DEFAULT_TEST_DRAFT_SERVER_URL,
+        timeout_seconds=5.0,
+        app_dir=tmp_path / "app",
+        profile_manifest_url=None,
+        profile_network_policy=ProfileNetworkPolicy.OFFLINE,
+        simulation_app_dir=None,
+    )
+    recorded: dict[str, Any] = {}
+
+    def should_stop() -> bool:
+        return False
+
+    def progress(completed: int, total: int | None) -> None:
+        del completed, total
+
+    def download_scryfall_default_cards_bulk_file(
+        *,
+        destination: Path,
+        should_stop: Callable[[], bool] | None = None,
+        progress: Callable[[int, int | None], None] | None = None,
+    ) -> Path:
+        recorded.update(
+            destination=destination,
+            should_stop=should_stop,
+            progress=progress,
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(gzip.compress(b'{"arena_id": 1}\n'))
+        return destination
+
+    monkeypatch.setattr(
+        "draftomen.qt_gui.download_scryfall_default_cards_bulk_file",
+        download_scryfall_default_cards_bulk_file,
+    )
+
+    assert factory.bulk_file_missing() is True
+
+    installed = factory.download_bulk_file(should_stop=should_stop, progress=progress)
+
+    assert installed == bulk_file
+    assert recorded == {
+        "destination": bulk_file,
+        "should_stop": should_stop,
+        "progress": progress,
+    }
+    assert bulk_file.is_file()
+    assert factory.bulk_file_missing() is False
 
 
 def test_verify_bundled_profile_flag_is_hidden_and_parsed() -> None:
@@ -8304,6 +8364,276 @@ assert message is not None
 assert message.property("text") == (
     "Mocked Draft needs Node.js: no 'node' executable is on PATH."
 )
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_test_draft_dialog_offers_the_bulk_download_and_ready_state_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str]] = []
+        self.leave_calls = 0
+        self.download_calls = 0
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        self.leave_calls += 1
+
+    @Slot()
+    def downloadTestDraftBulkFile(self) -> None:
+        self.download_calls += 1
+
+
+def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "supported_set_codes": ["hob"],
+        "default_set_code": "hob",
+        "bulk_file_missing": True,
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+test_draft_button = root.findChild(QObject, "testDraftButton")
+assert test_draft_button is not None and test_draft_button.isVisible()
+test_draft_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+
+dialog = root.findChild(QObject, "testDraftDialog")
+selector = root.findChild(QObject, "testDraftSetSelector")
+message = root.findChild(QObject, "testDraftMessage")
+progress = root.findChild(QObject, "testDraftDownloadProgress")
+download_button = root.findChild(QObject, "testDraftDownloadButton")
+start_button = root.findChild(QObject, "testDraftStartButton")
+assert dialog is not None and dialog.property("visible") is True
+assert selector is not None and message is not None
+assert progress is not None
+assert download_button is not None and start_button is not None
+
+assert message.property("text") == (
+    "The Scryfall card data Mocked Draft needs is missing. Download it to continue."
+)
+assert download_button.property("text") == "Download Scryfall data"
+assert download_button.isVisible() is True
+assert download_button.property("enabled") is True
+assert progress.isVisible() is False
+assert start_button.isVisible() is True
+assert start_button.property("enabled") is True
+
+download_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.download_calls == 1
+
+provider.publish_test_draft(
+    bulk_file_downloading=True, bulk_file_download_percent=40, pending=True
+)
+application.processEvents()
+assert message.property("text") == "Downloading Scryfall card data… 40%"
+assert progress.isVisible() is True
+assert float(progress.property("value")) == 40.0
+assert download_button.property("enabled") is False
+assert start_button.property("enabled") is False
+
+provider.publish_test_draft(
+    bulk_file_downloading=True, bulk_file_download_percent=None, pending=True
+)
+application.processEvents()
+assert message.property("text") == "Downloading Scryfall card data…"
+assert progress.isVisible() is True
+assert progress.property("indeterminate") is True
+
+provider.publish_test_draft(
+    bulk_file_downloading=False,
+    bulk_file_download_percent=None,
+    pending=False,
+    bulk_file_missing=False,
+    supported_set_codes=["hob", "msh"],
+)
+application.processEvents()
+assert progress.isVisible() is False
+assert download_button.isVisible() is False
+assert message.property("text") == "Choose a set and mode, then start."
+assert selector.property("count") == 2
+assert list(selector.property("model")) == ["HOB", "MSH"]
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Cannot assign to non-existent property" not in completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+
+
+def test_qml_test_draft_dialog_shows_the_download_failure_and_offers_retry_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+DOWNLOAD_ERROR = (
+    "Failed to download Scryfall default-cards bulk data: connection reset"
+)
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
+        self.test_draft_state = dict(test_draft)
+        self.download_calls = 0
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot()
+    def downloadTestDraftBulkFile(self) -> None:
+        self.download_calls += 1
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "supported_set_codes": ["hob"],
+        "default_set_code": "hob",
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+test_draft_button = root.findChild(QObject, "testDraftButton")
+assert test_draft_button is not None and test_draft_button.isVisible()
+test_draft_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+
+dialog = root.findChild(QObject, "testDraftDialog")
+selector = root.findChild(QObject, "testDraftSetSelector")
+message = root.findChild(QObject, "testDraftMessage")
+progress = root.findChild(QObject, "testDraftDownloadProgress")
+download_button = root.findChild(QObject, "testDraftDownloadButton")
+assert dialog is not None and dialog.property("visible") is True
+assert selector is not None and message is not None
+assert progress is not None and download_button is not None
+
+provider.publish_test_draft(
+    phase="failed",
+    error=DOWNLOAD_ERROR,
+    bulk_file_missing=True,
+    bulk_file_downloading=False,
+    pending=False,
+)
+application.processEvents()
+
+assert message.property("text") == DOWNLOAD_ERROR
+assert download_button.isVisible() is True
+assert download_button.property("enabled") is True
+assert progress.isVisible() is False
+assert selector.property("count") == 1
+assert list(selector.property("model")) == ["HOB"]
+
+download_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.download_calls == 1
 """
     completed = _run_qml_probe(probe)
 

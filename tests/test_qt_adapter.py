@@ -27,7 +27,7 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.carddb import CardDatabase, CardDatabaseError, CardInfo
 from draftomen.cardimages import CardImageService
 from draftomen.mock_session import MockLiveSession
 from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
@@ -2610,6 +2610,9 @@ _DISABLED_TEST_DRAFT_STATE: dict[str, object] = {
     "pending": False,
     "offer_generation": 0,
     "error": None,
+    "bulk_file_missing": False,
+    "bulk_file_downloading": False,
+    "bulk_file_download_percent": None,
 }
 _SIMULATED_POOL_TOTAL_CARDS = 7
 
@@ -2783,7 +2786,7 @@ class _FakeTestDraftRuntime:
 
 
 class _RecordingTestDraftFactory:
-    """Record the capability, server, and runtime requests the live worker makes."""
+    """Record the capability, server, runtime, and bulk-download requests."""
 
     def __init__(
         self,
@@ -2796,6 +2799,10 @@ class _RecordingTestDraftFactory:
         server_url: str = "http://127.0.0.1:4111",
         ensure_error: Exception | None = None,
         ensure_blocker: threading.Event | None = None,
+        bulk_file_missing_value: bool = False,
+        download_error: Exception | None = None,
+        download_blocker: threading.Event | None = None,
+        download_progress: tuple[int, int | None] | None = None,
     ) -> None:
         self.set_codes = set_codes
         self.runtime = runtime
@@ -2805,6 +2812,10 @@ class _RecordingTestDraftFactory:
         self.server_url = server_url
         self.ensure_error = ensure_error
         self.ensure_blocker = ensure_blocker
+        self.bulk_file_missing_value = bulk_file_missing_value
+        self.download_error = download_error
+        self.download_blocker = download_blocker
+        self.download_progress = download_progress
         self.supported_calls = 0
         self.supported_thread_ids: list[int] = []
         self.ensure_calls = 0
@@ -2812,6 +2823,8 @@ class _RecordingTestDraftFactory:
         self.release_calls = 0
         self.create_calls: list[dict[str, object]] = []
         self.create_thread_ids: list[int] = []
+        self.download_calls = 0
+        self.download_thread_ids: list[int] = []
         self.publishers: list[SnapshotPublisher] = []
 
     def supported_set_codes(self) -> tuple[str, ...]:
@@ -2820,6 +2833,28 @@ class _RecordingTestDraftFactory:
         if self.supported_error is not None:
             raise self.supported_error
         return self.set_codes
+
+    def bulk_file_missing(self) -> bool:
+        """Report the configured Scryfall bulk-file availability."""
+        return self.bulk_file_missing_value
+
+    def download_bulk_file(
+        self,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+        progress: Callable[[int, int | None], None] | None = None,
+    ) -> Path:
+        """Record one bulk download the live worker requested."""
+        del should_stop
+        self.download_calls += 1
+        self.download_thread_ids.append(threading.get_ident())
+        if progress is not None and self.download_progress is not None:
+            progress(*self.download_progress)
+        if self.download_blocker is not None:
+            self.download_blocker.wait(timeout=3.0)
+        if self.download_error is not None:
+            raise self.download_error
+        return Path("scryfall-default-cards.jsonl.gz")
 
     def ensure_server(
         self, *, should_stop: Callable[[], bool] | None = None
@@ -3984,6 +4019,9 @@ def test_live_adapter_leaves_test_draft_and_restores_arena_state(
             "pending": False,
             "offer_generation": 0,
             "error": None,
+            "bulk_file_missing": False,
+            "bulk_file_downloading": False,
+            "bulk_file_download_percent": None,
         }
         # The published state is Arena state again, not the simulated draft.
         assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
@@ -4263,6 +4301,9 @@ def test_live_adapter_drops_a_start_that_a_pending_leave_owns(
             "pending": False,
             "offer_generation": 0,
             "error": None,
+            "bulk_file_missing": False,
+            "bulk_file_downloading": False,
+            "bulk_file_download_percent": None,
         }
         assert adapter.state["errors"] == []
         assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
@@ -4883,5 +4924,164 @@ def test_live_adapter_keeps_gui_thread_responsive_while_the_mocked_draft_server_
     finally:
         blocker.set()
         ticks.stop()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_downloads_the_missing_test_draft_bulk_file_off_the_gui_thread(
+    qcore_application: QCoreApplication,
+) -> None:
+    """The worker downloads the Mocked Draft bulk file off the GUI thread."""
+    gui_thread_id = threading.get_ident()
+    blocker = threading.Event()
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob",),
+        bulk_file_missing_value=True,
+        download_blocker=blocker,
+        download_progress=(50, 100),
+    )
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    ticks = _GuiTickCounter()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                adapter.state["test_draft"]["bulk_file_missing"] is True
+            ),
+            description="the missing Mocked Draft bulk file",
+        )
+        adapter.downloadTestDraftBulkFile()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                adapter.state["test_draft"]["bulk_file_downloading"] is True
+            ),
+            description="the reported Mocked Draft bulk download",
+        )
+        assert adapter.state["test_draft"]["bulk_file_download_percent"] == 50
+        assert adapter.state["test_draft"]["pending"] is True
+        assert adapter.state["test_draft"]["bulk_file_missing"] is True
+        ticks_before_release = ticks.ticks
+        blocked_deadline = time.monotonic() + 0.2
+        while time.monotonic() < blocked_deadline:
+            qcore_application.processEvents()
+            time.sleep(0.001)
+        assert ticks.ticks > ticks_before_release
+        assert factory.download_calls == 1
+        assert all(
+            thread_id != gui_thread_id for thread_id in factory.download_thread_ids
+        )
+
+        factory.set_codes = ("hob", "msh")
+        factory.bulk_file_missing_value = False
+        blocker.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: (
+                adapter.state["test_draft"]["bulk_file_downloading"] is False
+            ),
+            description="the completed Mocked Draft bulk download",
+        )
+        assert adapter.state["test_draft"] == {
+            "enabled": True,
+            "active": False,
+            "phase": "idle",
+            "mode": None,
+            "set_code": None,
+            "supported_set_codes": ["hob", "msh"],
+            "default_set_code": "hob",
+            "pending": False,
+            "offer_generation": 0,
+            "error": None,
+            "bulk_file_missing": False,
+            "bulk_file_downloading": False,
+            "bulk_file_download_percent": None,
+        }
+        assert factory.create_calls == []
+    finally:
+        blocker.set()
+        ticks.stop()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_reports_a_test_draft_bulk_download_failure(
+    qcore_application: QCoreApplication,
+) -> None:
+    """A failed bulk download publishes the actionable error and stays retryable."""
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob",),
+        bulk_file_missing_value=True,
+        download_error=CardDatabaseError(
+            "Failed to download Scryfall default-cards bulk data: connection reset"
+        ),
+    )
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.downloadTestDraftBulkFile()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
+            description="the reported Mocked Draft bulk download failure",
+        )
+        assert adapter.state["test_draft"]["error"] == (
+            "Failed to download Scryfall default-cards bulk data: connection reset"
+        )
+        assert adapter.state["test_draft"]["bulk_file_missing"] is True
+        assert adapter.state["test_draft"]["bulk_file_downloading"] is False
+        assert adapter.state["test_draft"]["bulk_file_download_percent"] is None
+        assert adapter.state["test_draft"]["pending"] is False
+
+        polls_before = len(arenas[0].poll_thread_ids)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(arenas[0].poll_thread_ids) >= polls_before + 2,
+            description="Arena polling after the failed Mocked Draft bulk download",
+        )
+
+        # The worker kept its capability, so the dialog can offer the retry.
+        adapter.downloadTestDraftBulkFile()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: factory.download_calls == 2,
+            description="the retried Mocked Draft bulk download",
+        )
+        assert adapter.state["test_draft"]["phase"] == "failed"
+        assert factory.create_calls == []
+    finally:
         adapter.shutdown()
         adapter.wait_for_shutdown()
