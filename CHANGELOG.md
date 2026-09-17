@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Start and stop the pinned Draftmancer server from the Mocked Draft capability.
+  `draftomen/draftmancer_server.py` owns the checkout process: it adopts a server
+  that already answers the configured location, otherwise starts the pinned checkout
+  on a picked loopback port with persistence disabled, waits for a Socket.IO
+  handshake, and stops only the process it started on leave, at exit, and after a
+  failed start, with every setup failure surfaced as actionable dialog text. (#558)
 - Persist Mocked Draft as an off-by-default desktop developer setting with the
   Draftmancer checkout location and server URL. The settings surface exposes it as a
   DEVELOPER toggle that installs or clears the simulated-draft capability live, the

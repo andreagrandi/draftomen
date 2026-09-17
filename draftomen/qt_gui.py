@@ -25,6 +25,7 @@ from draftomen import __version__
 from draftomen.card_data_client import CardDataClient, cached_card_data_set_codes
 from draftomen.carddb import build_card_database_from_bulk_file
 from draftomen.cardimages import CardImageService, card_image_cache_dir
+from draftomen.draftmancer_server import MockedDraftServer
 from draftomen.mock_session import MOCK_SCENARIOS, MockLiveSession, MockScenario
 from draftomen.paths import resolve_player_log_path
 from draftomen.preferences import GuiDisplayPreferences, load_gui_preferences
@@ -412,7 +413,10 @@ class _GuiTestDraftFactory:
     ) -> None:
         self._draftmancer_dir = draftmancer_dir
         self._scryfall_bulk_file = scryfall_bulk_file
-        self._server_url = server_url
+        self._server = MockedDraftServer(
+            configured_url=server_url,
+            checkout_dir=draftmancer_dir,
+        )
         self._timeout_seconds = timeout_seconds
         self._app_dir = app_dir
         self._profile_manifest_url = profile_manifest_url
@@ -426,9 +430,18 @@ class _GuiTestDraftFactory:
             draftomen_set_codes=cached_card_data_set_codes(app_dir=self._app_dir),
         )
 
+    def ensure_server(self, *, should_stop: Callable[[], bool] | None = None) -> str:
+        """Serve the pinned checkout when nothing answers the configured location."""
+        return self._server.ensure_server(should_stop=should_stop)
+
+    def release_server(self) -> None:
+        """Stop the checkout this factory started; an adopted server is untouched."""
+        self._server.release()
+
     def create_runtime(
         self,
         *,
+        server_url: str,
         set_code: str,
         publisher: SnapshotPublisher,
         splash_enabled: bool,
@@ -439,7 +452,7 @@ class _GuiTestDraftFactory:
         return create_test_draft_runtime(
             draftmancer_dir=self._draftmancer_dir,
             scryfall_bulk_file=self._scryfall_bulk_file,
-            server_url=self._server_url,
+            server_url=server_url,
             set_code=set_code,
             timeout_seconds=self._timeout_seconds,
             source_app_dir=self._app_dir,

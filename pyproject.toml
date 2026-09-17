@@ -82,6 +82,7 @@ files = [
     "draftomen/corpus.py",
     "draftomen/deckbuilder.py",
     "draftomen/draftmancer.py",
+    "draftomen/draftmancer_server.py",
     "draftomen/enrichment_inventory.py",
     "draftomen/enrichment_publications.py",
     "draftomen/events.py",

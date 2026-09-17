@@ -371,12 +371,14 @@ defaults, and `--profile-manifest-url` / `--offline-profiles` behave as in
 `test-draft failed: <reason>` and exit nonzero; the command never starts,
 stops, or configures the Draftmancer service.
 
-The native application exposes the same developer controls. The app bar shows a
-**Test Draft** action only when the application is started with the
-`--draftmancer-dir` opt-in:
+The native application serves the same developer checkout itself. With the Mocked
+Draft setting enabled the application starts the pinned checkout on a port it
+picks, adopts a server that already answers the configured location, and stops
+only the process it started when the draft is left or the application exits. The
+native app journeys need the enabled setting instead of a manually managed server:
 
 ```bash
-uv run --extra draftmancer draftomen --draftmancer-dir ../Draftmancer
+uv run --extra draftmancer draftomen
 ```
 
 The dialog offers the sets the pinned checkout and the local card-data cache
@@ -384,12 +386,15 @@ both provide (HOB, the application's default test-draft set, whenever both have
 it) and lets the developer choose Manual or Auto. Manual mode confirms the
 selected recommendation with the **Pick** button in the ordinary live drafting
 view and leaves the run through the dialog's **Leave test draft** button, while
-Auto reuses the normal completed-draft and build surfaces. Without the opt-in no
-Test Draft control is present, and the Pick button stays hidden during ordinary
-Arena drafting.
+Auto reuses the normal completed-draft and build surfaces. Without the enabled
+setting no Mocked Draft control is present, and the Pick button stays hidden
+during ordinary Arena drafting. The TUI/CLI commands and the compiled-bundle
+helper keep requiring the developer-managed server above.
 
-The complete acceptance workflow is three developer-run commands, all against
-the developer-managed pinned server above:
+The complete acceptance workflow is three developer-run commands. The headless and
+compiled-bundle commands run against the developer-managed pinned server above,
+while the interactive launch uses the enabled Mocked Draft setting and its
+self-served checkout:
 
 A headless auto draft proves the production recommendation and deck-building
 path end to end against the real protocol:
@@ -416,7 +421,7 @@ An interactive launch proves a developer can start a simulated draft, confirm
 picks, and leave it by hand through those same controls:
 
 ```bash
-uv run --extra draftmancer draftomen --draftmancer-dir ../Draftmancer
+uv run --extra draftmancer draftomen
 ```
 
 To run the same pinned server through a compiled bundle instead of the source
