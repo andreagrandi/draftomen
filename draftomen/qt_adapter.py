@@ -59,6 +59,7 @@ from draftomen.session import (
 )
 from draftomen.test_draft import (
     DEFAULT_TEST_DRAFT_SET_CODE,
+    TestDraftError,
     TestDraftOfferIdentity,
     TestDraftRuntime,
 )
@@ -89,20 +90,27 @@ class TestDraftSessionState:
 
 
 class TestDraftFactory(Protocol):
-    """Create simulated draft runtimes and report the supported set codes."""
+    """Serve simulated drafts, create their runtimes, and report the supported set codes."""
 
     def supported_set_codes(self) -> tuple[str, ...]:
+        ...
+
+    def ensure_server(self, *, should_stop: Callable[[], bool] | None = None) -> str:
         ...
 
     def create_runtime(
         self,
         *,
+        server_url: str,
         set_code: str,
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
         ai_enhanced_suggestions_enabled: bool,
     ) -> TestDraftRuntime:
+        ...
+
+    def release_server(self) -> None:
         ...
 
 
@@ -838,6 +846,10 @@ class _LiveSessionWorker(QObject):
 
         return publish
 
+    def _test_draft_interrupted(self) -> bool:
+        """Report a leave or shutdown that already owns the simulated teardown."""
+        return self._stop_requested or self._test_draft_leaving
+
     def _switch_source(self, *, source: TestDraftSource) -> None:
         """Change the authoritative source and drop stale in-flight auxiliary work."""
         self._authoritative_source = source
@@ -1235,7 +1247,13 @@ class _LiveSessionWorker(QObject):
         try:
             self._runtime_generation += 1
             generation = self._runtime_generation
+            server_url = self._test_draft_factory.ensure_server(
+                should_stop=self._test_draft_interrupted
+            )
+            if self._test_draft_interrupted():
+                return
             runtime = self._test_draft_factory.create_runtime(
+                server_url=server_url,
                 set_code=trimmed_set_code,
                 publisher=self._test_draft_snapshot_publisher(
                     runtime_generation=generation
@@ -1269,7 +1287,19 @@ class _LiveSessionWorker(QObject):
                 self._publish_snapshot(result.build)
                 self._request_one_card_image()
         except Exception as error:
+            if self._test_draft_interrupted():
+                return
+            startup_failure = (
+                self._authoritative_source == "test-draft"
+                and isinstance(error, TestDraftError)
+                and error.stage == "startup"
+            )
+            # Fail before releasing: _fail_test_draft keeps the owned runtime while
+            # the simulated source is authoritative, and releasing first would
+            # restore Arena authority so the release would run a second time.
             self._fail_test_draft(message=str(error))
+            if startup_failure:
+                self._release_test_draft_runtime()
         finally:
             self._test_draft_pending = False
             self._publish_test_draft_state()
@@ -1350,26 +1380,28 @@ class _LiveSessionWorker(QObject):
 
         if self._stop_requested:
             return
-        self._test_draft_factory = test_draft_factory
+        outgoing = self._test_draft_factory
+        self._test_draft_factory = None
         self._release_test_draft_runtime()
+        self._close_test_draft_runtime(factory=outgoing)
         self._reset_test_draft_progress()
+        self._test_draft_factory = test_draft_factory
         self._refresh_test_draft_capability()
         self._publish_test_draft_state()
 
     def _release_test_draft_runtime(self) -> None:
         """Close the owned simulated runtime and restore Arena authority."""
 
-        if self._test_draft_runtime is None:
-            return
         switched = self._authoritative_source == "test-draft"
         self._close_test_draft_runtime()
-        if switched:
-            self._switch_source(source="arena")
-            try:
-                self._restore_arena_preferences()
-            except Exception as error:
-                self.failed.emit(str(error))
-            self._poll()
+        if not switched:
+            return
+        self._switch_source(source="arena")
+        try:
+            self._restore_arena_preferences()
+        except Exception as error:
+            self.failed.emit(str(error))
+        self._poll()
 
     def _reset_test_draft_progress(self) -> None:
         """Clear the published simulated-draft mode, offer, phase, and error."""
@@ -1402,20 +1434,28 @@ class _LiveSessionWorker(QObject):
         elif supported_codes:
             self._test_draft_default_set_code = supported_codes[0]
 
-    def _close_test_draft_runtime(self) -> None:
+    def _close_test_draft_runtime(
+        self, *, factory: TestDraftFactory | None = None
+    ) -> None:
+        release = factory if factory is not None else self._test_draft_factory
         runtime = self._test_draft_runtime
         self._test_draft_runtime = None
         self._test_draft_offer = None
         self._test_draft_offer_generation = 0
         self._runtime_generation += 1
-        if runtime is None:
-            return
-        try:
-            runtime.cancel()
-            runtime.close()
-        except Exception as error:
-            if not self._stop_requested:
-                self.failed.emit(str(error))
+        if runtime is not None:
+            try:
+                runtime.cancel()
+                runtime.close()
+            except Exception as error:
+                if not self._stop_requested:
+                    self.failed.emit(str(error))
+        if release is not None:
+            try:
+                release.release_server()
+            except Exception as error:
+                if not self._stop_requested:
+                    self.failed.emit(str(error))
 
     def _restore_arena_preferences(self) -> None:
         session = self._session

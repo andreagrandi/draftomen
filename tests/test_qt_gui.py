@@ -414,7 +414,7 @@ def test_gui_mocked_draft_resolves_application_data_defaults_and_flag_precedence
     assert defaulted_factory._scryfall_bulk_file == default_test_draft_bulk_file(
         app_dir=app_dir,
     )
-    assert defaulted_factory._server_url == DEFAULT_TEST_DRAFT_SERVER_URL
+    assert defaulted_factory._server.configured_url == DEFAULT_TEST_DRAFT_SERVER_URL
 
     overridden = _build_provider(
         args=_parser().parse_args(
@@ -439,7 +439,7 @@ def test_gui_mocked_draft_resolves_application_data_defaults_and_flag_precedence
     assert overridden_factory is not None
     assert overridden_factory._draftmancer_dir == tmp_path / "flagged-checkout"
     assert overridden_factory._scryfall_bulk_file == tmp_path / "flagged-cards.jsonl.gz"
-    assert overridden_factory._server_url == "http://127.0.0.1:3999"
+    assert overridden_factory._server.configured_url == "http://127.0.0.1:3999"
 
 
 def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
@@ -7944,6 +7944,83 @@ assert provider.leave_calls == 1
 assert provider.pick_calls == []
 assert provider.start_calls == []
 assert dialog.property("visible") is True
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_mocked_draft_dialog_shows_the_published_capability_error() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
+        self.test_draft_state = dict(test_draft)
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "active": False,
+        "mode": None,
+        "phase": "failed",
+        "set_code": "hob",
+        "supported_set_codes": ["hob"],
+        "error": "Mocked Draft needs Node.js: no 'node' executable is on PATH.",
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+test_draft_button = root.findChild(QObject, "testDraftButton")
+assert test_draft_button is not None and test_draft_button.isVisible()
+test_draft_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+dialog = root.findChild(QObject, "testDraftDialog")
+assert dialog is not None and dialog.property("visible") is True
+message = root.findChild(QObject, "testDraftMessage")
+assert message is not None
+assert message.property("text") == (
+    "Mocked Draft needs Node.js: no 'node' executable is on PATH."
+)
 """
     completed = _run_qml_probe(probe)
 

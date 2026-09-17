@@ -2726,7 +2726,7 @@ class _FakeTestDraftRuntime:
 
 
 class _RecordingTestDraftFactory:
-    """Record the capability and runtime requests the live worker makes."""
+    """Record the capability, server, and runtime requests the live worker makes."""
 
     def __init__(
         self,
@@ -2736,14 +2736,23 @@ class _RecordingTestDraftFactory:
         runtime_factory: Callable[..., object] | None = None,
         create_error: Exception | None = None,
         supported_error: Exception | None = None,
+        server_url: str = "http://127.0.0.1:4111",
+        ensure_error: Exception | None = None,
+        ensure_blocker: threading.Event | None = None,
     ) -> None:
         self.set_codes = set_codes
         self.runtime = runtime
         self.runtime_factory = runtime_factory
         self.create_error = create_error
         self.supported_error = supported_error
+        self.server_url = server_url
+        self.ensure_error = ensure_error
+        self.ensure_blocker = ensure_blocker
         self.supported_calls = 0
         self.supported_thread_ids: list[int] = []
+        self.ensure_calls = 0
+        self.ensure_thread_ids: list[int] = []
+        self.release_calls = 0
         self.create_calls: list[dict[str, object]] = []
         self.create_thread_ids: list[int] = []
         self.publishers: list[SnapshotPublisher] = []
@@ -2755,9 +2764,27 @@ class _RecordingTestDraftFactory:
             raise self.supported_error
         return self.set_codes
 
+    def ensure_server(
+        self, *, should_stop: Callable[[], bool] | None = None
+    ) -> str:
+        """Record one server request and answer the configured test URL."""
+        del should_stop
+        self.ensure_calls += 1
+        self.ensure_thread_ids.append(threading.get_ident())
+        if self.ensure_blocker is not None:
+            self.ensure_blocker.wait(timeout=3.0)
+        if self.ensure_error is not None:
+            raise self.ensure_error
+        return self.server_url
+
+    def release_server(self) -> None:
+        """Record one server release the live worker makes."""
+        self.release_calls += 1
+
     def create_runtime(
         self,
         *,
+        server_url: str,
         set_code: str,
         publisher: SnapshotPublisher,
         splash_enabled: bool,
@@ -2766,6 +2793,7 @@ class _RecordingTestDraftFactory:
     ) -> object:
         self.create_calls.append(
             {
+                "server_url": server_url,
                 "set_code": set_code,
                 "splash_enabled": splash_enabled,
                 "contextual_adjustments_enabled": (
@@ -2782,6 +2810,7 @@ class _RecordingTestDraftFactory:
             raise self.create_error
         if self.runtime_factory is not None:
             return self.runtime_factory(
+                server_url=server_url,
                 set_code=set_code,
                 publisher=publisher,
                 splash_enabled=splash_enabled,
@@ -3571,6 +3600,7 @@ class _RealTestDraftRuntimeFactory:
     def __call__(
         self,
         *,
+        server_url: str,
         set_code: str,
         publisher: SnapshotPublisher,
         splash_enabled: bool,
@@ -3590,7 +3620,7 @@ class _RealTestDraftRuntimeFactory:
         runtime = create_test_draft_runtime(
             draftmancer_dir=self._sources.draftmancer_dir,
             scryfall_bulk_file=self._sources.bulk_path,
-            server_url="http://127.0.0.1:3000",
+            server_url=server_url,
             set_code=set_code,
             timeout_seconds=self._timeout_seconds,
             source_app_dir=self._sources.normal_app_dir,
@@ -4041,6 +4071,7 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
             description="the manual Test Draft offer",
         )
         assert factory.create_calls[0] == {
+            "server_url": factory.server_url,
             "set_code": "hob",
             "splash_enabled": False,
             "contextual_adjustments_enabled": False,
@@ -4444,6 +4475,356 @@ def test_live_adapter_keeps_gui_thread_responsive_during_blocked_test_draft_pick
         assert adapter.state["test_draft"]["phase"] == "drafting"
     finally:
         release.set()
+        ticks.stop()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_serves_and_releases_the_mocked_draft_server(
+    qcore_application: QCoreApplication,
+) -> None:
+    """A manual start serves the URL and leave releases the server."""
+    gui_thread_id = threading.get_ident()
+    runtime = _FakeTestDraftRuntime()
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        assert factory.ensure_calls == 1
+        assert all(
+            thread_id != gui_thread_id for thread_id in factory.ensure_thread_ids
+        )
+        assert factory.create_calls[0]["server_url"] == factory.server_url
+        assert adapter.state["test_draft"]["active"] is True
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
+            and adapter.state["test_draft"]["active"] is False,
+            description="the released Mocked Draft server",
+        )
+        assert factory.release_calls == 1
+        assert adapter.state["pool"]["total_cards"] == arenas[0].snapshot.pool.total_cards
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_releases_the_mocked_draft_server_when_the_draft_start_fails(
+    qcore_application: QCoreApplication,
+) -> None:
+    """A runtime failure tears down the server and publishes the error."""
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob",),
+        create_error=TestDraftError(
+            "card data for set 'hob' is unavailable", stage="startup"
+        ),
+    )
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
+            description="the failed Mocked Draft start",
+        )
+        assert factory.ensure_calls == 1
+        assert factory.release_calls == 1
+        assert adapter.state["test_draft"]["error"] == (
+            "card data for set 'hob' is unavailable"
+        )
+        assert adapter.state["test_draft"]["active"] is False
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_releases_the_mocked_draft_server_when_auto_startup_fails(
+    qcore_application: QCoreApplication,
+) -> None:
+    """A failed automatic connect releases the served checkout and returns to Arena."""
+
+    def run_auto() -> object:
+        raise TestDraftError(
+            "the simulated draft did not start: boom",
+            stage="startup",
+        )
+
+    runtime = _FakeTestDraftRuntime(
+        controller=_FakeTestDraftController(run_auto=run_auto)
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("auto", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "failed"
+            and adapter.state["test_draft"]["pending"] is False,
+            description="the failed automatic Mocked Draft start",
+        )
+        state = adapter.state["test_draft"]
+        assert state["phase"] == "failed"
+        assert state["error"] == "the simulated draft did not start: boom"
+        assert state["active"] is False
+        assert state["pending"] is False
+        assert factory.ensure_calls == 1
+        assert len(factory.create_calls) == 1
+        assert runtime.close_calls == 1
+        assert factory.release_calls == 1
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_publishes_the_mocked_draft_server_error(
+    qcore_application: QCoreApplication,
+) -> None:
+    """A server failure reaches the dialog with no runtime and a release."""
+    from draftomen.draftmancer_server import MockedDraftServerError
+    from draftomen.draftmancer_server import NODE_MISSING_MESSAGE
+
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob",),
+        runtime=_FakeTestDraftRuntime(),
+        ensure_error=MockedDraftServerError(NODE_MISSING_MESSAGE),
+    )
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
+            description="the published Mocked Draft server error",
+        )
+        assert factory.create_calls == []
+        assert factory.release_calls == 1
+        assert adapter.state["test_draft"]["error"] == NODE_MISSING_MESSAGE
+        assert adapter.state["test_draft"]["phase"] == "failed"
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_releases_the_mocked_draft_server_when_the_capability_is_cleared(
+    qcore_application: QCoreApplication,
+) -> None:
+    """Clearing the factory releases the outgoing server and keeps the new one."""
+    runtime = _FakeTestDraftRuntime()
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+    replacement = _RecordingTestDraftFactory(
+        set_codes=("hob",), runtime=_FakeTestDraftRuntime()
+    )
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        adapter.setTestDraftFactory(cast("TestDraftFactory", replacement))
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["active"] is False
+            and adapter.state["test_draft"]["phase"] == "idle",
+            description="the replacement Mocked Draft capability",
+        )
+        assert factory.release_calls == 1
+        assert replacement.release_calls == 0
+        assert adapter.state["test_draft"]["active"] is False
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_releases_the_mocked_draft_server_at_shutdown(
+    qcore_application: QCoreApplication,
+) -> None:
+    """Shutdown releases the served checkout after a manual start."""
+    runtime = _FakeTestDraftRuntime()
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+        assert factory.release_calls == 1
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_keeps_gui_thread_responsive_while_the_mocked_draft_server_starts(
+    qcore_application: QCoreApplication,
+) -> None:
+    """The GUI thread ticks while ensure_server blocks on the worker thread."""
+    gui_thread_id = threading.get_ident()
+    blocker = threading.Event()
+    runtime = _FakeTestDraftRuntime()
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob",), runtime=runtime, ensure_blocker=blocker
+    )
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    ticks = _GuiTickCounter()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: factory.ensure_calls == 1 and ticks.ticks > 0,
+            description="the blocked Mocked Draft server start",
+        )
+        assert adapter.state["test_draft"]["phase"] == "starting"
+        ticks_before_release = ticks.ticks
+        blocked_deadline = time.monotonic() + 0.2
+        while time.monotonic() < blocked_deadline:
+            qcore_application.processEvents()
+            time.sleep(0.001)
+        assert ticks.ticks > ticks_before_release
+        assert all(
+            thread_id != gui_thread_id for thread_id in factory.ensure_thread_ids
+        )
+        assert adapter.state["test_draft"]["pending"] is True
+
+        blocker.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "drafting",
+            description="the served Mocked Draft start",
+        )
+        assert factory.create_calls[0]["server_url"] == factory.server_url
+    finally:
+        blocker.set()
         ticks.stop()
         adapter.shutdown()
         adapter.wait_for_shutdown()

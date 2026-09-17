@@ -215,11 +215,13 @@ check against the final mounted macOS app and Windows executable.
 
 The opt-in `--test-draft` mode of `tests/bundle_smoke.py` is the only check that
 exercises the compiled bundle's Socket.IO path end to end. It launches the
-bundled GUI twice through the hidden `--test-draft-smoke` flag against a real
-Draftmancer server, so an opted-in developer proves that the packaged transport
-publishes the Test Draft capability and that the native Test Draft controls
-drive it, while the external server keeps running. The mode is never part of CI:
-the workflow never runs it and never requires an ambient Draftmancer service.
+bundled GUI twice through the hidden `--test-draft-smoke` flag against a
+developer-managed Draftmancer server, so an opted-in developer proves that the
+packaged transport publishes the Test Draft capability and that the native Test
+Draft controls drive it, while the external server keeps running. The mode is
+never part of CI: the workflow never runs it and never requires an ambient
+Draftmancer service. The source-tree application, unlike this helper, starts the
+pinned checkout itself when the Mocked Draft setting is enabled.
 
 The helper runs both journeys in one invocation:
 
