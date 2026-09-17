@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Edit and persist the three Mocked Draft sources from the DEVELOPER settings
+  section: the Draftmancer checkout directory, the server URL, and the Scryfall
+  bulk file each prefill with the effective location, the capability rebuilds on
+  the same path as the toggle, and the launch flags stay per-launch overrides.
+  (#582)
 - Start and stop the pinned Draftmancer server from the Mocked Draft capability.
   `draftomen/draftmancer_server.py` owns the checkout process: it adopts a server
   that already answers the configured location, otherwise starts the pinned checkout

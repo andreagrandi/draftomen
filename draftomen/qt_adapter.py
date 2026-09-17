@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 from os import PathLike
+from pathlib import Path
 from typing import Any, Literal, Protocol, TypeAlias, cast
 
 from PySide6.QtCore import (
@@ -58,10 +59,13 @@ from draftomen.session import (
     SnapshotPublisher,
 )
 from draftomen.test_draft import (
+    DEFAULT_TEST_DRAFT_SERVER_URL,
     DEFAULT_TEST_DRAFT_SET_CODE,
     TestDraftError,
     TestDraftOfferIdentity,
     TestDraftRuntime,
+    default_test_draft_bulk_file,
+    default_test_draft_checkout_dir,
 )
 
 SessionFactory = Callable[[SnapshotPublisher], LiveSession]
@@ -359,6 +363,7 @@ class GuiPreferencesAdapter(QObject):
     applicationFontPixelSizeChanged = Signal()
     contextualAdjustmentsEnabledChanged = Signal(bool)
     mockedDraftEnabledChanged = Signal(bool)
+    mockedDraftSourcesChanged = Signal()
 
     def __init__(
         self,
@@ -370,6 +375,13 @@ class GuiPreferencesAdapter(QObject):
         self._app_dir = app_dir
         self._preferences, self._persistence_message = load_gui_preferences(
             app_dir=app_dir,
+        )
+        resolved_app_dir = None if app_dir is None else Path(app_dir)
+        self._default_mocked_draft_checkout_dir = default_test_draft_checkout_dir(
+            app_dir=resolved_app_dir,
+        )
+        self._default_mocked_draft_bulk_file = default_test_draft_bulk_file(
+            app_dir=resolved_app_dir,
         )
         self._save_generation = 0
         self._save_thread: _GuiPreferencesSaveThread | None = None
@@ -430,6 +442,27 @@ class GuiPreferencesAdapter(QObject):
     def mockedDraftEnabled(self) -> bool:
         return self._preferences.mocked_draft_enabled
 
+    @Property(str, notify=mockedDraftSourcesChanged)
+    def mockedDraftCheckoutDir(self) -> str:
+        return (
+            self._preferences.mocked_draft_checkout_dir
+            or str(self._default_mocked_draft_checkout_dir)
+        )
+
+    @Property(str, notify=mockedDraftSourcesChanged)
+    def mockedDraftServerUrl(self) -> str:
+        return (
+            self._preferences.mocked_draft_server_url
+            or DEFAULT_TEST_DRAFT_SERVER_URL
+        )
+
+    @Property(str, notify=mockedDraftSourcesChanged)
+    def mockedDraftScryfallBulkFile(self) -> str:
+        return (
+            self._preferences.mocked_draft_scryfall_bulk_file
+            or str(self._default_mocked_draft_bulk_file)
+        )
+
     @Property(int, notify=applicationFontPixelSizeChanged)
     def applicationFontPixelSize(self) -> int:
         application = QGuiApplication.instance()
@@ -478,6 +511,18 @@ class GuiPreferencesAdapter(QObject):
     def setMockedDraftEnabled(self, enabled: bool) -> None:
         self._replace_preferences(mocked_draft_enabled=enabled)
 
+    @Slot(str)
+    def setMockedDraftCheckoutDir(self, value: str) -> None:
+        self._replace_preferences(mocked_draft_checkout_dir=value.strip())
+
+    @Slot(str)
+    def setMockedDraftServerUrl(self, value: str) -> None:
+        self._replace_preferences(mocked_draft_server_url=value.strip())
+
+    @Slot(str)
+    def setMockedDraftScryfallBulkFile(self, value: str) -> None:
+        self._replace_preferences(mocked_draft_scryfall_bulk_file=value.strip())
+
     @Slot()
     def shutdown(self) -> None:
         self._closing = True
@@ -514,7 +559,7 @@ class GuiPreferencesAdapter(QObject):
         self._persistence_message = persistence_message
         self.persistenceChanged.emit()
 
-    def _replace_preferences(self, **changes: bool) -> None:
+    def _replace_preferences(self, **changes: Any) -> None:
         if self._closing:
             return
         previous = self._preferences
@@ -536,6 +581,13 @@ class GuiPreferencesAdapter(QObject):
             )
         if updated.mocked_draft_enabled != previous.mocked_draft_enabled:
             self.mockedDraftEnabledChanged.emit(updated.mocked_draft_enabled)
+        if (
+            updated.mocked_draft_checkout_dir != previous.mocked_draft_checkout_dir
+            or updated.mocked_draft_server_url != previous.mocked_draft_server_url
+            or updated.mocked_draft_scryfall_bulk_file
+            != previous.mocked_draft_scryfall_bulk_file
+        ):
+            self.mockedDraftSourcesChanged.emit()
         self._ensure_save_thread().enqueue(
             generation=generation,
             preferences=updated,

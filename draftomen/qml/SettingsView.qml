@@ -470,6 +470,72 @@ Item {
                             onToggled: root.displayPreferences.setMockedDraftEnabled(checked)
                         }
                     }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Label { text: "Draftmancer checkout"; color: Theme.text; font.bold: true }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "Directory of the pinned Draftmancer checkout the application serves."
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.textPixelSize(11)
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        SettingsTextField {
+                            objectName: "settingsMockedDraftCheckoutDirField"
+                            Layout.preferredWidth: root.narrow ? 200 : 320
+                            text: root.displayPreferences.mockedDraftCheckoutDir
+                            Accessible.name: "Draftmancer checkout directory"
+                            Accessible.description: "Directory of the pinned Draftmancer checkout used by Mocked Draft. Saved for this desktop application."
+                            onCommitted: root.displayPreferences.setMockedDraftCheckoutDir(text)
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Label { text: "Draftmancer server URL"; color: Theme.text; font.bold: true }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "Draftmancer server address the application connects to before it starts the checkout."
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.textPixelSize(11)
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        SettingsTextField {
+                            objectName: "settingsMockedDraftServerUrlField"
+                            Layout.preferredWidth: root.narrow ? 200 : 320
+                            text: root.displayPreferences.mockedDraftServerUrl
+                            Accessible.name: "Draftmancer server URL"
+                            Accessible.description: "Draftmancer server address the application connects to before it starts the checkout. Saved for this desktop application."
+                            onCommitted: root.displayPreferences.setMockedDraftServerUrl(text)
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Label { text: "Scryfall bulk file"; color: Theme.text; font.bold: true }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "Local Scryfall JSONL bulk source used to resolve simulated printing identities."
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.textPixelSize(11)
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        SettingsTextField {
+                            objectName: "settingsMockedDraftScryfallBulkFileField"
+                            Layout.preferredWidth: root.narrow ? 200 : 320
+                            text: root.displayPreferences.mockedDraftScryfallBulkFile
+                            Accessible.name: "Scryfall bulk file"
+                            Accessible.description: "Local Scryfall JSONL bulk source used to resolve simulated printing identities. Saved for this desktop application."
+                            onCommitted: root.displayPreferences.setMockedDraftScryfallBulkFile(text)
+                        }
+                    }
                 }
             }
             Item { Layout.preferredHeight: 12 }

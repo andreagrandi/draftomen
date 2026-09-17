@@ -35,6 +35,7 @@ from draftomen.qt_gui import (
     _live_session_factory,
     _parser,
     _preflight_bundled_profile,
+    _sync_mocked_draft_capability,
     run_gui,
 )
 from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
@@ -432,6 +433,7 @@ def test_gui_mocked_draft_resolves_application_data_defaults_and_flag_precedence
             mocked_draft_enabled=True,
             mocked_draft_checkout_dir=str(tmp_path / "persisted-checkout"),
             mocked_draft_server_url="http://127.0.0.1:3888",
+            mocked_draft_scryfall_bulk_file=str(tmp_path / "persisted-cards.jsonl.gz"),
         ),
     )
     overridden_factory = overridden._test_draft_factory  # type: ignore[attr-defined]
@@ -440,6 +442,99 @@ def test_gui_mocked_draft_resolves_application_data_defaults_and_flag_precedence
     assert overridden_factory._draftmancer_dir == tmp_path / "flagged-checkout"
     assert overridden_factory._scryfall_bulk_file == tmp_path / "flagged-cards.jsonl.gz"
     assert overridden_factory._server.configured_url == "http://127.0.0.1:3999"
+
+    persisted = _build_provider(
+        args=_parser().parse_args(base_args),
+        preferences=GuiDisplayPreferences(
+            mocked_draft_enabled=True,
+            mocked_draft_checkout_dir=str(tmp_path / "persisted-checkout"),
+            mocked_draft_server_url="http://127.0.0.1:3888",
+            mocked_draft_scryfall_bulk_file=str(tmp_path / "persisted-cards.jsonl.gz"),
+        ),
+    )
+    persisted_factory = persisted._test_draft_factory  # type: ignore[attr-defined]
+
+    assert persisted_factory is not None
+    assert persisted_factory._draftmancer_dir == tmp_path / "persisted-checkout"
+    assert persisted_factory._scryfall_bulk_file == tmp_path / "persisted-cards.jsonl.gz"
+    assert persisted_factory._server.configured_url == "http://127.0.0.1:3888"
+
+
+def test_gui_mocked_draft_capability_follows_source_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    bulk = tmp_path / "cards.jsonl.gz"
+    base_args = [
+        "--provider",
+        "live",
+        "--app-dir",
+        str(tmp_path / "app"),
+        "--log-path",
+        str(tmp_path / "Player.log"),
+        "--poll-interval",
+        "0.01",
+        "--no-startup-scan",
+    ]
+    args = _parser().parse_args(base_args)
+    provider = _build_provider(args=args, preferences=GuiDisplayPreferences())
+    installed: list[object] = []
+    monkeypatch.setattr(
+        provider, "setTestDraftFactory", lambda factory: installed.append(factory)
+    )
+
+    _sync_mocked_draft_capability(
+        provider=provider,
+        args=args,
+        preferences=GuiDisplayPreferences(
+            mocked_draft_enabled=True,
+            mocked_draft_checkout_dir=str(checkout),
+            mocked_draft_server_url="http://127.0.0.1:3888",
+            mocked_draft_scryfall_bulk_file=str(bulk),
+        ),
+    )
+    assert len(installed) == 1
+    factory = installed[0]
+    assert factory._draftmancer_dir == checkout  # type: ignore[attr-defined]
+    assert factory._scryfall_bulk_file == bulk  # type: ignore[attr-defined]
+    assert (  # type: ignore[attr-defined]
+        factory._server.configured_url == "http://127.0.0.1:3888"
+    )
+
+    flagged_args = _parser().parse_args(
+        [
+            *base_args,
+            "--draftmancer-dir",
+            str(tmp_path / "flagged-checkout"),
+            "--scryfall-bulk-file",
+            str(tmp_path / "flagged-cards.jsonl.gz"),
+            "--test-draft-server-url",
+            "http://127.0.0.1:3999",
+        ]
+    )
+    _sync_mocked_draft_capability(
+        provider=provider,
+        args=flagged_args,
+        preferences=GuiDisplayPreferences(
+            mocked_draft_enabled=True,
+            mocked_draft_checkout_dir=str(checkout),
+            mocked_draft_server_url="http://127.0.0.1:3888",
+            mocked_draft_scryfall_bulk_file=str(bulk),
+        ),
+    )
+    assert len(installed) == 2
+    flagged = installed[1]
+    assert flagged._draftmancer_dir == tmp_path / "flagged-checkout"  # type: ignore[attr-defined]
+    assert flagged._scryfall_bulk_file == tmp_path / "flagged-cards.jsonl.gz"  # type: ignore[attr-defined]
+    assert flagged._server.configured_url == "http://127.0.0.1:3999"  # type: ignore[attr-defined]
+
+    _sync_mocked_draft_capability(
+        provider=provider,
+        args=args,
+        preferences=GuiDisplayPreferences(),
+    )
+    assert installed[-1] is None
 
 
 def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
@@ -6842,6 +6937,12 @@ with TemporaryDirectory() as preferences_dir:
     )
     switches = [root.findChild(QObject, name) for name in names]
     assert all(switch is not None for switch in switches)
+    fields = (
+        "settingsMockedDraftCheckoutDirField",
+        "settingsMockedDraftServerUrlField",
+        "settingsMockedDraftScryfallBulkFileField",
+    )
+    assert all(root.findChild(QObject, name) is not None for name in fields)
     assert all(switch.property("height") >= 42 for switch in switches)
     assert all(switch.property("width") >= 40 for switch in switches)
 
@@ -7400,6 +7501,188 @@ assert len(provider.installed) == 2
 assert provider.installed[1] is None
 assert test_draft_button.property("visible") is False
 assert test_draft_button.isVisible() is False
+
+wait_for_saved(preferences)
+preferences.shutdown()
+del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_settings_mocked_draft_source_fields_prefill_and_apply_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QMetaObject, QObject, Qt, QUrl
+from PySide6.QtGui import QAccessible, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family, _parser, _sync_mocked_draft_capability
+from draftomen.qt_mock import MockSessionAdapter
+from draftomen.test_draft import (
+    DEFAULT_TEST_DRAFT_SERVER_URL,
+    default_test_draft_bulk_file,
+    default_test_draft_checkout_dir,
+)
+
+
+class StubSourceProvider(MockSessionAdapter):
+    def __init__(self) -> None:
+        self.installed: list[object] = []
+        super().__init__(session=MockLiveSession(scenario="ready"))
+
+    def setTestDraftFactory(self, test_draft_factory) -> None:
+        self.installed.append(test_draft_factory)
+        self._replace_state(
+            state=self.state
+            | {"test_draft": {"enabled": test_draft_factory is not None}}
+        )
+
+
+def wait_for_saved(preferences: GuiPreferencesAdapter) -> None:
+    for _ in range(100):
+        application.processEvents()
+        if preferences.persistenceMessage == "Saved":
+            return
+        QTest.qWait(10)
+    assert preferences.persistenceMessage == "Saved"
+
+
+def type_into(field, value: str) -> None:
+    try:
+        assert QMetaObject.invokeMethod(field, "clear")
+    except RuntimeError:
+        field.forceActiveFocus()
+        QTest.keyClick(root, Qt.Key_A, Qt.ControlModifier)
+    field.forceActiveFocus()
+    for character in value:
+        QTest.keyClick(root, character)
+    try:
+        assert QMetaObject.invokeMethod(field, "commit")
+    except RuntimeError:
+        QTest.keyClick(root, Qt.Key_Return)
+    application.processEvents()
+
+
+def apply_mocked_draft_enabled(_enabled: bool) -> None:
+    _sync_mocked_draft_capability(
+        provider=provider,
+        args=args,
+        preferences=preferences.preferences,
+    )
+
+
+def apply_mocked_draft_sources() -> None:
+    if not preferences.preferences.mocked_draft_enabled:
+        return
+    _sync_mocked_draft_capability(
+        provider=provider,
+        args=args,
+        preferences=preferences.preferences,
+    )
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubSourceProvider()
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+args = _parser().parse_args(
+    [
+        "--provider", "live",
+        "--app-dir", preference_dir.name,
+        "--log-path", str(Path(preference_dir.name) / "Player.log"),
+        "--poll-interval", "0.01",
+        "--no-startup-scan",
+    ]
+)
+preferences.mockedDraftEnabledChanged.connect(apply_mocked_draft_enabled)
+preferences.mockedDraftSourcesChanged.connect(apply_mocked_draft_sources)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "settings")
+context.setContextProperty("initialWindowWidth", 900)
+context.setContextProperty("initialWindowHeight", 760)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+checkout_field = root.findChild(QObject, "settingsMockedDraftCheckoutDirField")
+server_field = root.findChild(QObject, "settingsMockedDraftServerUrlField")
+bulk_field = root.findChild(QObject, "settingsMockedDraftScryfallBulkFileField")
+assert checkout_field is not None
+assert server_field is not None
+assert bulk_field is not None
+assert checkout_field.property("text") == str(
+    default_test_draft_checkout_dir(app_dir=Path(preference_dir.name))
+)
+assert server_field.property("text") == DEFAULT_TEST_DRAFT_SERVER_URL
+assert bulk_field.property("text") == str(
+    default_test_draft_bulk_file(app_dir=Path(preference_dir.name))
+)
+for field, name in (
+    (checkout_field, "Draftmancer checkout directory"),
+    (server_field, "Draftmancer server URL"),
+    (bulk_field, "Scryfall bulk file"),
+):
+    accessible = QAccessible.queryAccessibleInterface(field)
+    assert accessible is not None
+    assert accessible.text(QAccessible.Text.Name) == name
+
+source_changes: list[None] = []
+preferences.mockedDraftSourcesChanged.connect(lambda: source_changes.append(None))
+
+checkout = str(Path(preference_dir.name) / "typed-checkout")
+type_into(checkout_field, checkout)
+assert checkout_field.property("text") == checkout
+assert len(source_changes) == 1
+assert preferences.preferences.mocked_draft_checkout_dir == checkout
+wait_for_saved(preferences)
+reloaded = GuiPreferencesAdapter(app_dir=preference_dir.name)
+try:
+    assert reloaded.mockedDraftCheckoutDir == checkout
+finally:
+    reloaded.shutdown()
+
+server_url = "http://127.0.0.1:3999"
+type_into(server_field, server_url)
+assert server_field.property("text") == server_url
+assert preferences.preferences.mocked_draft_server_url == server_url
+
+bulk_file = str(Path(preference_dir.name) / "cards.jsonl.gz")
+type_into(bulk_field, bulk_file)
+assert bulk_field.property("text") == bulk_file
+assert preferences.preferences.mocked_draft_scryfall_bulk_file == bulk_file
+
+wait_for_saved(preferences)
+switch = root.findChild(QObject, "settingsMockedDraftSwitch")
+assert switch is not None
+switch.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert len(provider.installed) == 1
+assert provider.installed[0]._draftmancer_dir == Path(checkout)
+second_checkout = str(Path(preference_dir.name) / "second-checkout")
+type_into(checkout_field, second_checkout)
+application.processEvents()
+assert len(provider.installed) == 2
+assert provider.installed[1]._draftmancer_dir == Path(second_checkout)
 
 wait_for_saved(preferences)
 preferences.shutdown()

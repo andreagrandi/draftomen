@@ -353,9 +353,12 @@ def _mocked_draft_sources(
         if checkout_value
         else default_test_draft_checkout_dir(app_dir=args.app_dir)
     )
+    bulk_file_value = (
+        args.scryfall_bulk_file or preferences.mocked_draft_scryfall_bulk_file
+    )
     scryfall_bulk_file = (
-        Path(args.scryfall_bulk_file).expanduser()
-        if args.scryfall_bulk_file is not None
+        Path(bulk_file_value).expanduser()
+        if bulk_file_value
         else default_test_draft_bulk_file(app_dir=args.app_dir)
     )
     server_url = (
@@ -392,6 +395,27 @@ def _mocked_draft_factory(
         profile_network_policy=network_policy,
         simulation_app_dir=None,
     )
+
+
+def _sync_mocked_draft_capability(
+    *,
+    provider: SessionAdapter,
+    args: argparse.Namespace,
+    preferences: GuiDisplayPreferences,
+) -> None:
+    """Install or clear the Mocked Draft capability from the current preferences."""
+
+    # The user's live choice governs; a launch flag is only consulted for the sources.
+    if not preferences.mocked_draft_enabled:
+        provider.setTestDraftFactory(None)
+        return
+    try:
+        factory = _mocked_draft_factory(args=args, preferences=preferences)
+    except ValueError as error:
+        print(f"Mocked Draft could not be enabled: {error}", file=sys.stderr)
+        provider.setTestDraftFactory(None)
+        return
+    provider.setTestDraftFactory(factory)
 
 
 class _GuiTestDraftFactory:
@@ -1057,25 +1081,30 @@ def run_gui(
     preferences = GuiPreferencesAdapter(app_dir=args.app_dir, parent=application)
     provider = _build_provider(args=args, preferences=preferences.preferences)
 
-    def apply_mocked_draft_enabled(enabled: bool) -> None:
-        """Install or clear the developer Mocked Draft capability in the running application."""
+    def apply_mocked_draft_enabled(_enabled: bool) -> None:
+        """Apply the Mocked Draft setting the user just toggled."""
 
-        # After any toggle the user's live choice governs; the launch flag is no longer consulted.
-        if not enabled:
-            provider.setTestDraftFactory(None)
+        _sync_mocked_draft_capability(
+            provider=provider,
+            args=args,
+            preferences=preferences.preferences,
+        )
+
+    def apply_mocked_draft_sources() -> None:
+        """Rebuild the installed Mocked Draft capability after a source edit."""
+
+        # A source edit is not an enablement choice: with the setting off, a capability
+        # installed from a launch flag stays exactly as the user left it.
+        if not preferences.preferences.mocked_draft_enabled:
             return
-        try:
-            factory = _mocked_draft_factory(
-                args=args,
-                preferences=preferences.preferences,
-            )
-        except ValueError as error:
-            print(f"Mocked Draft could not be enabled: {error}", file=sys.stderr)
-            provider.setTestDraftFactory(None)
-            return
-        provider.setTestDraftFactory(factory)
+        _sync_mocked_draft_capability(
+            provider=provider,
+            args=args,
+            preferences=preferences.preferences,
+        )
 
     preferences.mockedDraftEnabledChanged.connect(apply_mocked_draft_enabled)
+    preferences.mockedDraftSourcesChanged.connect(apply_mocked_draft_sources)
     preferences.contextualAdjustmentsEnabledChanged.connect(
         provider.setContextualScoringEnabled
     )
