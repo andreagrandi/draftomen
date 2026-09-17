@@ -1775,6 +1775,63 @@ def test_gui_preferences_adapter_persists_mocked_draft_toggle_once(
         adapter.shutdown()
 
 
+def test_gui_preferences_adapter_persists_mocked_draft_sources_and_notifies(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(parents=True)
+    adapter = GuiPreferencesAdapter(app_dir=app_dir)
+    source_changes: list[None] = []
+    enablement_changes: list[bool] = []
+    adapter.mockedDraftSourcesChanged.connect(lambda: source_changes.append(None))
+    adapter.mockedDraftEnabledChanged.connect(enablement_changes.append)
+
+    try:
+        from draftomen.test_draft import (
+            DEFAULT_TEST_DRAFT_SERVER_URL,
+            default_test_draft_bulk_file,
+            default_test_draft_checkout_dir,
+        )
+
+        assert adapter.mockedDraftCheckoutDir == str(
+            default_test_draft_checkout_dir(app_dir=app_dir)
+        )
+        assert adapter.mockedDraftServerUrl == DEFAULT_TEST_DRAFT_SERVER_URL
+        assert adapter.mockedDraftScryfallBulkFile == str(
+            default_test_draft_bulk_file(app_dir=app_dir)
+        )
+
+        adapter.setMockedDraftCheckoutDir("  /opt/Draftmancer  ")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.persistenceMessage == "Saved",
+            description="the persisted Mocked Draft checkout",
+        )
+        assert adapter.mockedDraftCheckoutDir == "/opt/Draftmancer"
+        assert len(source_changes) == 1
+        assert enablement_changes == []
+
+        reloaded = GuiPreferencesAdapter(app_dir=app_dir)
+        try:
+            assert reloaded.mockedDraftCheckoutDir == "/opt/Draftmancer"
+            assert reloaded.mockedDraftServerUrl == DEFAULT_TEST_DRAFT_SERVER_URL
+            assert reloaded.mockedDraftScryfallBulkFile == str(
+                default_test_draft_bulk_file(app_dir=app_dir)
+            )
+        finally:
+            reloaded.shutdown()
+
+        adapter.setMockedDraftCheckoutDir("/opt/Draftmancer")
+        repeat_deadline = time.monotonic() + 0.1
+        while time.monotonic() < repeat_deadline:
+            qcore_application.processEvents()
+            time.sleep(0.001)
+        assert len(source_changes) == 1
+    finally:
+        adapter.shutdown()
+
+
 def test_gui_preferences_adapter_exposes_saving_and_ignores_stale_completion(
     qcore_application: QCoreApplication,
     tmp_path: Path,

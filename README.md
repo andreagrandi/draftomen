@@ -375,7 +375,12 @@ The native application serves the same developer checkout itself. With the Mocke
 Draft setting enabled the application starts the pinned checkout on a port it
 picks, adopts a server that already answers the configured location, and stops
 only the process it started when the draft is left or the application exits. The
-native app journeys need the enabled setting instead of a manually managed server:
+three source values live in Settings → DEVELOPER next to the Mocked Draft switch —
+the Draftmancer checkout directory, the Draftmancer server URL, and the Scryfall
+bulk file — each prefilled with the application-data location, editable in the
+running app, and still overridden by `--draftmancer-dir`, `--test-draft-server-url`,
+and `--scryfall-bulk-file`. The native app journeys need the enabled setting
+instead of a manually managed server:
 
 ```bash
 uv run --extra draftmancer draftomen

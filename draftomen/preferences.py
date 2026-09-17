@@ -162,7 +162,13 @@ def save_tui_preferences(
 
 GUI_PREFERENCES_FILE_NAME = "gui-preferences.json"
 GUI_PREFERENCES_SCHEMA_VERSION = 1
-GUI_TEXT_FIELDS = frozenset({"mocked_draft_checkout_dir", "mocked_draft_server_url"})
+GUI_TEXT_FIELDS = frozenset(
+    {
+        "mocked_draft_checkout_dir",
+        "mocked_draft_server_url",
+        "mocked_draft_scryfall_bulk_file",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -181,6 +187,7 @@ class GuiDisplayPreferences:
     mocked_draft_enabled: bool = False
     mocked_draft_checkout_dir: str = ""
     mocked_draft_server_url: str = ""
+    mocked_draft_scryfall_bulk_file: str = ""
 
 
 def gui_preferences_path(*, app_dir: PathInput | None = None) -> Path:

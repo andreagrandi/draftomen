@@ -232,6 +232,7 @@ def test_load_gui_preferences_defaults_mocked_draft_for_existing_v1_file(
     assert preferences.mocked_draft_enabled is False
     assert preferences.mocked_draft_checkout_dir == ""
     assert preferences.mocked_draft_server_url == ""
+    assert preferences.mocked_draft_scryfall_bulk_file == ""
     assert warning is None
 
 
@@ -249,6 +250,7 @@ def test_load_gui_preferences_uses_defaults_for_invalid_mocked_draft_text_fields
                 "display": {
                     "mocked_draft_checkout_dir": invalid_text,
                     "mocked_draft_server_url": invalid_text,
+                    "mocked_draft_scryfall_bulk_file": invalid_text,
                     "secondary_stats": False,
                 },
             },
@@ -260,7 +262,7 @@ def test_load_gui_preferences_uses_defaults_for_invalid_mocked_draft_text_fields
 
     assert preferences == GuiDisplayPreferences(secondary_stats=False)
     assert warning is not None
-    assert "mocked_draft_checkout_dir, mocked_draft_server_url" in warning
+    assert "mocked_draft_checkout_dir, mocked_draft_server_url, mocked_draft_scryfall_bulk_file" in warning
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -291,6 +293,7 @@ def test_gui_preferences_round_trip_and_isolate_display_choices(
         mocked_draft_enabled=True,
         mocked_draft_checkout_dir="/opt/Draftmancer",
         mocked_draft_server_url="http://127.0.0.1:3100",
+        mocked_draft_scryfall_bulk_file="/opt/cards.jsonl.gz",
     )
 
     assert save_gui_preferences(preferences=expected, app_dir=app_dir) is None
@@ -306,6 +309,7 @@ def test_gui_preferences_round_trip_and_isolate_display_choices(
             "detailed_build_context": False,
             "mocked_draft_checkout_dir": "/opt/Draftmancer",
             "mocked_draft_enabled": True,
+            "mocked_draft_scryfall_bulk_file": "/opt/cards.jsonl.gz",
             "mocked_draft_server_url": "http://127.0.0.1:3100",
             "secondary_stats": False,
             "show_backtest": True,

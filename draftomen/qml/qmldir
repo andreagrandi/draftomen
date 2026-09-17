@@ -17,6 +17,7 @@ BuildView 1.0 BuildView.qml
 BacktestView 1.0 BacktestView.qml
 SettingsView 1.0 SettingsView.qml
 SettingsSwitch 1.0 SettingsSwitch.qml
+SettingsTextField 1.0 SettingsTextField.qml
 DimensionalSurface 1.0 DimensionalSurface.qml
 DimensionalButton 1.0 DimensionalButton.qml
 DimensionalTabButton 1.0 DimensionalTabButton.qml
