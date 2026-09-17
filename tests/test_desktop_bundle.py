@@ -934,8 +934,8 @@ def test_native_specs_preserve_project_metadata() -> None:
             )
 
 
-def test_native_builds_sync_the_locked_draftmancer_extra_and_include_socketio() -> None:
-    """Native build inputs install the optional transport the worker imports."""
+def test_native_builds_sync_the_locked_draftmancer_transport_and_socketio() -> None:
+    """Native build inputs carry the required transport the worker imports."""
 
     workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
         encoding="utf-8"
@@ -943,7 +943,13 @@ def test_native_builds_sync_the_locked_draftmancer_extra_and_include_socketio() 
     workflow_sections = workflow_text.split("\n  publish-development:", maxsplit=1)
     assert len(workflow_sections) == 2
     build_job_text = workflow_sections[0]
-    assert "uv sync --locked --extra draftmancer" in build_job_text
+    assert "--extra" not in build_job_text
+    sync_lines = [
+        line.strip()
+        for line in build_job_text.splitlines()
+        if line.strip().startswith("run: uv sync")
+    ]
+    assert sync_lines == ["run: uv sync --locked"]
 
     run_lines = [
         line.strip() for line in build_job_text.splitlines() if "uv run" in line
@@ -951,30 +957,27 @@ def test_native_builds_sync_the_locked_draftmancer_extra_and_include_socketio() 
     smoke_lines = [line for line in run_lines if "tests/bundle_smoke.py" in line]
     build_lines = [line for line in run_lines if "tests/bundle_smoke.py" not in line]
     assert len(smoke_lines) == 2
-    assert all("--extra draftmancer" not in line for line in smoke_lines)
     assert build_lines
-    assert all("--extra draftmancer" in line for line in build_lines)
 
     project_metadata = _read_project_metadata()
     base_dependencies = project_metadata["dependencies"]
     assert isinstance(base_dependencies, list)
     base_dependency_names = {_requirement_name(item) for item in base_dependencies}
-    assert not any(
-        "socketio" in name or "engineio" in name for name in base_dependency_names
-    )
-    optional_dependencies = project_metadata["optional-dependencies"]
+    assert "python-socketio" in base_dependency_names
+    optional_dependencies = project_metadata.get("optional-dependencies", {})
     assert isinstance(optional_dependencies, dict)
-    assert optional_dependencies["draftmancer"] == [
-        "python-socketio[client]>=5.16.4,<6"
-    ]
+    assert "draftmancer" not in optional_dependencies
 
     with (PROJECT_ROOT / "uv.lock").open(mode="rb") as lock_file:
         locked_packages = tomllib.load(lock_file)["package"]
     project_package = next(
         package for package in locked_packages if package["name"] == "draftomen"
     )
-    locked_extra = project_package["optional-dependencies"]["draftmancer"]
-    assert [entry["name"] for entry in locked_extra] == ["python-socketio"]
+    locked_base_dependencies = {
+        entry["name"] for entry in project_package["dependencies"]
+    }
+    assert "python-socketio" in locked_base_dependencies
+    assert "optional-dependencies" not in project_package
 
     for spec_path in SPEC_PATHS.values():
         nuitka_args = shlex.split(_read_spec(path=spec_path)["nuitka"]["extra_args"])

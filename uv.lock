@@ -221,13 +221,9 @@ version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "pyside6" },
+    { name = "python-socketio", extra = ["client"] },
     { name = "textual" },
     { name = "textual-image" },
-]
-
-[package.optional-dependencies]
-draftmancer = [
-    { name = "python-socketio", extra = ["client"] },
 ]
 
 [package.dev-dependencies]
@@ -239,11 +235,10 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "pyside6", specifier = ">=6.9,<7" },
-    { name = "python-socketio", extras = ["client"], marker = "extra == 'draftmancer'", specifier = ">=5.16.4,<6" },
+    { name = "python-socketio", extras = ["client"], specifier = ">=5.16.4,<6" },
     { name = "textual", specifier = ">=8.2.8" },
     { name = "textual-image", specifier = ">=0.13.2" },
 ]
-provides-extras = ["draftmancer"]
 
 [package.metadata.requires-dev]
 dev = [

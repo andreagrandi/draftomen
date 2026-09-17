@@ -13,6 +13,8 @@ from threading import Condition, RLock
 from time import monotonic
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import socketio
+
 from draftomen.carddb import CardDatabase
 from draftomen.events import (
     DraftCompletedEvent,
@@ -23,7 +25,6 @@ from draftomen.events import (
 )
 
 DRAFTMANCER_REVISION = "df08e5ef647aae54e0b1c569e70b4b2aa5e0016c"
-_INSTALL_EXTRA_MESSAGE = "Install Draft Omen with the 'draftmancer' extra."
 _TRANSPORTS = ["websocket", "polling"]
 
 __all__ = [
@@ -400,11 +401,6 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
     def _ensure_socket(self) -> object:
         if self._socket is not None:
             return self._socket
-        try:
-            import socketio
-        except ImportError as error:
-            message = DraftmancerAdapterError(_INSTALL_EXTRA_MESSAGE)
-            raise self._fail(message) from error
         try:
             self._socket = socketio.Client(reconnection=False)
         except Exception as error:

@@ -327,7 +327,7 @@ uv run draftomen-tui corpus-build --selection explicit --set-code HOB
 With the pinned server running, open a second terminal in Draft Omen and run:
 
 ```bash
-uv run --extra draftmancer python scripts/draftmancer_smoke.py \
+uv run python scripts/draftmancer_smoke.py \
   --draftmancer-dir ../Draftmancer
 ```
 
@@ -348,7 +348,7 @@ drafts a complete three-pack event through production recommendations and the
 normal deck builder:
 
 ```bash
-uv run --extra draftmancer draftomen-tui test-draft \
+uv run draftomen-tui test-draft \
   --draftmancer-dir ../Draftmancer
 ```
 
@@ -393,7 +393,7 @@ leaves the dialog ready without a restart. Nothing is downloaded automatically.
 The native app journeys need the enabled setting instead of a manually managed server:
 
 ```bash
-uv run --extra draftmancer draftomen
+uv run draftomen
 ```
 
 The dialog offers the sets the pinned checkout and the local card-data cache
@@ -415,7 +415,7 @@ A headless auto draft proves the production recommendation and deck-building
 path end to end against the real protocol:
 
 ```bash
-uv run --extra draftmancer draftomen-tui test-draft \
+uv run draftomen-tui test-draft \
   --draftmancer-dir ../Draftmancer
 ```
 
@@ -436,7 +436,7 @@ An interactive launch proves a developer can start a simulated draft, confirm
 picks, and leave it by hand through those same controls:
 
 ```bash
-uv run --extra draftmancer draftomen
+uv run draftomen
 ```
 
 To run the same pinned server through a compiled bundle instead of the source

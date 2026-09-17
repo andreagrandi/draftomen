@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import builtins
-
 import json
 import math
 import threading
@@ -13,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import socketio
 from draftomen.draftmancer import (
     DraftmancerAdapter,
     DraftmancerAdapterError,
@@ -754,23 +753,13 @@ def test_pick_rejection_and_malformed_ack_publish_no_pick_or_completion() -> Non
             adapter.pick(unique_card_id=1)
 
 
-def test_default_socket_client_reports_missing_optional_extra(
+def test_default_socket_client_reports_construction_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_import = builtins.__import__
+    def failed_client(*, reconnection: bool) -> object:
+        raise OSError("socket unavailable")
 
-    def blocked_import(
-        name: str,
-        globals: dict[str, object] | None = None,
-        locals: dict[str, object] | None = None,
-        fromlist: tuple[str, ...] = (),
-        level: int = 0,
-    ) -> object:
-        if name == "socketio":
-            raise ModuleNotFoundError("No module named socketio")
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", blocked_import)
+    monkeypatch.setattr(socketio, "Client", failed_client)
     config = _config()
     adapter = DraftmancerAdapter(
         config=config,
@@ -779,7 +768,7 @@ def test_default_socket_client_reports_missing_optional_extra(
     )
     with pytest.raises(
         DraftmancerAdapterError,
-        match=r"^Install Draft Omen with the 'draftmancer' extra\.$",
+        match=r"^Could not connect to Draftmancer at http://127\.0\.0\.1:3000: socket unavailable$",
     ):
         adapter.connect_and_start()
 
