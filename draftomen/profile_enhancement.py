@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 
 from draftomen.carddb import CardDatabase
+from draftomen.profile_condition_projection import compile_condition_map
 from draftomen.profile_relationship_projection import (
     RelationshipConversion,
     compile_confirmed_relationship_projections,
@@ -101,7 +102,10 @@ def compile_profile_enhancement(
     compiled surface: eligible relationships gain a deterministic typed
     projection derived only from the retained capability facts of this artifact
     and the pinned card database, while every other relationship is returned
-    exactly as reviewed. The returned block also carries one conversion per
+    exactly as reviewed. A derived draft-potential condition map is compiled
+    from the same pinned card faces beside the reviewed findings; it never
+    changes reviewed finding IDs, run references, confidence, or
+    relationship counts. The returned block also carries one conversion per
     stored relationship, in stored order, naming the gate that decided it.
     """
 
@@ -138,6 +142,13 @@ def compile_profile_enhancement(
         artifact=artifact,
         card_database=card_database,
     )
+    try:
+        condition_map = compile_condition_map(
+            artifact=artifact,
+            card_database=card_database,
+        )
+    except SemanticEnrichmentError as error:
+        raise ProfileEnhancementError(COMPILE_ERROR) from error
     if not mechanics and not compilation.relationships:
         raise ProfileEnhancementError(NO_FINDINGS_ERROR)
     referenced_runs = {item.run_id for item in (*mechanics, *compilation.relationships)}
@@ -176,6 +187,7 @@ def compile_profile_enhancement(
             relationships=compilation.relationships,
             review=artifact.review,
             confidence=confidence,
+            condition_map=condition_map,
         )
     except SetProfileSchemaError as error:
         raise ProfileEnhancementError(COMPILE_ERROR) from error

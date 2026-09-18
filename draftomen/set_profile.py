@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 from draftomen.config import COLOR_PAIRS
 from draftomen.paths import app_data_dir
+from draftomen.semantic_condition_records import ConditionMap, validate_condition_map_pins
 from draftomen.semantic_enrichment import SEMANTIC_ENRICHMENT_SCHEMA_VERSION
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
@@ -836,6 +837,7 @@ class SetProfileEnhancement:
     relationships: tuple[CardRelationship, ...]
     review: ArtifactReview
     confidence: float
+    condition_map: ConditionMap | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -905,6 +907,16 @@ class SetProfileEnhancement:
                 )
         except SemanticEnrichmentError as error:
             raise SetProfileSchemaError(f"Invalid enhancement: {error}") from error
+        if self.condition_map is not None:
+            if not isinstance(self.condition_map, ConditionMap):
+                raise SetProfileSchemaError("enhancement.condition_map must be a ConditionMap or None.")
+            try:
+                validate_condition_map_pins(
+                    condition_map=self.condition_map,
+                    pins={pin.card_id: pin for pin in cards},
+                )
+            except SemanticEnrichmentError as error:
+                raise SetProfileSchemaError(f"Invalid enhancement: {error}") from error
         if not mechanics and not relationships:
             raise SetProfileSchemaError(
                 "enhanced profiles require at least one confirmed semantic relationship or mechanic finding."
@@ -938,7 +950,7 @@ class SetProfileEnhancement:
             raise SetProfileSchemaError("enhancement.runs must be referenced by an included finding.")
 
     def to_json(self) -> dict[str, object]:
-        return {
+        encoded: dict[str, object] = {
             "artifact_schema_version": self.artifact_schema_version,
             "artifact_sha256": self.artifact_sha256,
             "set_code": self.set_code,
@@ -954,6 +966,9 @@ class SetProfileEnhancement:
             "review": self.review.to_json(),
             "confidence": self.confidence,
         }
+        if self.condition_map is not None:
+            encoded["condition_map"] = self.condition_map.to_json()
+        return encoded
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> SetProfileEnhancement:
@@ -985,6 +1000,12 @@ class SetProfileEnhancement:
                 ),
                 review=ArtifactReview.from_json(_required_mapping(value, "review", "enhancement.review")),
                 confidence=_required_number(value, "confidence", "enhancement.confidence"),
+                condition_map=_optional_record(
+                    value,
+                    "condition_map",
+                    ConditionMap.from_json,
+                    "enhancement.condition_map",
+                ),
             )
         except SemanticEnrichmentError as error:
             raise SetProfileSchemaError(f"Invalid enhancement: {error}") from error
@@ -1709,6 +1730,14 @@ def _array_of(
     if not isinstance(nested, list):
         raise SetProfileSchemaError(f"{field_name} must be an array.")
     return tuple(parser(item) for item in _mapping_items(nested, field_name))
+
+
+def _optional_record(value: Mapping[str, Any], key: str, parser: Any, field_name: str) -> Any:
+    nested = value.get(key)
+    if nested is None:
+        return None
+    _object(nested, field_name)
+    return parser(nested)
 
 
 def _sorted_unique(values: Iterable[Any], *, key: Any, field_name: str) -> tuple[Any, ...]:

@@ -3,6 +3,13 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Compile source-bound landfall, ferocious, and storied condition maps offline. The
+  condition compiler derives helper and payoff capabilities from pinned Oracle text
+  with exact-quote evidence, links draft-potential helper edges with thresholds and
+  timing preserved, and publishes the map beside reviewed relationships without
+  touching finding, run, or confidence math; the offline probe recovers the saved
+  #587 family rows through the real `generate-profile` consumer with zero network
+  calls. (#591)
 - Recover qualified recruit and amass relationships offline. The projection
   compiler binds exact multiline Oracle evidence, retains conditional recruit
   discard, amass mode, Azog controller, and Misty Mountains threshold
