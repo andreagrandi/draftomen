@@ -60,6 +60,7 @@ from draftomen.semantic_relationship_records import (
     _subtype_atoms,
     _subtype_forms,
     _validate_clause_source,
+    oracle_evidence_window,
     validate_prerequisite_sources,
     validate_relationship_pins,
     validate_relationship_sources,
@@ -102,6 +103,41 @@ _SUBTYPE_SEQUENCE_PATTERN = re.compile(
     + "|".join(sorted(_CARD_TYPE_WORDS | _OBJECT_KIND_WORDS))
     + r")\b"
 )
+
+# A capability that cites one of the closed token-production instructions produces a creature
+# through that instruction alone, so the instruction decides what the enabler supplies and the
+# statements around it decide under which conditions.  Recognition reads the cited instructions and
+# the selected face's own Oracle text; no card, family or mechanic identity takes part in it.
+_AMASS_INSTRUCTION_PATTERN = re.compile(
+    r"\bamass(?:es)?\s+(?P<subtype>[A-Za-z][A-Za-z'’-]+)\s+(?P<count>\d+|X)\b",
+    re.IGNORECASE,
+)
+_AMASS_PARENTHETICAL_PATTERN = re.compile(r"\([^()]*\)")
+_AMASS_REMINDER_PATTERN = re.compile(r"\bcounters? on an Army\b", re.IGNORECASE)
+_RECRUIT_INSTRUCTION_PATTERN = re.compile(r"\brecruit\b", re.IGNORECASE)
+_DISCARD_CONDITION_PATTERN = re.compile(
+    r"If you discarded a nonland card, create [^.]+\.", re.IGNORECASE
+)
+_NO_ARMY_CONDITION_PATTERN = re.compile(r"If (?:you|they) don['’]t control an Army")
+_PARTY_AMASS_PATTERN = re.compile(r"\b(?:Its|Their) controller amasses\b")
+_OWN_CONTROLLER_PATTERN = re.compile(r"If you controlled\b[^.]*\.")
+_THRESHOLD_CONDITION_PATTERN = re.compile(
+    r"If you control (?P<count>[A-Za-z]+|\d+) or more (?P<kind>[A-Za-z][A-Za-z'’-]+)s\b",
+    re.IGNORECASE,
+)
+_CONDITIONAL_CREATION_PATTERN = re.compile(r"If you do, create [^.]+\.", re.IGNORECASE)
+_CREATED_TOKEN_PATTERN = re.compile(r"\bcreate [^.;:]*?creature tokens?\b", re.IGNORECASE)
+_REMINDER_PATTERN = re.compile(r"\s*\((?P<text>[^()]*)\)")
+_MODAL_FRAME_PATTERN = re.compile(r"^choose (?:one|two|three)\b[^:]*[—:-]\s*$", re.IGNORECASE)
+_TYPE_CHOICE_PATTERN = re.compile(r"\bchoose a creature type\b[^.]*\.", re.IGNORECASE)
+_ADDITIONAL_COST_PATTERN = re.compile(r"As an additional cost to cast [^,]+, (?P<alternatives>[^.]+)\.")
+_ACTIVATION_RESTRICTION_PATTERN = re.compile(r"Activate only [^.]+\.", re.IGNORECASE)
+_CONVERSION_PATTERN = re.compile(
+    r"becomes? an? (?P<subtype>[A-Z][a-z'’-]+) in addition to its other types\."
+)
+_TIMING_FRAME_PATTERN = re.compile(r"^(?:At the beginning of|When|Whenever|During)\b", re.IGNORECASE)
+_PARENT_CONDITION_PATTERN = re.compile(r"^(?:If|Unless|As long as|While|During)\b", re.IGNORECASE)
+_SENTENCE_BOUNDARIES = ".\n"
 
 # The closed object grammar: a run continues while its words are object vocabulary and the text
 # between them is number, power/toughness, possessive or list punctuation.
@@ -307,6 +343,14 @@ class _ParticipantNames:
     face_name: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _TokenFamily:
+    """One token-production family a capability's own cited instruction declares."""
+
+    produced: tuple[str, ...]
+    qualifications: tuple[RelationshipQualification, ...]
+
+
 def compile_confirmed_relationship_projections(
     *,
     artifact: SemanticEnrichmentArtifact,
@@ -502,12 +546,47 @@ def _compile_relationship(
             RelationshipConversionOutcome.CONTRADICTION,
             "zone_supply_contradiction:" + ",".join(zone.value for zone in contradicted),
         )
-    source_participant = _compile_participant(capability=source, other=target, card=source_card)
+    family = _token_family(
+        capability=source,
+        oracle_text=_participant_oracle_text(source, source_card),
+    )
+    source_participant = _compile_participant(
+        capability=source,
+        other=target,
+        card=source_card,
+        family=family,
+    )
     if source_participant is None:
         return _unconverted(
             relationship, RelationshipConversionOutcome.UNSUPPORTED, "source_clause_unbound"
         )
-    target_participant = _compile_participant(capability=target, other=source, card=target_card)
+    target_participant = _compile_participant(
+        capability=target,
+        other=source,
+        card=target_card,
+        family=None,
+    )
+    if target_participant is None and family is not None:
+        opposed = _opposed_token_subtype(
+            family=family,
+            target=target,
+            target_oracle=_participant_oracle_text(target, target_card),
+        )
+        if opposed is None:
+            return _unconverted(
+                relationship, RelationshipConversionOutcome.UNSUPPORTED, "target_clause_unbound"
+            )
+        if opposed:
+            return _unconverted(
+                relationship,
+                RelationshipConversionOutcome.CONTRADICTION,
+                "token_subtype_contradiction",
+            )
+        target_participant = _qualified_effect_participant(
+            capability=target,
+            other=source,
+            card=target_card,
+        )
     if target_participant is None:
         return _unconverted(
             relationship, RelationshipConversionOutcome.UNSUPPORTED, "target_clause_unbound"
@@ -612,9 +691,16 @@ def _compile_participant(
     capability: CardCapability,
     other: CardCapability,
     card: CardInfo,
+    family: _TokenFamily | None,
 ) -> RelationshipParticipant | None:
-    """Compile every clause and retained qualification one participant declares, or None."""
-    lines = _participant_oracle_text(capability, card).split("\n")
+    """Compile every clause and retained qualification one participant declares, or None.
+
+    A participant whose capability declares a token-production family keeps the family's own
+    instruction, condition, controller branch or threshold statements next to the typed clauses the
+    ordinary path binds, because a keyword instruction alone cannot carry its conditions.  Only the
+    enabler side passes a family, so a payoff never borrows another participant's instruction.
+    """
+    oracle_text = _participant_oracle_text(capability, card)
     if capability.prerequisites:
         clauses: list[RelationshipPrerequisite] = []
         qualifications: list[RelationshipQualification] = []
@@ -624,61 +710,596 @@ def _compile_participant(
                 other=other,
                 prerequisite=prerequisite,
                 index=index,
-                lines=lines,
+                oracle_text=oracle_text,
             )
             if clause is not None:
                 clauses.append(clause)
                 continue
+            if family is not None and _family_retains(family=family, prerequisite=prerequisite):
+                continue
             qualification = _retained_qualification(
                 capability=capability,
                 prerequisite=prerequisite,
-                lines=lines,
+                oracle_text=oracle_text,
             )
             if qualification is None:
                 return None
             qualifications.append(qualification)
     else:
-        clause = _compile_effect_clause(capability=capability, other=other, lines=lines)
-        if clause is None:
+        clause = _compile_effect_clause(capability=capability, other=other, oracle_text=oracle_text)
+        if clause is None and family is None:
             return None
-        clauses = [clause]
+        clauses = [] if clause is None else [clause]
         qualifications = []
+    if family is not None:
+        qualifications.extend(family.qualifications)
     try:
         return _relationship_participant(
             capability=capability,
             card=card,
             clauses=tuple(clauses),
-            qualifications=tuple(qualifications),
+            qualifications=tuple(dict.fromkeys(qualifications)),
         )
     except SemanticEnrichmentError:
         return None
+
+
+def _token_family(*, capability: CardCapability, oracle_text: str) -> _TokenFamily | None:
+    """Recognize the token-production family a capability's own cited instruction declares.
+
+    A closed keyword instruction (amass, recruit) or a chapter that conditions a second creation on
+    the printed count of the first token decides what the capability produces; the instruction, the
+    branch or condition it states and the reminder it owns stay retained inside complete-line
+    windows of the selected face.  A citation without a resolvable window or without one of those
+    instructions declares no family, so a plain effect statement never reads as qualified
+    production.
+    """
+    produced: set[str] = set()
+    qualifications: list[RelationshipQualification] = []
+    recognized = False
+    for item in capability.evidence:
+        window = _evidence_window(
+            oracle_text=oracle_text,
+            capability=capability,
+            quote=item.quote,
+        )
+        if window is None:
+            return None
+        amass = _amass_retention(window=window, capability=capability)
+        retained = amass
+        if retained is None:
+            retained = _recruit_retention(window=window, capability=capability)
+        if retained is None:
+            retained = _chapter_retention(window=window, capability=capability)
+        if retained is None:
+            continue
+        recognized = True
+        qualifications.extend(retained)
+        produced.update(
+            _amass_subtypes(window) if amass is not None else _created_subtypes(window)
+        )
+    if not recognized:
+        return None
+    return _TokenFamily(
+        produced=tuple(sorted(produced)),
+        qualifications=tuple(dict.fromkeys(qualifications)),
+    )
+
+
+def _family_retains(*, family: _TokenFamily, prerequisite: CapabilityPrerequisite) -> bool:
+    """Return whether one family qualification already retains a prerequisite's own statement."""
+    kind = _QUALIFICATION_KINDS[prerequisite.kind]
+    quote = prerequisite.evidence.quote
+    return any(
+        qualification.kind is kind
+        and (quote in qualification.selector or quote in qualification.evidence.quote)
+        for qualification in family.qualifications
+    )
+
+
+def _amass_retention(
+    *,
+    window: str,
+    capability: CardCapability,
+) -> tuple[RelationshipQualification, ...] | None:
+    """Retain one amass instruction, the reminder it owns and the controller branch it states."""
+    instructions = _instructions(window, _AMASS_INSTRUCTION_PATTERN)
+    if not instructions:
+        return None
+    retained: list[RelationshipQualification] = []
+    for match in instructions:
+        statement = _statement_span(window, match.start(), match.end())
+        end = _reminder_end(window, statement[1], _AMASS_REMINDER_PATTERN)
+        qualification = _qualification(
+            kind=QualificationKind.MODE,
+            capability=capability,
+            evidence=window,
+            selector=window[statement[0] : end],
+        )
+        if qualification is None:
+            return None
+        retained.append(qualification)
+    condition = _NO_ARMY_CONDITION_PATTERN.search(window)
+    if condition is not None:
+        qualification = _qualification(
+            kind=QualificationKind.CONDITION,
+            capability=capability,
+            evidence=window,
+            selector=condition.group(0),
+        )
+        if qualification is None:
+            return None
+        retained.append(qualification)
+    party = _PARTY_AMASS_PATTERN.search(window)
+    if party is not None:
+        statement = _statement_span(window, party.start(), party.end())
+        branch = _OWN_CONTROLLER_PATTERN.search(window, statement[0])
+        end = statement[1] if branch is None else branch.end()
+        qualification = _qualification(
+            kind=QualificationKind.PARTY,
+            capability=capability,
+            evidence=window,
+            selector=window[statement[0] : end],
+        )
+        if qualification is None:
+            return None
+        retained.append(qualification)
+    return tuple(retained)
+
+
+def _recruit_retention(
+    *,
+    window: str,
+    capability: CardCapability,
+) -> tuple[RelationshipQualification, ...] | None:
+    """Retain one recruit instruction, the frame it hangs on and its discard condition."""
+    match = _RECRUIT_INSTRUCTION_PATTERN.search(window)
+    if match is None:
+        return None
+    retained: list[RelationshipQualification] = []
+    statement = _statement_span(window, match.start(), match.end())
+    frame = window[statement[0] : statement[1]]
+    qualification = _qualification(
+        kind=(
+            QualificationKind.CONDITION
+            if _PARENT_CONDITION_PATTERN.match(frame) is not None
+            else QualificationKind.TIMING
+        ),
+        capability=capability,
+        evidence=window,
+        selector=frame,
+    )
+    if qualification is None:
+        return None
+    retained.append(qualification)
+    condition = _DISCARD_CONDITION_PATTERN.search(window)
+    if condition is not None:
+        qualification = _qualification(
+            kind=QualificationKind.CONDITION,
+            capability=capability,
+            evidence=window,
+            selector=condition.group(0),
+        )
+        if qualification is None:
+            return None
+        retained.append(qualification)
+    return tuple(retained)
+
+
+def _chapter_retention(
+    *,
+    window: str,
+    capability: CardCapability,
+) -> tuple[RelationshipQualification, ...] | None:
+    """Retain the threshold and conditional creation of one chapter that makes two tokens."""
+    threshold = _THRESHOLD_CONDITION_PATTERN.search(window)
+    if threshold is None:
+        return None
+    creation = _CONDITIONAL_CREATION_PATTERN.search(window, threshold.end())
+    if creation is None:
+        return None
+    sequence = _statement_span(window, threshold.start(), threshold.end())
+    end = _statement_span(window, creation.start(), creation.end())[1]
+    retained: list[RelationshipQualification] = []
+    for kind, selector in (
+        (QualificationKind.QUANTITY, window[threshold.start() : threshold.end()]),
+        (QualificationKind.CONDITION, window[sequence[0] : end]),
+    ):
+        qualification = _qualification(
+            kind=kind,
+            capability=capability,
+            evidence=window,
+            selector=selector,
+        )
+        if qualification is None:
+            return None
+        retained.append(qualification)
+    return tuple(retained)
+
+
+def _amass_subtypes(window: str) -> tuple[str, ...]:
+    """Return the creature subtypes an amass instruction produces: its own subtype and Army."""
+    return tuple(
+        match.group("subtype").casefold()
+        for match in _instructions(window, _AMASS_INSTRUCTION_PATTERN)
+    ) + ("army",)
+
+
+def _instructions(paragraph: str, pattern: re.Pattern[str]) -> tuple[re.Match[str], ...]:
+    """Return the matches of one instruction pattern a window itself states.
+
+    Parenthetical reminder text never states an instruction: it explains a keyword the window has
+    already printed, so its own wording is not the effect the card declares.
+    """
+    return tuple(
+        pattern.finditer(
+            _AMASS_PARENTHETICAL_PATTERN.sub(lambda match: " " * len(match.group(0)), paragraph)
+        )
+    )
+
+
+def _created_subtypes(window: str) -> tuple[str, ...]:
+    """Return the creature subtypes every created token of one cited window states."""
+    return tuple(
+        subtype
+        for match in _CREATED_TOKEN_PATTERN.finditer(window)
+        for subtype in _stated_subtypes(match.group(0))
+    )
+
+
+def _stated_subtypes(clause: str) -> tuple[str, ...]:
+    """Return the subtype words one created token clause states, in printed order."""
+    return tuple(
+        match.group(0).casefold()
+        for match in _WORD_PATTERN.finditer(clause)
+        if match.group(0).casefold() not in _COLOR_WORDS
+        and match.group(0).casefold() not in _CARD_TYPE_WORDS
+        and match.group(0).casefold() not in _OBJECT_KIND_WORDS
+        and match.group(0).casefold() not in _COUNT_WORDS
+        and match.group(0).casefold() not in _DETERMINER_WORDS
+        and match.group(0).casefold() not in _OPERATION_LEXEMES
+        and len(match.group(0)) > 1
+    )
+
+
+def _statement_span(paragraph: str, start: int, end: int) -> tuple[int, int]:
+    """Return the sentence span one instruction occupies inside its own cited window."""
+    left = start
+    while left > 0 and paragraph[left - 1] not in _SENTENCE_BOUNDARIES:
+        left -= 1
+    while left < end and paragraph[left] == " ":
+        left += 1
+    right = end
+    while right < len(paragraph) and paragraph[right] not in _SENTENCE_BOUNDARIES:
+        right += 1
+    if right < len(paragraph):
+        right += 1
+    return left, right
+
+
+def _reminder_end(paragraph: str, start: int, marker: re.Pattern[str]) -> int:
+    """Return the end of the parenthetical reminder one statement owns, or the statement end."""
+    match = _REMINDER_PATTERN.match(paragraph, start)
+    if match is None or marker.search(match.group("text")) is None:
+        return start
+    return match.end()
+
+
+def _opposed_token_subtype(
+    *,
+    family: _TokenFamily,
+    target: CardCapability,
+    target_oracle: str,
+) -> bool | None:
+    """Return whether a family's produced subtypes contradict the target's required subtype.
+
+    None means the comparison cannot be made at all: the target states a subtype requirement and
+    the family states no creature subtype it produces, so the pair fails closed instead of assuming
+    the tokens fit.  A same-face type-changing ability that states the required subtype is a
+    conditional bridge, so a token that is not that subtype yet can still be made into one.
+    """
+    required = target.qualifier.subtype
+    if required is None:
+        return False
+    if not family.produced:
+        return None
+    if all(
+        any(stated in _subtype_forms(word) for stated in family.produced)
+        for word in required.casefold().split()
+    ):
+        return False
+    if _conversion_statement(oracle_text=target_oracle, subtype=required) is not None:
+        return False
+    return True
+
+
+def _qualified_effect_participant(
+    *,
+    capability: CardCapability,
+    other: CardCapability,
+    card: CardInfo,
+) -> RelationshipParticipant | None:
+    """Retain one family effect no typed clause can express as qualifications, or None.
+
+    The fallback runs only for a pair whose family recognition and subtype gates already accepted
+    the connection.  Every prerequisite the ordinary path cannot bind keeps the qualification kind
+    its own closed kind maps to, and the complete effect statement plus the frames it depends on
+    are retained inside complete-line windows of the capability's own selected face.  A missing or
+    ambiguous statement fails the whole participant closed rather than dropping either side.
+    """
+    oracle_text = _participant_oracle_text(capability, card)
+    clauses: list[RelationshipPrerequisite] = []
+    qualifications: list[RelationshipQualification] = []
+    for index, prerequisite in enumerate(capability.prerequisites):
+        clause = _compile_bound_clause(
+            capability=capability,
+            other=other,
+            prerequisite=prerequisite,
+            index=index,
+            oracle_text=oracle_text,
+        )
+        if clause is not None:
+            clauses.append(clause)
+            continue
+        qualification = _retained_qualification(
+            capability=capability,
+            prerequisite=prerequisite,
+            oracle_text=oracle_text,
+        )
+        if qualification is None:
+            return None
+        qualifications.append(qualification)
+    retained = _effect_qualifications(capability=capability, oracle_text=oracle_text)
+    if retained is None:
+        return None
+    qualifications.extend(retained)
+    try:
+        return _relationship_participant(
+            capability=capability,
+            card=card,
+            clauses=tuple(clauses),
+            qualifications=tuple(dict.fromkeys(qualifications)),
+        )
+    except SemanticEnrichmentError:
+        return None
+
+
+def _effect_qualifications(
+    *,
+    capability: CardCapability,
+    oracle_text: str,
+) -> tuple[RelationshipQualification, ...] | None:
+    """Return one capability's complete cited effect as retained statements, or None.
+
+    Each cited statement keeps its own text, so a mode, frame, cost, conversion or restriction the
+    effect depends on is stated under the closed kind it belongs to.  The evidence a qualification
+    cites is the smallest contiguous span of complete Oracle lines covering those statements: the
+    cited text itself plus the statement it hangs on, and nothing else from a neighbouring line.
+    """
+    selected: list[tuple[QualificationKind, str]] = []
+    for item in capability.evidence:
+        window = _evidence_window(
+            oracle_text=oracle_text,
+            capability=capability,
+            quote=item.quote,
+        )
+        if window is None:
+            return None
+        selected.extend(
+            _effect_statements(
+                capability=capability,
+                oracle_text=oracle_text,
+                quote=item.quote,
+                window=window,
+            )
+        )
+    if not selected:
+        return None
+    spans: list[tuple[int, int]] = []
+    for _, selector in selected:
+        found = _occurrences(oracle_text, selector)
+        if len(found) != 1:
+            return None
+        spans.append(found[0])
+    evidence = _covered_lines(oracle_text=oracle_text, spans=spans)
+    if evidence is None:
+        return None
+    retained: list[RelationshipQualification] = []
+    for kind, selector in selected:
+        qualification = _qualification(
+            kind=kind,
+            capability=capability,
+            evidence=evidence,
+            selector=selector,
+        )
+        if qualification is None:
+            return None
+        retained.append(qualification)
+    return tuple(dict.fromkeys(retained))
+
+
+def _effect_statements(
+    *,
+    capability: CardCapability,
+    oracle_text: str,
+    quote: str,
+    window: str,
+) -> tuple[tuple[QualificationKind, str], ...]:
+    """Return the statements one cited effect depends on, with the closed kind of each."""
+    statements: list[tuple[QualificationKind, str]] = [(QualificationKind.CONDITION, quote)]
+    frame = _modal_frame(oracle_text=oracle_text, window=window)
+    if frame is not None:
+        statements.append((QualificationKind.CHOICE, frame))
+    choice = _TYPE_CHOICE_PATTERN.search(window)
+    if choice is not None:
+        statements.append(
+            (QualificationKind.CHOICE, _statement(window, choice.start(), choice.end()))
+        )
+    cost = _cost_statement(quote=quote)
+    if cost is not None:
+        statements.append((QualificationKind.COST, cost[0]))
+        if cost[1] is not None:
+            statements.append((QualificationKind.CHOICE, cost[1]))
+    restriction = _ACTIVATION_RESTRICTION_PATTERN.search(window)
+    if restriction is not None:
+        statements.append(
+            (QualificationKind.TIMING, _statement(window, restriction.start(), restriction.end()))
+        )
+    conversion = _conversion_statement(
+        oracle_text=oracle_text,
+        subtype=capability.qualifier.subtype,
+    )
+    if conversion is not None:
+        statements.append((QualificationKind.CONDITION, conversion[0]))
+        if conversion[1] is not None:
+            statements.append((QualificationKind.TIMING, conversion[1]))
+    return tuple(statements)
+
+
+def _modal_frame(*, oracle_text: str, window: str) -> str | None:
+    """Return the printed modal frame line one cited mode hangs on, or None."""
+    start = oracle_text.find(window)
+    if start <= 0:
+        return None
+    previous_end = oracle_text.rfind("\n", 0, start)
+    if previous_end < 0:
+        return None
+    previous_start = oracle_text.rfind("\n", 0, previous_end) + 1
+    frame = oracle_text[previous_start:previous_end]
+    if _MODAL_FRAME_PATTERN.match(frame) is None:
+        return None
+    return frame
+
+
+def _cost_statement(*, quote: str) -> tuple[str, str | None] | None:
+    """Return the cost frame one cited effect states and the alternative frame it offers."""
+    additional = _ADDITIONAL_COST_PATTERN.match(quote)
+    if additional is not None:
+        alternatives = additional.group("alternatives")
+        offers = alternatives if re.search(r"\bor\b", alternatives, re.IGNORECASE) else None
+        return quote, offers
+    head, separator, _ = quote.partition(": ")
+    if not separator:
+        return None
+    folded = head.casefold()
+    if "{" in head or "sacrifice" in folded or "tap" in folded:
+        return head, None
+    return None
+
+
+def _conversion_statement(
+    *,
+    oracle_text: str,
+    subtype: str | None,
+) -> tuple[str, str | None] | None:
+    """Return the same-face type-changing instruction for one required subtype, and its frame."""
+    if subtype is None:
+        return None
+    for match in _CONVERSION_PATTERN.finditer(oracle_text):
+        stated = match.group("subtype").casefold()
+        if not any(stated == form for form in _subtype_forms(subtype.casefold())):
+            continue
+        statement = _statement_span(oracle_text, match.start(), match.end())
+        return oracle_text[statement[0] : statement[1]], _conversion_frame(oracle_text, statement)
+    return None
+
+
+def _conversion_frame(oracle_text: str, statement: tuple[int, int]) -> str | None:
+    """Return the timing frame of the instruction that introduces one conversion, or None."""
+    if statement[0] == 0:
+        return None
+    previous = _statement_span(oracle_text, statement[0] - 1, statement[0] - 1)
+    before = oracle_text[previous[0] : previous[1]]
+    comma = before.find(",")
+    frame = before if comma < 0 else before[:comma]
+    if _TIMING_FRAME_PATTERN.match(frame) is None:
+        return None
+    return frame
+
+
+def _covered_lines(*, oracle_text: str, spans: Sequence[tuple[int, int]]) -> str | None:
+    """Return the smallest span of complete Oracle lines covering every one of these spans."""
+    if not spans:
+        return None
+    start = oracle_text.rfind("\n", 0, min(span[0] for span in spans)) + 1
+    end = oracle_text.find("\n", max(span[1] for span in spans))
+    return oracle_text[start:] if end < 0 else oracle_text[start:end]
+
+
+def _statement(paragraph: str, start: int, end: int) -> str:
+    """Return the exact sentence text one match occupies inside its own window."""
+    span = _statement_span(paragraph, start, end)
+    return paragraph[span[0] : span[1]]
+
+
+def _evidence_window(
+    *,
+    oracle_text: str,
+    capability: CardCapability,
+    quote: str,
+) -> str | None:
+    """Return the unique smallest complete-line window citing a quote and a capability quote.
+
+    A cited prerequisite may be a fragment of the ability a capability quotes, so the window is
+    taken from the capability's own exact evidence rather than from a physical line: the smaller
+    of the two windows whose complete-line span already holds the other quote.
+    """
+    selected = oracle_evidence_window(oracle_text=oracle_text, quote=quote)
+    if selected is None:
+        return None
+    candidates: set[str] = set()
+    if any(item.quote in selected for item in capability.evidence):
+        candidates.add(selected)
+    for item in capability.evidence:
+        window = oracle_evidence_window(oracle_text=oracle_text, quote=item.quote)
+        if window is not None and quote in window:
+            candidates.add(window)
+    if not candidates:
+        return None
+    smallest = min(candidates, key=len)
+    if sum(1 for window in candidates if len(window) == len(smallest)) != 1:
+        return None
+    return smallest
 
 
 def _retained_qualification(
     *,
     capability: CardCapability,
     prerequisite: CapabilityPrerequisite,
-    lines: Sequence[str],
+    oracle_text: str,
 ) -> RelationshipQualification | None:
     """Retain one untypable prerequisite verbatim inside its own cited paragraph, or None."""
     quote = prerequisite.evidence.quote
-    containing = [line for line in lines if quote in line]
-    if len(containing) != 1:
+    paragraph = _evidence_window(oracle_text=oracle_text, capability=capability, quote=quote)
+    if paragraph is None:
         return None
-    paragraph = containing[0]
-    if not any(item.quote in paragraph for item in capability.evidence):
-        return None
-    if len(_occurrences(paragraph, quote)) != 1:
+    return _qualification(
+        kind=_QUALIFICATION_KINDS[prerequisite.kind],
+        capability=capability,
+        evidence=paragraph,
+        selector=quote,
+    )
+
+
+def _qualification(
+    *,
+    kind: QualificationKind,
+    capability: CardCapability,
+    evidence: str,
+    selector: str,
+) -> RelationshipQualification | None:
+    """Retain one exact statement of a capability's own cited window, or None when ambiguous."""
+    if len(_occurrences(evidence, selector)) != 1:
         return None
     try:
         return RelationshipQualification(
-            kind=_QUALIFICATION_KINDS[prerequisite.kind],
+            kind=kind,
             evidence=OracleEvidence(
                 card_id=capability.card_id,
                 face_index=capability.face_index,
-                quote=paragraph,
+                quote=evidence,
             ),
-            selector=quote,
+            selector=selector,
             occurrence=0,
         )
     except SemanticEnrichmentError:
@@ -691,15 +1312,12 @@ def _compile_bound_clause(
     other: CardCapability,
     prerequisite: CapabilityPrerequisite,
     index: int,
-    lines: Sequence[str],
+    oracle_text: str,
 ) -> RelationshipPrerequisite | None:
     """Compile the clause one retained coarse prerequisite binds, or None when it cannot bind one."""
     quote = prerequisite.evidence.quote
-    containing = [line for line in lines if quote in line]
-    if len(containing) != 1:
-        return None
-    paragraph = containing[0]
-    if not any(item.quote in paragraph for item in capability.evidence):
+    paragraph = _evidence_window(oracle_text=oracle_text, capability=capability, quote=quote)
+    if paragraph is None:
         return None
     spans = _occurrences(paragraph, quote)
     if len(spans) != 1:
@@ -720,15 +1338,18 @@ def _compile_effect_clause(
     *,
     capability: CardCapability,
     other: CardCapability,
-    lines: Sequence[str],
+    oracle_text: str,
 ) -> RelationshipPrerequisite | None:
     """Compile the clause a capability declares without any coarse prerequisite, or None."""
     accepted: set[RelationshipPrerequisite] = set()
     for evidence in capability.evidence:
-        containing = [line for line in lines if evidence.quote in line]
-        if len(containing) != 1:
+        paragraph = _evidence_window(
+            oracle_text=oracle_text,
+            capability=capability,
+            quote=evidence.quote,
+        )
+        if paragraph is None:
             continue
-        paragraph = containing[0]
         for span in _occurrences(paragraph, evidence.quote):
             clause = _compile_clause(
                 capability=capability,

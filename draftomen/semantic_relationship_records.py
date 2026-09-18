@@ -837,6 +837,24 @@ class CardRelationship:
         )
 
 
+def oracle_evidence_window(*, oracle_text: str, quote: str) -> str | None:
+    """Return the complete lines one quote cites, or None when the citation is not exact.
+
+    The window is the smallest contiguous span of complete physical lines holding one unique
+    occurrence of the quote, so a fragment resolves to its containing line and a quote that
+    spans several lines resolves to all of them.  Original bytes, punctuation and embedded
+    newlines are preserved; an empty, absent or repeated quote has no window.
+    """
+    if not quote:
+        return None
+    position = oracle_text.find(quote)
+    if position < 0 or oracle_text.find(quote, position + 1) >= 0:
+        return None
+    start = oracle_text.rfind("\n", 0, position) + 1
+    end = oracle_text.find("\n", position + len(quote) - 1)
+    return oracle_text[start:] if end < 0 else oracle_text[start:end]
+
+
 def validate_prerequisite_projection(*, projection: RelationshipPrerequisiteProjection) -> None:
     """Require an anchored projection whose clauses bind to their own quotations."""
     for participant, other in ((projection.source, projection.target), (projection.target, projection.source)):
@@ -859,14 +877,16 @@ def validate_relationship_participant_sources(
     evidence: tuple[OracleEvidence, ...] | None = None,
 ) -> None:
     """Run one participant's evidence ownership, selector and qualifier checks on its quotations."""
-    paragraphs = oracle_text.split("\n") if oracle_text is not None else None
     for qualification in participant.qualifications:
         if (
             qualification.evidence.card_id != participant.card_id
             or qualification.evidence.face_index != participant.face_index
         ):
             raise PrerequisiteProjectionError(code="contradiction")
-        if paragraphs is not None and qualification.evidence.quote not in paragraphs:
+        if oracle_text is not None and (
+            oracle_evidence_window(oracle_text=oracle_text, quote=qualification.evidence.quote)
+            != qualification.evidence.quote
+        ):
             raise PrerequisiteProjectionError(code="contradiction")
         if evidence is not None and not any(
             item.quote in qualification.evidence.quote for item in evidence
@@ -878,7 +898,9 @@ def validate_relationship_participant_sources(
         if clause.evidence.face_index != participant.face_index:
             raise PrerequisiteProjectionError(code="contradiction")
         paragraph = clause.evidence.quote
-        if paragraphs is not None and paragraph not in paragraphs:
+        if oracle_text is not None and (
+            oracle_evidence_window(oracle_text=oracle_text, quote=paragraph) != paragraph
+        ):
             raise PrerequisiteProjectionError(code="contradiction")
         if evidence is not None:
             if not evidence:
@@ -2066,6 +2088,7 @@ __all__ = [
     "RelationshipQualification",
     "RelationshipTiming",
     "RelationshipZone",
+    "oracle_evidence_window",
     "role_anchor_covered",
     "validate_prerequisite_projection",
     "validate_prerequisite_sources",
