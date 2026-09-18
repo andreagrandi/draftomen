@@ -1,0 +1,832 @@
+{
+  "blockers": [],
+  "context": {
+    "artifact": {
+      "bytes_are_canonical": true,
+      "cards": 202,
+      "digest_matches_audit": true,
+      "filename_is_digest": true,
+      "guide_pin_covered_by_frozen_source": true,
+      "guide_pins": [
+        {
+          "guide_id": "hob-draftsim-guide",
+          "retrieved_at": "2026-09-14T06:48:48.233313Z",
+          "sha256": "537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf",
+          "url": "https://draftsim.com/mtg-hob-limited-set-review/"
+        }
+      ],
+      "oracle_facts": 583,
+      "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json",
+      "relationship_run_ids": [
+        "local-c7a4f08030a1bfb7"
+      ],
+      "relationships": 685,
+      "review_state": "confirmed",
+      "set_source_sha256": "082a17e20d0406350d0c1e04f3a7d4b04454132eece0c87ac929ad13653f279a",
+      "sha256": "edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84",
+      "stored_projections": 0
+    },
+    "card_database": {
+      "cards": 202,
+      "digest_matches_audit": true,
+      "path": "/Users/andrea/Projects/draftomen/website/public/card-data/hob.json.gz",
+      "sha256": "8831da97958741163a6d4b93d5068c28a44d8146ed476c9a76618cc91d0ae7b7",
+      "unknown_cards": 0
+    },
+    "enhancement_error": null,
+    "enhancement_origin": "artifact_compile",
+    "guide_source": {
+      "chars": 1630279,
+      "digest_matches_audit": true,
+      "guide_id": "hob-draftsim-guide",
+      "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/sources/guide.json",
+      "retrieved_at": "2026-09-14T06:48:48.233313Z",
+      "sha256": "bd176ad3d3666822b98f68cb5f2ae67a0fc7d35c171d7816c266a741a49ac795",
+      "text_sha256": "537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf",
+      "text_sha256_matches_pin": true,
+      "url": "https://draftsim.com/mtg-hob-limited-set-review/"
+    },
+    "sources": "available"
+  },
+  "installed_profile_digest_after": "c73802bf419756245d88d619b99bb9c638e06f19b283023284be7984f6281d24",
+  "installed_profile_digest_before": "c73802bf419756245d88d619b99bb9c638e06f19b283023284be7984f6281d24",
+  "network_denial": {
+    "blocked_attempts": [],
+    "installed": true,
+    "mechanism": "socket.getaddrinfo, socket.create_connection, socket.connect and socket.connect_ex raise"
+  },
+  "probe": "hob-587-trace",
+  "probe_revision": 3,
+  "provider_client_imported": false,
+  "qt_messages_by_phase": {
+    "rendered_advice": [
+      "Populating font family aliases took 81 ms. Replace uses of missing font family \"Sans Serif\" with one that exists to avoid this cost."
+    ],
+    "teardown": [
+      "file:///Users/andrea/Projects/draftomen/draftomen/qml/Theme.qml:52: TypeError: Cannot read property 'systemTextScaling' of null"
+    ]
+  },
+  "qt_phases_seen": [
+    "rendered_advice",
+    "teardown"
+  ],
+  "run_dir": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943",
+  "run_tree_after": {
+    "files": 1638,
+    "sha256": "c518992a1735bfbfe358eaa5db9158865740b8f62dd90e11f5a86b69d2c24cb5"
+  },
+  "run_tree_before": {
+    "files": 1638,
+    "sha256": "c518992a1735bfbfe358eaa5db9158865740b8f62dd90e11f5a86b69d2c24cb5"
+  },
+  "run_tree_matches_manifest": true,
+  "run_tree_unchanged": true,
+  "schema_version": 1,
+  "stage_status": {
+    "generated_representation": "observed",
+    "pool_support": "observed",
+    "rendered_advice": "observed",
+    "saved_evidence": "observed"
+  },
+  "stages": {
+    "generated_representation": {
+      "artifact_load_ok": true,
+      "classifier_matches_compiler": true,
+      "compile_recomputed": {
+        "projected_relationships": 3,
+        "relationships": 685
+      },
+      "enhancement": {
+        "artifact_sha256": "edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84",
+        "artifact_sha256_matches_file": true,
+        "card_count": 202,
+        "mechanics": 0,
+        "projected_finding_ids": [
+          "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103546:103546-f1-self-mill:103422:103422-0-threshold-graveyard-payoff",
+          "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103556:103556-f1-mill-self:103422:103422-0-threshold-graveyard-payoff",
+          "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff"
+        ],
+        "projected_relationships": 3,
+        "relationships": 685
+      },
+      "enhancement_origin": "artifact_compile",
+      "failure_reasons": {
+        "projected": 3,
+        "source_clause_unbound": 678,
+        "target_clause_unbound": 4
+      },
+      "installed_profile": {
+        "digest_matches_audit": true,
+        "enhancement_artifact_sha256": "edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84",
+        "enhancement_matches_paid_artifact": true,
+        "generated_at": "2026-09-16T19:02:08+00:00",
+        "matches_audit_snapshot": true,
+        "path": "/Users/andrea/.draftomen/set-profiles/hob-quickdraft.json",
+        "projected_finding_ids": [
+          "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103546:103546-f1-self-mill:103422:103422-0-threshold-graveyard-payoff",
+          "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103556:103556-f1-mill-self:103422:103422-0-threshold-graveyard-payoff",
+          "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff"
+        ],
+        "projected_relationships": 3,
+        "relationships": 685,
+        "sha256": "c73802bf419756245d88d619b99bb9c638e06f19b283023284be7984f6281d24",
+        "status": "observed"
+      },
+      "per_mechanism": {
+        "fodder-dies-payoff": {
+          "projected": 0,
+          "total": 2
+        },
+        "fodder-sacrifice-outlet": {
+          "projected": 0,
+          "total": 8
+        },
+        "mill-graveyard-payoff": {
+          "projected": 2,
+          "total": 9
+        },
+        "recursion-graveyard-payoff": {
+          "projected": 1,
+          "total": 27
+        },
+        "token-death-payoff": {
+          "projected": 0,
+          "total": 37
+        },
+        "token-go-wide-payoff": {
+          "projected": 0,
+          "total": 333
+        },
+        "token-sacrifice-outlet": {
+          "projected": 0,
+          "total": 269
+        }
+      },
+      "status": "observed"
+    },
+    "pool_support": {
+      "caps": {
+        "max_contextual_adjustment": 6.0,
+        "max_synergy_term": 1.5
+      },
+      "controls": {
+        "fixture_enhancement": [
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 4,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 83.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 0.570732,
+            "contextual_evidence": [
+              "relationship relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1 (token-go-wide-payoff) for Bard's Company [103526]: drafted Fíli the Pathfinder [103382] satisfies source:condition/create/token;types=all_of:creature;token=token;subtype=dwarf;color=exact:R;controller=you;qty=exactly/1;zones=none->battlefield/you; target:condition/control/permanent;types=all_of:creature;controller=you;qty=exactly/1"
+            ],
+            "pack_number": 0,
+            "pick_number": 5,
+            "rationale_evidence": [
+              "",
+              "",
+              "relationship relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1 (token-go-wide-payoff) for Bard's Company [103526]: drafted Fíli the Pathfinder [103382] satisfies source:condition/create/token;types=all_of:creature;token=token;subtype=dwarf;color=exact:R;controller=you;qty=exactly/1;zones=none->battlefield/you; target:condition/control/permanent;types=all_of:creature;controller=you;qty=exactly/1"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 85.04042896969699,
+            "recommended_grp_id": 103526,
+            "support_count": 1,
+            "support_finding_ids": [
+              "relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1"
+            ],
+            "support_targets": [
+              103526
+            ],
+            "synergy": 0.570732
+          },
+          {
+            "aggregate": 0.205793,
+            "contextual_evidence": [
+              "relationship relationship:token-sacrifice-outlet:103531:103531-3:103458:103458-sacrifice-outlet (token-sacrifice-outlet) for Rhovanion Rampager [103458]: drafted Chief Warg's Company [103531] satisfies source:condition/create/token;types=all_of:creature;token=token;subtype=wolf;color=exact:G;controller=you;qty=exactly/1;zones=none->battlefield/you;timing=upkeep/your/none; target:cost/sacrifice/permanent;types=all_of:creature;controller=you;qty=exactly/1;zones=none->graveyard/owner;exclusion=ability_source"
+            ],
+            "pack_number": 0,
+            "pick_number": 6,
+            "rationale_evidence": [
+              "",
+              "",
+              "relationship relationship:token-sacrifice-outlet:103531:103531-3:103458:103458-sacrifice-outlet (token-sacrifice-outlet) for Rhovanion Rampager [103458]: drafted Chief Warg's Company [103531] satisfies source:condition/create/token;types=all_of:creature;token=token;subtype=wolf;color=exact:G;controller=you;qty=exactly/1;zones=none->battlefield/you;timing=upkeep/your/none; target:cost/sacrifice/permanent;types=all_of:creature;controller=you;qty=exactly/1;zones=none->graveyard/owner;exclusion=ability_source"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 85.81185360606062,
+            "recommended_grp_id": 103458,
+            "support_count": 1,
+            "support_finding_ids": [
+              "relationship:token-sacrifice-outlet:103531:103531-3:103458:103458-sacrifice-outlet"
+            ],
+            "support_targets": [
+              103458
+            ],
+            "synergy": 0.205793
+          },
+          {
+            "aggregate": 1.5,
+            "contextual_evidence": [
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "pack_number": 2,
+            "pick_number": 13,
+            "rationale_evidence": [
+              "",
+              "",
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 97.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 1,
+            "support_finding_ids": [
+              "relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1"
+            ],
+            "support_targets": [
+              103526
+            ],
+            "synergy": 1.5
+          }
+        ],
+        "fixture_enhancement_removed": [
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 4,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 83.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 0.380488,
+            "contextual_evidence": [
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "pack_number": 0,
+            "pick_number": 5,
+            "rationale_evidence": [
+              "",
+              "",
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 84.85018496969698,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.380488
+          },
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 6,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 85.60606060606062,
+            "recommended_grp_id": 103458,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 1.5,
+            "contextual_evidence": [
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "pack_number": 2,
+            "pick_number": 13,
+            "rationale_evidence": [
+              "",
+              "",
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 97.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 1.5
+          }
+        ],
+        "paid_enhancement": [
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 4,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 83.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 0.380488,
+            "contextual_evidence": [
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "pack_number": 0,
+            "pick_number": 5,
+            "rationale_evidence": [
+              "",
+              "",
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 84.85018496969698,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.380488
+          },
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 6,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 85.60606060606062,
+            "recommended_grp_id": 103458,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 1.5,
+            "contextual_evidence": [
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "pack_number": 2,
+            "pick_number": 13,
+            "rationale_evidence": [
+              "",
+              "",
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 97.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 1.5
+          }
+        ],
+        "paid_enhancement_context_disabled": [
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 4,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 83.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 5,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 84.46969696969698,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 6,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 85.60606060606062,
+            "recommended_grp_id": 103458,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 2,
+            "pick_number": 13,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 95.83333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          }
+        ],
+        "paid_enhancement_relationships_off": [
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 4,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 83.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 0.380488,
+            "contextual_evidence": [
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "pack_number": 0,
+            "pick_number": 5,
+            "rationale_evidence": [
+              "",
+              "",
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 84.85018496969698,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.380488
+          },
+          {
+            "aggregate": 0.0,
+            "contextual_evidence": [],
+            "pack_number": 0,
+            "pick_number": 6,
+            "rationale_evidence": [
+              "",
+              ""
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color"
+            ],
+            "raw_score": 85.60606060606062,
+            "recommended_grp_id": 103458,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 0.0
+          },
+          {
+            "aggregate": 1.5,
+            "contextual_evidence": [
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "pack_number": 2,
+            "pick_number": 13,
+            "rationale_evidence": [
+              "",
+              "",
+              "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"
+            ],
+            "rationale_kinds": [
+              "rating",
+              "color",
+              "synergy"
+            ],
+            "raw_score": 97.33333333333334,
+            "recommended_grp_id": 103526,
+            "support_count": 0,
+            "support_finding_ids": [],
+            "support_targets": [],
+            "synergy": 1.5
+          }
+        ]
+      },
+      "enhancement_origin": "artifact_compile",
+      "focused_checks": {
+        "context_disabled_zero_breakdown": true,
+        "fixture_support_for_r1": 2,
+        "fixture_support_for_r6": 1,
+        "paid_any_support_rows": 0,
+        "paid_any_synergy": true,
+        "paid_support_for_r1": 0,
+        "paid_support_for_r6": 0,
+        "relationships_off_zero_support": true,
+        "saturation_row": {
+          "cap_binds": true,
+          "enhancement_removed_synergy": 1.5,
+          "found": true,
+          "pack_number": 2,
+          "pick_number": 13,
+          "rationale_kinds": [
+            "rating",
+            "color",
+            "synergy"
+          ],
+          "rationale_mentions_r1_finding": false,
+          "raw_score_delta_vs_enhancement_removed": 0.0,
+          "support_finding_ids": [
+            "relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1"
+          ],
+          "support_targets": [
+            103526
+          ],
+          "synergy": 1.5,
+          "synergy_delta_vs_enhancement_removed": 0.0
+        }
+      },
+      "status": "observed"
+    },
+    "rendered_advice": {
+      "enhancement_origin": "artifact_compile",
+      "qml_rendered_details": {
+        "fixture_enhancement.no_support": {
+          "color": "#c8c2b8",
+          "font_pixel_size": 11
+        },
+        "fixture_enhancement.support": {
+          "color": "#c8c2b8",
+          "font_pixel_size": 11
+        },
+        "paid_enhancement.no_support": {
+          "color": "#c8c2b8",
+          "font_pixel_size": 11
+        }
+      },
+      "qml_rendered_texts": {
+        "fixture_enhancement.no_support": "Bard's Company receives 83 DO points. Base rating: 83.33 DO points. Rating evidence: profile estimate GIH win rate 65.0%. Profile evidence is mature; confidence in that evidence is 100%, not a win probability.",
+        "fixture_enhancement.support": "Bard's Company receives 85 DO points. Base rating: 83.33 DO points. Rating evidence: profile estimate GIH win rate 65.0%. Profile evidence is mature; confidence in that evidence is 100%, not a win probability. Its colors fit your current deck (+1.14 DO points). Confirmed relationship support: relationship relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1 (token-go-wide-payoff) for Bard's Company [103526]: drafted Fíli the Pathfinder [103382] satisfies source:condition/create/token;types=all_of:creature;token=token;subtype=dwarf;color=exact:R;controller=you;qty=exactly/1;zones=none->battlefield/you; target:condition/control/permanent;types=all_of:creature;controller=you;qty=exactly/1 (+0.57 DO points).",
+        "paid_enhancement.no_support": "Bard's Company receives 83 DO points. Base rating: 83.33 DO points. Rating evidence: profile estimate GIH win rate 65.0%. Profile evidence is mature; confidence in that evidence is 100%, not a win probability."
+      },
+      "qml_renderer_matches": {
+        "fixture_enhancement.no_support": true,
+        "fixture_enhancement.support": true,
+        "paid_enhancement.no_support": true
+      },
+      "qml_theme_resolved": {
+        "fixture_enhancement.no_support": true,
+        "fixture_enhancement.support": true,
+        "paid_enhancement.no_support": true
+      },
+      "renderer_texts": {
+        "fixture_enhancement.no_support": {
+          "concise_explanation": "Rating: profile estimate GIH win rate 65.0% (mature profile, 100% confidence). Color fit contributes +0 DO points.",
+          "detailed_explanation": "Bard's Company receives 83 DO points. Base rating: 83.33 DO points. Rating evidence: profile estimate GIH win rate 65.0%. Profile evidence is mature; confidence in that evidence is 100%, not a win probability.",
+          "mentions_relationship_finding": false,
+          "pack_number": 0,
+          "pick_number": 4,
+          "row_present": true,
+          "scored_grp_id": 103526,
+          "support_finding_ids": []
+        },
+        "fixture_enhancement.support": {
+          "concise_explanation": "Rating: profile estimate GIH win rate 65.0% (mature profile, 100% confidence). Color fit contributes +1 DO points. Synergy contributes +1 DO points.",
+          "detailed_explanation": "Bard's Company receives 85 DO points. Base rating: 83.33 DO points. Rating evidence: profile estimate GIH win rate 65.0%. Profile evidence is mature; confidence in that evidence is 100%, not a win probability. Its colors fit your current deck (+1.14 DO points). Confirmed relationship support: relationship relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1 (token-go-wide-payoff) for Bard's Company [103526]: drafted Fíli the Pathfinder [103382] satisfies source:condition/create/token;types=all_of:creature;token=token;subtype=dwarf;color=exact:R;controller=you;qty=exactly/1;zones=none->battlefield/you; target:condition/control/permanent;types=all_of:creature;controller=you;qty=exactly/1 (+0.57 DO points).",
+          "mentions_relationship_finding": true,
+          "pack_number": 0,
+          "pick_number": 5,
+          "row_present": true,
+          "scored_grp_id": 103526,
+          "support_finding_ids": [
+            "relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1"
+          ]
+        },
+        "paid_enhancement.no_support": {
+          "concise_explanation": "Rating: profile estimate GIH win rate 65.0% (mature profile, 100% confidence). Color fit contributes +0 DO points.",
+          "detailed_explanation": "Bard's Company receives 83 DO points. Base rating: 83.33 DO points. Rating evidence: profile estimate GIH win rate 65.0%. Profile evidence is mature; confidence in that evidence is 100%, not a win probability.",
+          "mentions_relationship_finding": false,
+          "pack_number": 0,
+          "pick_number": 4,
+          "row_present": true,
+          "scored_grp_id": 103526,
+          "support_finding_ids": []
+        },
+        "paid_enhancement.support": {
+          "row_present": false
+        }
+      },
+      "status": "observed"
+    },
+    "saved_evidence": {
+      "artifact": {
+        "bytes_are_canonical": true,
+        "cards": 202,
+        "digest_matches_audit": true,
+        "filename_is_digest": true,
+        "guide_pin_covered_by_frozen_source": true,
+        "guide_pins": [
+          {
+            "guide_id": "hob-draftsim-guide",
+            "retrieved_at": "2026-09-14T06:48:48.233313Z",
+            "sha256": "537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf",
+            "url": "https://draftsim.com/mtg-hob-limited-set-review/"
+          }
+        ],
+        "oracle_facts": 583,
+        "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json",
+        "relationship_run_ids": [
+          "local-c7a4f08030a1bfb7"
+        ],
+        "relationships": 685,
+        "review_state": "confirmed",
+        "set_source_sha256": "082a17e20d0406350d0c1e04f3a7d4b04454132eece0c87ac929ad13653f279a",
+        "sha256": "edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84",
+        "stored_projections": 0
+      },
+      "artifact_evidence": {
+        "guide_claims": [
+          {
+            "category": "mechanic",
+            "finding_id": "work-0b9feb52b8137843899181a7fbc18914ff8aa860f3438d5d1778dea1de122931:mechanic-recruit",
+            "review_status": "uncertain"
+          },
+          {
+            "category": "mechanic",
+            "finding_id": "work-0b9feb52b8137843899181a7fbc18914ff8aa860f3438d5d1778dea1de122931:mechanic-storied",
+            "review_status": "uncertain"
+          }
+        ],
+        "mechanisms": {
+          "fodder-dies-payoff": 2,
+          "fodder-sacrifice-outlet": 8,
+          "mill-graveyard-payoff": 9,
+          "recursion-graveyard-payoff": 27,
+          "token-death-payoff": 37,
+          "token-go-wide-payoff": 333,
+          "token-sacrifice-outlet": 269
+        },
+        "rejected_by_source_kind": {
+          "guide": 9,
+          "oracle": 82,
+          "relationship": 376
+        },
+        "rejected_findings": 467
+      },
+      "checks": {
+        "artifact_bytes_are_canonical": true,
+        "artifact_digest_matches_audit": true,
+        "artifact_filename_is_its_digest": true,
+        "card_database_digest_matches_audit": true,
+        "guide_digest_matches_audit": true,
+        "guide_text_matches_artifact_pin": true,
+        "paid_relationship_units_accepted_none": true
+      },
+      "status": "observed",
+      "work_units": {
+        "outcomes": {
+          "malformed": 103,
+          "success": 441
+        },
+        "relationship_units": 141,
+        "relationship_units_with_accepted_payload": 0,
+        "results_by_kind": {
+          "card-capability": {
+            "accepted": 0,
+            "files": 402,
+            "rejected": 172,
+            "uncertain": 1147
+          },
+          "guide": {
+            "accepted": 0,
+            "files": 1,
+            "rejected": 9,
+            "uncertain": 2
+          },
+          "relationship": {
+            "accepted": 0,
+            "files": 141,
+            "rejected": 51,
+            "uncertain": 0
+          }
+        }
+      }
+    }
+  }
+}

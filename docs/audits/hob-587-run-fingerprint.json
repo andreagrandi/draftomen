@@ -1,0 +1,269 @@
+{
+  "schema_version": 1,
+  "audit": "hob-587",
+  "contract_item": "AC6",
+  "owner": "TraceAudit",
+  "captured_at_utc": "2026-09-17T21:30:39Z",
+  "capture_host": {
+    "machine": "Apple M2 Pro (darwin 25.5.0, arm64)",
+    "python": "3.12.9",
+    "repo_head_commit": "597b367",
+    "repo_branch": "audit-hob-relationship-coverage"
+  },
+  "scope_note": "Digests cover the paid run named in issue #587 and the supplements named by the audit brief. The installed HOB profile and the app enrichment-store object are observed environment state, not frozen audit inputs; they are recorded with the understanding that they can change.",
+  "paid_run": {
+    "run_id": "9574d202eef14943",
+    "run_dir": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943",
+    "confirmed_artifact": "artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json",
+    "files": 1638,
+    "bytes": 9501470,
+    "root_digest": {
+      "method": "sha256 of the manifest file; manifest lines are `<sha256>  ./<relative path>` sorted with LC_ALL=C",
+      "manifest_file": "docs/audits/hob-587-run-manifest.sha256",
+      "manifest_bytes": 248880,
+      "manifest_sha256": "c518992a1735bfbfe358eaa5db9158865740b8f62dd90e11f5a86b69d2c24cb5"
+    },
+    "subtrees": {
+      "artifacts": {"files": 2, "bytes": 3364598, "tree_digest": "fce0f681c0cb66004348c0d17914235d2cfc27066123dcfc499c91f13f0056ed"},
+      "sources": {"files": 2, "bytes": 1928875, "tree_digest": "c327069d56e3f9b2cf697103c083b392dd5dcc8713ffec2627c3ce4fa5564987"},
+      "repair-backups": {"files": 1, "bytes": 700, "tree_digest": "05db297a6426090d86baf7ceef3fb08d4e9b2e4ec6606473383dcf04c638ecbe"},
+      "work/attempts": {"files": 545, "bytes": 391798, "tree_digest": "c5f67b4dbc9ca4d0709e2b00eb6cf445f6640f1bc25fb13622411f72e7de526b"},
+      "work/responses": {"files": 544, "bytes": 2243295, "tree_digest": "a1af3493626ddf94e7fabf05df309c56e27cfd2e9267da77226691f5e76a5a8a"},
+      "work/results": {"files": 544, "bytes": 1572204, "tree_digest": "10cab34419b57cd5f23c570f3e0d7874267a29258e596dc1ec5f2351607d9327"}
+    },
+    "key_files": [
+      {
+        "path": "artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json",
+        "bytes": 1723163,
+        "sha256": "edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84",
+        "role": "confirmed artifact named by issue #587; file name equals its digest",
+        "content": {"cards": 202, "oracle_facts": 583, "relationships": 685, "review_state": "confirmed", "set_source_sha256": "082a17e20d0406350d0c1e04f3a7d4b04454132eece0c87ac929ad13653f279a"}
+      },
+      {
+        "path": "artifacts/bb00b761b8c1489bb560c6ea233c7d5eb70bb3c6bd52ef484313f12dc0957cae.json",
+        "bytes": 1641435,
+        "sha256": "bb00b761b8c1489bb560c6ea233c7d5eb70bb3c6bd52ef484313f12dc0957cae",
+        "role": "same run content before confirmation: review.state=pending, confirmed_relationship_ids=0; name equals its digest. Its confirmed successor is edc7d166... after review at 2026-09-14T18:34:09Z."
+      },
+      {
+        "path": "sources/card-database.json",
+        "bytes": 261017,
+        "sha256": "70ebacdfa4bd8e45f485a6bf7392daf1f754414e0716c6587fcc9e8dc419b9b9",
+        "role": "frozen card source for the paid run"
+      },
+      {
+        "path": "sources/guide.json",
+        "bytes": 1667858,
+        "sha256": "bd176ad3d3666822b98f68cb5f2ae67a0fc7d35c171d7816c266a741a49ac795",
+        "role": "frozen guide source for the paid run; guide id hob-draftsim-guide, url https://draftsim.com/mtg-hob-limited-set-review/, text sha256 537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf, which is also the artifact's guide pin and the run's guide work-unit input_sha256"
+      },
+      {
+        "path": "repair-backups/e13f2fe12f1177d27c277caa00ec7bc92f9f10de82bee814e220aa645c68c0d5.attempt-before-provenance-repair.json",
+        "bytes": 700,
+        "sha256": "488c162ffdd5c28cecca892eb54291de8bba5baf39ebad1b7b7b49ac53a1e0d1",
+        "role": "pre-repair attempt snapshot retained by the paid run"
+      }
+    ],
+    "work_unit_counts": {
+      "attempts": 545,
+      "responses": 544,
+      "results": 544,
+      "results_by_kind": {"card-capability": 402, "relationship": 141, "guide": 1},
+      "results_by_outcome": {"success": 441, "malformed": 103}
+    }
+  },
+  "supplements": {
+    "note": "Repo-local HOB benchmark run enrichment-4308b9f8cde9497c808b5a7d105a29b4 recorded mode=live with requests=0 and spent_usd=0. Its guide is the local copy guide.txt (sha256 21f5d19e...), NOT the paid run's sources/guide.json (sha256 bd176ad3...). Do not conflate the two guides.",
+    "dir": ".draftomen/enrichment-runs/hob",
+    "files": {
+      "benchmark.json": {"bytes": 10663, "sha256": "abbc975e55d341ee62fe4ad83d05985f2418aa37b98b4540ee74d4c075a42ebb"},
+      "benchmark.md": {"bytes": 32028, "sha256": "19856bd27c8a2294573c78fce4292757eb8ce1866dc0f15f79a9fd845742dff9"},
+      "guide.txt": {"bytes": 36658, "sha256": "21f5d19ee59790fdfe9b1f33c98840b18da0db5ea6d7e4d07a089c234a37ddae"},
+      "raw.html": {"bytes": 1762432, "sha256": "fb1c113ece0e044ff5ae6083061d7b8b90fb5e92762e1db35a80ccbf02a89cef"},
+      "report.json": {"bytes": 10272955, "sha256": "dc56a82400bbf40dab777bbbd027919d403a4a4c36bb3c68926dada565257e4c"},
+      "report.md": {"bytes": 3138314, "sha256": "3b113172514ebff413c564ceefb280867ddfa74df0b0d662d13edb94ddaeebac"}
+    },
+    "work": {"files": 5465, "tree_digest": "3eb457fea3a0e2ddd715921ab060c5189365622b7a6c1b45f341664e4e1dd28f"}
+  },
+  "repo_inputs": {
+    "website/public/card-data/hob.json.gz": {"bytes": 38004, "sha256": "8831da97958741163a6d4b93d5068c28a44d8146ed476c9a76618cc91d0ae7b7", "role": "tracked HOB card artifact; template hash pinned by scripts/hob_relationship_scoring_smoke.py"},
+    "tests/fixtures/hob-relationship-scoring-profile.json": {"bytes": 46933, "sha256": "2407a8b64e24f884564a252b933b05cac0acce6d5f337c5da93bd21516b24a81", "role": "calibration profile; carries a two-relationship enhancement, not the paid artifact's compiled representation"},
+    "tests/fixtures/hob-relationship-scoring-state.json": {"bytes": 1665, "sha256": "8a284c1fc0c2b8f80c29c9c06eed387e7d6ca24d3057193c63590780b6499fd2", "role": "persisted calibration draft used for pool-support traces"},
+    "tests/fixtures/hob-relationship-projection-confirmation.json": {"sha256": "3aba3332ce7db82edc830d3b39f00077503d9d8305fc4a467888398705fcbe8f", "role": "committed projection confirmation fixture"}
+  },
+  "observed_environment": {
+    "installed_profile": {
+      "path": "~/.draftomen/set-profiles/hob-quickdraft.json",
+      "bytes": 826511,
+      "sha256": "c73802bf419756245d88d619b99bb9c638e06f19b283023284be7984f6281d24",
+      "generated_at": "2026-09-16T19:02:08+00:00",
+      "enhancement_artifact_sha256": "edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84",
+      "enhancement_relationships": 685,
+      "enhancement_relationships_with_projection": 3
+    },
+    "installed_gui_preferences": {
+      "path": "~/.draftomen/gui-preferences.json",
+      "contextual_adjustments_enabled": true,
+      "note": "User's live setting on 2026-09-17. The shipped default for a fresh install is false (draftomen/preferences.py GuiDisplayPreferences.contextual_adjustments_enabled)."
+    },
+    "app_enrichment_store_object": {
+      "path": "~/.draftomen/set-enrichment/hob-quickdraft/hob-quickdraft/artifacts/fd236b3801611efb154675f8a19cf6143758c00abf53d8b39b8e2b895fde437e.json.gz",
+      "bytes": 41221,
+      "sha256": "fd236b3801611efb154675f8a19cf6143758c00abf53d8b39b8e2b895fde437e",
+      "note": "Stored profile object with field layout {confidence, enhancement, enhancement_status, format, maturity, profile_version, schema_version, set_code, source}; source provider draftomen-profile-generator revision 2; enhancement_status enhanced; 685 relationships, 0 with projection. Recorded as observed store state only."
+    }
+  },
+  "probe_preconditions": {
+    "checked_at_utc": "2026-09-17T21:30:39Z",
+    "card_database_from_tracked_artifact": {
+      "source": "website/public/card-data/hob.json.gz",
+      "cards": 202,
+      "unknown_cards": 0,
+      "set_source_sha256": "082a17e20d0406350d0c1e04f3a7d4b04454132eece0c87ac929ad13653f279a",
+      "matches_artifact_set_source_sha256": true,
+      "method": "SetCardData.from_gzip_bytes -> to_card_database -> EnrichmentSources -> set_source_sha256"
+    },
+    "artifact_compile_gates": "review.state=confirmed, set_code=hob, card data digest matches; only the projection eligibility count itself remains unobserved"
+  },
+  "reproduction": {
+    "manifest_command": "cd <paid_run> && find . -type f | LC_ALL=C sort | xargs shasum -a 256 > docs/audits/hob-587-run-manifest.sha256",
+    "verify_command": "shasum -a 256 docs/audits/hob-587-run-manifest.sha256",
+    "equivalent_python_method": "sorted(relative posix paths) -> \"<sha256>  ./<path>\\n\" lines -> sha256 of the joined utf-8 bytes",
+    "probe": {
+      "path": "docs/audits/hob_587_trace_probe.py",
+      "revision": 3,
+      "sha256": "24ac41a8f553af0df2724226227e1f6c2965556d61855ae9cb7d4d536fd8adbc",
+      "executed_revision": 3,
+      "executed_sha256": "79bb68348972ca5787c5eaf9b41132a7eac3b004f72979306d4c26703bbd6739",
+      "executed_copy": "/tmp/hob_587_trace_probe.py",
+      "delta_from_executed_copy": "the checked-in utility carries the executed revision-3 body unchanged except for the default paths: REPO_ROOT is derived from the utility's own checked-in location and RUN_DIR from the home directory, with the DRAFTOMEN_REPO and HOB587_RUN_DIR overrides unchanged; the docstring run path and a provenance paragraph also differ. A scoped diff against the executed copy shows those lines only.",
+      "run_command": "QT_QPA_PLATFORM=offscreen uv run --no-sync python docs/audits/hob_587_trace_probe.py --out /tmp/hob-587-trace-out.json",
+      "durable_output": {
+        "final": {
+          "path": "docs/audits/hob-587-trace-out.json",
+          "sha256": "74244c03b89d29505851b6be022498005058eef21caa6e81479621ffe73a80e6",
+          "probe_revision_inside": 3
+        },
+        "previous": {
+          "path": "docs/audits/hob-587-trace-out-r2.json",
+          "sha256": "61bc5f54c00cf7b7143607d6751ee011ce101cf1bb6f39cf2fd50cfda32d9c80",
+          "probe_revision_inside": 2
+        },
+        "note": "byte-identical copies of the executed runs; the final run observed all four stages with zero blockers, artifact_compile origin, zero network-denial blocks and unchanged fingerprints"
+      },
+      "rechecks": ["run tree digest before and after", "artifact and source digests", "installed profile digest", "no provider client imported", "network denial installed before any stage runs"]
+    },
+    "probe_executions": [
+      {
+        "revision": 3,
+        "sha256": "79bb68348972ca5787c5eaf9b41132a7eac3b004f72979306d4c26703bbd6739",
+        "executed_by": "Main",
+        "out": "docs/audits/hob-587-trace-out.json",
+        "executed_copy": "/tmp/hob_587_trace_probe.py (revision 3 as executed; sha256 above)",
+        "checked_in_copy": "docs/audits/hob_587_trace_probe.py (same body, portable default paths; sha256 in reproduction.probe above)",
+        "observed": {
+          "stage_status": {
+            "saved_evidence": "observed",
+            "generated_representation": "observed",
+            "pool_support": "observed",
+            "rendered_advice": "observed"
+          },
+          "blockers": 0,
+          "enhancement_origin": "artifact_compile",
+          "network_denial_blocked_attempts": 0,
+          "run_tree_unchanged": true,
+          "run_tree_matches_manifest": true,
+          "provider_client_imported": false,
+          "saturation_row_cap_binds": true,
+          "saturation_row_rationale_mentions_r1_finding": false,
+          "qml_renderer_matches": "true for all three rendered payloads",
+          "qml_theme_resolved": "true for all three rendered payloads",
+          "qt_messages_by_phase": {
+            "rendered_advice": ["Populating font family aliases took 81 ms. Replace uses of missing font family \"Sans Serif\" with one that exists to avoid this cost."],
+            "teardown": ["file:///Users/andrea/Projects/draftomen/draftomen/qml/Theme.qml:52: TypeError: Cannot read property 'systemTextScaling' of null"]
+          }
+        },
+        "rendered_scope_caveat": "component-level offscreen render of CardPreview.qml with the published Recommendation payload; the application window, live session and interactive journey were not exercised"
+      },
+      {
+        "revision": 2,
+        "sha256": "eb68e0ea0296f61a35d02446afc75309aefbdab1755cdd510121d14ae93d67c2",
+        "executed_by": "Main",
+        "out": "docs/audits/hob-587-trace-out-r2.json",
+        "observed": {
+          "stage_status": {
+            "saved_evidence": "observed",
+            "generated_representation": "observed",
+            "pool_support": "observed",
+            "rendered_advice": "observed"
+          },
+          "blockers": 0,
+          "enhancement_origin": "artifact_compile",
+          "network_denial_installed": true,
+          "network_denial_blocked_attempts": 0,
+          "run_tree_unchanged": true,
+          "run_tree_matches_manifest": true,
+          "provider_client_imported": false,
+          "installed_profile_digest_before": "c73802bf419756245d88d619b99bb9c638e06f19b283023284be7984f6281d24",
+          "installed_profile_digest_after": "c73802bf419756245d88d619b99bb9c638e06f19b283023284be7984f6281d24",
+          "failure_reasons": {"projected": 3, "source_clause_unbound": 678, "target_clause_unbound": 4},
+          "classifier_matches_compiler": true,
+          "focused_checks": {
+            "fixture_support_for_r1": 2,
+            "fixture_support_for_r6": 1,
+            "paid_support_for_r1": 0,
+            "paid_support_for_r6": 0,
+            "paid_any_support_rows": 0,
+            "paid_any_synergy": true,
+            "context_disabled_zero_breakdown": true,
+            "relationships_off_zero_support": true
+          },
+          "qml_renderer_matches": {"fixture_enhancement": true, "paid_enhancement": true}
+        },
+        "gaps_closed_by_revision_3": [
+          "the rendered label was read back for a row without relationship support only; the with-support row text needs the revision-3 rerun",
+          "the cap-bind arithmetic against an enhancement-removed control and the finding-id absence in the saturated rationale need the revision-3 rerun",
+          "Qt messages are not attributed to a phase in the revision-2 report"
+        ]
+      },
+      {
+        "revision": 1,
+        "sha256": "fb8b5ea476910a7fbefbd79c7f47b71c1635c945d9679b4a9fff15e7743db29c",
+        "executed_by": "Main",
+        "out": "/tmp/hob-587-trace-out.json",
+        "observed": {
+          "stage_status": {
+            "saved_evidence": "blocked",
+            "generated_representation": "blocked",
+            "pool_support": "blocked",
+            "rendered_advice": "blocked"
+          },
+          "blocker_error": "SemanticEnrichmentError: guides must cover every guide source exactly.",
+          "run_tree_unchanged": true,
+          "run_tree_matches_manifest": true,
+          "provider_client_imported": false,
+          "installed_profile_digest_before": "c73802bf419756245d88d619b99bb9c638e06f19b283023284be7984f6281d24",
+          "installed_profile_digest_after": "c73802bf419756245d88d619b99bb9c638e06f19b283023284be7984f6281d24"
+        },
+        "classification": "Probe defect, not a source defect. Revision 1 built EnrichmentSources with guides=(), while the confirmed artifact pins hob-draftsim-guide; the production loader correctly rejected the mismatched sources (draftomen/semantic_enrichment.py:332-341). No runtime object was produced, so revision 1 observed no representation, support or rendered text.",
+        "paid_data_intact_check": {
+          "guide_text_sha256_from_sources/guide.json": "537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf",
+          "artifact_guide_pin_sha256": "537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf",
+          "guide_id_url_and_retrieved_at_match": true,
+          "method": "read sources/guide.json, GuideSource.text_sha256 (draftomen/semantic_enrichment.py:164-167), compare with the artifact's guide pin fields"
+        },
+        "fix_in_revision_2": "Loads the frozen guide from the paid run's sources/guide.json and passes it to both the artifact loader and EnrichmentSources; adds an in-process network-denial guard; falls back to the installed profile's compiled enhancement for the pool-support and rendered-advice stages, labeling enhancement_origin."
+      }
+    ]
+  },
+  "no_provider_calls": {
+    "statement": "This audit performed no provider calls and did not modify any paid input. All evidence was produced by reading files and by offline, read-only API calls.",
+    "evidence": [
+      "No enrichment, publication, or refresh command was executed during the audit; only file reads, shell hashing, and JSON queries.",
+      "docs/audits/hob-587-run-manifest.sha256 was captured before any audit computation and is re-checked by the probe after its run (run_tree_unchanged and run_tree_matches_manifest).",
+      "The probe imports no provider client and reports provider_client_imported=false.",
+      "The executed probe revisions deny network inside their own process: socket.getaddrinfo, socket.create_connection, socket.connect and socket.connect_ex raise before any stage runs, and the report counts the denied attempts (network_denial). A stage that needed the network would be reported blocked rather than silently succeeding; both runs reported zero blocked attempts."
+    ],
+    "caveat": "Absence of provider calls is asserted for audit activity on this machine; it does not describe the original paid run, which recorded 545 attempts and 544 provider responses."
+  }
+}

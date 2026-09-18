@@ -1,0 +1,366 @@
+{
+  "schema_version": 1,
+  "audit_id": "hob-587-mechanic-matrix",
+  "artifact": {
+    "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json",
+    "sha256": "edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84",
+    "cards": 202,
+    "oracle_facts": 583,
+    "guide_claims": 2,
+    "rejected_findings": 467,
+    "confirmed_relationships": 685,
+    "run": {
+      "provider": "draftomen",
+      "model": "local-pair-matcher-v1",
+      "cost_usd": "0",
+      "note": "frozen run is local (no paid or provider call); review state confirmed by draftomen-tui at 2026-09-14T18:34:09Z"
+    }
+  },
+  "sources": {
+    "frozen_guide": {
+      "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/sources/guide.json",
+      "guide_id": "hob-draftsim-guide",
+      "url": "https://draftsim.com/mtg-hob-limited-set-review/",
+      "file_sha256": "bd176ad3d3666822b98f68cb5f2ae67a0fc7d35c171d7816c266a741a49ac795",
+      "recorded_text_sha256": "537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf",
+      "note": "this is the guide the frozen artifact cites (artifact.guides[0]); 537de10a... is the digest guide.json records for its own .text field and the value the artifact cites, while the file bytes hash to bd176ad3d366.... it MUST NOT be substituted by the benchmark/example guide"
+    },
+    "example_guide_supplied_for_comparison": {
+      "path": ".draftomen/enrichment-runs/hob/guide.txt",
+      "sha256": "21f5d19ee59790fdfe9b1f33c98840b18da0db5ea6d7e4d07a089c234a37ddae",
+      "title": "The Ultimate Guide to The Hobbit Draft - Draftsim",
+      "benchmark_identity": {
+        "benchmark_path": ".draftomen/enrichment-runs/hob/benchmark.json",
+        "guide_id": "draftsim-hob-draft-guide",
+        "url": "https://draftsim.com/mtg-hob-draft-guide/",
+        "retrieved_at": "2026-09-11T12:16:46.844329+00:00",
+        "chars": 36256,
+        "raw_source_sha256_prefix": "fb1c113ece0",
+        "card_source_path": "website/public/card-data/hob.json.gz",
+        "card_count": 202,
+        "eligible_card_count": 201,
+        "ineligible_card_ids": [103513]
+      },
+      "caveat": "different document from the frozen guide (frozen sha 537de10a..., review-guide url; this one sha 21f5d19e..., draft-guide url). It is the guide Main read as artifact://10. Used only for contrast, never as evidence for frozen rows."
+    },
+    "card_database": {
+      "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/sources/card-database.json",
+      "sha256": "70ebacdfa4bd8e45f485a6bf7392daf1f754414e0716c6587fcc9e8dc419b9b9",
+      "cards": 202,
+      "note": "235 oracle-text entries because multi-face cards carry one text per face"
+    }
+  },
+  "guide_coverage_census": {
+    "method": "case-insensitive substring count over guide text exactly as stored (frozen guide.json .text, which is full-page HTML; example .draftomen/enrichment-runs/hob/guide.txt, which is reader-mode text)",
+    "method_caveat": "the frozen column counts raw HTML, so keywords embedded in page boilerplate and URLs are counted (hone 46 = 5 substantive hits + 41 inside 'phone'/'iPhone'; threshold 5 = 3 in article text). Counts are indicative of presence, never of depth; the hone sentence quoted below is the frozen guide's only hone discussion.",
+    "frozen": {
+      "recruit": 24,
+      "amass": 17,
+      "landfall": 17,
+      "ferocious": 12,
+      "adventure": 25,
+      "storied": 14,
+      "hone": 46,
+      "equipment": 25,
+      "Treasure": 21,
+      "threshold": 5,
+      "flashback": 3,
+      "tribal": 0
+    },
+    "example": {
+      "recruit": 7,
+      "amass": 10,
+      "landfall": 8,
+      "ferocious": 5,
+      "adventure": 3,
+      "storied": 8,
+      "hone": 7,
+      "equipment": 8,
+      "Treasure": 6,
+      "Army": 5,
+      "tribal": 0
+    },
+    "finding": "the frozen guide carries Set Mechanics sections for Adventures, Amass, Recruit and Storied, plus equipment and Treasure discussion and one hone-counter sentence in the Dwalin, Weaponmaster review ('one of only two cards in The Hobbit to use hone counters, which is frankly an embarrassing number for something touted as a brand new mechanic'); landfall and ferocious appear in its archetype list and card notes rather than as sections. The example guide covers a strict subset with different emphasis (3 adventure mentions vs 25) and neither uses the word 'tribal' (both instead teach 'choose a creature type' typal payoffs). Frozen-guide quoting is therefore the only admissible evidence for this audit."
+  },
+  "capability_census": {
+    "source": "docs/audits/hob-587-relationship-ledger.json capabilities[] (80 rows)",
+    "roles": {
+      "token_maker": 37,
+      "recursion": 14,
+      "go_wide_payoff": 11,
+      "sacrifice_outlet": 8,
+      "self_mill": 5,
+      "death_payoff": 2,
+      "graveyard_payoff": 2,
+      "sacrifice_fodder": 1
+    },
+    "mechanics": {
+      "amass": 18,
+      "mill_flashback": 17,
+      "recruit": 13,
+      "adventures": 13,
+      "landfall": 7,
+      "equipment": 5,
+      "storied": 2,
+      "treasure": 2,
+      "ferocious": 1
+    },
+    "oracle_text_presence_in_card_database": {
+      "hone": 2,
+      "amass": 15,
+      "recruit": 10,
+      "landfall": 11,
+      "ferocious": 6,
+      "enduring story/storied": 9,
+      "equipment/equip": 24,
+      "adventure": 0
+    },
+    "note": "mechanics counts are capabilities carrying that tag after the source cross-check: 'adventures' covers the 13 capabilities on the 6 adventure-layout cards (103397, 103422, 103449, 103546, 103551, 103556); 'storied' covers the 2 capabilities of 103382 Fíli the Pathfinder only (card-level tag: the anthem clause is the saved storied payoff with 34 target rows, the Dwarf token trigger is its source with 15 rows; the other eight storied cards print the keyword but hold no saved relationship); 'treasure' covers 103459 and 103482. Presence counts are oracle-text entries in sources/card-database.json (235 entries, one text per face), so amass 15 and landfall 11 exceed their card counts (14 and 10); equipment/equip matches 24 entries = 22 cards. The 'adventure' count is 0 because the word occurs in the adventure face's type line ('Sorcery - Adventure'), not in any oracle text."
+  },
+  "relationship_ledger_census": {
+    "confirmed": 685,
+    "classification": {
+      "useful_conditional": 606,
+      "useful_conditional_alternate_contribution": 17,
+      "useful_conditional_resolved_from_oracle": 18,
+      "record_defect_role_direction": 20,
+      "contradiction": 24
+    },
+    "contradiction_detail": {
+      "mxg": 5,
+      "mxe": 3,
+      "mxd": 16
+    },
+    "alternate_contribution_detail": {
+      "uac": 17,
+      "note": "useful conditional, not a soft contradiction, in two shapes. 13 rows are The Misty Mountains Cold: its Treasure tokens are artifacts, but the same chapter ability (chapters I-IV) creates a 6/6 red Dragon creature token with flying once you control four or more Treasures and the Saga is sacrificed that way, so creature-count, creature-pump, creature-death and creature-only-sacrifice uses follow once per Saga - on the first chapter whose Treasure reaches four or more, which can be chapter I, and never when the check fails. 4 rows are graveyard rows whose cited clause removes a card from the graveyard while another clause of the same card adds one: 103390 The Mountain-king's Return (chapter I discard) and 103543 Silvan Reveler (etb draw-then-discard when the discarded card is a nonland) - no downstream semantic permission required for any of them"
+    },
+    "resolved_from_oracle_detail": {
+      "ucc": 18,
+      "note": "Azog, Moria's Ruin: 'Its controller amasses Goblins X, where X is that creature's power. If you controlled that creature, draw a card' - conditional on Azog destroying a creature you control; resolved from frozen Oracle text, not missing"
+    },
+    "record_defect_detail": {
+      "mrd": 20,
+      "note": "Bard, King of Dale is a token-doubling replacement that creates no token itself; the saved rows put it on the provider side, so they need a corrected payoff model (Bard as modifier of another source's tokens), not more Oracle evidence"
+    },
+    "compiler_gap_detail": {
+      "sp:fu": 558,
+      "sp:nadj": 53,
+      "sp:af": 36,
+      "sp:opn": 20,
+      "sp:oos": 11,
+      "tp:ou": 4,
+      "projected": 3
+    },
+    "projected_rows": [
+      "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103546:103546-f1-self-mill:103422:103422-0-threshold-graveyard-payoff",
+      "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103556:103556-f1-mill-self:103422:103422-0-threshold-graveyard-payoff",
+      "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff"
+    ],
+    "per_mechanism": {
+      "token-go-wide-payoff": 333,
+      "token-sacrifice-outlet": 269,
+      "token-death-payoff": 37,
+      "recursion-graveyard-payoff": 27,
+      "mill-graveyard-payoff": 9,
+      "fodder-sacrifice-outlet": 8,
+      "fodder-dies-payoff": 2
+    },
+    "conclusion": "the frozen compiler emits 3 of 685 typed rows; 682 rows are recorded review evidence whose semantics are independent of compiler acceptance - including the projected recursion row 103442-return-creature-card -> 103422, whose cited clause returns a card from the graveyard and therefore consumes the very threshold it was projected against (mxd). All 685 rows were screened against the full oracle text of both cards for every mechanically falsifiable requirement class (typal elf/bear, Goblin-only, creature vs artifact, nontoken-only, creature-death) and the 27 recursion rows were additionally screened for graveyard zone direction (supply vs consumption): the requirement screen raised 4 candidate missed contradictions, all four resolved in favour of the saved class because Beorn the Fierce's combat trigger makes a target creature a Bear in addition to its types, and it confirmed the 3 Elf and 5 Goblin rows (no paired source has a conversion clause); the zone screen moved 16 rows to mxd, 4 to uac and left 7 uc. The 13 rows previously labelled mxt were re-classified uac under the printed four-Treasure check. No row was accepted or invalidated on the basis of compiler rejection alone."
+  },
+  "contract": {
+    "purpose": "bounded contract a capability/payoff pair must satisfy for a HOB relationship claim to be useful",
+    "required_fields": [
+      "provided capability (what the source card actually produces)",
+      "payoff requirement (what the target needs to exist or happen)",
+      "costs (mana, additional cost, tap, sacrifice, discard, timing restriction)",
+      "optional choices (may / if you do / up to / modal / chosen creature type)",
+      "quantities (fixed N, X, count equal to a statistic, once per turn)",
+      "alternative modes (modal faces, adventure faces, alternative cost)",
+      "timing (etb, attack, dies, upkeep, saga chapter, sorcery-only, once each turn)",
+      "party / typal (required or produced creature types and controller scope)",
+      "draft potential vs live state"
+    ],
+    "families": [
+      {
+        "mechanic": "recruit",
+        "provided_capability": "the printed keyword instruction: 'Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.' When the ability resolves, the draw and the discard are mandatory instructions, not a may-choice; the token is conditional on the card actually discarded being a nonland",
+        "payoff_requirement": "a go-wide or creature-count payoff; token creation requires actually discarding a nonland card. The draw happens first, so an empty or land-only starting hand can draw and discard a nonland",
+        "costs": "the draw/discard cycle is free but replaces a card; no mana cost beyond the triggering spell/ability; the mandatory discard can force the loss of the drawn or best card when there is no spare",
+        "optional_choices": "the only choice inside recruit is which card to discard; the draw and the discard are mandatory. Whether recruit happens at all belongs to the parent ability, which is a separate fact: the ten recruit parents are mandatory triggers or conditional checks (etb, dies, attack, saga chapter I, opponent's first noncreature spell, counter-spell rider), and the only 'may' printed on those ten cards is 103526's permission to cast itself as though it had flash, which is not the recruit parent",
+        "quantities": "one 1/1 token per recruit instance, at most once per triggering event",
+        "alternative_modes": "the same payload sits on different parent abilities (etb, dies, attack, saga chapter I, opponent's first noncreature spell, counter-spell rider); no recruit adventure face exists in this set (Clap! Snap! is an amass adventure face)",
+        "timing": "etb, attack, dies, saga chapter I, opponent's first noncreature spell, counter-spell rider; no upkeep trigger is printed",
+        "party_typal": "token is a Human Soldier; payoffs used are generic creatures (anthem, creature count, sacrifice outlet)",
+        "draft_potential": "recruit is a major token engine but not the only one: the 13 recruit-tagged capabilities are the source of 89 of the 333 token-go-wide-payoff rows, 72 of the 269 token-sacrifice-outlet rows and 10 of the 37 token-death-payoff rows, against 117/96/13 for amass-tagged sources and 29/22/3 for landfall-tagged sources",
+        "live_state": "conditional on actually discarding a nonland card. Starting hand size and composition do not establish this condition because recruit draws first. A land discard does not create a token. Saved token_maker rows therefore retain this qualification rather than asserting guaranteed supply",
+        "positive_example": "Patient Instructor ('When this creature enters, recruit') -> Bard's Company's anthem ('Other creatures you control get +1/+1'), a recorded token-go-wide-payoff row: the 1/1 Human Soldier is a creature body the anthem buffs, provided the discard was a nonland",
+        "invalid_example": "the token is not guaranteed by the parent trigger: Lake-town Lookout's dies-triggered recruit fails only when the card it actually discards is a land, so a land-only starting hand whose freshly drawn card is still a land creates no token, while the same hand with a nonland on top does; those rows stay conditionally useful, and nothing makes recruit a contradiction, because recruit tokens are creatures and creature-only payoffs accept them once created"
+      },
+      {
+        "mechanic": "amass",
+        "provided_capability": "put N +1/+1 counters on an Army you control; it's also a Goblin; if you don't control an Army, create a 0/0 black Goblin Army creature token first",
+        "payoff_requirement": "an Army (or the 0/0 fallback) plus either Goblin typal or a single large creature use; go-wide payoffs apply only through the first, token-creating instance",
+        "costs": "none beyond the spell/ability that amasses; X forms cost what the source costs",
+        "optional_choices": "amass itself is mandatory; the parent trigger may be optional ('you may sacrifice another creature. If you do, ...')",
+        "quantities": "1, 2, 3, 4, X = the dying creature's power, X = excess damage",
+        "alternative_modes": "adventure face payloads, saga chapters, dies/attack/cast triggers",
+        "timing": "etb, dies, attack, cast-noncreature, saga chapter; instant/sorcery speed as printed",
+        "party_typal": "Army creature type plus Goblin subtype; 'amass Goblins' is the only variant in this set",
+        "draft_potential": "first amass creates a body (token_maker); repeat amass grows the same single creature, so it does NOT go wide: an Army of power 6 is one attacker, one sacrifice body and one death trigger. Army growth and repeated go-wide token production are therefore not interchangeable.",
+        "live_state": "partially live: 18 amass capabilities are recorded as token_maker, and every creature-only outlet accepts the Army because the Army (or the 0/0 token it creates first) is a creature. The saved evidence quotes only the amass reminder, and the frozen Oracle text resolves the open question ('Its controller amasses Goblins X ... If you controlled that creature, draw a card'), so the capability is resolved from Oracle text (ucc) rather than missing.",
+        "positive_example": "Goblin-town Flunkies ('When this creature enters, amass Goblins 1') creating the 0/0 Army fallback then attaching Goblin Plate Mail ('When this Equipment enters, amass Goblins 1, then attach this Equipment to the amassed Army') - the equipment genuinely targets the Army the same turn",
+        "invalid_example": "all 5 mxg rows are Bolg's Company ('{T}, Sacrifice another Goblin: Add {B}{R}') paired with sources that produce no Goblin anywhere in their full oracle text: Troop of Ponies, Lake-town Lookout (Human Soldier), Head of the Hunt (Wolf), Down in the Valley (Elf) and Bard's Company (Human Soldier). Amass plus a creature-only outlet is not itself a contradiction: the Army (or the 0/0 fallback) is a creature, so 103458, 103528 and 103550 accept it once it exists."
+      },
+      {
+        "mechanic": "landfall",
+        "provided_capability": "whenever a land you control enters, resolve that card's landfall clause: create a creature token (2/2 Bear, 1/1 Elf), put +1/+1 counters or a temporary pump on a creature, tap or untap a creature, set a base power/toughness, or - Silvan Reveler - pay {1}{G}{U} to return the source card from your graveyard to your hand",
+        "payoff_requirement": "a go-wide/anthem payoff, or the clause's own effect; landfall follows land entries, not just the normal land play. Effects that put lands onto the battlefield or blink them can provide additional entries; playing a land from the graveyard does not by itself grant an extra land play",
+        "costs": "land drops and any ramp effects; no additional cost except Silvan Reveler's {1}{G}{U}",
+        "optional_choices": "the land drop itself; Silvan Reveler's return clause is optional ('you may pay'); saga chapter II grants the clause as a choice-free addition",
+        "quantities": "one landfall trigger per land-entry event; the payload is fixed per card (one token, one counter, and so on)",
+        "alternative_modes": "saga-granted landfall (Down in the Valley chapter II); a landfall clause that returns the source card from the graveyard (Silvan Reveler)",
+        "timing": "continuous triggered ability, one trigger per land entry, any turn",
+        "party_typal": "Bear and Elf tokens; Thranduil, Sindarin Liege's Elf anthem sits on the same card as its landfall token clause",
+        "draft_potential": "7 landfall-tagged capabilities on 4 of the set's 10 landfall cards (103503, 103504, 103543, 103546): 3 token makers, 2 recursion, 1 self-mill and 1 go-wide payoff; the payoff is real only with above-average land counts or ramp",
+        "live_state": "recorded with the condition landfall (103503 and saga-granted 103504 as token_maker, 103546's anthem as go-wide payoff, 103543 and the mill faces as recursion/self-mill); the trigger rate is not modelled, which #587's contract does not require (a land-entry rate model is optional refinement for a downstream consumer, not a gap in this audit)",
+        "positive_example": "Dancing from Dark to Dawn ('Landfall - Whenever a land you control enters, create a 2/2 green Bear creature token') with Beorn the Fierce's Bear anthem ('Other Bears you control get +2/+2'; the row is recorded, one of the 6 rows targeting 103499-bear-buff-go-wide)",
+        "invalid_example": "none recorded for landfall; the risk is quantitative (token rate), not categorical, and a landfall payoff in a deck with too few lands is a deck-building risk rather than a contradiction"
+      },
+      {
+        "mechanic": "ferocious",
+        "provided_capability": "the recorded ferocious capability is Wilderland Scrounger's: 'Ferocious - Whenever this creature attacks while you control a creature with power 4 or greater, put a +1/+1 counter on each creature you control.' The set prints six ferocious cards with different payoffs (103454 self +2/+2, 103456 gain 2 life, 103510 a counter on itself at combat, 103520 +1/+0 and trample, 103521 the go-wide counter, 103530 draw a card and lose 1 life), all gated on controlling a creature with power 4 or greater",
+        "payoff_requirement": "an existing power-4+ creature at the attack/combat step; the recorded payoff is go-wide counters",
+        "costs": "the deck must supply a power-4+ creature by that moment",
+        "optional_choices": "none; the attack is the choice",
+        "quantities": "one +1/+1 counter per creature you control for the recorded capability",
+        "alternative_modes": "five other ferocious payoffs on the other five cards",
+        "timing": "attack or beginning of combat, requiring the power condition at that moment",
+        "party_typal": "none",
+        "draft_potential": "1 ferocious-tagged capability (Wilderland Scrounger); the other five ferocious cards print the keyword but hold no saved relationship. The guide files ferocious under the Golgari 'Warg and Ferocious' archetype and notes several cheap enablers",
+        "live_state": "the capability is a payoff target only (0 source rows; 37 rows target it); the condition 'creature with power 4 or greater' is recorded, but the artifact links no amass or Dragon source to that gate, so the Army/Dragon -> ferocious interaction is a documented downstream gap rather than a recorded row",
+        "positive_example": "Wilderland Scrounger's Ferocious trigger with any power-4+ creature you control (e.g. Goblin Plate Mail's equip target after a 4-counter amass, or the 6/6 Dragon token from The Misty Mountains Cold)",
+        "invalid_example": "recorded tokens alone do not satisfy the gate: a board of 1/1 recruit tokens and a 0/0 Army with no power-4+ creature leaves the trigger off; no ferocious contradiction is recorded in the class data, so this family stays open rather than accepted"
+      },
+      {
+        "mechanic": "adventures",
+        "provided_capability": "a second face (an Adventure spell) with its own mana cost, castable separately from the permanent face; recorded payloads are token creation (At the Door, 'Create X 2/2 red Dwarf creature tokens'), mill-and-return (Speak Secrets, Silvan Rally, Gleam of Death, Clap! Snap! amass), search (Seek the Heart) and combat tricks on the other adventure cards",
+        "payoff_requirement": "recursion, graveyard or token payoffs; the adventure face is a separate cast, so it can trigger cast-based effects",
+        "costs": "the adventure face's own mana cost; the permanent face is cast separately from exile afterwards",
+        "optional_choices": "which face to cast",
+        "quantities": "as printed per face (X Dwarves, one instant or sorcery taken, up to two lands taken, mill four or six)",
+        "alternative_modes": "the two faces are the alternative modes",
+        "timing": "the adventure face is always a sorcery-speed cast",
+        "party_typal": "none intrinsic; the artifact keys face-indexed capabilities (face_index 0/1) for these cards",
+        "draft_potential": "13 capabilities on the six adventure-layout cards (103397, 103422, 103449, 103546, 103551, 103556) carry mechanics.adventures; the set prints 17 adventure layouts, of which the ledger records these six",
+        "live_state": "face separation is modelled: face_index is present on 103397, 103422, 103449, 103546, 103551 and 103556, and rows are sourced from adventure faces (103397-f1-token-maker 14 rows, 103449-f1-amass-token 18, 103546 f1 4, 103556 f1 4, 103422 f1 2), so those rows do assume that face is cast; nothing in the frozen data requires the permanent face to have been cast from exile first",
+        "positive_example": "Glamdring, Foe-hammer // Gleam of Death - the adventure face (Gleam of Death) mills six and returns the instant/sorcery cards, and the mill clause is one of the 3 rows the frozen compiler projects (103556-f1-mill-self -> 103422)",
+        "invalid_example": "none recorded; the two faces are separate casts, so a row sourced from the permanent face must not be read as an adventure-face effect"
+      },
+      {
+        "mechanic": "storied",
+        "provided_capability": "the printed keyword reminder: 'Storied (If you control three or more artifacts, legendaries, and/or Sagas, you have an enduring story for the rest of the game.)' The threshold counts artifacts, legendaries and Sagas together - three or more permanents in any combination, a legendary artifact counting once - and the enduring story, once attained, lasts for the rest of the game",
+        "payoff_requirement": "a clause that checks the state ('As long as you have an enduring story ...', 'If you have an enduring story ...'); the set prints nine such cards (103376, 103382, 103385, 103391, 103463, 103464, 103484, 103527, 103545), of which only Fíli the Pathfinder's anthem is a saved relationship target",
+        "costs": "deck construction: three artifacts, legendaries and/or Sagas; permanents already played for other reasons qualify (Treasures and Equipment are artifacts, the storied cards themselves are legendary creatures)",
+        "optional_choices": "none; the condition is checked continuously but the attained state is not a choice",
+        "quantities": "three or more qualifying permanents to attain the story; no re-check afterwards",
+        "alternative_modes": "none printed",
+        "timing": "static; the story can be attained at any point where the condition holds and then persists for the rest of the game, so a generic creature entering is not the trigger and losing the qualifying permanents does not remove it",
+        "party_typal": "the threshold is type-based (artifact / legendary / Saga), not typal; the saved storied rows run from Fíli the Pathfinder, a legendary Dwarf",
+        "draft_potential": "2 ledger capabilities carry the storied tag (Fíli the Pathfinder's Dwarf token trigger and its anthem); the frozen guide's Storied section explains the threshold and calls it easy to reach ('with the sheer number of legendary creatures and equipment in this set, I can't imagine getting the enduring story will be all that difficult')",
+        "live_state": "the 34 rows targeting 103382-enduring-story-anthem are conditional on an attained enduring story: the anthem is inactive before the threshold is met and active for the rest of the game afterwards, even if the qualifying permanents are lost",
+        "positive_example": "The Misty Mountains Cold (103482, a Saga) plus its Treasure tokens (artifacts) plus Fíli the Pathfinder itself (a legendary creature) reaches three qualifying permanents, so Fíli's 'creatures you control get +1/+1' is live; the ledger records 103482-dragon-token-1 -> 103382-enduring-story-anthem (uac, the Dragon is the creature the anthem buffs)",
+        "invalid_example": "an ordinary creature is not a qualifying permanent: Nighthowl Pursuer (nonlegendary creature), a Goblin Army token and a Forest total zero qualifying permanents, so there is no enduring story and the anthem does not apply; conversely, once the story is attained, sacrificing the Saga and spending the Treasures does not remove it"
+      },
+      {
+        "mechanic": "hone",
+        "provided_capability": "printed hone text on two cards: Dwalin, Weaponmaster 103534 ('Whenever Dwalin enters or attacks, put a hone counter on each Equipment you control. (Each hone counter on an Equipment grants +1/+0 to equipped creature.)') and Sting, Bilbo's Sword 103562 ('When Sting enters, put a hone counter on Sting for each creature target opponent controls. Attach Sting to up to one target creature you control.' plus 'Equip {3}')",
+        "payoff_requirement": "the equipped creature keeps the Equipment and its hone counters; the printed static ability is +1/+0 per hone counter to the equipped creature",
+        "costs": "the printed costs of the two cards (Sting's Equip {3}; Dwalin's own cost and its enter/attack trigger)",
+        "optional_choices": "which creature to equip; Sting's attach is 'up to one target creature you control'",
+        "quantities": "Dwalin: one counter on each Equipment you control per enter/attack; Sting: one counter per creature the target opponent controls",
+        "alternative_modes": "none printed",
+        "timing": "Dwalin triggers on entering or attacking; Sting's counters arrive on entering, its equip is sorcery-speed",
+        "party_typal": "equipment matters; no type restriction is printed on either card",
+        "draft_potential": "the frozen guide's only hone sentence is in the Dwalin, Weaponmaster review ('one of only two cards in The Hobbit to use hone counters, which is frankly an embarrassing number for something touted as a brand new mechanic'), so hone cannot carry a family of relationships",
+        "live_state": "retained, but only under generic roles - NOT missing extraction: sources/card-database.json prints hone on 2 cards and the frozen artifact retains 9 hone facts for them (103534: 103534-attack-matters-1, 103534-counters-1, 103534-counters-theme-1, 103534-equipment-payoff-1, each quoting the full hone-counter ability; 103562: 103562-enter-counters, 103562-enter-counters-theme, 103562-equip-ability, 103562-equipment-payoff, 103562-hone-counter-static, the last two quoting 'Each hone counter on an Equipment grants +1/+0 to equipped creature.'). What is missing is a dedicated hone representation (no role or mechanic in the closed vocabulary names hone; the counters are recorded as counters/counters_theme/equipment_payoff) and hone relationships (neither card appears in the 685 confirmed relationships, and no hone-tagged capability exists in docs/audits/hob-587-relationship-ledger.json). Re-extraction from the frozen sources is unnecessary; the bounded downstream work is the hone representation and its relationship recovery.",
+        "positive_example": "Dwalin, Weaponmaster's enter/attack trigger with several Equipment on the battlefield (Goblin Plate Mail, Dwarven Shortsword, Sting) - the retained 103534-counters-1 and 103534-equipment-payoff-1 facts already carry the full ability text",
+        "invalid_example": "no hone contradiction is recorded, and none can be: hone cards hold no relationship rows, so the family is unrepresented rather than rejected"
+      },
+      {
+        "mechanic": "equipment",
+        "provided_capability": "an Equipment that creates or attaches to a token (Dwarven Shortsword, Goblin Plate Mail) or scales with Equipment count (Orcrist's cost reduction; Sting's hone counters)",
+        "payoff_requirement": "a creature to attach to; token creation makes the attach self-sufficient",
+        "costs": "equip cost; Orcrist costs {1} less per Equipment you control",
+        "optional_choices": "which creature to equip",
+        "quantities": "one token per etb; Treasure per Goblin when Orcrist's equipped creature connects",
+        "alternative_modes": "Glamdring is both Equipment and adventure face",
+        "timing": "etb, combat-damage triggers and equip at sorcery speed",
+        "party_typal": "Orcrist creates Treasure per creature of the chosen type - a typal-choice payoff",
+        "draft_potential": "5 equipment-tagged capabilities; the set prints 22 Equipment cards (24 equipment/equip oracle-text entries), so equipment-tagged sources account for 18 of the 333 token-go-wide-payoff rows and 15 of the 269 token-sacrifice-outlet rows",
+        "live_state": "live but under-represented: equipment-tagged sources appear in token-go-wide-payoff (18 rows) and token-sacrifice-outlet (15 rows), and the amass-attach line of Goblin Plate Mail is recorded as a source capability; Sting's equipment facts (103562-equip-ability, 103562-equipment-payoff) are retained without relationship rows, so its payload is a representation gap rather than absent extraction",
+        "positive_example": "Goblin Plate Mail: 'amass Goblins 1, then attach this Equipment to the amassed Army' - single card that both provides and uses the Army",
+        "invalid_example": "none recorded"
+      },
+      {
+        "mechanic": "treasure",
+        "provided_capability": "Treasure tokens (artifact, '{T}, Sacrifice this token: Add one mana of any color') from saga chapters and etb triggers; the recorded sources are The Misty Mountains Cold (103482) and The Sackville-Bagginses (103459)",
+        "payoff_requirement": "sacrifice-outlet payoffs must accept an artifact; creature-only outlets do not apply to the Treasure itself",
+        "costs": "the chapter/etb trigger, and - for the Treasure's mana - sacrificing the token itself",
+        "optional_choices": "The Sackville-Bagginses' etb may sacrifice a creature or artifact - an explicit either/or already recorded",
+        "quantities": "one Treasure per chapter; The Misty Mountains Cold checks four or more Treasures",
+        "alternative_modes": "artifact-or-creature sacrifice costs (Stir Up Trouble, Snowslope Hunter)",
+        "timing": "saga chapters, etb",
+        "party_typal": "none",
+        "draft_potential": "2 Treasure-tagged capabilities on 103459 and 103482; Treasure-tagged sources account for 9 of the 333 token-go-wide-payoff rows and 7 of the 269 token-sacrifice-outlet rows",
+        "live_state": "live and bounded: the recorded classes keep creature-only outlets apart from artifact-accepting outlets (The Sackville-Bagginses' creature-or-artifact choice is recorded). The Misty Mountains Cold's 13 rows are uac, not contradictions: its Treasure tokens cannot feed creature payoffs, but chapters I-IV each create a 6/6 red Dragon creature token with flying when you control four or more Treasures and sacrifice the Saga, so the Dragon exists from the first chapter whose Treasure count reaches four (can be chapter I) and never when the check fails.",
+        "positive_example": "The Sackville-Bagginses ('you may sacrifice another creature or artifact. If you do, draw a card and create a Treasure token') with artifact-accepting outlets",
+        "invalid_example": "The Misty Mountains Cold's Treasure tokens treated as creature bodies: they are artifacts, so creature-death and creature-only-sacrifice uses do not follow from the Treasure clause alone; the Dragon clause is the creature half and is conditional on four or more Treasures. The invalid part is reading the Treasure clause as producing a creature."
+      }
+    ]
+  },
+  "non_keyword_families_in_the_frozen_ledger": {
+    "note": "the 685 saved relationships are not grouped by the six preview mechanics; their mechanism keys are the seven payoff families below, so the mechanic matrix above must be read as the semantic layer over these families",
+    "families": {
+      "token-go-wide-payoff": "333 relationships; source capabilities are token makers (amass-tagged 117, recruit-tagged 89, landfall-tagged 29, adventure-tagged 23, equipment-tagged 18, mill/flashback-tagged 17, Treasure-tagged 9, storied-tagged 7, plain token rooms) and targets are anthems, creature-count and typal payoffs",
+      "token-sacrifice-outlet": "269 relationships; outlets differ by what they accept (another creature, artifact or creature, another Goblin, sacrifice self) and by cost (mana, tap, once per turn, sorcery speed) - those differences are where the class data locates contradictions, but they are not the whole story: the 24 contradictions are 16 mxd (recursion rows whose cited clause removes a card from the graveyard), 5 mxg (Goblin-only outlets paired with non-Goblin sources) and 3 mxe (Elf payoffs only partially met)",
+      "token-death-payoff": "37 relationships; requires the source token to be a creature that dies, and every recorded source is a creature token - the Treasure card appears here only through its Dragon token, which is a creature",
+      "recursion-graveyard-payoff": "27 relationships; the payoff 103422 requires seven or more cards in your graveyard, so self-mill and flashback are the enabling half. Zone adjudication of all 27 rows: 16 are mxd because the cited clause removes a card from the graveyard and therefore consumes the threshold the row relies on (the graveyard-payoff case, e.g. 103454 Plunder the Trollshaws 'Return target creature card from your graveyard to your hand'), 4 are uac because another clause of the same card adds a card to the graveyard (103390 The Mountain-king's Return chapter I, 103543 Silvan Reveler), and the remaining 7 only consume a card that is already in the graveyard from an independent site of supply",
+      "mill-graveyard-payoff": "9 relationships; 2 of these are projected rows (both Glamdring, Foe-hammer // Gleam of Death faces milling into 103422) and the third projected row is the recursion row 103442 -> 103422",
+      "fodder-sacrifice-outlet": "8 relationships; Troop of Ponies is the only recorded sacrifice fodder card",
+      "fodder-dies-payoff": "2 relationships; both recorded dies payoffs accept the fodder creature (Great Fierce Bee: 'whenever one or more other creatures die, scry 1'; Part in Friendship: 'whenever a nontoken creature you control dies'). Asymmetry check: Great Fierce Bee is the target of all 37 token-death rows, Part in Friendship (nontoken-only) is the target of none - the nontoken distinction is preserved in the saved data"
+    }
+  },
+  "downstream_gaps": {
+    "588": "existing downstream records keep their ids; the ledger preserves the original run, artifact digest, card_id/face and evidence quotes so those records can be re-keyed to finding_id without re-running enrichment",
+    "589": "common compiler: 682 of 685 rows never reach a typed projection; dominant gap is sp:fu (558) - a citation frame the closed clause grammar cannot express (keyword remenders, conditional frames). A common compiler must read the keyword reminder text or the artifact's own conditions, not only the closed clause window.",
+    "590": "recruit/amass: recruit's draw and discard are mandatory instructions and its token is conditional on the discarded card being a nonland; whether recruit happens at all belongs to the parent ability, and no recruit card prints an optional parent. Amass re-uses or creates a single Army, so it is a token_maker only on the first instance. Both need a quantity/identity model (one Army, N counters, repeat growth) before go-wide or death payoffs can be computed.",
+    "591": "landfall/ferocious/storied: all three are recorded as their printed conditions and satisfy #587's contract; rate or availability modelling is NOT required by #587. Storied needs no correction downstream: the printed threshold is three or more artifacts, legendaries and/or Sagas, and the enduring story persists for the rest of the game once attained. The one substantive observation is that ferocious's power-4-or-greater gate can be satisfied by the set's own amassed Armies and by The Misty Mountains Cold's 6/6 Dragon, and nothing in the saved data links those sources to the gate - a compiler/consumer opportunity, not an audit gap.",
+    "592": "adventure: face_index is preserved in the ledger so face-level capabilities survive; the compiler must bind the adventure face as a separate cast rather than as the permanent's clause.",
+    "593": "pool evaluation: the population is the full frozen set (202 cards, 583 oracle facts), not only the 80 relationship participants - a card with no saved relationship must not be read as having no capability, and the 80 capability roles are one input among the set's own facts. Use the 24 contradictions as hard negatives, keep the 17 uac and 18 ucc rows conditional on their recorded conditions, and fix the 20 mrd rows via the corrected payoff model before scoring.",
+    "594": "UI gates: expose classification (uc / uac / ucc / mrd / contradiction) and the gap code separately; a compiler gap must never render as a rejected relationship, and an mrd row must render as a record defect rather than as a synergy. Also expose that only 3 rows are live.",
+    "595": "final publication/draft verification: the ledger's two digests prove exact record accounting (every saved id, in order and as a set), not semantic completeness. Semantic coverage is bounded by 606 conditional + 17 alternate-contribution + 18 oracle-resolved conditional + 20 role-direction defects + 24 contradictions, and by the 3-of-685 compiler projection; the storied, recruit, hone and Misty Mountains Cold clauses quoted in the matrix are source-bound to the frozen card database.",
+    "597": "hone representation and missing home/item interactions (opened by the #597 report): the hone facts for Dwalin, Weaponmaster (103534) and Sting, Bilbo's Sword (103562) are retained (9 hone oracle facts), but no dedicated hone role or mechanic exists in the capability catalog, so hone-counter payoffs and the Equipment a hone counter sits on have no recorded parents and no relationship rows; the bounded fix is a representation extension plus relationship recovery from the frozen sources, not a new run."
+  },
+  "blockers": [
+    "Bard, King of Dale (20 mrd rows): role-direction defect in the saved payoff model, not an evidence gap. The Oracle text is explicit ('If one or more tokens would be created under your control, twice that many of those tokens are created instead.'), so the rows need Bard modelled as a token-doubling modifier of another source's tokens.",
+    "hone family: the hone cards are not absent from the saved run - the artifact retains 9 hone oracle facts for Dwalin, Weaponmaster (103534) and Sting, Bilbo's Sword (103562), all quoted from the frozen card database (sha 70ebacdf...). What is missing is a dedicated hone representation: the frozen capability catalog has no hone role or mechanic, so the counters are recorded only as counters/counters_theme/equipment_payoff and neither card has any saved relationship. The fix is a representation extension plus relationship recovery from the frozen sources; re-extraction and a paid run are not needed.",
+    "scope of the semantic check: the full-text screen covers every mechanically falsifiable requirement class (typal elf/bear, Goblin-only, creature vs artifact, nontoken-only, creature-death) across all 685 rows, and the 27 recursion rows were additionally screened for graveyard zone direction (supply vs consumption), which moved 16 rows to mxd and 4 to uac. The 606 'useful conditional' rows are conditional as recorded; they were not re-derived row by row against play patterns, and #587 does not require rate or availability modelling.",
+    "example guide: the frozen guide (sha 537de10a...) and the supplement guide (sha 21f5d19e..., benchmark guide_id draftsim-hob-draft-guide) are different documents, and artifact://10 is a reader-mode fetch that is not proven byte-identical to guide.txt - only keyword-density contrast is reported."
+  ],
+  "unresolved_matrix_work": [
+    "20 mrd rows (source 103524-token-creation-replacement, Bard, King of Dale): correct the payoff model so token doubling is modelled as a modifier of another source's token creation; no new evidence needed.",
+    "hone representation (bounded, no implementation here): Dwalin, Weaponmaster (103534) and Sting, Bilbo's Sword (103562) already carry their hone facts in the frozen artifact (103534-attack-matters-1, 103534-counters-1, 103534-counters-theme-1, 103534-equipment-payoff-1, 103562-enter-counters, 103562-enter-counters-theme, 103562-equip-ability, 103562-equipment-payoff, 103562-hone-counter-static). Add a hone role/mechanic to the frozen capability representation, then record hone-counter parents and targets (the Equipment the counter sits on, the equipped creature) in this ledger's shape from those frozen sources.",
+    "606 uc rows: the screen covers requirement classes and graveyard zone direction only; downstream scoring must treat them as conditionally useful, never as validated synergies.",
+    "family contract sourcing: every family claim in this matrix is bound to a frozen source quote (storied's three-permanent threshold, The Misty Mountains Cold's four-Treasure Dragon check on chapters I-IV, recruit's draw-then-discard, the two hone cards' printed text, 5 of the 6 ferocious cards' payoffs); no claim rests on a keyword name or on the frozen compiler's acceptance.",
+    "compiler coverage stays 3 of 685 projected rows (sp:fu 558, sp:nadj 53, sp:af 36, sp:opn 20, sp:oos 11, tp:ou 4); recorded for #589, not closed by this audit."
+  ],
+  "reproducible_checks": [
+    "python3 -c \"import json,hashlib;a=json.load(open('docs/audits/hob-587-relationship-ledger.json'));print(len(a['capabilities']),len(a['quote_registry']),sum(len(v) for v in a['findings'].values()))\"  # expect 80 73 685",
+    "python3 - <<'EOF' (reconstruct finding ids from capabilities[row[0/1]].id and compare with artifact.relationships finding_id; compare sha256 of sorted and of listed order against the ledger's finding_id.order_sha256/set_sha256) EOF",
+    "python3 -c \"import json;d=json.load(open('/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/sources/card-database.json'));print(len(json.dumps(d)))\"  # source integrity",
+    "sha256 of the artifact file equals edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84 (verified)",
+    "every quote in quote_registry occurs verbatim in the frozen card database oracle text (verified: 73/73)",
+    "grep the frozen guide shasum 537de10a... and confirm artifact.guides[0].url is https://draftsim.com/mtg-hob-limited-set-review/ before citing any guide sentence"
+  ]
+}

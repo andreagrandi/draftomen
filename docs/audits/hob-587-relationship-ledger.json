@@ -1,0 +1,2345 @@
+{
+ "schema_version": 1,
+ "audit_id": "hob-587-relationship-ledger",
+ "artifact": {
+  "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json",
+  "sha256": "edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84",
+  "created_at": "2026-09-14T18:25:30.788004Z",
+  "set_code": "hob",
+  "set_source_id": "draftomen-card-data-v1-hob",
+  "set_source_sha256": "082a17e20d0406350d0c1e04f3a7d4b04454132eece0c87ac929ad13653f279a",
+  "review_state": "confirmed",
+  "reviewed_at": "2026-09-14T18:34:09.071794Z",
+  "confirmed_relationship_ids": 685
+ },
+ "sources": {
+  "card_database": {
+   "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/sources/card-database.json",
+   "sha256": "70ebacdfa4bd8e45f485a6bf7392daf1f754414e0716c6587fcc9e8dc419b9b9",
+   "cards": 202
+  },
+  "guide": {
+   "path": "/Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943/sources/guide.json",
+   "guide_id": "hob-draftsim-guide",
+   "url": "https://draftsim.com/mtg-hob-limited-set-review/",
+   "file_sha256": "bd176ad3d3666822b98f68cb5f2ae67a0fc7d35c171d7816c266a741a49ac795",
+   "text_sha256": "537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf",
+   "note": "guide.json carries one digest, 537de10a..., which is the hash of its .text field and the value artifact.guides[0].sha256 cites; the file bytes hash to bd176ad3d366... (computed at audit time). Guide sentences are read from .text"
+  }
+ },
+ "finding_id": {
+  "prefix": "local-c7a4f08030a1bfb7:relationship:",
+  "format": "prefix + mechanism + ':' + source_card_id + ':' + source_capability_id + ':' + target_card_id + ':' + target_capability_id, where the capability ids come from capabilities[row[0]].id and capabilities[row[1]].id and the card ids are their leading digits",
+  "count": 685,
+  "order_sha256": "b0bfff8314d2026dc0883666e0acb1472f0544777d46e41a32ddd87b90eee956",
+  "set_sha256": "50268b6f79ccb2e53506be89ef418757e23f06635bef1f01188abef30a7e968a"
+ },
+ "compiler": {
+  "module": "draftomen/profile_relationship_projection.py",
+  "projected_rows": 3,
+  "projected_finding_ids": [
+   "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103546:103546-f1-self-mill:103422:103422-0-threshold-graveyard-payoff",
+   "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103556:103556-f1-mill-self:103422:103422-0-threshold-graveyard-payoff",
+   "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff"
+  ]
+ },
+ "legends": {
+  "cls": {
+   "uc": "useful conditional interaction: source-bound and play-relevant when its capability conditions hold",
+   "uac": "useful conditional with an alternate contribution: the cited clause cannot support the payoff, but another clause of the same card contributes a qualifying object. 13 rows are The Misty Mountains Cold: its Treasure tokens are artifacts, so they cannot pay creature-count, creature-pump, creature-death or creature-only-sacrifice costs, but the same chapter ability ('I, II, III, IV - Create a Treasure token. Then if you control four or more Treasures, sacrifice this Saga. If you do, create a 6/6 red Dragon creature token with flying.') creates the Dragon once, on the first chapter I-IV whose Treasure brings the count to four or more (as early as chapter I when three other Treasures are already controlled, and never if the check still fails when the Saga is sacrificed after IV). 4 rows are graveyard rows whose cited clause consumes the graveyard while another clause of the same card adds one there: 103390 The Mountain-king's Return (the cited chapter II returns a card from the graveyard to the battlefield; chapter I recruit's discard puts one in) and 103543 Silvan Reveler (the cited etb land-redirect moves a discarded land from the graveyard to the battlefield; the same etb draw-then-discard puts one in when the discarded card is a nonland)",
+   "mxg": "contradiction (full oracle text checked): Bolg's Company sacrifices 'another Goblin'; no clause of the paired source produces a Goblin, so the pairing cannot be used",
+   "mxe": "contradiction (full oracle text checked): Thranduil's 'Other Elves you control get +1/+1' cannot apply to the source's tokens, and Thranduil has no type-conversion clause that could turn them into Elves",
+   "mxd": "contradiction, graveyard zone direction (full oracle text checked): the cited clause takes cards out of a graveyard the payoff counts instead of adding them. Flashback casts the card from the graveyard and then exiles it (103389 Moment of Glory, 103425 Plunder the Trollshaws, 103494 Tidings of War); return-from-graveyard clauses move cards to hand or to the battlefield (103390 chapter II, 103434 Along the Crooked Way, 103442 Gathering of Darkness, 103447 Gollum the Abandoned, 103535 Eagle's Rescue); 103462 Supper for Spiders puts opponents' creature cards onto your battlefield as Food artifacts that lose all other types. None of these can reach the threshold of 103420 ('each graveyard with seven or more cards in it') or 103422 ('seven or more cards in your graveyard')",
+   "ucc": "useful conditional, resolved from the frozen Oracle text: Azog, Moria's Ruin reads 'When Azog enters, destroy up to one other target creature. Its controller amasses Goblins X, where X is that creature's power. If you controlled that creature, draw a card.' The destroyed creature's controller gets the Army, so the pairing is useful only when Azog destroys a creature you control. The saved evidence quoted only the amass reminder; the fact itself is resolved, not missing.",
+   "mrd": "record defect - role direction: Bard, King of Dale reads 'If one or more tokens would be created under your control, twice that many of those tokens are created instead.' It is a token-doubling payoff/modifier and creates no token itself, yet the saved rows place it on the provider side of token relationships. These rows need a corrected payoff model (Bard as modifier of another source's tokens), not more Oracle evidence.",
+   "evidence_basis": "classes re-adjudicated against the full oracle text of both cards in card-database.json, not only the quoted fragment: the 27 recursion rows were screened for graveyard zone direction - 7 rows whose cited mill clause adds cards to the graveyard stay uc, 4 rows on 103390 and 103543 are uac on their other supplying clause, 16 rows whose cited clause removes graveyard cards are mxd (flashback exiles, return clauses move cards out, Supper for Spiders takes opponents' cards); the 13 Misty Mountains Cold rows are uac under the printed four-or-more-Treasure check and the once-per-saga Dragon, not fourth-chapter completion; the rows pairing non-Bear token makers with Beorn the Fierce stay useful because Beorn's combat trigger makes a target creature a Bear in addition to its types; mxg and mxe were confirmed against full text (no paired source has a Goblin or Elf conversion); the Azog rows are resolved as ucc from his own controller clause; the Bard rows are a role-direction defect (mrd) in the saved payoff model"
+  },
+  "stage": {
+   "sp": "source participant could not bind its clauses",
+   "tp": "target participant could not bind its clauses",
+   "-": "typed projection emitted"
+  },
+  "gap": {
+   "fu": "citation frame unrepresentable: the cited predicate sits behind a compressed keyword instruction or conditional frame the closed clause window cannot express",
+   "nadj": "no adjacent operation/object pair: no closed-grammar object phrase touches the operation",
+   "af": "clause assembly failed: candidate spans could not form one maximal typed clause",
+   "opn": "no object phrase: no closed-grammar object run exists inside the cited region",
+   "oos": "operation span outside cited regions: the operation lexeme only occurs outside the evidence",
+   "ou": "operation unrecognized: the cited predicate states no single closed operation"
+  },
+  "row": "each findings[mechanism] entry is [source_capability_index, target_capability_index, cls, '<stage>:<gap>']; '-' means the typed projection was emitted; indices address the capabilities array",
+  "condition_definitions": {
+   "storied": "frozen printed reminder text (103382 Fíli the Pathfinder and eight further cards in card-database.json): 'Storied (If you control three or more artifacts, legendaries, and/or Sagas, you have an enduring story for the rest of the game.)' The threshold counts artifacts, legendaries and Sagas together - three or more permanents in any combination, a legendary artifact counting once - and once it is met the enduring story lasts for the rest of the game, so losing the qualifying permanents does not remove it. The 34 rows targeting 103382-enduring-story-anthem are conditional on that attained state (inactive before the threshold, live for the rest of the game afterwards), not on a generic creature entering.",
+   "recruit_discard": "frozen printed reminder text ('Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.'): the draw happens first, so an empty hand does not exclude the token (the drawn card can be discarded); the discard is a mandatory instruction once the ability resolves, and the token depends on the card actually discarded being a nonland. Whether recruit happens at all is decided by the parent ability, which is a separate fact."
+  }
+ },
+ "quote_registry": [
+  "{2}, {T}, Sacrifice this creature: Search your library for up to two basic land cards, reveal them, put one onto the battlefield tapped and the other into your hand, then shuffle.",
+  "Whenever one or more other creatures die, scry 1. (Look at the top card of your library. You may put that card on the bottom.)",
+  "Whenever a nontoken creature you control dies, reveal cards from the top of your library until you reveal a creature card. If its mana value is less than or equal to the number of lands you control, put it onto the battlefield. Otherwise, put it into your hand. Put the rest on the bottom of your library in a random order. This ability triggers only once each turn.",
+  "{2}, Sacrifice an artifact or creature: Return this card from your graveyard to your hand. Activate only as a sorcery.",
+  "Whenever this creature attacks, you may sacrifice another creature. If you do, put a number of +1/+1 counters on this creature equal to the sacrificed creature's power.",
+  "When The Sackville-Bagginses enter, you may sacrifice another creature or artifact. If you do, draw a card and create a Treasure token.",
+  "As an additional cost to cast this spell, sacrifice an artifact or creature or pay {4}.",
+  "Sacrifice another creature or artifact: Exile the top card of your library. You may play it until the end of your next turn. Activate only during your turn and only once each turn.",
+  "When Bolg enters, you may sacrifice another creature. When you do, Bolg deals damage equal to that creature's power to another target creature.",
+  "{T}, Sacrifice another Goblin: Add {B}{R}.",
+  "{1}, Sacrifice another creature: Draw cards equal to the sacrificed creature's power, then discard a card.",
+  "Mill four cards, then put an instant or sorcery card from among them into your hand.",
+  "This creature gets +2/+0 for each graveyard with seven or more cards in it.",
+  "Look at the top four cards of your library and separate them into a face-down pile and a face-up pile. An opponent chooses one of the piles. Put that pile into your hand and the other into your graveyard.",
+  "When this creature enters, mill four cards, then put all Elf cards from among them into your hand.",
+  "Mill four cards, then put up to two land cards from among them into your hand.",
+  "Mill six cards, then put all instant and sorcery cards from among them into your hand.",
+  "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.",
+  "Flashback {4}{W} (You may cast this card from your graveyard for its flashback cost. Then exile it.)",
+  "II — Return target creature card with mana value 3 or less from your graveyard to the battlefield.",
+  "Flashback {3}{U} (You may cast this card from your graveyard for its flashback cost. Then exile it.)",
+  "When this enchantment enters, return target creature card from your graveyard to your hand.",
+  "Return up to one target creature card from your graveyard to your hand.",
+  "Put onto the battlefield under your control all creature cards in your opponents' graveyards that were put there from the battlefield this turn.",
+  "Flashback {3}{R} (You may cast this card from your graveyard for its flashback cost. Then exile it.)",
+  "{2}{W/U}{W/U}: Return this card from your graveyard to the battlefield attached to target creature you control with power 1 or less. Activate only as a sorcery.",
+  "If you discard a land card this way, put it from your graveyard onto the battlefield tapped.",
+  "When this enchantment enters, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+  "When this Equipment enters, create a 2/2 red Dwarf creature token, then attach this Equipment to it.",
+  "At the beginning of the next upkeep, create a 4/4 white Bird Soldier creature token with flying for each creature returned to your hand this way.",
+  "When this creature enters, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+  "Whenever Fíli or another nontoken Dwarf you control enters, create a 2/2 red Dwarf creature token.",
+  "When this creature dies, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+  "I — Recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+  "Whenever an opponent casts their first noncreature spell each turn, you recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+  "Create X 2/2 red Dwarf creature tokens.",
+  "Whenever you attack, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+  "If that spell's mana value was 2 or less, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+  "If they don't control an Army, they create a 0/0 black Goblin Army creature token first.",
+  "II — Amass Goblins 1. (Put a +1/+1 counter on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "Amass Goblins 3. (Put three +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "Amass Goblins 2.",
+  "When you do, create a 2/2 green Wolf creature token.",
+  "Amass Goblins 2. (Put two +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "When this creature dies, amass Goblins X, where X is this creature's power. (Put X +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "Whenever you cast a noncreature spell, amass Goblins 1. (Put a +1/+1 counter on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "When this creature enters, amass Goblins 1. (Put a +1/+1 counter on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "I, II, III, IV — Create a Treasure token. Then if you control four or more Treasures, sacrifice this Saga. If you do, create a 6/6 red Dragon creature token with flying. (A Treasure token is an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+  "Whenever you attack, amass Goblins 2. (Put two +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "Whenever this creature enters or attacks, create a 3/1 colorless Wall artifact creature token with defender named Stone Boulder.",
+  "If you don't control an Army, create a 0/0 black Goblin Army creature token first.",
+  "Landfall — Whenever a land you control enters, create a 2/2 green Bear creature token.",
+  "II — This Saga gains \"Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token.\"",
+  "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.",
+  "If one or more tokens would be created under your control, twice that many of those tokens are created instead.",
+  "Whenever this creature enters or attacks, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)",
+  "If excess damage was dealt this way, amass Goblins X, where X is that excess damage. (Put X +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "At the beginning of your upkeep, create a 2/2 green Wolf creature token.",
+  "When this creature dies, amass Goblins 4. (Put four +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "When this Equipment enters, amass Goblins 1, then attach this Equipment to the amassed Army. (To amass Goblins 1, put a +1/+1 counter on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)",
+  "Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token.",
+  "{4}{R}, {T}: Create a 2/2 red Dwarf creature token. This ability costs {1} less to activate for each Equipment you control. Activate only as a sorcery.",
+  "{3}{W}: Creatures you control get +1/+1 until end of turn.",
+  "Esgaroth Garrison's power is equal to the number of creatures you control.",
+  "As long as you have an enduring story, creatures you control get +1/+1.",
+  "Creatures you control get +2/+1 until end of turn.",
+  "As this enchantment enters, choose a creature type.\nCreatures you control of the chosen type get +2/+2.",
+  "Ferocious — Whenever this creature attacks while you control a creature with power 4 or greater, put a +1/+1 counter on each creature you control.",
+  "Other creatures you control get +1/+1.",
+  "Creatures you control get +1/+1.",
+  "Whenever equipped creature deals combat damage to a player, choose a creature type. Create a Treasure token for each creature you control of that type.",
+  "Other Bears you control get +2/+2.",
+  "Other Elves you control get +1/+1."
+ ],
+ "capabilities": [
+  {
+   "id": "103370-sacrifice-fodder",
+   "card_id": 103370,
+   "card_name": "Troop of Ponies",
+   "role": "sacrifice_fodder",
+   "face_index": null,
+   "conditions": [
+    "activated",
+    "mana_cost",
+    "sacrifice_self"
+   ],
+   "mechanics": [],
+   "evidence": [
+    0
+   ],
+   "source_rows": 10,
+   "target_rows": 0
+  },
+  {
+   "id": "103375-5",
+   "card_id": 103375,
+   "card_name": "Celebrate the Mountain-king",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    27
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103377-go-wide-pump",
+   "card_id": 103377,
+   "card_name": "Dwarven Provisioner",
+   "role": "go_wide_payoff",
+   "face_index": null,
+   "conditions": [
+    "activated_mana"
+   ],
+   "mechanics": [],
+   "evidence": [
+    62
+   ],
+   "source_rows": 0,
+   "target_rows": 37
+  },
+  {
+   "id": "103378-token-maker-1",
+   "card_id": 103378,
+   "card_name": "Dwarven Shortsword",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb"
+   ],
+   "mechanics": [
+    "equipment"
+   ],
+   "evidence": [
+    28
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103380-token-maker-1",
+   "card_id": 103380,
+   "card_name": "The Eagles Are Coming!",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "next_upkeep",
+    "return_creatures"
+   ],
+   "mechanics": [],
+   "evidence": [
+    29
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103381-go-wide-power",
+   "card_id": 103381,
+   "card_name": "Esgaroth Garrison",
+   "role": "go_wide_payoff",
+   "face_index": null,
+   "conditions": [
+    "static"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    63
+   ],
+   "source_rows": 0,
+   "target_rows": 33
+  },
+  {
+   "id": "103381-recruit-token",
+   "card_id": 103381,
+   "card_name": "Esgaroth Garrison",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    30
+   ],
+   "source_rows": 16,
+   "target_rows": 0
+  },
+  {
+   "id": "103382-dwarf-token-trigger",
+   "card_id": 103382,
+   "card_name": "Fíli the Pathfinder",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "nontoken_dwarf_enters"
+   ],
+   "mechanics": [
+    "storied"
+   ],
+   "evidence": [
+    31
+   ],
+   "source_rows": 15,
+   "target_rows": 0
+  },
+  {
+   "id": "103382-enduring-story-anthem",
+   "card_id": 103382,
+   "card_name": "Fíli the Pathfinder",
+   "role": "go_wide_payoff",
+   "face_index": null,
+   "conditions": [
+    "storied"
+   ],
+   "mechanics": [
+    "storied"
+   ],
+   "evidence": [
+    64
+   ],
+   "source_rows": 0,
+   "target_rows": 34
+  },
+  {
+   "id": "103386-dies-create-token-token-maker",
+   "card_id": 103386,
+   "card_name": "Lake-town Lookout",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "dies",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    32
+   ],
+   "source_rows": 20,
+   "target_rows": 0
+  },
+  {
+   "id": "103389-flashback",
+   "card_id": 103389,
+   "card_name": "Moment of Glory",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "flashback",
+    "mana_cost"
+   ],
+   "mechanics": [
+    "mill_flashback"
+   ],
+   "evidence": [
+    18
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103390-i-token",
+   "card_id": 103390,
+   "card_name": "The Mountain-king's Return",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "saga_chapter",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    33
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103390-ii-recursion",
+   "card_id": 103390,
+   "card_name": "The Mountain-king's Return",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "saga_chapter"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    19
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103392-recruit-token",
+   "card_id": 103392,
+   "card_name": "The Queen of Dale",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "opponent_action",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    34
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103396-go-wide-payoff",
+   "card_id": 103396,
+   "card_name": "Thorin's Last Stand",
+   "role": "go_wide_payoff",
+   "face_index": null,
+   "conditions": [
+    "instant",
+    "modal"
+   ],
+   "mechanics": [],
+   "evidence": [
+    65
+   ],
+   "source_rows": 0,
+   "target_rows": 37
+  },
+  {
+   "id": "103397-f0-go-wide-payoff",
+   "card_id": 103397,
+   "card_name": "An Unexpected Party // At the Door",
+   "role": "go_wide_payoff",
+   "face_index": 0,
+   "conditions": [
+    "typal_choice"
+   ],
+   "mechanics": [
+    "adventures"
+   ],
+   "evidence": [
+    66
+   ],
+   "source_rows": 0,
+   "target_rows": 35
+  },
+  {
+   "id": "103397-f1-token-maker",
+   "card_id": 103397,
+   "card_name": "An Unexpected Party // At the Door",
+   "role": "token_maker",
+   "face_index": 1,
+   "conditions": [
+    "adventure_face",
+    "mana_x"
+   ],
+   "mechanics": [
+    "adventures"
+   ],
+   "evidence": [
+    35
+   ],
+   "source_rows": 14,
+   "target_rows": 0
+  },
+  {
+   "id": "103414-create-1",
+   "card_id": 103414,
+   "card_name": "Great Gilded Boat",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "attack",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    36
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103418-recruit-token",
+   "card_id": 103418,
+   "card_name": "Long Lake Nuisance",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    30
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103420-graveyard-scaling",
+   "card_id": 103420,
+   "card_name": "Master's Councillors",
+   "role": "graveyard_payoff",
+   "face_index": null,
+   "conditions": [
+    "graveyard_threshold_any"
+   ],
+   "mechanics": [
+    "mill_flashback"
+   ],
+   "evidence": [
+    12
+   ],
+   "source_rows": 0,
+   "target_rows": 19
+  },
+  {
+   "id": "103422-0-threshold-graveyard-payoff",
+   "card_id": 103422,
+   "card_name": "Most Decrepit Old Bird // Speak Secrets",
+   "role": "graveyard_payoff",
+   "face_index": 0,
+   "conditions": [
+    "graveyard_threshold_yours"
+   ],
+   "mechanics": [
+    "adventures",
+    "mill_flashback"
+   ],
+   "evidence": [
+    17
+   ],
+   "source_rows": 0,
+   "target_rows": 17
+  },
+  {
+   "id": "103422-1-mill-four-self-mill",
+   "card_id": 103422,
+   "card_name": "Most Decrepit Old Bird // Speak Secrets",
+   "role": "self_mill",
+   "face_index": 1,
+   "conditions": [
+    "adventure_face",
+    "mill"
+   ],
+   "mechanics": [
+    "adventures",
+    "mill_flashback"
+   ],
+   "evidence": [
+    11
+   ],
+   "source_rows": 1,
+   "target_rows": 0
+  },
+  {
+   "id": "103422-1-return-instant-sorcery",
+   "card_id": 103422,
+   "card_name": "Most Decrepit Old Bird // Speak Secrets",
+   "role": "recursion",
+   "face_index": 1,
+   "conditions": [
+    "adventure_face",
+    "mill"
+   ],
+   "mechanics": [
+    "adventures",
+    "mill_flashback"
+   ],
+   "evidence": [
+    11
+   ],
+   "source_rows": 1,
+   "target_rows": 0
+  },
+  {
+   "id": "103425-flashback",
+   "card_id": 103425,
+   "card_name": "Plunder the Trollshaws",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "flashback",
+    "mana_cost"
+   ],
+   "mechanics": [
+    "mill_flashback"
+   ],
+   "evidence": [
+    20
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103427-self-mill",
+   "card_id": 103427,
+   "card_name": "Riddles in the Dark",
+   "role": "self_mill",
+   "face_index": null,
+   "conditions": [
+    "opponent_chooses",
+    "variable_count"
+   ],
+   "mechanics": [
+    "mill_flashback"
+   ],
+   "evidence": [
+    13
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103429-recruit-token",
+   "card_id": 103429,
+   "card_name": "Sound the Trumpets",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "counter_spell",
+    "mana_value_2"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    37
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103434-1",
+   "card_id": 103434,
+   "card_name": "Along the Crooked Way",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "etb"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    21
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103435-token-maker-1",
+   "card_id": 103435,
+   "card_name": "Azog, Moria's Ruin",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "destroy_creature"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    38
+   ],
+   "source_rows": 18,
+   "target_rows": 0
+  },
+  {
+   "id": "103439-amass-token",
+   "card_id": 103439,
+   "card_name": "Down, Down to Goblin-town",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "saga_chapter",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    39
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103442-amass-goblin-army-token",
+   "card_id": 103442,
+   "card_name": "Gathering of Darkness",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "sorcery",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    40
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103442-return-creature-card",
+   "card_id": 103442,
+   "card_name": "Gathering of Darkness",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "sorcery",
+    "up_to_one"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    22
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103447-graveyard-return",
+   "card_id": 103447,
+   "card_name": "Gollum the Abandoned",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "graveyard",
+    "mana_cost",
+    "sorcery_speed"
+   ],
+   "mechanics": [],
+   "evidence": [
+    3
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103447-sacrifice-outlet",
+   "card_id": 103447,
+   "card_name": "Gollum the Abandoned",
+   "role": "sacrifice_outlet",
+   "face_index": null,
+   "conditions": [
+    "graveyard",
+    "mana_cost",
+    "sorcery_speed",
+    "optional"
+   ],
+   "mechanics": [],
+   "evidence": [
+    3
+   ],
+   "source_rows": 0,
+   "target_rows": 38
+  },
+  {
+   "id": "103448-death-payoff-scry",
+   "card_id": 103448,
+   "card_name": "Great Fierce Bee",
+   "role": "death_payoff",
+   "face_index": null,
+   "conditions": [
+    "creature_dies"
+   ],
+   "mechanics": [],
+   "evidence": [
+    1
+   ],
+   "source_rows": 0,
+   "target_rows": 38
+  },
+  {
+   "id": "103449-f1-amass-token",
+   "card_id": 103449,
+   "card_name": "Great Ugly-Looking Goblin // Clap! Snap!",
+   "role": "token_maker",
+   "face_index": 1,
+   "conditions": [
+    "adventure_face",
+    "amass_army"
+   ],
+   "mechanics": [
+    "adventures",
+    "amass"
+   ],
+   "evidence": [
+    41
+   ],
+   "source_rows": 18,
+   "target_rows": 0
+  },
+  {
+   "id": "103451-death-token-token-maker",
+   "card_id": 103451,
+   "card_name": "Head of the Hunt",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "opponent_creature_dies",
+    "replacement"
+   ],
+   "mechanics": [],
+   "evidence": [
+    42
+   ],
+   "source_rows": 20,
+   "target_rows": 0
+  },
+  {
+   "id": "103455-token-1",
+   "card_id": 103455,
+   "card_name": "Rage into the Valley",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "sorcery",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    43
+   ],
+   "source_rows": 18,
+   "target_rows": 0
+  },
+  {
+   "id": "103458-sacrifice-1",
+   "card_id": 103458,
+   "card_name": "Rhovanion Rampager",
+   "role": "sacrifice_outlet",
+   "face_index": null,
+   "conditions": [
+    "attack",
+    "optional",
+    "creature_only"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    4
+   ],
+   "source_rows": 0,
+   "target_rows": 36
+  },
+  {
+   "id": "103458-token-1",
+   "card_id": 103458,
+   "card_name": "Rhovanion Rampager",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "dies",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    44
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103459-sacrifice-outlet",
+   "card_id": 103459,
+   "card_name": "The Sackville-Bagginses",
+   "role": "sacrifice_outlet",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "optional",
+    "one_shot"
+   ],
+   "mechanics": [
+    "treasure"
+   ],
+   "evidence": [
+    5
+   ],
+   "source_rows": 0,
+   "target_rows": 38
+  },
+  {
+   "id": "103460-sacrifice-cost",
+   "card_id": 103460,
+   "card_name": "Stir Up Trouble",
+   "role": "sacrifice_outlet",
+   "face_index": null,
+   "conditions": [
+    "additional_cost",
+    "alternative_pay4",
+    "optional"
+   ],
+   "mechanics": [],
+   "evidence": [
+    6
+   ],
+   "source_rows": 0,
+   "target_rows": 38
+  },
+  {
+   "id": "103462-return-creature-cards",
+   "card_id": 103462,
+   "card_name": "Supper for Spiders",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "opponent_graveyard",
+    "this_turn"
+   ],
+   "mechanics": [],
+   "evidence": [
+    23
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103465-token-maker-1",
+   "card_id": 103465,
+   "card_name": "Bothersome Noisemaker",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "cast_noncreature",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    45
+   ],
+   "source_rows": 18,
+   "target_rows": 0
+  },
+  {
+   "id": "103478-amass-token",
+   "card_id": 103478,
+   "card_name": "Goblin-town Flunkies",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    46
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103482-dragon-token-1",
+   "card_id": 103482,
+   "card_name": "The Misty Mountains Cold",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "saga_chapter",
+    "treasure_token"
+   ],
+   "mechanics": [
+    "treasure"
+   ],
+   "evidence": [
+    47
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103483-token-maker-1",
+   "card_id": 103483,
+   "card_name": "Misty Mountains Raider",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "attack",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    48
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103491-sacrifice-outlet",
+   "card_id": 103491,
+   "card_name": "Snowslope Hunter",
+   "role": "sacrifice_outlet",
+   "face_index": null,
+   "conditions": [
+    "once_per_turn",
+    "your_turn",
+    "artifact_or_creature"
+   ],
+   "mechanics": [],
+   "evidence": [
+    7
+   ],
+   "source_rows": 0,
+   "target_rows": 38
+  },
+  {
+   "id": "103492-token-maker",
+   "card_id": 103492,
+   "card_name": "Stone-Giant of High Pass",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb_or_attack",
+    "defender_token"
+   ],
+   "mechanics": [],
+   "evidence": [
+    49
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103494-amass-token",
+   "card_id": 103494,
+   "card_name": "Tidings of War",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "sorcery",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass",
+    "mill_flashback"
+   ],
+   "evidence": [
+    50
+   ],
+   "source_rows": 18,
+   "target_rows": 0
+  },
+  {
+   "id": "103494-flashback",
+   "card_id": 103494,
+   "card_name": "Tidings of War",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "flashback",
+    "mana_cost"
+   ],
+   "mechanics": [
+    "amass",
+    "mill_flashback"
+   ],
+   "evidence": [
+    24
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103499-bear-buff-go-wide",
+   "card_id": 103499,
+   "card_name": "Beorn the Fierce",
+   "role": "go_wide_payoff",
+   "face_index": null,
+   "conditions": [
+    "typal_bear",
+    "combat_conversion"
+   ],
+   "mechanics": [],
+   "evidence": [
+    71
+   ],
+   "source_rows": 0,
+   "target_rows": 6
+  },
+  {
+   "id": "103502-mill-self-mill",
+   "card_id": 103502,
+   "card_name": "Cantankerous Keepers",
+   "role": "self_mill",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "mill"
+   ],
+   "mechanics": [
+    "mill_flashback"
+   ],
+   "evidence": [
+    14
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103502-return-elf-cards",
+   "card_id": 103502,
+   "card_name": "Cantankerous Keepers",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "typal_elf"
+   ],
+   "mechanics": [
+    "mill_flashback"
+   ],
+   "evidence": [
+    14
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103503-token-maker-1",
+   "card_id": 103503,
+   "card_name": "Dancing from Dark to Dawn",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "landfall"
+   ],
+   "mechanics": [
+    "landfall"
+   ],
+   "evidence": [
+    51
+   ],
+   "source_rows": 18,
+   "target_rows": 0
+  },
+  {
+   "id": "103504-landfall-1-token-maker",
+   "card_id": 103504,
+   "card_name": "Down in the Valley",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "saga_chapter",
+    "landfall"
+   ],
+   "mechanics": [
+    "landfall"
+   ],
+   "evidence": [
+    52
+   ],
+   "source_rows": 20,
+   "target_rows": 0
+  },
+  {
+   "id": "103511-token-maker",
+   "card_id": 103511,
+   "card_name": "The Notary Hobbits",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "nontoken_only"
+   ],
+   "mechanics": [],
+   "evidence": [
+    53
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103514-death-payoff",
+   "card_id": 103514,
+   "card_name": "Part in Friendship",
+   "role": "death_payoff",
+   "face_index": null,
+   "conditions": [
+    "nontoken_dies",
+    "once_per_turn"
+   ],
+   "mechanics": [],
+   "evidence": [
+    2
+   ],
+   "source_rows": 0,
+   "target_rows": 1
+  },
+  {
+   "id": "103521-go-wide-payoff-1",
+   "card_id": 103521,
+   "card_name": "Wilderland Scrounger",
+   "role": "go_wide_payoff",
+   "face_index": null,
+   "conditions": [
+    "ferocious",
+    "attack"
+   ],
+   "mechanics": [
+    "ferocious"
+   ],
+   "evidence": [
+    67
+   ],
+   "source_rows": 0,
+   "target_rows": 37
+  },
+  {
+   "id": "103524-token-creation-replacement",
+   "card_id": 103524,
+   "card_name": "Bard, King of Dale",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "replacement"
+   ],
+   "mechanics": [],
+   "evidence": [
+    54
+   ],
+   "source_rows": 20,
+   "target_rows": 0
+  },
+  {
+   "id": "103526-anthem",
+   "card_id": 103526,
+   "card_name": "Bard's Company",
+   "role": "go_wide_payoff",
+   "face_index": null,
+   "conditions": [
+    "static"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    68
+   ],
+   "source_rows": 0,
+   "target_rows": 35
+  },
+  {
+   "id": "103526-recruit-attack-token-maker",
+   "card_id": 103526,
+   "card_name": "Bard's Company",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb_or_attack",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    55
+   ],
+   "source_rows": 16,
+   "target_rows": 0
+  },
+  {
+   "id": "103528-sacrifice-outlet-1",
+   "card_id": 103528,
+   "card_name": "Bolg of the North",
+   "role": "sacrifice_outlet",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "optional",
+    "creature_only"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    8
+   ],
+   "source_rows": 0,
+   "target_rows": 37
+  },
+  {
+   "id": "103528-token-maker-1",
+   "card_id": 103528,
+   "card_name": "Bolg of the North",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "optional",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    56
+   ],
+   "source_rows": 15,
+   "target_rows": 0
+  },
+  {
+   "id": "103529-sacrifice-outlet",
+   "card_id": 103529,
+   "card_name": "Bolg's Company",
+   "role": "sacrifice_outlet",
+   "face_index": null,
+   "conditions": [
+    "goblin_only",
+    "tap_cost",
+    "mana_ability"
+   ],
+   "mechanics": [],
+   "evidence": [
+    9
+   ],
+   "source_rows": 0,
+   "target_rows": 14
+  },
+  {
+   "id": "103531-wolf-token",
+   "card_id": 103531,
+   "card_name": "Chief Warg's Company",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "upkeep"
+   ],
+   "mechanics": [],
+   "evidence": [
+    57
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103535-recursion",
+   "card_id": 103535,
+   "card_name": "Eagle's Rescue",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "graveyard",
+    "mana_cost",
+    "sorcery_speed"
+   ],
+   "mechanics": [],
+   "evidence": [
+    25
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103536-amass-token",
+   "card_id": 103536,
+   "card_name": "Fearsome Goblin Pair",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "dies",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass"
+   ],
+   "evidence": [
+    58
+   ],
+   "source_rows": 18,
+   "target_rows": 0
+  },
+  {
+   "id": "103537-token-maker-1",
+   "card_id": 103537,
+   "card_name": "Goblin Plate Mail",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "amass_army"
+   ],
+   "mechanics": [
+    "amass",
+    "equipment"
+   ],
+   "evidence": [
+    59
+   ],
+   "source_rows": 18,
+   "target_rows": 0
+  },
+  {
+   "id": "103542-recruit-token",
+   "card_id": 103542,
+   "card_name": "Patient Instructor",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "recruit_discard"
+   ],
+   "mechanics": [
+    "recruit"
+   ],
+   "evidence": [
+    30
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  },
+  {
+   "id": "103543-recursion-etb",
+   "card_id": 103543,
+   "card_name": "Silvan Reveler",
+   "role": "recursion",
+   "face_index": null,
+   "conditions": [
+    "etb",
+    "optional",
+    "mana_cost"
+   ],
+   "mechanics": [
+    "landfall"
+   ],
+   "evidence": [
+    26
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103546-f0-go-wide-payoff",
+   "card_id": 103546,
+   "card_name": "Thranduil, Sindarin Liege // Silvan Rally",
+   "role": "go_wide_payoff",
+   "face_index": 0,
+   "conditions": [
+    "typal_elf"
+   ],
+   "mechanics": [
+    "adventures",
+    "landfall",
+    "mill_flashback"
+   ],
+   "evidence": [
+    72
+   ],
+   "source_rows": 0,
+   "target_rows": 5
+  },
+  {
+   "id": "103546-f0-token-maker",
+   "card_id": 103546,
+   "card_name": "Thranduil, Sindarin Liege // Silvan Rally",
+   "role": "token_maker",
+   "face_index": 0,
+   "conditions": [
+    "landfall"
+   ],
+   "mechanics": [
+    "adventures",
+    "landfall",
+    "mill_flashback"
+   ],
+   "evidence": [
+    60
+   ],
+   "source_rows": 16,
+   "target_rows": 0
+  },
+  {
+   "id": "103546-f1-recursion",
+   "card_id": 103546,
+   "card_name": "Thranduil, Sindarin Liege // Silvan Rally",
+   "role": "recursion",
+   "face_index": 1,
+   "conditions": [
+    "adventure_face",
+    "mill"
+   ],
+   "mechanics": [
+    "adventures",
+    "landfall",
+    "mill_flashback"
+   ],
+   "evidence": [
+    15
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103546-f1-self-mill",
+   "card_id": 103546,
+   "card_name": "Thranduil, Sindarin Liege // Silvan Rally",
+   "role": "self_mill",
+   "face_index": 1,
+   "conditions": [],
+   "mechanics": [
+    "adventures",
+    "landfall",
+    "mill_flashback"
+   ],
+   "evidence": [
+    15
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103550-sacrifice-outlet",
+   "card_id": 103550,
+   "card_name": "Tom, Bert, and William",
+   "role": "sacrifice_outlet",
+   "face_index": null,
+   "conditions": [
+    "mana_cost",
+    "creature_only"
+   ],
+   "mechanics": [],
+   "evidence": [
+    10
+   ],
+   "source_rows": 0,
+   "target_rows": 38
+  },
+  {
+   "id": "103551-f0-go-wide-payoff",
+   "card_id": 103551,
+   "card_name": "The Arkenstone // Seek the Heart",
+   "role": "go_wide_payoff",
+   "face_index": 0,
+   "conditions": [
+    "static"
+   ],
+   "mechanics": [
+    "adventures"
+   ],
+   "evidence": [
+    69
+   ],
+   "source_rows": 0,
+   "target_rows": 37
+  },
+  {
+   "id": "103556-f1-mill-self",
+   "card_id": 103556,
+   "card_name": "Glamdring, Foe-hammer // Gleam of Death",
+   "role": "self_mill",
+   "face_index": 1,
+   "conditions": [
+    "adventure_face",
+    "mill"
+   ],
+   "mechanics": [
+    "adventures",
+    "equipment",
+    "mill_flashback"
+   ],
+   "evidence": [
+    16
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103556-f1-return-spells",
+   "card_id": 103556,
+   "card_name": "Glamdring, Foe-hammer // Gleam of Death",
+   "role": "recursion",
+   "face_index": 1,
+   "conditions": [
+    "adventure_face",
+    "mill"
+   ],
+   "mechanics": [
+    "adventures",
+    "equipment",
+    "mill_flashback"
+   ],
+   "evidence": [
+    16
+   ],
+   "source_rows": 2,
+   "target_rows": 0
+  },
+  {
+   "id": "103561-go-wide-count",
+   "card_id": 103561,
+   "card_name": "Orcrist, Goblin-cleaver",
+   "role": "go_wide_payoff",
+   "face_index": null,
+   "conditions": [
+    "equip_cost",
+    "combat_damage",
+    "typal_choice"
+   ],
+   "mechanics": [
+    "equipment"
+   ],
+   "evidence": [
+    70
+   ],
+   "source_rows": 0,
+   "target_rows": 37
+  },
+  {
+   "id": "103571-token-maker-1",
+   "card_id": 103571,
+   "card_name": "The Lonely Mountain",
+   "role": "token_maker",
+   "face_index": null,
+   "conditions": [
+    "activated",
+    "sorcery_speed",
+    "mana_cost"
+   ],
+   "mechanics": [],
+   "evidence": [
+    61
+   ],
+   "source_rows": 17,
+   "target_rows": 0
+  }
+ ],
+ "findings": {
+"fodder-dies-payoff": [
+[0,33,"uc","sp:fu"],
+[0,56,"uc","sp:fu"]
+],
+"fodder-sacrifice-outlet": [
+[0,32,"uc","sp:fu"],
+[0,37,"uc","sp:fu"],
+[0,39,"uc","sp:fu"],
+[0,40,"uc","sp:fu"],
+[0,46,"uc","sp:fu"],
+[0,61,"uc","sp:fu"],
+[0,63,"mxg","sp:fu"],
+[0,74,"uc","sp:fu"]
+],
+"mill-graveyard-payoff": [
+[21,19,"uc","tp:ou"],
+[24,19,"uc","sp:nadj"],
+[51,19,"uc","sp:fu"],
+[73,19,"uc","tp:ou"],
+[76,19,"uc","tp:ou"],
+[24,20,"uc","sp:nadj"],
+[51,20,"uc","sp:fu"],
+[73,20,"uc","-"],
+[76,20,"uc","-"]
+],
+"recursion-graveyard-payoff": [
+[10,19,"mxd","sp:fu"],
+[10,20,"mxd","sp:fu"],
+[12,19,"uac","sp:opn"],
+[12,20,"uac","sp:opn"],
+[22,19,"uc","sp:oos"],
+[23,19,"mxd","sp:fu"],
+[26,19,"mxd","sp:fu"],
+[30,19,"mxd","tp:ou"],
+[31,19,"mxd","sp:fu"],
+[41,19,"mxd","sp:oos"],
+[49,19,"mxd","sp:fu"],
+[52,19,"uc","sp:oos"],
+[65,19,"mxd","sp:af"],
+[69,19,"uac","sp:oos"],
+[72,19,"uc","sp:oos"],
+[77,19,"uc","sp:oos"],
+[23,20,"mxd","sp:fu"],
+[26,20,"mxd","sp:fu"],
+[30,20,"mxd","-"],
+[31,20,"mxd","sp:fu"],
+[41,20,"mxd","sp:oos"],
+[49,20,"mxd","sp:fu"],
+[52,20,"uc","sp:oos"],
+[65,20,"mxd","sp:af"],
+[69,20,"uac","sp:oos"],
+[72,20,"uc","sp:oos"],
+[77,20,"uc","sp:oos"]
+],
+"token-death-payoff": [
+[1,33,"uc","sp:fu"],
+[3,33,"uc","sp:fu"],
+[4,33,"uc","sp:fu"],
+[6,33,"uc","sp:fu"],
+[7,33,"uc","sp:fu"],
+[9,33,"uc","sp:fu"],
+[11,33,"uc","sp:fu"],
+[13,33,"uc","sp:fu"],
+[16,33,"uc","sp:nadj"],
+[17,33,"uc","sp:fu"],
+[18,33,"uc","sp:fu"],
+[25,33,"uc","sp:fu"],
+[27,33,"ucc","sp:fu"],
+[28,33,"uc","sp:fu"],
+[29,33,"uc","sp:fu"],
+[34,33,"uc","sp:opn"],
+[35,33,"uc","sp:fu"],
+[36,33,"uc","sp:fu"],
+[38,33,"uc","sp:fu"],
+[42,33,"uc","sp:fu"],
+[43,33,"uc","sp:fu"],
+[44,33,"uac","sp:af"],
+[45,33,"uc","sp:fu"],
+[47,33,"uc","sp:nadj"],
+[48,33,"uc","sp:fu"],
+[53,33,"uc","sp:fu"],
+[54,33,"uc","sp:fu"],
+[55,33,"uc","sp:fu"],
+[58,33,"mrd","sp:nadj"],
+[60,33,"uc","sp:fu"],
+[62,33,"uc","sp:fu"],
+[64,33,"uc","sp:fu"],
+[66,33,"uc","sp:fu"],
+[67,33,"uc","sp:fu"],
+[68,33,"uc","sp:fu"],
+[71,33,"uc","sp:fu"],
+[79,33,"uc","sp:af"]
+],
+"token-go-wide-payoff": [
+[1,2,"uc","sp:fu"],
+[1,5,"uc","sp:fu"],
+[1,8,"uc","sp:fu"],
+[1,14,"uc","sp:fu"],
+[1,15,"uc","sp:fu"],
+[1,57,"uc","sp:fu"],
+[1,59,"uc","sp:fu"],
+[1,75,"uc","sp:fu"],
+[1,78,"uc","sp:fu"],
+[3,2,"uc","sp:fu"],
+[4,2,"uc","sp:fu"],
+[6,2,"uc","sp:fu"],
+[7,2,"uc","sp:fu"],
+[9,2,"uc","sp:fu"],
+[11,2,"uc","sp:fu"],
+[13,2,"uc","sp:fu"],
+[16,2,"uc","sp:nadj"],
+[17,2,"uc","sp:fu"],
+[18,2,"uc","sp:fu"],
+[25,2,"uc","sp:fu"],
+[27,2,"ucc","sp:fu"],
+[28,2,"uc","sp:fu"],
+[29,2,"uc","sp:fu"],
+[34,2,"uc","sp:opn"],
+[35,2,"uc","sp:fu"],
+[36,2,"uc","sp:fu"],
+[38,2,"uc","sp:fu"],
+[42,2,"uc","sp:fu"],
+[43,2,"uc","sp:fu"],
+[44,2,"uac","sp:af"],
+[45,2,"uc","sp:fu"],
+[47,2,"uc","sp:nadj"],
+[48,2,"uc","sp:fu"],
+[53,2,"uc","sp:fu"],
+[54,2,"uc","sp:fu"],
+[55,2,"uc","sp:fu"],
+[58,2,"mrd","sp:nadj"],
+[60,2,"uc","sp:fu"],
+[62,2,"uc","sp:fu"],
+[64,2,"uc","sp:fu"],
+[66,2,"uc","sp:fu"],
+[67,2,"uc","sp:fu"],
+[68,2,"uc","sp:fu"],
+[71,2,"uc","sp:fu"],
+[79,2,"uc","sp:af"],
+[3,5,"uc","sp:fu"],
+[3,8,"uc","sp:fu"],
+[3,14,"uc","sp:fu"],
+[3,15,"uc","sp:fu"],
+[3,57,"uc","sp:fu"],
+[3,59,"uc","sp:fu"],
+[3,75,"uc","sp:fu"],
+[3,78,"uc","sp:fu"],
+[4,5,"uc","sp:fu"],
+[4,8,"uc","sp:fu"],
+[4,14,"uc","sp:fu"],
+[4,15,"uc","sp:fu"],
+[4,57,"uc","sp:fu"],
+[4,59,"uc","sp:fu"],
+[4,75,"uc","sp:fu"],
+[4,78,"uc","sp:fu"],
+[6,8,"uc","sp:fu"],
+[9,5,"uc","sp:fu"],
+[11,5,"uc","sp:fu"],
+[13,5,"uc","sp:fu"],
+[6,14,"uc","sp:fu"],
+[6,15,"uc","sp:fu"],
+[17,5,"uc","sp:fu"],
+[18,5,"uc","sp:fu"],
+[25,5,"uc","sp:fu"],
+[27,5,"ucc","sp:fu"],
+[28,5,"uc","sp:fu"],
+[29,5,"uc","sp:fu"],
+[34,5,"uc","sp:opn"],
+[35,5,"uc","sp:fu"],
+[36,5,"uc","sp:fu"],
+[38,5,"uc","sp:fu"],
+[42,5,"uc","sp:fu"],
+[43,5,"uc","sp:fu"],
+[44,5,"uac","sp:af"],
+[45,5,"uc","sp:fu"],
+[47,5,"uc","sp:nadj"],
+[48,5,"uc","sp:fu"],
+[53,5,"uc","sp:fu"],
+[54,5,"uc","sp:fu"],
+[55,5,"uc","sp:fu"],
+[6,57,"uc","sp:fu"],
+[58,5,"mrd","sp:nadj"],
+[6,59,"uc","sp:fu"],
+[62,5,"uc","sp:fu"],
+[64,5,"uc","sp:fu"],
+[66,5,"uc","sp:fu"],
+[67,5,"uc","sp:fu"],
+[68,5,"uc","sp:fu"],
+[71,5,"uc","sp:fu"],
+[6,75,"uc","sp:fu"],
+[6,78,"uc","sp:fu"],
+[79,5,"uc","sp:af"],
+[9,8,"uc","sp:fu"],
+[11,8,"uc","sp:fu"],
+[13,8,"uc","sp:fu"],
+[7,14,"uc","sp:fu"],
+[7,15,"uc","sp:fu"],
+[17,8,"uc","sp:fu"],
+[18,8,"uc","sp:fu"],
+[25,8,"uc","sp:fu"],
+[27,8,"ucc","sp:fu"],
+[28,8,"uc","sp:fu"],
+[29,8,"uc","sp:fu"],
+[34,8,"uc","sp:opn"],
+[35,8,"uc","sp:fu"],
+[36,8,"uc","sp:fu"],
+[38,8,"uc","sp:fu"],
+[42,8,"uc","sp:fu"],
+[43,8,"uc","sp:fu"],
+[44,8,"uac","sp:af"],
+[45,8,"uc","sp:fu"],
+[47,8,"uc","sp:nadj"],
+[48,8,"uc","sp:fu"],
+[53,8,"uc","sp:fu"],
+[54,8,"uc","sp:fu"],
+[55,8,"uc","sp:fu"],
+[7,57,"uc","sp:fu"],
+[58,8,"mrd","sp:nadj"],
+[7,59,"uc","sp:fu"],
+[62,8,"uc","sp:fu"],
+[64,8,"uc","sp:fu"],
+[66,8,"uc","sp:fu"],
+[67,8,"uc","sp:fu"],
+[68,8,"uc","sp:fu"],
+[71,8,"uc","sp:fu"],
+[7,75,"uc","sp:fu"],
+[7,78,"uc","sp:fu"],
+[79,8,"uc","sp:af"],
+[9,14,"uc","sp:fu"],
+[9,15,"uc","sp:fu"],
+[9,50,"uc","sp:fu"],
+[9,57,"uc","sp:fu"],
+[9,59,"uc","sp:fu"],
+[9,70,"mxe","sp:fu"],
+[9,75,"uc","sp:fu"],
+[9,78,"uc","sp:fu"],
+[11,14,"uc","sp:fu"],
+[11,15,"uc","sp:fu"],
+[11,57,"uc","sp:fu"],
+[11,59,"uc","sp:fu"],
+[11,75,"uc","sp:fu"],
+[11,78,"uc","sp:fu"],
+[13,14,"uc","sp:fu"],
+[13,15,"uc","sp:fu"],
+[13,57,"uc","sp:fu"],
+[13,59,"uc","sp:fu"],
+[13,75,"uc","sp:fu"],
+[13,78,"uc","sp:fu"],
+[16,14,"uc","sp:nadj"],
+[17,14,"uc","sp:fu"],
+[18,14,"uc","sp:fu"],
+[25,14,"uc","sp:fu"],
+[27,14,"ucc","sp:fu"],
+[28,14,"uc","sp:fu"],
+[29,14,"uc","sp:fu"],
+[34,14,"uc","sp:opn"],
+[35,14,"uc","sp:fu"],
+[36,14,"uc","sp:fu"],
+[38,14,"uc","sp:fu"],
+[42,14,"uc","sp:fu"],
+[43,14,"uc","sp:fu"],
+[44,14,"uac","sp:af"],
+[45,14,"uc","sp:fu"],
+[47,14,"uc","sp:nadj"],
+[48,14,"uc","sp:fu"],
+[53,14,"uc","sp:fu"],
+[54,14,"uc","sp:fu"],
+[55,14,"uc","sp:fu"],
+[58,14,"mrd","sp:nadj"],
+[60,14,"uc","sp:fu"],
+[62,14,"uc","sp:fu"],
+[64,14,"uc","sp:fu"],
+[66,14,"uc","sp:fu"],
+[67,14,"uc","sp:fu"],
+[68,14,"uc","sp:fu"],
+[71,14,"uc","sp:fu"],
+[79,14,"uc","sp:af"],
+[17,15,"uc","sp:fu"],
+[18,15,"uc","sp:fu"],
+[25,15,"uc","sp:fu"],
+[27,15,"ucc","sp:fu"],
+[28,15,"uc","sp:fu"],
+[29,15,"uc","sp:fu"],
+[34,15,"uc","sp:opn"],
+[35,15,"uc","sp:fu"],
+[36,15,"uc","sp:fu"],
+[38,15,"uc","sp:fu"],
+[42,15,"uc","sp:fu"],
+[43,15,"uc","sp:fu"],
+[44,15,"uac","sp:af"],
+[45,15,"uc","sp:fu"],
+[47,15,"uc","sp:nadj"],
+[48,15,"uc","sp:fu"],
+[53,15,"uc","sp:fu"],
+[54,15,"uc","sp:fu"],
+[55,15,"uc","sp:fu"],
+[16,57,"uc","sp:nadj"],
+[58,15,"mrd","sp:nadj"],
+[16,59,"uc","sp:nadj"],
+[62,15,"uc","sp:fu"],
+[64,15,"uc","sp:fu"],
+[66,15,"uc","sp:fu"],
+[67,15,"uc","sp:fu"],
+[68,15,"uc","sp:fu"],
+[71,15,"uc","sp:fu"],
+[16,75,"uc","sp:nadj"],
+[16,78,"uc","sp:nadj"],
+[79,15,"uc","sp:af"],
+[17,57,"uc","sp:fu"],
+[17,59,"uc","sp:fu"],
+[17,75,"uc","sp:fu"],
+[17,78,"uc","sp:fu"],
+[18,57,"uc","sp:fu"],
+[18,59,"uc","sp:fu"],
+[18,75,"uc","sp:fu"],
+[18,78,"uc","sp:fu"],
+[25,57,"uc","sp:fu"],
+[25,59,"uc","sp:fu"],
+[25,75,"uc","sp:fu"],
+[25,78,"uc","sp:fu"],
+[27,57,"ucc","sp:fu"],
+[27,59,"ucc","sp:fu"],
+[27,75,"ucc","sp:fu"],
+[27,78,"ucc","sp:fu"],
+[28,57,"uc","sp:fu"],
+[28,59,"uc","sp:fu"],
+[28,75,"uc","sp:fu"],
+[28,78,"uc","sp:fu"],
+[29,57,"uc","sp:fu"],
+[29,59,"uc","sp:fu"],
+[29,75,"uc","sp:fu"],
+[29,78,"uc","sp:fu"],
+[34,57,"uc","sp:opn"],
+[34,59,"uc","sp:opn"],
+[34,75,"uc","sp:opn"],
+[34,78,"uc","sp:opn"],
+[35,50,"uc","sp:fu"],
+[35,57,"uc","sp:fu"],
+[35,59,"uc","sp:fu"],
+[35,70,"mxe","sp:fu"],
+[35,75,"uc","sp:fu"],
+[35,78,"uc","sp:fu"],
+[36,57,"uc","sp:fu"],
+[36,59,"uc","sp:fu"],
+[36,75,"uc","sp:fu"],
+[36,78,"uc","sp:fu"],
+[38,57,"uc","sp:fu"],
+[38,59,"uc","sp:fu"],
+[38,75,"uc","sp:fu"],
+[38,78,"uc","sp:fu"],
+[42,57,"uc","sp:fu"],
+[42,59,"uc","sp:fu"],
+[42,75,"uc","sp:fu"],
+[42,78,"uc","sp:fu"],
+[43,57,"uc","sp:fu"],
+[43,59,"uc","sp:fu"],
+[43,75,"uc","sp:fu"],
+[43,78,"uc","sp:fu"],
+[44,57,"uac","sp:af"],
+[44,59,"uac","sp:af"],
+[44,75,"uac","sp:af"],
+[44,78,"uac","sp:af"],
+[45,57,"uc","sp:fu"],
+[45,59,"uc","sp:fu"],
+[45,75,"uc","sp:fu"],
+[45,78,"uc","sp:fu"],
+[47,57,"uc","sp:nadj"],
+[47,59,"uc","sp:nadj"],
+[47,75,"uc","sp:nadj"],
+[47,78,"uc","sp:nadj"],
+[48,57,"uc","sp:fu"],
+[48,59,"uc","sp:fu"],
+[48,75,"uc","sp:fu"],
+[48,78,"uc","sp:fu"],
+[53,50,"uc","sp:fu"],
+[54,50,"uc","sp:fu"],
+[58,50,"mrd","sp:nadj"],
+[60,50,"uc","sp:fu"],
+[53,57,"uc","sp:fu"],
+[53,59,"uc","sp:fu"],
+[53,75,"uc","sp:fu"],
+[53,78,"uc","sp:fu"],
+[54,57,"uc","sp:fu"],
+[54,59,"uc","sp:fu"],
+[54,70,"uc","sp:fu"],
+[54,75,"uc","sp:fu"],
+[54,78,"uc","sp:fu"],
+[55,57,"uc","sp:fu"],
+[55,59,"uc","sp:fu"],
+[55,75,"uc","sp:fu"],
+[55,78,"uc","sp:fu"],
+[58,57,"mrd","sp:nadj"],
+[60,57,"uc","sp:fu"],
+[62,57,"uc","sp:fu"],
+[64,57,"uc","sp:fu"],
+[66,57,"uc","sp:fu"],
+[67,57,"uc","sp:fu"],
+[68,57,"uc","sp:fu"],
+[71,57,"uc","sp:fu"],
+[79,57,"uc","sp:af"],
+[58,59,"mrd","sp:nadj"],
+[58,70,"mrd","sp:nadj"],
+[58,75,"mrd","sp:nadj"],
+[58,78,"mrd","sp:nadj"],
+[62,59,"uc","sp:fu"],
+[64,59,"uc","sp:fu"],
+[66,59,"uc","sp:fu"],
+[67,59,"uc","sp:fu"],
+[68,59,"uc","sp:fu"],
+[60,70,"mxe","sp:fu"],
+[60,75,"uc","sp:fu"],
+[60,78,"uc","sp:fu"],
+[79,59,"uc","sp:af"],
+[62,75,"uc","sp:fu"],
+[62,78,"uc","sp:fu"],
+[64,75,"uc","sp:fu"],
+[64,78,"uc","sp:fu"],
+[66,75,"uc","sp:fu"],
+[66,78,"uc","sp:fu"],
+[67,75,"uc","sp:fu"],
+[67,78,"uc","sp:fu"],
+[68,75,"uc","sp:fu"],
+[68,78,"uc","sp:fu"],
+[71,75,"uc","sp:fu"],
+[71,78,"uc","sp:fu"],
+[79,75,"uc","sp:af"],
+[79,78,"uc","sp:af"]
+],
+"token-sacrifice-outlet": [
+[1,32,"uc","sp:fu"],
+[1,37,"uc","sp:fu"],
+[1,39,"uc","sp:fu"],
+[1,40,"uc","sp:fu"],
+[1,46,"uc","sp:fu"],
+[1,61,"uc","sp:fu"],
+[1,74,"uc","sp:fu"],
+[3,32,"uc","sp:fu"],
+[3,37,"uc","sp:fu"],
+[3,39,"uc","sp:fu"],
+[3,40,"uc","sp:fu"],
+[3,46,"uc","sp:fu"],
+[3,61,"uc","sp:fu"],
+[3,74,"uc","sp:fu"],
+[4,32,"uc","sp:fu"],
+[4,37,"uc","sp:fu"],
+[4,39,"uc","sp:fu"],
+[4,40,"uc","sp:fu"],
+[4,46,"uc","sp:fu"],
+[4,61,"uc","sp:fu"],
+[4,74,"uc","sp:fu"],
+[6,32,"uc","sp:fu"],
+[6,37,"uc","sp:fu"],
+[6,39,"uc","sp:fu"],
+[6,40,"uc","sp:fu"],
+[6,46,"uc","sp:fu"],
+[6,61,"uc","sp:fu"],
+[6,74,"uc","sp:fu"],
+[7,32,"uc","sp:fu"],
+[7,37,"uc","sp:fu"],
+[7,39,"uc","sp:fu"],
+[7,40,"uc","sp:fu"],
+[7,46,"uc","sp:fu"],
+[7,61,"uc","sp:fu"],
+[7,74,"uc","sp:fu"],
+[9,32,"uc","sp:fu"],
+[9,37,"uc","sp:fu"],
+[9,39,"uc","sp:fu"],
+[9,40,"uc","sp:fu"],
+[9,46,"uc","sp:fu"],
+[9,61,"uc","sp:fu"],
+[9,63,"mxg","sp:fu"],
+[9,74,"uc","sp:fu"],
+[11,32,"uc","sp:fu"],
+[11,37,"uc","sp:fu"],
+[11,39,"uc","sp:fu"],
+[11,40,"uc","sp:fu"],
+[11,46,"uc","sp:fu"],
+[11,61,"uc","sp:fu"],
+[11,74,"uc","sp:fu"],
+[13,32,"uc","sp:fu"],
+[13,37,"uc","sp:fu"],
+[13,39,"uc","sp:fu"],
+[13,40,"uc","sp:fu"],
+[13,46,"uc","sp:fu"],
+[13,61,"uc","sp:fu"],
+[13,74,"uc","sp:fu"],
+[16,32,"uc","sp:nadj"],
+[16,37,"uc","sp:nadj"],
+[16,39,"uc","sp:nadj"],
+[16,40,"uc","sp:nadj"],
+[16,46,"uc","sp:nadj"],
+[16,61,"uc","sp:nadj"],
+[16,74,"uc","sp:nadj"],
+[17,32,"uc","sp:fu"],
+[17,37,"uc","sp:fu"],
+[17,39,"uc","sp:fu"],
+[17,40,"uc","sp:fu"],
+[17,46,"uc","sp:fu"],
+[17,61,"uc","sp:fu"],
+[17,74,"uc","sp:fu"],
+[18,32,"uc","sp:fu"],
+[18,37,"uc","sp:fu"],
+[18,39,"uc","sp:fu"],
+[18,40,"uc","sp:fu"],
+[18,46,"uc","sp:fu"],
+[18,61,"uc","sp:fu"],
+[18,74,"uc","sp:fu"],
+[25,32,"uc","sp:fu"],
+[25,37,"uc","sp:fu"],
+[25,39,"uc","sp:fu"],
+[25,40,"uc","sp:fu"],
+[25,46,"uc","sp:fu"],
+[25,61,"uc","sp:fu"],
+[25,74,"uc","sp:fu"],
+[27,32,"ucc","sp:fu"],
+[27,37,"ucc","sp:fu"],
+[27,39,"ucc","sp:fu"],
+[27,40,"ucc","sp:fu"],
+[27,46,"ucc","sp:fu"],
+[27,61,"ucc","sp:fu"],
+[27,63,"ucc","sp:fu"],
+[27,74,"ucc","sp:fu"],
+[28,32,"uc","sp:fu"],
+[28,37,"uc","sp:fu"],
+[28,39,"uc","sp:fu"],
+[28,40,"uc","sp:fu"],
+[28,46,"uc","sp:fu"],
+[28,61,"uc","sp:fu"],
+[28,74,"uc","sp:fu"],
+[29,32,"uc","sp:fu"],
+[29,37,"uc","sp:fu"],
+[29,39,"uc","sp:fu"],
+[29,40,"uc","sp:fu"],
+[29,46,"uc","sp:fu"],
+[29,61,"uc","sp:fu"],
+[29,74,"uc","sp:fu"],
+[34,32,"uc","sp:opn"],
+[35,32,"uc","sp:fu"],
+[36,32,"uc","sp:fu"],
+[38,32,"uc","sp:fu"],
+[42,32,"uc","sp:fu"],
+[43,32,"uc","sp:fu"],
+[44,32,"uc","sp:af"],
+[45,32,"uc","sp:fu"],
+[47,32,"uc","sp:nadj"],
+[48,32,"uc","sp:fu"],
+[53,32,"uc","sp:fu"],
+[54,32,"uc","sp:fu"],
+[55,32,"uc","sp:fu"],
+[58,32,"mrd","sp:nadj"],
+[60,32,"uc","sp:fu"],
+[62,32,"uc","sp:fu"],
+[64,32,"uc","sp:fu"],
+[66,32,"uc","sp:fu"],
+[67,32,"uc","sp:fu"],
+[68,32,"uc","sp:fu"],
+[71,32,"uc","sp:fu"],
+[79,32,"uc","sp:af"],
+[34,37,"uc","sp:opn"],
+[34,39,"uc","sp:opn"],
+[34,40,"uc","sp:opn"],
+[34,46,"uc","sp:opn"],
+[34,61,"uc","sp:opn"],
+[34,63,"uc","sp:opn"],
+[34,74,"uc","sp:opn"],
+[35,37,"uc","sp:fu"],
+[35,39,"uc","sp:fu"],
+[35,40,"uc","sp:fu"],
+[35,46,"uc","sp:fu"],
+[35,61,"uc","sp:fu"],
+[35,63,"mxg","sp:fu"],
+[35,74,"uc","sp:fu"],
+[36,37,"uc","sp:fu"],
+[36,39,"uc","sp:fu"],
+[36,40,"uc","sp:fu"],
+[36,46,"uc","sp:fu"],
+[36,61,"uc","sp:fu"],
+[36,63,"uc","sp:fu"],
+[36,74,"uc","sp:fu"],
+[38,39,"uc","sp:fu"],
+[38,40,"uc","sp:fu"],
+[42,37,"uc","sp:fu"],
+[43,37,"uc","sp:fu"],
+[44,37,"uac","sp:af"],
+[45,37,"uc","sp:fu"],
+[38,46,"uc","sp:fu"],
+[47,37,"uc","sp:nadj"],
+[48,37,"uc","sp:fu"],
+[53,37,"uc","sp:fu"],
+[54,37,"uc","sp:fu"],
+[55,37,"uc","sp:fu"],
+[58,37,"mrd","sp:nadj"],
+[60,37,"uc","sp:fu"],
+[38,61,"uc","sp:fu"],
+[38,63,"uc","sp:fu"],
+[64,37,"uc","sp:fu"],
+[66,37,"uc","sp:fu"],
+[67,37,"uc","sp:fu"],
+[68,37,"uc","sp:fu"],
+[71,37,"uc","sp:fu"],
+[38,74,"uc","sp:fu"],
+[79,37,"uc","sp:af"],
+[42,39,"uc","sp:fu"],
+[43,39,"uc","sp:fu"],
+[44,39,"uc","sp:af"],
+[45,39,"uc","sp:fu"],
+[47,39,"uc","sp:nadj"],
+[48,39,"uc","sp:fu"],
+[53,39,"uc","sp:fu"],
+[54,39,"uc","sp:fu"],
+[55,39,"uc","sp:fu"],
+[58,39,"mrd","sp:nadj"],
+[60,39,"uc","sp:fu"],
+[62,39,"uc","sp:fu"],
+[64,39,"uc","sp:fu"],
+[66,39,"uc","sp:fu"],
+[67,39,"uc","sp:fu"],
+[68,39,"uc","sp:fu"],
+[71,39,"uc","sp:fu"],
+[79,39,"uc","sp:af"],
+[42,40,"uc","sp:fu"],
+[43,40,"uc","sp:fu"],
+[44,40,"uc","sp:af"],
+[45,40,"uc","sp:fu"],
+[47,40,"uc","sp:nadj"],
+[48,40,"uc","sp:fu"],
+[53,40,"uc","sp:fu"],
+[54,40,"uc","sp:fu"],
+[55,40,"uc","sp:fu"],
+[58,40,"mrd","sp:nadj"],
+[60,40,"uc","sp:fu"],
+[62,40,"uc","sp:fu"],
+[64,40,"uc","sp:fu"],
+[66,40,"uc","sp:fu"],
+[67,40,"uc","sp:fu"],
+[68,40,"uc","sp:fu"],
+[71,40,"uc","sp:fu"],
+[79,40,"uc","sp:af"],
+[42,46,"uc","sp:fu"],
+[42,61,"uc","sp:fu"],
+[42,63,"uc","sp:fu"],
+[42,74,"uc","sp:fu"],
+[43,46,"uc","sp:fu"],
+[43,61,"uc","sp:fu"],
+[43,74,"uc","sp:fu"],
+[44,46,"uc","sp:af"],
+[44,61,"uac","sp:af"],
+[44,74,"uac","sp:af"],
+[45,46,"uc","sp:fu"],
+[45,61,"uc","sp:fu"],
+[45,74,"uc","sp:fu"],
+[47,46,"uc","sp:nadj"],
+[48,46,"uc","sp:fu"],
+[53,46,"uc","sp:fu"],
+[54,46,"uc","sp:fu"],
+[55,46,"uc","sp:fu"],
+[58,46,"mrd","sp:nadj"],
+[60,46,"uc","sp:fu"],
+[62,46,"uc","sp:fu"],
+[64,46,"uc","sp:fu"],
+[66,46,"uc","sp:fu"],
+[67,46,"uc","sp:fu"],
+[68,46,"uc","sp:fu"],
+[71,46,"uc","sp:fu"],
+[79,46,"uc","sp:af"],
+[47,61,"uc","sp:nadj"],
+[47,74,"uc","sp:nadj"],
+[48,61,"uc","sp:fu"],
+[48,63,"uc","sp:fu"],
+[48,74,"uc","sp:fu"],
+[53,61,"uc","sp:fu"],
+[53,74,"uc","sp:fu"],
+[54,61,"uc","sp:fu"],
+[54,63,"mxg","sp:fu"],
+[54,74,"uc","sp:fu"],
+[55,61,"uc","sp:fu"],
+[55,74,"uc","sp:fu"],
+[58,61,"mrd","sp:nadj"],
+[58,63,"mrd","sp:nadj"],
+[58,74,"mrd","sp:nadj"],
+[60,61,"uc","sp:fu"],
+[60,63,"mxg","sp:fu"],
+[60,74,"uc","sp:fu"],
+[64,61,"uc","sp:fu"],
+[66,61,"uc","sp:fu"],
+[67,61,"uc","sp:fu"],
+[68,61,"uc","sp:fu"],
+[71,61,"uc","sp:fu"],
+[62,74,"uc","sp:fu"],
+[79,61,"uc","sp:af"],
+[66,63,"uc","sp:fu"],
+[67,63,"uc","sp:fu"],
+[64,74,"uc","sp:fu"],
+[66,74,"uc","sp:fu"],
+[67,74,"uc","sp:fu"],
+[68,74,"uc","sp:fu"],
+[71,74,"uc","sp:fu"],
+[79,74,"uc","sp:af"]
+]
+}
+}
