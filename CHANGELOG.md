@@ -3,6 +3,13 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Retain source-bound conditional draft synergies as qualified relationship projections.
+  A projection participant may declare the stated cost, choice, condition, mode, party,
+  quantity, and timing requirements the clause grammar cannot certify as exact
+  `selector`/`occurrence` qualifications inside its own frozen Oracle paragraph;
+  declared gaps close `incomplete` verdicts while contradictions still fail, the
+  projection reports `decoded` only when nothing is declared and `qualified` otherwise,
+  and the optional key keeps legacy artifact and profile bytes unchanged. (#588)
 - Document the HOB enrichment coverage audit, source-bound capability and
   relationship ledgers, conditional draft-synergy contract, and offline runtime
   traces. Record missing recovery work without changing production behavior or

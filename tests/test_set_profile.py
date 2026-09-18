@@ -19,15 +19,19 @@ from draftomen.semantic_enrichment import SEMANTIC_ENRICHMENT_SCHEMA_VERSION
 from draftomen.semantic_enrichment_records import OracleEvidence
 from draftomen.semantic_relationship_records import (
     CardRelationship,
+    QualificationKind,
+    QualificationOutcome,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
+    RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
 )
 from draftomen.semantic_roles import CompiledRoleProfile, ProfileCard, Role, RoleAssignment
 from draftomen.set_profile import (
     SET_PROFILE_SCHEMA_VERSION,
+    SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS,
     AggregateEvidence,
     CardPairSynergy,
     CardRating,
@@ -1444,3 +1448,45 @@ def test_typed_projection_ignores_claim_prose_at_the_profile_boundary() -> None:
     assert plain_projection == verbose_projection
     assert plain.enhancement.relationships[0].prerequisites != verbose.enhancement.relationships[0].prerequisites
     assert plain.fingerprint != verbose.fingerprint
+
+
+def test_profile_round_trip_preserves_qualified_relationships() -> None:
+    """A qualified enhancement relationship survives the profile bytes on schema 3."""
+    assert SET_PROFILE_SCHEMA_VERSION == 3
+    assert SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS == (1, 2, 3)
+    payload = _enhanced_payload_with_projection()
+    projection = _fixture_projection()
+    qualification = RelationshipQualification(
+        kind=QualificationKind.CONDITION,
+        evidence=OracleEvidence(
+            card_id=FIXTURE_SOURCE_CARD_ID,
+            face_index=None,
+            quote=FIXTURE_TOKEN_QUOTE,
+        ),
+        selector="a 1/1 red Goblin creature token",
+        occurrence=0,
+    )
+    qualified = RelationshipPrerequisiteProjection(
+        source=replace(projection.source, prerequisites=(), qualifications=(qualification,)),
+        target=projection.target,
+    )
+    assert qualified.outcome is QualificationOutcome.QUALIFIED
+    payload["enhancement"]["relationships"][0]["prerequisite_projection"] = qualified.to_json()  # type: ignore[index]
+    profile = SetProfile.from_json(payload)
+    relationship = profile.enhancement.relationships[0]  # type: ignore[union-attr]
+    stored = relationship.prerequisite_projection
+    assert stored is not None
+    assert stored.outcome is QualificationOutcome.QUALIFIED
+    assert stored.source.qualifications[0].kind is QualificationKind.CONDITION
+    assert stored.source.qualifications[0].selector == "a 1/1 red Goblin creature token"
+    assert stored.source.qualifications[0].occurrence == 0
+    assert stored.source.qualifications[0].evidence.quote == FIXTURE_TOKEN_QUOTE
+    restored = SetProfile.from_json(json.loads(profile.to_bytes().decode()))
+    assert restored.to_bytes() == profile.to_bytes()
+    assert restored.enhancement.relationships[0].prerequisite_projection == stored  # type: ignore[union-attr]
+    legacy = SetProfile.from_json(_enhanced_payload_with_projection())
+    legacy_payload = _enhanced_payload_with_projection()
+    assert "qualifications" not in json.dumps(
+        legacy_payload["enhancement"]["relationships"][0]["prerequisite_projection"]["source"]  # type: ignore[index]
+    )
+    assert SetProfile.from_json(legacy_payload).to_bytes() == legacy.to_bytes()

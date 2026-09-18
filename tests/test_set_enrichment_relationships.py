@@ -37,9 +37,12 @@ from draftomen.semantic_relationship_records import (
     RELATIONSHIP_PREREQUISITE_PROJECTION_SCHEMA_VERSION,
     CardRelationship,
     PrerequisiteProjectionError,
+    QualificationKind,
+    QualificationOutcome,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
+    RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
     role_anchor_covered,
@@ -5218,3 +5221,290 @@ def test_typed_mixed_direction_loot_records_keep_reversed_edges() -> None:
             clause.operation for clause in restored.prerequisite_projection.target.prerequisites
         } == {"draw", "discard"}
 
+
+
+# docs/audits/hob-587-relationship-ledger.json quote_registry[9]: 103529 Bolg's Company,
+# the audit's ordinary paid ability ("{T}, Sacrifice another Goblin: Add {B}{R}").
+PAID_ABILITY_QUOTE = "{T}, Sacrifice another Goblin: Add {B}{R}."
+# quote_registry[40]: 103442 Gathering of Darkness, the audit's two amass modes.
+AMASS_QUOTE = (
+    "Amass Goblins 3. (Put three +1/+1 counters on an Army you control. It's also a Goblin. "
+    "If you don't control an Army, create a 0/0 black Goblin Army creature token first.)"
+)
+PAID_OUTLET_CARD_ID = 501
+AMASS_CARD_ID = 502
+
+
+def _paid_evidence() -> OracleEvidence:
+    """Return the frozen Oracle evidence of the audit's paid ability paragraph."""
+    return OracleEvidence(card_id=PAID_OUTLET_CARD_ID, face_index=None, quote=PAID_ABILITY_QUOTE)
+
+
+def _paid_clause(**overrides: Any) -> RelationshipPrerequisite:
+    """Build the sacrifice cost clause of the audit's paid ability paragraph."""
+    values: dict[str, Any] = {
+        "kind": PrerequisiteKind.COST,
+        "subject": "input",
+        "operation": "sacrifice",
+        "object_kind": "permanent",
+        "card_types": ("creature",),
+        "type_operator": "all_of",
+        "token_restriction": "unrestricted",
+        "exclusion": "ability_source",
+        "subtype": "goblin",
+        "color_operator": "unrestricted",
+        "colors": (),
+        "controller": "you",
+        "owner": "not_applicable",
+        "quantity": CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
+        "source_zone": None,
+        "destination_zone": RelationshipZone(zone=CapabilityZone.GRAVEYARD, player="owner"),
+        "timing": RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
+        "required_card_id": None,
+        "evidence": _paid_evidence(),
+        "operation_quote": "Sacrifice",
+        "operation_occurrence": 0,
+        "object_quote": "another Goblin",
+        "object_occurrence": 0,
+        "capability_prerequisite_indices": (),
+    }
+    values.update(overrides)
+    return RelationshipPrerequisite(**values)
+
+
+def _paid_qualification(**overrides: Any) -> RelationshipQualification:
+    """Build one stated-requirement qualification inside the paid ability paragraph."""
+    values: dict[str, Any] = {
+        "kind": QualificationKind.COST,
+        "evidence": _paid_evidence(),
+        "selector": "Sacrifice another Goblin",
+        "occurrence": 0,
+    }
+    values.update(overrides)
+    return RelationshipQualification(**values)
+
+
+def _paid_source_participant(**overrides: Any) -> RelationshipParticipant:
+    """Build the load-bearing outlet participant of the audit's paid ability paragraph."""
+    values: dict[str, Any] = {
+        "card_id": PAID_OUTLET_CARD_ID,
+        "capability_id": "capability-paid-outlet",
+        "card_name": "Paid Outlet",
+        "face_index": None,
+        "face_name": None,
+        "card_source_sha256": hashlib.sha256(PAID_ABILITY_QUOTE.encode("utf-8")).hexdigest(),
+        "role": Role.SACRIFICE_OUTLET,
+        "capability_prerequisites": (),
+        "prerequisites": (_paid_clause(),),
+    }
+    values.update(overrides)
+    return RelationshipParticipant(**values)
+
+
+def _amass_evidence() -> OracleEvidence:
+    """Return the frozen Oracle evidence of the audit's amass paragraph."""
+    return OracleEvidence(card_id=AMASS_CARD_ID, face_index=None, quote=AMASS_QUOTE)
+
+
+def _amass_source_participant(**overrides: Any) -> RelationshipParticipant:
+    """Build the amass participant whose modes stay retained without board claims."""
+    values: dict[str, Any] = {
+        "card_id": AMASS_CARD_ID,
+        "capability_id": "capability-amass",
+        "card_name": "Amass Enabler",
+        "face_index": None,
+        "face_name": None,
+        "card_source_sha256": hashlib.sha256(AMASS_QUOTE.encode("utf-8")).hexdigest(),
+        "role": Role.TOKEN_MAKER,
+        "capability_prerequisites": (),
+        "prerequisites": (),
+        "qualifications": (
+            RelationshipQualification(
+                kind=QualificationKind.CONDITION,
+                evidence=_amass_evidence(),
+                selector="Put three +1/+1 counters on an Army you control",
+                occurrence=0,
+            ),
+            RelationshipQualification(
+                kind=QualificationKind.CONDITION,
+                evidence=_amass_evidence(),
+                selector="If you don't control an Army",
+                occurrence=0,
+            ),
+        ),
+    }
+    values.update(overrides)
+    return RelationshipParticipant(**values)
+
+
+def test_declared_qualification_converts_an_incomplete_clause_into_a_stored_projection() -> None:
+    """A stated cost kept as a qualification stores the paid-ability projection."""
+    participant = _paid_source_participant()
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        RelationshipPrerequisiteProjection(source=participant, target=_record_target_participant())
+    assert error.value.code == "incomplete"
+    qualified = replace(participant, qualifications=(_paid_qualification(),))
+    projection = RelationshipPrerequisiteProjection(
+        source=qualified, target=_record_target_participant()
+    )
+    assert projection.outcome is QualificationOutcome.QUALIFIED
+    restored = RelationshipPrerequisiteProjection.from_json(projection.to_json())
+    assert restored == projection
+    assert restored.outcome is QualificationOutcome.QUALIFIED
+    payload = json.loads(json.dumps(projection.to_json()))
+    stored = payload["source"]["qualifications"][0]
+    assert stored["kind"] == QualificationKind.COST.value
+    assert stored["selector"] == "Sacrifice another Goblin"
+    assert stored["evidence"] == _paid_evidence().to_json()
+
+
+def test_undeclared_requirement_never_yields_a_decoded_projection() -> None:
+    """The same record without its declaration stays incomplete and never decoded."""
+    participant = _paid_source_participant()
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        RelationshipPrerequisiteProjection(source=participant, target=_record_target_participant())
+    assert error.value.code == "incomplete"
+    assert str(error.value) == PREREQUISITE_INCOMPLETE_MESSAGE
+    qualified = RelationshipPrerequisiteProjection(
+        source=replace(participant, qualifications=(_paid_qualification(),)),
+        target=_record_target_participant(),
+    )
+    assert qualified.outcome is not QualificationOutcome.DECODED
+    assert qualified.outcome is QualificationOutcome.QUALIFIED
+    assert "decoded" not in json.dumps(qualified.to_json())
+
+
+def test_contradiction_is_never_closed_by_a_declaration() -> None:
+    """Foreign, unfrozen, unresolvable, and out-of-range declarations all fail."""
+    oracle_text = {
+        (PAID_OUTLET_CARD_ID, None): PAID_ABILITY_QUOTE,
+        (RECORD_TARGET_CARD_ID, None): RECORD_TARGET_TEXT,
+    }
+    valid = _paid_qualification()
+    foreign_qualification = RelationshipQualification(
+        kind=QualificationKind.COST,
+        evidence=OracleEvidence(card_id=FOREIGN_CARD_ID, face_index=None, quote=PAID_ABILITY_QUOTE),
+        selector="Sacrifice another Goblin",
+        occurrence=0,
+    )
+    with pytest.raises(SemanticEnrichmentError):
+        replace(_paid_source_participant(), qualifications=(foreign_qualification,))
+    with pytest.raises(PrerequisiteProjectionError) as frozen_error:
+        validate_prerequisite_sources(
+            projection=RelationshipPrerequisiteProjection(
+                source=replace(_paid_source_participant(), qualifications=(valid,)),
+                target=_record_target_participant(),
+            ),
+            oracle_text={
+                (PAID_OUTLET_CARD_ID, None): "Sacrifice a creature: Draw a card.",
+                (RECORD_TARGET_CARD_ID, None): RECORD_TARGET_TEXT,
+            },
+        )
+    assert frozen_error.value.code == "contradiction"
+    with pytest.raises(SemanticEnrichmentError):
+        RelationshipQualification(
+            kind=QualificationKind.COST,
+            evidence=_paid_evidence(),
+            selector="entirely absent phrase",
+            occurrence=0,
+        )
+    with pytest.raises(SemanticEnrichmentError):
+        RelationshipQualification(
+            kind=QualificationKind.COST,
+            evidence=_paid_evidence(),
+            selector="Sacrifice another Goblin",
+            occurrence=1,
+        )
+    with pytest.raises(PrerequisiteProjectionError) as declared_error:
+        validate_prerequisite_sources(
+            projection=RelationshipPrerequisiteProjection(
+                source=replace(
+                    _paid_source_participant(),
+                    prerequisites=(
+                        replace(_paid_clause(), object_quote="another Elf"),
+                    ),
+                    qualifications=(valid,),
+                ),
+                target=_record_target_participant(),
+            ),
+            oracle_text=oracle_text,
+        )
+    assert declared_error.value.code == "contradiction"
+
+
+def test_amass_modes_are_retained_without_asserting_board_state() -> None:
+    """Both amass branches stay stored as printed phrases, never as board claims."""
+    participant = _amass_source_participant()
+    projection = RelationshipPrerequisiteProjection(
+        source=participant, target=_record_target_participant()
+    )
+    assert projection.outcome is QualificationOutcome.QUALIFIED
+    assert sorted(item.selector for item in projection.source.qualifications) == [
+        "If you don't control an Army",
+        "Put three +1/+1 counters on an Army you control",
+    ]
+    restored = RelationshipPrerequisiteProjection.from_json(projection.to_json())
+    assert restored == projection
+    assert [item.evidence.quote for item in restored.source.qualifications] == [AMASS_QUOTE, AMASS_QUOTE]
+    assert restored.source.prerequisites == ()
+    assert "Army" not in json.dumps([item.kind.value for item in restored.source.qualifications])
+
+
+def test_ordinary_paid_ability_retains_its_cost() -> None:
+    """The tap and the sacrifice stay retained as printed cost phrases."""
+    participant = replace(
+        _paid_source_participant(),
+        qualifications=(
+            RelationshipQualification(
+                kind=QualificationKind.COST,
+                evidence=_paid_evidence(),
+                selector="{T}",
+                occurrence=0,
+            ),
+            RelationshipQualification(
+                kind=QualificationKind.COST,
+                evidence=_paid_evidence(),
+                selector="Sacrifice another Goblin",
+                occurrence=0,
+            ),
+        ),
+    )
+    projection = RelationshipPrerequisiteProjection(
+        source=participant, target=_record_target_participant()
+    )
+    assert projection.outcome is QualificationOutcome.QUALIFIED
+    assert sorted(item.selector for item in projection.source.qualifications) == [
+        "Sacrifice another Goblin",
+        "{T}",
+    ]
+    assert all(item.evidence.quote == PAID_ABILITY_QUOTE for item in projection.source.qualifications)
+    restored = RelationshipPrerequisiteProjection.from_json(projection.to_json())
+    assert restored == projection
+
+
+def test_participant_without_clauses_requires_a_declared_qualification() -> None:
+    """Empty clauses are admissible only alongside a declared qualification."""
+    with pytest.raises(SemanticEnrichmentError) as error:
+        _amass_source_participant(qualifications=())
+    assert str(error.value) == "prerequisites must not be empty unless qualifications are declared."
+    participant = _amass_source_participant()
+    projection = RelationshipPrerequisiteProjection(
+        source=participant, target=_record_target_participant()
+    )
+    assert projection.outcome is QualificationOutcome.QUALIFIED
+
+
+def test_participant_serializes_qualifications_only_when_declared() -> None:
+    """Absent qualifications keep legacy bytes; empty arrays and duplicates fail."""
+    legacy = _record_participant()
+    assert "qualifications" not in legacy.to_json()
+    assert RelationshipParticipant.from_json(legacy.to_json()) == legacy
+    assert RelationshipParticipant.from_json(legacy.to_json()).to_json() == legacy.to_json()
+    payload = legacy.to_json()
+    payload["qualifications"] = []
+    with pytest.raises(SemanticEnrichmentError) as empty_error:
+        RelationshipParticipant.from_json(payload)
+    assert str(empty_error.value) == "relationship participant qualifications must not be empty when present."
+    qualification = _paid_qualification()
+    with pytest.raises(SemanticEnrichmentError):
+        _paid_source_participant(qualifications=(qualification, qualification))

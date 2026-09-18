@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 import re
 from typing import Any, Literal, Self
 
@@ -153,6 +154,66 @@ class PrerequisiteProjectionError(SemanticEnrichmentError):
     def code(self) -> Literal["incomplete", "contradiction"]:
         """Return the fixed projection failure code."""
         return self._code
+
+
+class QualificationKind(StrEnum):
+    """Closed kind of a stated requirement retained without decoded content."""
+
+    COST = "cost"
+    CHOICE = "choice"
+    CONDITION = "condition"
+    MODE = "mode"
+    PARTY = "party"
+    QUANTITY = "quantity"
+    TIMING = "timing"
+
+
+class QualificationOutcome(StrEnum):
+    """Whether every stated prerequisite was decoded or qualifications were retained."""
+
+    DECODED = "decoded"
+    QUALIFIED = "qualified"
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipQualification:
+    """One stated requirement retained verbatim inside its own Oracle paragraph."""
+
+    kind: QualificationKind
+    evidence: OracleEvidence
+    selector: str
+    occurrence: int
+
+    def __post_init__(self) -> None:
+        _enum_member(self.kind, "kind", QualificationKind)
+        if type(self.evidence) is not OracleEvidence:
+            raise SemanticEnrichmentError("evidence must be an OracleEvidence record.")
+        object.__setattr__(self, "selector", _exact_text(self.selector, "selector"))
+        object.__setattr__(self, "occurrence", _integer(self.occurrence, "occurrence"))
+        if _resolved_span(quote=self.evidence.quote, selector=self.selector, occurrence=self.occurrence) is None:
+            raise SemanticEnrichmentError(
+                "relationship qualification selector is not an exact substring of its evidence quote."
+            )
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "evidence": self.evidence.to_json(),
+            "selector": self.selector,
+            "occurrence": self.occurrence,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> Self:
+        if not isinstance(value, Mapping):
+            raise SemanticEnrichmentError("relationship qualification must be an object.")
+        _keys(value, {"kind", "evidence", "selector", "occurrence"}, "relationship qualification")
+        return cls(
+            kind=_enum_from_json(value["kind"], "kind", QualificationKind),
+            evidence=OracleEvidence.from_json(value["evidence"]),
+            selector=value["selector"],
+            occurrence=value["occurrence"],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,6 +481,21 @@ class RelationshipPrerequisite:
         )
 
 
+_PARTICIPANT_KEYS = frozenset(
+    {
+        "card_id",
+        "capability_id",
+        "card_name",
+        "face_index",
+        "face_name",
+        "card_source_sha256",
+        "role",
+        "capability_prerequisites",
+        "prerequisites",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class RelationshipParticipant:
     """One directional participant of a typed prerequisite projection."""
@@ -433,6 +509,7 @@ class RelationshipParticipant:
     role: Role
     capability_prerequisites: tuple[CapabilityPrerequisite, ...]
     prerequisites: tuple[RelationshipPrerequisite, ...]
+    qualifications: tuple[RelationshipQualification, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "card_id", _integer(self.card_id, "card_id", positive=True))
@@ -452,10 +529,7 @@ class RelationshipParticipant:
             raise SemanticEnrichmentError(
                 "capability_prerequisites must contain CapabilityPrerequisite records."
             )
-        object.__setattr__(self, "capability_prerequisites", capability_prerequisites)
         prerequisites = _tuple(self.prerequisites, "prerequisites")
-        if not prerequisites:
-            raise SemanticEnrichmentError("prerequisites must not be empty.")
         if any(type(item) is not RelationshipPrerequisite for item in prerequisites):
             raise SemanticEnrichmentError("prerequisites must contain RelationshipPrerequisite records.")
         object.__setattr__(
@@ -467,9 +541,31 @@ class RelationshipParticipant:
                 key=lambda item: _canonical_json_bytes(item.to_json()),
             ),
         )
+        qualifications = _tuple(self.qualifications, "qualifications")
+        if any(type(item) is not RelationshipQualification for item in qualifications):
+            raise SemanticEnrichmentError(
+                "qualifications must contain RelationshipQualification records."
+            )
+        for qualification in qualifications:
+            if (
+                qualification.evidence.card_id != self.card_id
+                or qualification.evidence.face_index != self.face_index
+            ):
+                raise SemanticEnrichmentError("qualifications must belong to the participant card face.")
+        object.__setattr__(
+            self,
+            "qualifications",
+            _canonical(
+                qualifications,
+                field_name="qualifications",
+                key=lambda item: _canonical_json_bytes(item.to_json()),
+            ),
+        )
+        if not prerequisites and not qualifications:
+            raise SemanticEnrichmentError("prerequisites must not be empty unless qualifications are declared.")
 
     def to_json(self) -> dict[str, object]:
-        return {
+        encoded: dict[str, object] = {
             "card_id": self.card_id,
             "capability_id": self.capability_id,
             "card_name": self.card_name,
@@ -480,26 +576,28 @@ class RelationshipParticipant:
             "capability_prerequisites": [item.to_json() for item in self.capability_prerequisites],
             "prerequisites": [item.to_json() for item in self.prerequisites],
         }
+        if self.qualifications:
+            encoded["qualifications"] = [item.to_json() for item in self.qualifications]
+        return encoded
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> Self:
         if not isinstance(value, Mapping):
             raise SemanticEnrichmentError("relationship participant must be an object.")
-        _keys(
-            value,
-            {
-                "card_id",
-                "capability_id",
-                "card_name",
-                "face_index",
-                "face_name",
-                "card_source_sha256",
-                "role",
-                "capability_prerequisites",
-                "prerequisites",
-            },
-            "relationship participant",
-        )
+        if "qualifications" in value:
+            _keys(value, _PARTICIPANT_KEYS | {"qualifications"}, "relationship participant")
+            qualifications = _nested_json_array(
+                value["qualifications"],
+                "qualifications",
+                RelationshipQualification.from_json,
+            )
+            if not qualifications:
+                raise SemanticEnrichmentError(
+                    "relationship participant qualifications must not be empty when present."
+                )
+        else:
+            _keys(value, _PARTICIPANT_KEYS, "relationship participant")
+            qualifications = ()
         return cls(
             card_id=value["card_id"],
             capability_id=value["capability_id"],
@@ -518,6 +616,7 @@ class RelationshipParticipant:
                 "prerequisites",
                 RelationshipPrerequisite.from_json,
             ),
+            qualifications=qualifications,
         )
 
 
@@ -559,6 +658,13 @@ class RelationshipPrerequisiteProjection:
             target=RelationshipParticipant.from_json(value["target"]),
             schema_version=value["schema_version"],
         )
+
+    @property
+    def outcome(self) -> QualificationOutcome:
+        """Return whether every stated prerequisite was decoded or qualifications were retained."""
+        if self.source.qualifications or self.target.qualifications:
+            return QualificationOutcome.QUALIFIED
+        return QualificationOutcome.DECODED
 
 
 _CARD_RELATIONSHIP_KEYS = {
@@ -659,6 +765,11 @@ class CardRelationship:
                     raise SemanticEnrichmentError(
                         "projection clause evidence must be relationship Oracle evidence."
                     )
+            for qualification in participant.qualifications:
+                if qualification.evidence not in source_evidence:
+                    raise SemanticEnrichmentError(
+                        "projection qualification evidence must be relationship Oracle evidence."
+                    )
 
     @property
     def identity(self) -> tuple[str, tuple[int, ...], tuple[int | str, ...]]:
@@ -731,9 +842,13 @@ def validate_prerequisite_projection(*, projection: RelationshipPrerequisiteProj
     for participant, other in ((projection.source, projection.target), (projection.target, projection.source)):
         validate_relationship_participant_sources(participant=participant, other=other)
     for participant in (projection.source, projection.target):
-        _validate_participant_bindings(participant=participant)
-        if not role_anchor_covered(participant=participant):
-            raise PrerequisiteProjectionError(code="incomplete")
+        try:
+            _validate_participant_bindings(participant=participant)
+            if not role_anchor_covered(participant=participant):
+                raise PrerequisiteProjectionError(code="incomplete")
+        except PrerequisiteProjectionError as error:
+            if error.code != "incomplete" or not participant.qualifications:
+                raise
 
 
 def validate_relationship_participant_sources(
@@ -745,6 +860,18 @@ def validate_relationship_participant_sources(
 ) -> None:
     """Run one participant's evidence ownership, selector and qualifier checks on its quotations."""
     paragraphs = oracle_text.split("\n") if oracle_text is not None else None
+    for qualification in participant.qualifications:
+        if (
+            qualification.evidence.card_id != participant.card_id
+            or qualification.evidence.face_index != participant.face_index
+        ):
+            raise PrerequisiteProjectionError(code="contradiction")
+        if paragraphs is not None and qualification.evidence.quote not in paragraphs:
+            raise PrerequisiteProjectionError(code="contradiction")
+        if evidence is not None and not any(
+            item.quote in qualification.evidence.quote for item in evidence
+        ):
+            raise PrerequisiteProjectionError(code="contradiction")
     for clause in participant.prerequisites:
         if clause.evidence.card_id != participant.card_id:
             raise PrerequisiteProjectionError(code="contradiction")
@@ -759,14 +886,18 @@ def validate_relationship_participant_sources(
             if not any(item.quote in paragraph for item in evidence):
                 raise PrerequisiteProjectionError(code="contradiction")
         operation_span, object_span = _clause_binding(clause)
-        _validate_clause_source(
-            clause=clause,
-            paragraph=paragraph,
-            operation_span=operation_span,
-            object_span=object_span,
-            participant=participant,
-            other=other,
-        )
+        try:
+            _validate_clause_source(
+                clause=clause,
+                paragraph=paragraph,
+                operation_span=operation_span,
+                object_span=object_span,
+                participant=participant,
+                other=other,
+            )
+        except PrerequisiteProjectionError as error:
+            if error.code != "incomplete" or not participant.qualifications:
+                raise
 
 
 def validate_prerequisite_sources(
@@ -836,6 +967,11 @@ def validate_relationship_sources(
             if clause.evidence not in relationship_evidence:
                 raise SemanticEnrichmentError(
                     "projection clause evidence must be part of the relationship Oracle evidence."
+                )
+        for qualification in participant.qualifications:
+            if qualification.evidence not in relationship_evidence:
+                raise SemanticEnrichmentError(
+                    "projection qualification evidence must be part of the relationship Oracle evidence."
                 )
 
 
@@ -1920,11 +2056,14 @@ def _declared_zone(
 __all__ = [
     "CardRelationship",
     "PrerequisiteProjectionError",
+    "QualificationKind",
+    "QualificationOutcome",
     "RELATIONSHIP_PREREQUISITE_PROJECTION_SCHEMA_VERSION",
     "RELATIONSHIP_ZONE_PLAYERS",
     "RelationshipParticipant",
     "RelationshipPrerequisite",
     "RelationshipPrerequisiteProjection",
+    "RelationshipQualification",
     "RelationshipTiming",
     "RelationshipZone",
     "role_anchor_covered",

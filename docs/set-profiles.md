@@ -1934,16 +1934,26 @@ vocabulary, and the complete indices of the capability prerequisites the clause
 discharges. A projection is present only when the typed, source-bound and
 completeness gates passed; its presence still does not mean a draft pool
 satisfies those conditions, and no relationship prerequisite is a scoring input.
-Incomplete, ambiguous or unsupported prerequisites never produce a projection and
-leave the relationship advisory, while prerequisites that contradict their source
-evidence produce a rejected diagnostic instead. Stored projections repeat that
-semantic validation of their clauses, and readers re-check them against the frozen
-card sources and pins. Relationship duplicate identity is direction-sensitive:
-identical directed capabilities deduplicate, while a reversed direction or a
-different capability of the same cards stays a distinct relationship. A
-relationship without the field remains loadable and serializes without the new
-key, so existing artifacts and enhanced profiles keep working; a present but
-invalid projection is rejected rather than dropped.
+Incomplete or unsupported prerequisites produce no projection unless the participant declares
+the gap as a retained qualification; prerequisites that contradict their source evidence produce
+a rejected diagnostic instead. Stored projections repeat that semantic validation of their clauses,
+and readers re-check them against the frozen card sources and pins. Relationship duplicate identity
+is direction-sensitive: identical directed capabilities deduplicate, while a reversed direction or a
+different capability of the same cards stays a distinct relationship. A relationship without the field
+remains loadable and serializes without the new key, so existing artifacts and enhanced profiles keep
+working; a present but invalid projection is rejected rather than dropped.
+
+Each projection participant may carry an optional `qualifications` array. Each qualification keeps
+four keys: the closed `kind` (`cost`, `choice`, `condition`, `mode`, `party`, `quantity`, `timing`),
+the participant's own frozen `evidence` paragraph, and the exact printed phrase retained through
+`selector`/`occurrence`. A qualification carries no model prose, so consumers render the printed
+requirement rather than advice. `prerequisite_projection.outcome` is `decoded` only when neither
+participant declares a qualification; `qualified` means at least one stated requirement is retained
+unproven — draft potential, not current game state, and never a claim that a pool satisfies it.
+Declared qualifications close `incomplete` verdicts while contradictions are never closed, and a
+participant with no decoded clause is admissible only when it declares one. The key is absent when
+empty, so it changes no profile schema version (still 3, with 1–3 supported for reading) and a present
+but invalid qualification is rejected rather than dropped.
 Relationship validation now uses the pinned `draftomen-relationship-validation-v2`
 request and response contract, while guide and card extraction stay on their
 existing version, so retained v1 relationship results remain readable but are not
