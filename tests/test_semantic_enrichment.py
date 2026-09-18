@@ -42,9 +42,12 @@ from draftomen.semantic_enrichment_records import (
 from draftomen.semantic_relationship_records import (
     CardRelationship,
     PrerequisiteProjectionError,
+    QualificationKind,
+    QualificationOutcome,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
+    RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
 )
@@ -2142,3 +2145,96 @@ def test_projection_is_independent_of_claim_prose_and_legacy_prerequisites() -> 
         "A different descriptive reading.",
         "An extra legacy line.",
     )
+
+
+def _qualified_source_participant(**overrides: Any) -> RelationshipParticipant:
+    """Build the typed source participant with one incomplete clause and one retained condition."""
+    values: dict[str, Any] = {
+        "prerequisites": (_typed_source_clause(object_quote="1/1 white Soldier creature tokens"),),
+        "qualifications": (
+            RelationshipQualification(
+                kind=QualificationKind.CONDITION,
+                evidence=OracleEvidence(
+                    card_id=TYPED_SOURCE_CARD_ID,
+                    face_index=None,
+                    quote=TYPED_TOKEN_PARAGRAPH,
+                ),
+                selector="two 1/1 white Soldier creature tokens",
+                occurrence=0,
+            ),
+        ),
+    }
+    values.update(overrides)
+    return _typed_source_participant(**values)
+
+
+def test_qualified_projection_survives_artifact_serialization() -> None:
+    """A qualified projection keeps its identity through the artifact bytes."""
+    sources = _typed_sources()
+    qualified = _qualified_source_participant()
+    relationship = _typed_relationship(
+        prerequisite_projection=_typed_projection(source=qualified),
+    )
+    artifact = _typed_artifact(sources=sources, relationships=(relationship,))
+    restored = SemanticEnrichmentArtifact.from_bytes(artifact.to_bytes(), sources=sources)
+    projection = restored.relationships[0].prerequisite_projection
+    assert projection is not None
+    assert projection.outcome is QualificationOutcome.QUALIFIED
+    assert restored.relationships[0].mechanism == relationship.mechanism
+    assert projection.source.card_id == TYPED_SOURCE_CARD_ID
+    assert projection.source.face_index is None
+    assert projection.source.capability_id == "capability-typed-tokens"
+    assert projection.source.role is Role.TOKEN_MAKER
+    assert projection.source.card_source_sha256 == card_source_sha256(_typed_source_card())
+    assert restored.relationships[0].review.status is FindingStatus.ACCEPTED
+    assert restored.relationships[0].run_id == relationship.run_id
+    assert projection.source.qualifications[0].kind is QualificationKind.CONDITION
+    assert projection.source.qualifications[0].selector == "two 1/1 white Soldier creature tokens"
+    assert projection.source.qualifications[0].evidence.quote == TYPED_TOKEN_PARAGRAPH
+    assert restored.to_bytes() == artifact.to_bytes()
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        _typed_projection(source=replace(qualified, qualifications=()))
+    assert error.value.code == "incomplete"
+
+
+def test_artifact_guard_rejects_qualification_evidence_outside_the_relationship() -> None:
+    """A qualification quoting another paragraph fails the relationship guard."""
+    sources = _typed_sources()
+    foreign = RelationshipQualification(
+        kind=QualificationKind.CONDITION,
+        evidence=OracleEvidence(
+            card_id=TYPED_SOURCE_CARD_ID,
+            face_index=None,
+            quote="Draw a card.",
+        ),
+        selector="Draw a card",
+        occurrence=0,
+    )
+    with pytest.raises(SemanticEnrichmentError) as error:
+        _typed_artifact(
+            sources=sources,
+            relationships=(
+                _typed_relationship(
+                    prerequisite_projection=_typed_projection(
+                        source=replace(_qualified_source_participant(), qualifications=(foreign,)),
+                    ),
+                ),
+            ),
+        )
+    assert str(error.value) == "projection qualification evidence must be relationship Oracle evidence."
+    mismatched = _typed_relationship(
+        prerequisite_projection=_typed_projection(
+            source=replace(_typed_source_participant(), card_source_sha256="0" * 64),
+        ),
+    )
+    with pytest.raises(SemanticEnrichmentError) as hash_error:
+        _typed_artifact(sources=sources, relationships=(mismatched,))
+    assert "hash must match its card source pin" in str(hash_error.value)
+
+
+def test_legacy_artifact_bytes_are_unchanged() -> None:
+    """A projection without qualifications serializes with no new key."""
+    artifact = _typed_artifact()
+    payload = artifact.to_bytes()
+    assert b'"qualifications"' not in payload
+    assert SemanticEnrichmentArtifact.from_bytes(payload, sources=_typed_sources()).to_bytes() == payload
