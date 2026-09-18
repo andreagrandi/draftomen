@@ -24,6 +24,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DECK_BUILDER, PICK_ENGINE, DeckBuilderConfig
 from draftomen.profile_enhancement import compile_profile_enhancement, published_identity_is_safe
+from draftomen.profile_relationship_projection import RelationshipConversion
 from draftomen.public_dump import (
     PUBLIC_DUMP_MANIFEST_SCHEMA_VERSION,
     PublicDumpChecksumError,
@@ -370,6 +371,7 @@ class ProfileGenerationReport:
     generated_at: str
     sources: tuple[ProfileGenerationSource, ...] = ()
     enhancement: ProfileEnhancementProvenance | None = None
+    relationship_conversions: tuple[RelationshipConversion, ...] = ()
     samples: SampleSummary = field(default_factory=lambda: SampleSummary(total=0))
     card_games: int = 0
     pair_games: int = 0
@@ -387,6 +389,12 @@ class ProfileGenerationReport:
         ):
             raise ProfileGenerationError(
                 "report.enhancement must be a ProfileEnhancementProvenance or None."
+            )
+        if not isinstance(self.relationship_conversions, tuple) or any(
+            type(item) is not RelationshipConversion for item in self.relationship_conversions
+        ):
+            raise ProfileGenerationError(
+                "report.relationship_conversions must be a tuple of RelationshipConversion records."
             )
         if not isinstance(self.samples, SampleSummary):
             raise ProfileGenerationError("report.samples must be a SampleSummary.")
@@ -467,6 +475,10 @@ class ProfileGenerationReport:
         }
         if self.enhancement is not None:
             result["enhancement"] = self.enhancement.to_json()
+        if self.relationship_conversions:
+            result["relationship_conversions"] = [
+                conversion.to_json() for conversion in self.relationship_conversions
+            ]
         return result
 
     def to_bytes(self) -> bytes:
@@ -724,7 +736,7 @@ def generate_set_profile(
     manifest = source_manifest
     sources = () if manifest is None else tuple(ProfileGenerationSource.from_source(source) for source in manifest.sources)
     requested_card_database = _requested_card_database(card_database, normalized_set)
-    enhancement = (
+    compiled_enhancement = (
         None
         if enrichment is None
         else compile_profile_enhancement(
@@ -733,6 +745,7 @@ def generate_set_profile(
             card_database=requested_card_database,
         )
     )
+    enhancement = None if compiled_enhancement is None else compiled_enhancement.enhancement
     input_checksums = {} if manifest is None else {source.name: source.sha256 for source in manifest.sources if source.sha256 is not None}
     input_checksums["ratings"] = _ratings_input_checksum(ratings)
     for candidate_format in ("premierdraft", "traddraft"):
@@ -918,6 +931,9 @@ def generate_set_profile(
         generated_at=timestamp,
         sources=sources,
         enhancement=None if enhancement is None else ProfileEnhancementProvenance.from_enhancement(enhancement),
+        relationship_conversions=(
+            () if compiled_enhancement is None else compiled_enhancement.conversions
+        ),
         samples=samples if maturity is not ProfileMaturity.METADATA_ONLY else SampleSummary(total=0),
         card_games=_card_game_count(card_ratings=cards) if maturity is not ProfileMaturity.METADATA_ONLY else 0,
         pair_games=_pair_game_count(pair_profiles=pair_profiles) if maturity is not ProfileMaturity.METADATA_ONLY else 0,

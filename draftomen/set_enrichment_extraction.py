@@ -46,6 +46,7 @@ from draftomen.semantic_relationship_records import (
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
+    RelationshipQualification,
     role_anchor_covered,
     validate_relationship_participant_sources,
 )
@@ -2662,6 +2663,7 @@ def _relationship_participant(
     capability: CardCapability,
     card: CardInfo,
     clauses: tuple[RelationshipPrerequisite, ...],
+    qualifications: tuple[RelationshipQualification, ...] = (),
 ) -> RelationshipParticipant:
     """Build one directional participant from its trusted capability and frozen card."""
     return RelationshipParticipant(
@@ -2674,6 +2676,7 @@ def _relationship_participant(
         role=capability.role,
         capability_prerequisites=capability.prerequisites,
         prerequisites=clauses,
+        qualifications=qualifications,
     )
 
 
@@ -2735,10 +2738,11 @@ def _projection_evidence(
     *,
     projection: RelationshipPrerequisiteProjection,
 ) -> tuple[OracleEvidence, ...]:
-    """Return every clause and copied prerequisite evidence of one projection."""
+    """Return every clause, qualification and copied prerequisite evidence of one projection."""
     collected: list[OracleEvidence] = []
     for participant in (projection.source, projection.target):
         collected.extend(clause.evidence for clause in participant.prerequisites)
+        collected.extend(qualification.evidence for qualification in participant.qualifications)
         collected.extend(
             prerequisite.evidence for prerequisite in participant.capability_prerequisites
         )

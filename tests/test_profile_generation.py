@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime
 from dataclasses import replace
 import hashlib
@@ -25,6 +26,7 @@ from draftomen.profile_generation import (
     generate_set_profile,
 )
 from draftomen.profile_publication import validate_profile_generation
+from draftomen.profile_relationship_projection import RelationshipConversionOutcome
 from draftomen.public_dump import PublicDumpManifest, PublicDumpSource
 from draftomen.profile_statistics import BetaPrior
 from draftomen.seventeen import (
@@ -60,9 +62,12 @@ from draftomen.semantic_enrichment_records import (
 )
 from draftomen.semantic_relationship_records import (
     CardRelationship,
+    QualificationKind,
+    QualificationOutcome,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
+    RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
 )
@@ -2617,3 +2622,167 @@ def test_unprojected_relationship_adds_no_enrichment_roles() -> None:
         for card in role_profile.cards
         for assignment in card.assignments
     )
+
+
+TYPED_QUALIFIED_ANTHEM_PARAGRAPH = (
+    "Creatures you control get +1/+1 as long as there are seven or more cards "
+    "in your graveyard."
+)
+TYPED_QUALIFIED_THRESHOLD = "as long as there are seven or more cards in your graveyard."
+
+
+def _typed_qualified_target_card() -> CardInfo:
+    """Build the payoff card whose one paragraph also states a retained requirement."""
+    return _typed_card(
+        TYPED_TARGET_CARD_ID,
+        TYPED_TARGET_CARD_NAME,
+        TYPED_QUALIFIED_ANTHEM_PARAGRAPH,
+    )
+
+
+def _typed_qualified_database() -> CardDatabase:
+    """Build the generation card database around the retained-requirement payoff."""
+    return CardDatabase(
+        cards={
+            **_typed_database().cards,
+            TYPED_TARGET_CARD_ID: _typed_qualified_target_card(),
+        }
+    )
+
+
+def _typed_qualified_relationship() -> CardRelationship:
+    """Build one accepted relationship whose payoff clause cannot express its stated threshold."""
+    target_card = _typed_qualified_target_card()
+    projection = _typed_projection(target_card=target_card)
+    evidence = OracleEvidence(
+        card_id=TYPED_TARGET_CARD_ID,
+        face_index=None,
+        quote=TYPED_QUALIFIED_ANTHEM_PARAGRAPH,
+    )
+    return replace(
+        _typed_relationship(target_card=target_card),
+        oracle_evidence=(
+            OracleEvidence(
+                card_id=TYPED_SOURCE_CARD_ID,
+                face_index=None,
+                quote=TYPED_TOKEN_PARAGRAPH,
+            ),
+            evidence,
+        ),
+        prerequisite_projection=replace(
+            projection,
+            target=replace(
+                projection.target,
+                prerequisites=(
+                    replace(projection.target.prerequisites[0], evidence=evidence),
+                ),
+                qualifications=(
+                    RelationshipQualification(
+                        kind=QualificationKind.QUANTITY,
+                        evidence=evidence,
+                        selector=TYPED_QUALIFIED_THRESHOLD,
+                        occurrence=0,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def _typed_qualified_artifact() -> SemanticEnrichmentArtifact:
+    """Build one artifact storing a retained qualification beside an unbound relationship."""
+    database = _typed_qualified_database()
+    return _enrichment_artifact(
+        sources=_enrichment_sources(cards=database),
+        relationships=(_typed_qualified_relationship(), _enrichment_relationship()),
+    )
+
+
+def test_report_carries_one_conversion_per_stored_relationship() -> None:
+    database = _typed_qualified_database()
+    artifact = _typed_qualified_artifact()
+    first = _enhanced_generation(enrichment=artifact, card_database=database)
+    second = _enhanced_generation(
+        enrichment=_typed_qualified_artifact(),
+        card_database=database,
+    )
+    stored = artifact.confirmed_relationships
+    conversions = first.report.relationship_conversions
+
+    assert [item.finding_id for item in conversions] == [
+        item.finding_id for item in stored
+    ]
+    assert Counter(item.outcome.value for item in conversions) == {
+        "qualified": 1,
+        "unsupported": 1,
+    }
+    stored_by_id = {item.finding_id: item for item in stored}
+    qualified = next(
+        item
+        for item in conversions
+        if item.outcome is RelationshipConversionOutcome.QUALIFIED
+    )
+    assert qualified.reason == "projected"
+    assert qualified.mechanism == stored_by_id[qualified.finding_id].mechanism
+    assert first.report.to_json()["relationship_conversions"] == [
+        item.to_json() for item in conversions
+    ]
+
+    unenriched = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=_database(),
+        ratings=_ratings(),
+        generated_at=GENERATED_AT,
+        config=_config(),
+    )
+    assert unenriched.report.relationship_conversions == ()
+    assert "relationship_conversions" not in unenriched.report.to_json()
+
+    with pytest.raises(ProfileGenerationError) as raised:
+        replace(first.report, relationship_conversions=(object(),))
+
+    assert str(raised.value) == (
+        "report.relationship_conversions must be a tuple of RelationshipConversion records."
+    )
+    assert first.profile_bytes == second.profile_bytes
+    assert first.gzip_bytes == second.gzip_bytes
+    assert first.report.to_bytes() == second.report.to_bytes()
+
+
+def test_qualified_conversions_round_trip_through_the_generated_profile(
+    tmp_path: Path,
+) -> None:
+    database = _typed_qualified_database()
+    artifact = _typed_qualified_artifact()
+    generated = _enhanced_generation(enrichment=artifact, card_database=database)
+    reported_qualified = sum(
+        1
+        for item in generated.report.relationship_conversions
+        if item.outcome is RelationshipConversionOutcome.QUALIFIED
+    )
+    assert reported_qualified == 1
+
+    path = tmp_path / "typed-qualified-profile.json"
+    dump_set_profile(generated.profile, path)
+    loaded = load_set_profile(path, expected_set_code="TST", expected_format="QuickDraft")
+    assert loaded.to_bytes() == generated.profile.to_bytes()
+    enhancement = loaded.enhancement
+    assert enhancement is not None
+    relationship = next(
+        item for item in enhancement.relationships if item.prerequisite_projection is not None
+    )
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome is QualificationOutcome.QUALIFIED
+    assert projection == _typed_qualified_relationship().prerequisite_projection
+    assert projection.target.qualifications[0].kind is QualificationKind.QUANTITY
+    assert projection.target.qualifications[0].selector == TYPED_QUALIFIED_THRESHOLD
+    loaded_qualified = sum(
+        1
+        for item in enhancement.relationships
+        if item.prerequisite_projection is not None
+        and item.prerequisite_projection.outcome is QualificationOutcome.QUALIFIED
+    )
+    assert loaded_qualified == reported_qualified
