@@ -364,6 +364,32 @@ Success prints `set_code`, `format`, `artifact`, `artifact_sha256`, `run_id`,
 `publications`; `maturity` is `metadata-only` for the default stage and names the
 role-bearing stage (`early` or `mature`) otherwise.
 
+#### HOB coverage audit
+
+The [#587 inventory and capability audit](audits/hob-587-inventory.md),
+[mechanic matrix and qualified-synergy contract](audits/hob-587-mechanics.md),
+and [offline runtime traces and fingerprints](audits/hob-587-traces.md)
+examine the existing paid HOB confirmation without changing it. The accompanying
+machine ledgers account for the saved findings. Retained findings, executable
+projections, pool support, and rendered advice are separate stages; a compatible
+profile alone does not prove useful coverage.
+
+The audit reconciles all 583 capability facts and 685 relationship findings.
+The offline compiler produces three executable projections; this is a diagnosis,
+not a recovery target. Network-denied compiler, pool and offscreen QML component
+traces leave the 1,638-file paid-run fingerprint unchanged.
+
+The approved missing-work tickets are native children of
+[#559](https://github.com/andreagrandi/draftomen/issues/559):
+[#596](https://github.com/andreagrandi/draftomen/issues/596) owns saved-candidate
+accounting, [#597](https://github.com/andreagrandi/draftomen/issues/597) owns
+missing role recovery, and [#598](https://github.com/andreagrandi/draftomen/issues/598)
+owns token replacement payoffs. Their project classification is High priority,
+Card Data, size M, with High orchestration risk. The acceptance matrices in
+#588 through #595 reference these audit findings, and #595 is blocked by the
+three additional tickets. No production fix, profile publication or full
+application draft journey is claimed by this audit.
+
 #### Listing local enrichment work
 
 `list-enrichment` reports every local run and every saved artifact with its set,

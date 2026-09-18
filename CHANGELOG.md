@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Document the HOB enrichment coverage audit, source-bound capability and
+  relationship ledgers, conditional draft-synergy contract, and offline runtime
+  traces. Record missing recovery work without changing production behavior or
+  rerunning paid enrichment. (#587)
 - Download the Mocked Draft Scryfall bulk source from the dialog. When the resolved
   `scryfall-default-cards.jsonl.gz` is missing the dialog says so and offers **Download
   Scryfall data**, and the click streams Scryfall's `default_cards` bulk JSONL into the

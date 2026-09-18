@@ -1,0 +1,470 @@
+{
+  "schema_version": 1,
+  "audit": "hob-587",
+  "contract_item": "AC5",
+  "owner": "TraceAudit",
+  "report": "docs/audits/hob-587-traces.md",
+  "fingerprint": "docs/audits/hob-587-run-fingerprint.json",
+  "durable_output": {
+    "final": {
+      "path": "docs/audits/hob-587-trace-out.json",
+      "sha256": "74244c03b89d29505851b6be022498005058eef21caa6e81479621ffe73a80e6",
+      "probe_revision_inside": 3
+    },
+    "previous": {
+      "path": "docs/audits/hob-587-trace-out-r2.json",
+      "sha256": "61bc5f54c00cf7b7143607d6751ee011ce101cf1bb6f39cf2fd50cfda32d9c80",
+      "probe_revision_inside": 2
+    },
+    "content": "byte-identical copies of the executed probe outputs; every value quoted as observed in this file and in the report comes from one of them, and the final file is the superseding record"
+  },
+  "status_legend": {
+    "observed": "Probe stage ran end to end and the value was read back from the runtime object; the durable output file carries it.",
+    "observed-data": "Value computed during the audit from saved JSON bytes (file reads and JSON queries). No runtime model execution.",
+    "partial": "The named leg was not exercised by the executed probe revision; a revision-3 rerun is required before any claim about it.",
+    "static-expectation": "Derived from source reading and arithmetic only; not a runtime observation.",
+    "not-run": "Runtime step prepared but never executed."
+  },
+  "run_command": "cd /Users/andrea/Projects/draftomen && QT_QPA_PLATFORM=offscreen uv run --no-sync python docs/audits/hob_587_trace_probe.py --out /tmp/hob-587-trace-out.json",
+  "probe": {
+    "path": "docs/audits/hob_587_trace_probe.py",
+    "revision": 3,
+    "sha256": "24ac41a8f553af0df2724226227e1f6c2965556d61855ae9cb7d4d536fd8adbc",
+    "executed_revision": 3,
+    "executed_sha256": "79bb68348972ca5787c5eaf9b41132a7eac3b004f72979306d4c26703bbd6739",
+    "executed_copy": "/tmp/hob_587_trace_probe.py",
+    "delta_from_executed_copy": "the checked-in utility carries the executed revision-3 body unchanged except for the default paths: REPO_ROOT is derived from the utility's own checked-in location and RUN_DIR from the home directory, with the DRAFTOMEN_REPO and HOB587_RUN_DIR overrides unchanged; the docstring run path and a provenance paragraph also differ. A scoped diff against the executed copy shows those lines only.",
+    "environment": [
+      "repository virtualenv with pyside6 (python 3.12.9); run from the repository root",
+      "QT_QPA_PLATFORM=offscreen for the QML stage",
+      "no network, no API key, no provider client imported",
+      "writes only its --out JSON file"
+    ],
+    "load_path": [
+      "The artifact is loaded with sources/guide.json as an EnrichmentSources guide; the production loader requires exact guide coverage (draftomen/semantic_enrichment.py:332-341), so passing guides=() is rejected.",
+      "GuideSource is built from sources/guide.json fields guide_id, url, retrieved_at and text; GuideSource.text_sha256 must equal the artifact's guide pin sha256.",
+      "When the artifact cannot be loaded, the pool_support and rendered_advice stages use the installed profile's compiled enhancement and report enhancement_origin=installed_profile."
+    ],
+    "network_denial": "Installed before any stage runs: socket.getaddrinfo, socket.create_connection, socket.connect and socket.connect_ex raise; the report counts denied attempts.",
+    "revision_3_changes": [
+      "rendered_advice reads back the first row and the first row carrying relationship support per control, and records the label's font pixel size and colour as theme-resolution evidence",
+      "pool_support adds a fixture_enhancement_removed control and reports the saturation row's cap arithmetic plus whether the rationale quotes the R1 finding id",
+      "the guiPreferences adapter stays referenced for the whole stage and the Qt objects are destroyed in an explicit teardown phase while Qt messages are captured per phase"
+    ]
+  },
+  "probe_executions": [
+    {
+      "revision": 3,
+      "sha256": "79bb68348972ca5787c5eaf9b41132a7eac3b004f72979306d4c26703bbd6739",
+      "executed_by": "Main",
+      "out": "docs/audits/hob-587-trace-out.json",
+      "executed_copy": "/tmp/hob_587_trace_probe.py (revision 3 as executed; sha256 above)",
+      "checked_in_copy": "docs/audits/hob_587_trace_probe.py (same body, portable default paths; sha256 in the probe block above)",
+      "observed": {
+        "stage_status": {
+          "saved_evidence": "observed",
+          "generated_representation": "observed",
+          "pool_support": "observed",
+          "rendered_advice": "observed"
+        },
+        "blockers": 0,
+        "enhancement_origin": "artifact_compile",
+        "network_denial_blocked_attempts": 0,
+        "run_tree_unchanged": true,
+        "run_tree_matches_manifest": true,
+        "provider_client_imported": false,
+        "saturation_row": {
+          "pack_number": 2,
+          "pick_number": 13,
+          "synergy": 1.5,
+          "enhancement_removed_synergy": 1.5,
+          "synergy_delta_vs_enhancement_removed": 0.0,
+          "raw_score_delta_vs_enhancement_removed": 0.0,
+          "cap_binds": true,
+          "rationale_kinds": ["rating", "color", "synergy"],
+          "rationale_mentions_r1_finding": false
+        },
+        "rendered": {
+          "fixture_enhancement.support": "rendered the relationship evidence: 'Confirmed relationship support: relationship relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1 (token-go-wide-payoff) for Bard's Company [103526] ... (+0.57 DO points)'",
+          "paid_enhancement.support": "row_present false: the paid enhancement has no support-carrying row in this draft",
+          "qml_renderer_matches": "true for all three rendered payloads",
+          "qml_theme_resolved": "true for all three (font pixel size 11, colour #c8c2b8)"
+        },
+        "qt_messages_by_phase": {
+          "rendered_advice": ["Populating font family aliases took 81 ms. Replace uses of missing font family \"Sans Serif\" with one that exists to avoid this cost."],
+          "teardown": ["file:///Users/andrea/Projects/draftomen/draftomen/qml/Theme.qml:52: TypeError: Cannot read property 'systemTextScaling' of null"]
+        },
+        "qt_note": "the probe installs a message handler, so console output is suppressed by design and the messages are recorded in the report instead; no message was recorded during the saved_evidence, generated_representation or pool_support stages"
+      }
+    },
+    {
+      "revision": 2,
+      "sha256": "eb68e0ea0296f61a35d02446afc75309aefbdab1755cdd510121d14ae93d67c2",
+      "executed_by": "Main",
+      "out": "docs/audits/hob-587-trace-out-r2.json",
+      "observed": {
+        "stage_status": {
+          "saved_evidence": "observed",
+          "generated_representation": "observed",
+          "pool_support": "observed",
+          "rendered_advice": "observed"
+        },
+        "blockers": 0,
+        "enhancement_origin": "artifact_compile",
+        "network_denial_installed": true,
+        "network_denial_blocked_attempts": 0,
+        "run_tree_unchanged": true,
+        "run_tree_matches_manifest": true,
+        "provider_client_imported": false
+      },
+      "gaps_closed_by_revision_3": [
+        "rendered label read back for a support-free row only",
+        "cap-bind arithmetic against an enhancement-removed control and the finding-id absence check in the saturated rationale",
+        "Qt messages not attributed to a phase"
+      ]
+    },
+    {
+      "revision": 1,
+      "sha256": "fb8b5ea476910a7fbefbd79c7f47b71c1635c945d9679b4a9fff15e7743db29c",
+      "executed_by": "Main",
+      "out": "/tmp/hob-587-trace-out.json (overwritten by the revision-2 run)",
+      "observed": {
+        "stage_status": {
+          "saved_evidence": "blocked",
+          "generated_representation": "blocked",
+          "pool_support": "blocked",
+          "rendered_advice": "blocked"
+        },
+        "blocker_error": "SemanticEnrichmentError: guides must cover every guide source exactly.",
+        "run_tree_unchanged": true,
+        "run_tree_matches_manifest": true,
+        "provider_client_imported": false
+      },
+      "classification": "probe defect, not a source defect",
+      "paid_data_intact": true,
+      "fix_in_revision_2": "frozen guide from sources/guide.json, in-process network denial, installed-profile fallback for downstream stages"
+    }
+  ],
+  "stages": [
+    {
+      "stage": "saved_evidence",
+      "input": "artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json plus work/{attempts,responses,results}, loaded with sources/guide.json",
+      "load_path": "frozen guide from sources/guide.json; card database rebuilt from website/public/card-data/hob.json.gz",
+      "code": [
+        "draftomen/semantic_enrichment.py:270-320 (SemanticEnrichmentArtifact record)",
+        "draftomen/semantic_enrichment.py:578 (from_bytes loader)",
+        "draftomen/semantic_enrichment.py:332-341 (guide coverage, url, retrieved_at and text hash checks)",
+        "draftomen/set_enrichment_candidates.py:119-132 (ROLE_COMPATIBILITY_RULES)"
+      ],
+      "observed_result": "status observed; all seven artifact checks true (filename is digest, digest matches audit, canonical bytes, card database digest, guide digest, guide text matches pin, no accepted paid relationship payload); 202 cards, 583 oracle facts, 685 relationships, 0 stored projections, review_state confirmed"
+    },
+    {
+      "stage": "generated_representation",
+      "input": "artifact + website/public/card-data/hob.json.gz",
+      "load_path": "compile_profile_enhancement on the paid artifact; enhancement_origin=artifact_compile observed",
+      "code": [
+        "draftomen/profile_enhancement.py:69-108 (compile gates)",
+        "draftomen/profile_enhancement.py:114-117 (calls the compiler)",
+        "draftomen/profile_relationship_projection.py:223-249 (compile_confirmed_relationship_projections)",
+        "draftomen/profile_relationship_projection.py:337-383 (_compile_relationship decision order)"
+      ],
+      "observed_result": "status observed; 685 relationships compiled, 3 projected, failure_reasons {projected 3, source_clause_unbound 678, target_clause_unbound 4}, classifier_matches_compiler true, compiled projected ids equal the installed profile's three"
+    },
+    {
+      "stage": "pool_support",
+      "input": "compiled enhancement + tests/fixtures/hob-relationship-scoring-state.json",
+      "load_path": "artifact-compiled enhancement; five controls including fixture_enhancement_removed in revision 3",
+      "code": [
+        "draftomen/backtest.py:132-160 (generate_backtest_report)",
+        "draftomen/pickengine.py:1157-1164 (contextual gate)",
+        "draftomen/pickengine.py:974-977 and 498-515 (enhanced_relationships_enabled strip)",
+        "draftomen/pickengine.py:1474-1497 (_relationship_synergy_term)",
+        "draftomen/pickengine.py:1538-1560 (_unsupported_payoff_term)",
+        "draftomen/pool_ledger.py:1020-1059 (_relationship_support pre-pick projection)",
+        "draftomen/pool_ledger.py:1090-1135 (_matched_relationship_support; projection is None -> no support)"
+      ],
+      "observed_result": "status observed; fixture control carries R1 support on 2 rows and R6 on 1; paid control carries 0 support rows and 0 R1/R6 support while still scoring theme-package synergy (0.380488 at pick 5, 1.5 at pack 2 pick 13); context disabled zeroes every contextual term; relationships off leaves zero support records; the saturation row sits at the 1.5 cap with cap_binds true and its rationale does not quote the R1 finding id"
+    },
+    {
+      "stage": "rendered_advice",
+      "input": "ScoredCard from the pick engine",
+      "load_path": "same enhancement as pool_support, reported as enhancement_origin",
+      "code": [
+        "draftomen/pickengine.py:538-572 (render_pick_rationale_concise)",
+        "draftomen/pickengine.py:574-708 (render_pick_rationale_detailed)",
+        "draftomen/session.py:2514-2540 (Recommendation payload)",
+        "draftomen/qt_adapter.py:141-175 (_to_qml_value)",
+        "draftomen/qml/CardPreview.qml:426-437 (objectName cardPreviewExplanation, detailedIntel binds recommendation.explanation)",
+        "draftomen/qml/Theme.qml:52-54 (singleton reads the guiPreferences context property, so the probe must supply it)"
+      ],
+      "observed_result": "status observed: the support-free row renders identical generic text under both enhancements; the fixture's support-carrying row renders the relationship evidence and mentions_relationship_finding is true; the paid enhancement has no support-carrying row (row_present false); qml_renderer_matches and qml_theme_resolved are true for all three rendered payloads",
+      "honesty_note": "Component-level evidence only: CardPreview.qml rendered offscreen with the payload the adapter publishes. The application window, live session and interactive journey were not exercised."
+    }
+  ],
+  "cases": [
+    {
+      "id": "T1-typed-projection-gate",
+      "title": "682 of 685 confirmed relationships never reach runtime because the compiler cannot build a typed prerequisite projection",
+      "gate_class": "unsupported_contract",
+      "representative_inputs": {
+        "artifact": "artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json",
+        "cards": 202,
+        "capability_facts": 583,
+        "confirmed_relationships": 685,
+        "stored_typed_projections_in_artifact": 0,
+        "installed_profile_projected_relationships": 3
+      },
+      "observed_data": {
+        "mechanism_histogram": {
+          "token-go-wide-payoff": 333,
+          "token-sacrifice-outlet": 269,
+          "token-death-payoff": 37,
+          "recursion-graveyard-payoff": 27,
+          "mill-graveyard-payoff": 9,
+          "fodder-sacrifice-outlet": 8,
+          "fodder-dies-payoff": 2
+        },
+        "projected_finding_ids_in_installed_profile": [
+          "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103546:103546-f1-self-mill:103422:103422-0-threshold-graveyard-payoff",
+          "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:103556:103556-f1-mill-self:103422:103422-0-threshold-graveyard-payoff",
+          "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff"
+        ],
+        "all_three_share_target": 103422,
+        "reviewed_but_unprojected_example": "relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1 (projected only in the calibration fixture)",
+        "source": "docs/audits/hob-587-run-fingerprint.json key_files and the installed profile observation"
+      },
+      "observed_runtime_result": {
+        "failure_reasons": {"projected": 3, "source_clause_unbound": 678, "target_clause_unbound": 4},
+        "classifier_matches_compiler": true,
+        "compile_recomputed": {"relationships": 685, "projected_relationships": 3},
+        "per_mechanism": {
+          "mill-graveyard-payoff": {"total": 9, "projected": 2},
+          "recursion-graveyard-payoff": {"total": 27, "projected": 1},
+          "token-go-wide-payoff": {"total": 333, "projected": 0},
+          "token-sacrifice-outlet": {"total": 269, "projected": 0},
+          "token-death-payoff": {"total": 37, "projected": 0},
+          "fodder-sacrifice-outlet": {"total": 8, "projected": 0},
+          "fodder-dies-payoff": {"total": 2, "projected": 0}
+        },
+        "data_loss_signals": "none: no failure carried source_capability_fact_unusable, target_capability_fact_unusable, participant_card_missing or participant_card_unknown, so the 682 are an unsupported-contract (clause vocabulary) gate, not missing data"
+      },
+      "observation_status": "observed",
+      "probe_keys": [
+        "stages.saved_evidence.artifact_evidence.mechanisms",
+        "stages.generated_representation.enhancement.projected_relationships",
+        "stages.generated_representation.failure_reasons",
+        "stages.generated_representation.classifier_matches_compiler",
+        "stages.generated_representation.per_mechanism",
+        "stages.generated_representation.installed_profile"
+      ],
+      "checks": [
+        "jq '.stages.generated_representation.failure_reasons, .stages.generated_representation.classifier_matches_compiler' docs/audits/hob-587-trace-out.json",
+        "jq '.stages.generated_representation.per_mechanism' docs/audits/hob-587-trace-out.json"
+      ],
+      "honesty_notes": "Compiler rejection is a representation/implementation gate, not proof of semantic invalidity (issue #587 decision section). The observed histogram contains only clause-binding gates, which is the data-loss/unsupported-contract distinction the audit required. The converse also holds: projection is not semantic certification, as semantic_validity_caveat records.",
+      "semantic_validity_caveat": "Three projected is not three correct. A typed projection records only that the closed clause grammar can express the pair. One of the three, local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff, is one of the recursion-family rows the #587 review flags for adjudication (rows [10,20] and [30,20] of docs/audits/hob-587-relationship-ledger.json): its source, Gathering of Darkness [103442], returns up to one target creature card from your graveyard to your hand (frozen Oracle, sources/card-database.json:2543), a graveyard consumer recorded as a threshold enabler for the seven-card graveyard payoff of Most Decrepit Old Bird // Speak Secrets [103422]. Compiler success does not rescue that classification."
+    },
+    {
+      "id": "T2-settings-contextual",
+      "title": "Contextual scoring is off by default on a fresh install and zeroes every relationship term",
+      "gate_class": "settings",
+      "source_pointers": [
+        "draftomen/preferences.py:186 (GuiDisplayPreferences.contextual_adjustments_enabled default False)",
+        "draftomen/qt_gui.py:550 (persisted preference passed into the session)",
+        "draftomen/session.py:914 (session default True) and 3030-3052 (ChangeContextualScoring handler)",
+        "draftomen/pickengine.py:1157-1164 (disabled -> empty ContextualScoreBreakdown and no evidence)",
+        "draftomen/qml/SettingsView.qml:135-138 (rendered toggle)"
+      ],
+      "observed_data": {
+        "user_live_preference_value": true,
+        "note": "The user's ~/.draftomen/gui-preferences.json had contextual_adjustments_enabled=true on 2026-09-17, so the shipped default is not the current local blocker."
+      },
+      "observed_runtime_result": {
+        "context_disabled_zero_breakdown": true,
+        "paid_control_context_disabled_rows": "4 of 4 rows carry synergy 0.0, aggregate 0.0, no support records, empty contextual_evidence and rationale kinds [rating, color] only"
+      },
+      "observation_status": "observed",
+      "probe_keys": [
+        "stages.pool_support.focused_checks.context_disabled_zero_breakdown",
+        "stages.pool_support.controls.paid_enhancement_context_disabled"
+      ],
+      "checks": [
+        "jq '.stages.pool_support.focused_checks.context_disabled_zero_breakdown' docs/audits/hob-587-trace-out.json",
+        "jq '.stages.pool_support.controls.paid_enhancement_context_disabled' docs/audits/hob-587-trace-out.json"
+      ]
+    },
+    {
+      "id": "T3-settings-ai-suggestions",
+      "title": "AI-enhanced suggestions availability is an independent setting that gates relationship support, and it can read available while 682/685 relationships stay unprojected",
+      "gate_class": "settings",
+      "source_pointers": [
+        "draftomen/session.py:4581-4617 (_enhancement_availability_for_context with preference_enabled from the AI toggle)",
+        "draftomen/session.py:688-750 (available requires non-generic profile, enhancement, compatibility, preference)",
+        "draftomen/session.py:1889-1891 and 2415-2417 (availability.enabled feeds enhanced_relationships_enabled)",
+        "draftomen/pickengine.py:974-977 with 498-515 (support stripped when the gate is false)",
+        "draftomen/qml/StatusStrip.qml:84-98 (availability message rendered) and SettingsView.qml:158-165 (switch)",
+        "draftomen/pool_ledger.py:1148-1180 (relationship_enhancement_is_compatible)"
+      ],
+      "observed_data": {
+        "installed_profile_availability_preconditions": "enhancement carries the paid artifact and role_profile is present; maturity early",
+        "message_rendered_by_status_strip_when_available": "AI-enhanced suggestions available for HOB."
+      },
+      "observed_runtime_result": {
+        "relationships_off_zero_support": true,
+        "paid_enhancement_relationships_off_rows": "4 of 4 rows carry no support records; theme-package synergy still appears (0.380488 and 1.5) because the theme path is not gated by the AI toggle",
+        "paid_enhancement_with_toggle_on": "0 support rows and 0 R1/R6 support, so the toggle cannot rescue the 682 unprojected relationships"
+      },
+      "observation_status": "observed",
+      "probe_keys": [
+        "stages.pool_support.focused_checks.relationships_off_zero_support",
+        "stages.pool_support.controls.paid_enhancement_relationships_off",
+        "stages.pool_support.focused_checks.paid_any_support_rows"
+      ],
+      "checks": [
+        "jq '.stages.pool_support.focused_checks.relationships_off_zero_support, .stages.pool_support.focused_checks.paid_any_support_rows' docs/audits/hob-587-trace-out.json"
+      ]
+    },
+    {
+      "id": "T4-score-cap",
+      "title": "Support can exist while the rendered explanation stays generic when the synergy term saturates",
+      "gate_class": "score_cap",
+      "representative_inputs": {"calibration_row": "saturation (pack 2, pick 13, recommended 103526)", "support": "R1 token-go-wide-payoff 103382 -> 103526"},
+      "source_pointers": [
+        "draftomen/pickengine.py:64 (MAX_SYNERGY_TERM = 1.5)",
+        "draftomen/pickengine.py:96-103 (_TERM_BOUNDS)",
+        "draftomen/pickengine.py:305-309 (aggregate clamped to +/- MAX_CONTEXTUAL_ADJUSTMENT = 6.0)",
+        "scripts/hob_relationship_scoring_smoke.py:327-348 (saturation row: synergy at the cap in both the enhanced and enhancement-removed controls, unchanged raw score, and the R1 finding id absent from the rationale evidence text)"
+      ],
+      "observed_runtime_result": {
+        "saturation_row_fixture_control": {"pack_number": 2, "pick_number": 13, "synergy": 1.5, "support_finding_ids": ["relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1"], "support_targets": [103526], "rationale_kinds": ["rating", "color", "synergy"], "contextual_evidence": ["supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))"]},
+        "saturation_row_paid_control": {"synergy": 1.5, "support_finding_ids": [], "rationale_kinds": ["rating", "color", "synergy"]},
+        "saturation_row_enhancement_removed": {"synergy": 1.5, "synergy_delta_vs_enhancement_removed": 0.0, "raw_score_delta_vs_enhancement_removed": 0.0, "cap_binds": true, "rationale_mentions_r1_finding": false},
+        "aggregate_observed_values": "0.570732 (R1 row), 0.205793 (R6 row), 0.380488 (theme-only row), 1.5 (saturated row), all within the +/-6.0 aggregate cap"
+      },
+      "observation_status": "observed",
+      "probe_keys": [
+        "stages.pool_support.caps",
+        "stages.pool_support.focused_checks.saturation_row",
+        "stages.pool_support.controls.*[*].synergy",
+        "stages.pool_support.controls.*[*].rationale_kinds",
+        "stages.pool_support.controls.*[*].rationale_evidence"
+      ],
+      "checks": [
+        "jq '.stages.pool_support.focused_checks.saturation_row' docs/audits/hob-587-trace-out.json   # revision-3 output"
+      ],
+      "honesty_notes": "A synergy rationale kind with theme evidence is expected at the cap; the smoke's 'stays generic' assertion is specifically that the relationship finding id is absent from the rationale evidence text, and the probe observed exactly that. The paid artifact's rows reach 1.5 through theme packages while carrying no relationship support at all."
+    },
+    {
+      "id": "T5-source-evidence-provenance",
+      "title": "Every confirmed relationship comes from the local pair matcher; the paid provider validation accepted none of the pairs it reviewed",
+      "gate_class": "missing_information",
+      "representative_inputs": {
+        "run_id_of_all_685_relationships": "local-c7a4f08030a1bfb7",
+        "paid_relationship_validation_units": 141,
+        "paid_relationship_units_with_accepted_payload": 0
+      },
+      "source_pointers": [
+        "draftomen/set_enrichment_workflow.py:192-196 and 629-633 (local matcher run id, provider draftomen, model local-pair-matcher-v1)",
+        "draftomen/set_enrichment.py:738-742 (local structured resolution first; only residual pairs reach a paid batch)",
+        "work/results/*.json (90 relationship units malformed, 51 success with a rejected finding: 'relationship prerequisites contradict their source evidence.')"
+      ],
+      "observed_data": {
+        "artifact_rejected_findings": {"total": 467, "oracle": 82, "relationship": 376, "guide": 9},
+        "artifact_guide_claims": [
+          {"finding_id": "work-0b9feb52b8137843899181a7fbc18914ff8aa860f3438d5d1778dea1de122931:mechanic-recruit", "review_status": "uncertain"},
+          {"finding_id": "work-0b9feb52b8137843899181a7fbc18914ff8aa860f3438d5d1778dea1de122931:mechanic-storied", "review_status": "uncertain"}
+        ],
+        "consequence": "compile_profile_enhancement includes only accepted mechanic claims, so the generated enhancement carries 0 mechanics (observed)"
+      },
+      "observed_runtime_result": {
+        "relationship_run_ids": ["local-c7a4f08030a1bfb7"],
+        "relationship_units": 141,
+        "relationship_units_with_accepted_payload": 0,
+        "work_unit_outcomes": {"success": 441, "malformed": 103},
+        "paid_capability_units": {"files": 402, "accepted": 0, "rejected": 172, "uncertain": 1147},
+        "guide_units": {"files": 1, "accepted": 0, "rejected": 9, "uncertain": 2},
+        "enhancement_mechanics": 0
+      },
+      "observation_status": "observed",
+      "probe_keys": [
+        "stages.saved_evidence.artifact.relationship_run_ids",
+        "stages.saved_evidence.work_units",
+        "stages.saved_evidence.checks.paid_relationship_units_accepted_none",
+        "stages.generated_representation.enhancement.mechanics"
+      ],
+      "checks": [
+        "jq '.stages.saved_evidence.work_units, .stages.generated_representation.enhancement.mechanics' docs/audits/hob-587-trace-out.json"
+      ],
+      "honesty_notes": "A rejected provider finding is evidence about that pair only, and 90 of 141 responses were unparseable, so the run provides no validated confirmation for any of the 685 relationships and no proof that they are wrong. The paid capability units accepting nothing is a separate observation that belongs with the inventory work."
+    },
+    {
+      "id": "T6-rendered-advice",
+      "title": "Rendered explanation surfaces relationship evidence only through the pool-support records",
+      "gate_class": "rendered_surface",
+      "representative_inputs": {
+        "fixture_control": "tests/fixtures/hob-relationship-scoring-profile.json (R1 and R6 projected)",
+        "paid_control": "same profile with the enhancement compiled from the paid artifact"
+      },
+      "source_pointers": [
+        "draftomen/pickengine.py:538-572 (concise text)",
+        "draftomen/pickengine.py:574-708 (detailed text with retained evidence)",
+        "draftomen/session.py:2514-2540 (Recommendation payload for QML)",
+        "draftomen/qt_adapter.py:141-175 (dataclass fields become QML-safe keys)",
+        "draftomen/qml/CardPreview.qml:426-437 (objectName cardPreviewExplanation; detailedIntel binds recommendation.explanation)",
+        "draftomen/qml/StatusStrip.qml:58-66 (contextual evidence status message)"
+      ],
+      "observed_runtime_result": {
+        "support_free_row_both_controls": "Bard's Company receives 83 DO points. Base rating: 83.33 DO points. Rating evidence: profile estimate GIH win rate 65.0%. Profile evidence is mature; confidence in that evidence is 100%, not a win probability.",
+        "support_carrying_row_fixture_control": "Bard's Company receives 85 DO points. ... Its colors fit your current deck (+1.14 DO points). Confirmed relationship support: relationship relationship:token-go-wide-payoff:103382:103382-token-maker:103526:103526-go-wide-payoff-1 (token-go-wide-payoff) for Bard's Company [103526]: drafted Fíli the Pathfinder [103382] satisfies source:condition/create/token;types=all_of:creature;token=token;subtype=dwarf;color=exact:R;controller=you;qty=exactly/1;zones=none->battlefield/you; target:condition/control/permanent;types=all_of:creature;controller=you;qty=exactly/1 (+0.57 DO points).",
+        "support_carrying_row_paid_control": "absent: the paid enhancement produces no support-carrying row in this draft (paid_enhancement.support.row_present false)",
+        "qml_renderer_matches": {"fixture_enhancement.no_support": true, "fixture_enhancement.support": true, "paid_enhancement.no_support": true},
+        "qml_theme_resolved": {"fixture_enhancement.no_support": true, "fixture_enhancement.support": true, "paid_enhancement.no_support": true},
+        "label_theme_values": {"font_pixel_size": 11, "color": "#c8c2b8"}
+      },
+      "observation_status": "observed",
+      "probe_keys": [
+        "stages.rendered_advice.renderer_texts",
+        "stages.rendered_advice.qml_rendered_texts",
+        "stages.rendered_advice.qml_rendered_details",
+        "stages.rendered_advice.qml_renderer_matches",
+        "stages.rendered_advice.qml_theme_resolved"
+      ],
+      "checks": [
+        "jq '.stages.rendered_advice.qml_rendered_texts, .stages.rendered_advice.qml_renderer_matches' docs/audits/hob-587-trace-out.json",
+        "jq '.stages.rendered_advice.qml_rendered_details, .stages.rendered_advice.qml_theme_resolved' docs/audits/hob-587-trace-out.json"
+      ],
+      "honesty_notes": "Component-level evidence: CardPreview.qml rendered offscreen with the payload the adapter publishes. It proves the component reproduces the renderer text, including the relationship evidence on a support-carrying row, and that theme values resolved during the stage. It does not demonstrate the application window, live session or an interactive journey."
+    }
+  ],
+  "stage_blocker_risks": [
+    {
+      "stage": "saved_evidence",
+      "risk": "the artifact loader rejects the sources, for example when the frozen guide does not cover the artifact's guide pins",
+      "detection": "stage status becomes partial with artifact_load_error; the checks block still reports the byte-level facts (digests, work units) so the failure is attributable rather than silent",
+      "observed": "not triggered in the revision-2 run"
+    },
+    {
+      "stage": "generated_representation",
+      "risk": "compile_profile_enhancement rejects the paid artifact (review, set_code, or card-data mismatch)",
+      "detection": "stage reports enhancement_origin=installed_profile and enhancement_error instead of a histogram; the pool and rendered stages then describe the installed profile, not the artifact",
+      "observed": "not triggered: enhancement_origin=artifact_compile"
+    },
+    {
+      "stage": "pool_support",
+      "risk": "dataclasses.replace of the calibration profile with the compiled enhancement may fail profile validation",
+      "detection": "probe stage status blocked with the raised error",
+      "observed": "not triggered: all five controls produced four rows each"
+    },
+    {
+      "stage": "rendered_advice",
+      "risk": "PySide6/QQml may be unavailable or refuse offscreen rendering in Main's environment; the guiPreferences context property may be released before the label settles",
+      "detection": "probe stage status blocked with the exception text, or qml_theme_resolved false with a captured Qt message naming the phase; no UI claim may be made in that case",
+      "observed": "not triggered: the component reached Ready, all three rendered payloads resolved non-empty text matching the renderer, qml_theme_resolved true, and the only Qt messages were a font-alias notice during the stage and the Theme.qml null read in the teardown phase"
+    }
+  ],
+  "open_unknowns": [
+    "How many of the 682 unprojected relationships are semantically valid but unrepresentable (the observed histogram is a representation measurement, not a semantic verdict).",
+    "Whether the published remote profile object served by the manifest carries the same three projections as the locally installed profile (the installed profile matches the compiled artifact exactly).",
+    "Why the paid capability units accepted nothing while the local resolver produced all 583 oracle facts, and why the paid guide unit rejected all nine findings (inventory and mechanic matrix territory)."
+  ]
+}
