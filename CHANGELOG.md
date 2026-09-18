@@ -3,6 +3,14 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Recover qualified recruit and amass relationships offline. The projection
+  compiler binds exact multiline Oracle evidence, retains conditional recruit
+  discard, amass mode, Azog controller, and Misty Mountains threshold
+  qualifications, recovers qualified payoff participants with source-proven
+  cost, choice, timing, and conversion statements, and rejects the four
+  subtype-negative pairs as `token_subtype_contradiction`, so all 414 scoped
+  HOB findings account through the real `generate-profile` consumer with
+  410 qualified rows and four explicit contradictions. (#590)
 - Recover qualified relationships through the offline profile pipeline. The
   projection compiler now emits qualified rows: a prerequisite that cannot bind a
   typed clause is retained verbatim as an exact-quote qualification inside the

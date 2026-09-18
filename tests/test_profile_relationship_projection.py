@@ -1,13 +1,18 @@
 """Regressions for deterministic source-bound projections of confirmed local relationships.
 
 The compiler is exercised against a compact confirmation extracted from the zero-cost saved HOB
-run whose digest is ``edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84``: three
+run whose digest is ``edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84``: the
 reviewed real pairs, their strict v2 capability facts, the pinned cards that bind them and the
-real model runs behind them.  The same confirmation carries fixture-grammar pairs for the closed
-guards this module defends - a trailing condition inside one action, a condition on the next
-instruction only, and a retained token subtype that states one of the two explicit words.  The
-fixture carries its own frozen sources, so these tests never read a home directory and never skip
-when an operator's files are absent.
+real model runs behind them.  Besides the three original mill/recursion pairs it carries the
+recovered production families - recruit, the reminder-free Adventure amass face, Azog's
+controlled amass, the Misty Mountains Cold chapter, the two-line chosen-type anthem, the subtype
+matrix around Goblin and Elf requirements, Beorn's same-face type conversion and the recovered
+sacrifice outlets.  The same confirmation carries fixture-grammar pairs for the closed guards
+this module defends - a trailing condition inside one action, a condition on the next
+instruction only, a retained token subtype that states one of the two explicit words, and a
+chosen-type payoff whose paragraph the face prints twice.  The fixture carries its own frozen
+sources, so these tests never read a home directory and never skip when an operator's files are
+absent.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from draftomen.profile_relationship_projection import (
 from draftomen.semantic_enrichment import EnrichmentSources, SemanticEnrichmentArtifact
 from draftomen.semantic_enrichment_records import OracleEvidence, OracleFact
 from draftomen.semantic_relationship_records import (
+    QualificationKind,
     CardRelationship,
     PrerequisiteProjectionError,
     RelationshipQualification,
@@ -82,6 +88,101 @@ _UNTYPABLE_PREREQUISITES = (
     ("condition", _THRESHOLD_COUNT, "condition"),
     ("threshold", _THRESHOLD_COUNT, "quantity"),
 )
+# The recovered family rows of the expanded confirmation, keyed by their stored finding subjects.
+_RECRUIT = "token-go-wide-payoff:103381:103381-recruit-token:990010:990010-fixture-wide-payoff"
+_ADVENTURE_AMASS = (
+    "token-go-wide-payoff:103449:103449-f1-amass-token:990010:990010-fixture-wide-payoff"
+)
+_AZOG = "token-go-wide-payoff:103435:103435-token-maker-1:103381:103381-go-wide-power"
+_MISTY = "token-go-wide-payoff:103482:103482-dragon-token-1:103381:103381-go-wide-power"
+_CHOSEN_TYPE = (
+    "token-go-wide-payoff:103442:103442-amass-goblin-army-token:103397:103397-f0-go-wide-payoff"
+)
+_REPEATED_PAYOFF = (
+    "token-go-wide-payoff:103442:103442-amass-goblin-army-token:"
+    "990020:990020-fixture-repeated-payoff"
+)
+_GOBLIN_ARMY_OUTLET = (
+    "token-sacrifice-outlet:103442:103442-amass-goblin-army-token:103529:103529-sacrifice-outlet"
+)
+_LOOKOUT_OUTLET = (
+    "token-sacrifice-outlet:103386:103386-dies-create-token-token-maker:"
+    "103529:103529-sacrifice-outlet"
+)
+_COMPANY_ANTHEM = (
+    "token-go-wide-payoff:103526:103526-recruit-attack-token-maker:"
+    "103546:103546-f0-go-wide-payoff"
+)
+_BEORN = "token-go-wide-payoff:103381:103381-recruit-token:103499:103499-bear-buff-go-wide"
+_SACRIFICE_COST = (
+    "token-sacrifice-outlet:103442:103442-amass-goblin-army-token:103460:103460-sacrifice-cost"
+)
+_SACRIFICE_OUTLET = (
+    "token-sacrifice-outlet:103442:103442-amass-goblin-army-token:103491:103491-sacrifice-outlet"
+)
+_RECRUIT_CAPABILITY = "103381-recruit-token"
+_ADVENTURE_AMASS_CAPABILITY = "103449-f1-amass-token"
+_AZOG_CAPABILITY = "103435-token-maker-1"
+_MISTY_CAPABILITY = "103482-dragon-token-1"
+_CHOSEN_TYPE_CAPABILITY = "103397-f0-go-wide-payoff"
+_LOOKOUT_CAPABILITY = "103386-dies-create-token-token-maker"
+_COMPANY_CAPABILITY = "103526-recruit-attack-token-maker"
+_OUTLET_CAPABILITY = "103529-sacrifice-outlet"
+_BEORN_CAPABILITY = "103499-bear-buff-go-wide"
+_SACRIFICE_COST_CAPABILITY = "103460-sacrifice-cost"
+_SACRIFICE_OUTLET_CAPABILITY = "103491-sacrifice-outlet"
+# The frozen statements the recovered qualifications must retain, verbatim from the saved run.
+_RECRUIT_INSTRUCTION = (
+    "When this creature enters, recruit. (Draw a card, then discard a card. "
+    "If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+)
+_RECRUIT_FRAME = "When this creature enters, recruit."
+_RECRUIT_CONDITION = (
+    "If you discarded a nonland card, create a 1/1 white Human Soldier creature token."
+)
+_ADVENTURE_AMASS_INSTRUCTION = "Amass Goblins 2."
+_ADVENTURE_REMINDER = "(Then exile this card."
+_MENACE_LINE = "Each creature you control with a +1/+1 counter on it has menace."
+_WRONG_FACE_NAME = "Great Ugly-Looking Goblin"
+_AZOG_MODE = "Its controller amasses Goblins X, where X is that creature's power."
+_AZOG_PARTY = (
+    "Its controller amasses Goblins X, where X is that creature's power. "
+    "If you controlled that creature, draw a card."
+)
+_AZOG_CONDITION = "If they don't control an Army"
+_AZOG_TIMING = "When Azog enters"
+_AZOG_REMINDER = (
+    "If they don't control an Army, they create a 0/0 black Goblin Army creature token first."
+)
+_MISTY_CHAPTER = (
+    "I, II, III, IV — Create a Treasure token. Then if you control four or more Treasures, "
+    "sacrifice this Saga. If you do, create a 6/6 red Dragon creature token with flying. "
+    '(A Treasure token is an artifact with "{T}, Sacrifice this token: Add one mana of any color.")'
+)
+_MISTY_RANGE = "I, II, III, IV"
+_MISTY_QUANTITY = "if you control four or more Treasures"
+_MISTY_SEQUENCE = (
+    "Then if you control four or more Treasures, sacrifice this Saga. If you do, create a "
+    "6/6 red Dragon creature token with flying."
+)
+_CHOSEN_TYPE_CHOICE = "As this enchantment enters, choose a creature type."
+_CHOSEN_TYPE_PAYOFF = "Creatures you control of the chosen type get +2/+2."
+_CHOSEN_TYPE_PARAGRAPH = f"{_CHOSEN_TYPE_CHOICE}\n{_CHOSEN_TYPE_PAYOFF}"
+_GOBLIN_OUTLET_QUOTE = "{T}, Sacrifice another Goblin: Add {B}{R}."
+_GOBLIN_OUTLET_COST = "{T}, Sacrifice another Goblin"
+_BEORN_PAYOFF = "Other Bears you control get +2/+2."
+_BEORN_COMBAT_ABILITY = (
+    "At the beginning of combat on your turn, put a trample counter on up to one target "
+    "creature you control. It becomes a Bear in addition to its other types. Then if you "
+    "control three or more Bears, draw two cards."
+)
+_BEORN_CONVERSION = "It becomes a Bear in addition to its other types."
+_SACRIFICE_STATEMENT = (
+    "As an additional cost to cast this spell, sacrifice an artifact or creature or pay {4}."
+)
+_SACRIFICE_CHOICE = "sacrifice an artifact or creature or pay {4}"
+_OUTLET_COST = "Sacrifice another creature or artifact"
+_OUTLET_RESTRICTION = "Activate only during your turn and only once each turn."
 
 
 def _cards() -> tuple[CardInfo, ...]:
@@ -128,6 +229,54 @@ def _with_facts(
 ) -> SemanticEnrichmentArtifact:
     """Rebuild the confirmation around a different stored fact set."""
     return dataclasses.replace(artifact, oracle_facts=facts, sources=_sources())
+
+
+def _with_capability(
+    artifact: SemanticEnrichmentArtifact,
+    capability: str,
+    *,
+    claim: dict[str, object] | None = None,
+    evidence: tuple[OracleEvidence, ...] | None = None,
+) -> SemanticEnrichmentArtifact:
+    """Rebuild the confirmation with different claim fields or evidence for one capability."""
+    facts: list[OracleFact] = []
+    for fact in artifact.oracle_facts:
+        if fact.finding_id.endswith(f":{capability}"):
+            changes: dict[str, object] = {}
+            if claim is not None:
+                fields = json.loads(fact.claim)
+                fields.update(claim)
+                changes["claim"] = json.dumps(fields, separators=(",", ":"), sort_keys=True)
+            if evidence is not None:
+                changes["evidence"] = evidence
+            fact = dataclasses.replace(fact, **changes)
+        facts.append(fact)
+    return _with_facts(artifact, tuple(facts))
+
+
+def _revalidate(artifact: SemanticEnrichmentArtifact, relationship: CardRelationship) -> None:
+    """Re-prove one compiled row against the frozen cards and pins the confirmation carries."""
+    validate_relationship_sources(
+        relationship=relationship,
+        cards={card.grp_id: card for card in _cards()},
+        pins={pin.card_id: pin for pin in artifact.cards},
+    )
+
+
+def _without_projection(
+    compilation: RelationshipProjectionCompilation,
+    artifact: SemanticEnrichmentArtifact,
+    suffix: str,
+    outcome: RelationshipConversionOutcome,
+    reason: str,
+) -> None:
+    """Assert one stored row keeps its exact payload because the named gate stopped it."""
+    relationship = _row(compilation, suffix)
+    assert relationship is _stored(artifact, suffix)
+    assert relationship.prerequisite_projection is None
+    conversion = _conversion(compilation, suffix)
+    assert conversion.outcome is outcome
+    assert conversion.reason == reason
 
 
 def _with_prerequisite(
@@ -361,17 +510,35 @@ def test_complete_token_subtype_still_compiles_the_pair() -> None:
     assert clause.object_quote == "a 0/0 black Goblin Army creature token"
 
 
-def test_unrepresentable_amass_antecedent_leaves_the_relationship_unprojected() -> None:
-    """An amass reminder's "If you don't control an Army" antecedent has no typed field."""
+def test_untypable_amass_antecedent_keeps_the_pair_qualified() -> None:
+    """An amass reminder's no-Army antecedent has no typed field, so the pair stays qualified."""
     artifact = _confirmation()
-    # both facts of the pair are present: the negative comes from the omitted antecedent alone
+    # both facts of the pair are present: the qualification states the antecedent those facts print
     facts = {(fact.card_id, fact.finding_id.rsplit(":", 1)[-1]) for fact in artifact.oracle_facts}
     assert (103442, "103442-amass-goblin-army-token") in facts
     assert (103381, "103381-go-wide-power") in facts
     stored = _stored(artifact, _AMASS)
     relationship = _row(_compile(artifact), _AMASS)
-    assert relationship is stored
-    assert relationship.prerequisite_projection is None
+    assert relationship is not stored
+    assert relationship.finding_id == stored.finding_id
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.source.prerequisites == ()
+    qualifications = {item.kind: item for item in projection.source.qualifications}
+    assert set(qualifications) == {QualificationKind.MODE, QualificationKind.CONDITION}
+    # one instruction body: the counters the keyword grows and the single body it creates instead
+    mode = qualifications[QualificationKind.MODE]
+    assert "Amass Goblins 3." in mode.selector
+    assert "counters on an Army" in mode.selector
+    assert "If you don't control an Army" in mode.selector
+    assert qualifications[QualificationKind.CONDITION].selector == "If you don't control an Army"
+    # the power-setting payoff keeps its own statement and no branch becomes a typed creation
+    assert [item.kind for item in projection.target.qualifications] == [QualificationKind.CONDITION]
+    assert not [
+        clause
+        for clause in (*projection.source.prerequisites, *projection.target.prerequisites)
+        if clause.operation == "create" and clause.quantity is not None
+    ]
 
 
 @pytest.mark.parametrize(
@@ -458,12 +625,12 @@ def test_unreadable_capability_claim_never_introduces_a_projection(claim: str) -
             for item in artifact.oracle_facts
         ),
     )
-    rows = _compile(variant).relationships
-    assert not any(row.prerequisite_projection is not None for row in rows)
-    assert all(
-        row is stored
-        for row, stored in zip(rows, variant.confirmed_relationships)
-    )
+    rows = {row.finding_id: row for row in _compile(variant).relationships}
+    stored = {row.finding_id: row for row in variant.confirmed_relationships}
+    for row in rows.values():
+        if row.finding_id.endswith((_MILL, _NEXT_ACTION_MILL)):
+            assert row is stored[row.finding_id]
+            assert row.prerequisite_projection is None
 
 
 def test_model_decided_relationship_is_returned_exactly_as_stored() -> None:
@@ -506,16 +673,24 @@ def test_compilation_preserves_the_artifact_bytes_and_stored_rows() -> None:
     assert [row.finding_id for row in rows] == [
         row.finding_id for row in artifact.confirmed_relationships
     ]
-    # the recursion pair is rejected by the zone gate, so only the two mill pairs project
-    assert [row.prerequisite_projection is not None for row in rows] == [
-        True,
-        False,
-        True,
-        False,
-        False,
-        False,
-    ]
-    assert _row(compilation, _AMASS) is _stored(artifact, _AMASS)
+    # an unconverted row is returned as the identical stored payload; every projected row is a
+    # fresh record that carries its compiled clauses and qualifications
+    unconverted = {
+        RelationshipConversionOutcome.UNSUPPORTED,
+        RelationshipConversionOutcome.CONTRADICTION,
+        RelationshipConversionOutcome.MISSING_EVIDENCE,
+    }
+    stored_rows = {row.finding_id: row for row in artifact.confirmed_relationships}
+    assert all(
+        (row is stored_rows[row.finding_id]) is (item.outcome in unconverted)
+        for row, item in zip(rows, compilation.conversions)
+    )
+    # a recovered row is recompiled while the unbound fixture maker keeps its own payload
+    assert _row(compilation, _AMASS) is not _stored(artifact, _AMASS)
+    assert _row(compilation, _ARMY_PAIR) is _stored(artifact, _ARMY_PAIR)
+    # the closed guards stay unprojected whichever way their gate refuses them
+    assert _row(compilation, _TRAILING_MILL).prerequisite_projection is None
+    assert _row(compilation, _RECURSION).prerequisite_projection is None
     assert all(
         "prerequisite_projection" not in stored for stored in json.loads(before)["relationships"]
     )
@@ -525,17 +700,9 @@ def test_every_stored_relationship_receives_one_conversion_in_stored_order() -> 
     """The compilation accounts for each stored row once, with a closed outcome and reason."""
     artifact = _confirmation()
     compilation = _compile(artifact)
-    assert len(artifact.confirmed_relationships) == 6
+    assert len(artifact.confirmed_relationships) == 18
     assert [item.finding_id for item in compilation.conversions] == [
         row.finding_id for row in artifact.confirmed_relationships
-    ]
-    assert [(item.outcome.value, item.reason) for item in compilation.conversions] == [
-        ("decoded", "projected"),
-        ("unsupported", "source_clause_unbound"),
-        ("decoded", "projected"),
-        ("contradiction", "zone_supply_contradiction:graveyard"),
-        ("unsupported", "target_clause_unbound"),
-        ("unsupported", "source_clause_unbound"),
     ]
     assert [item.mechanism for item in compilation.conversions] == [
         row.mechanism for row in artifact.confirmed_relationships
@@ -543,6 +710,21 @@ def test_every_stored_relationship_receives_one_conversion_in_stored_order() -> 
     assert all(
         item.outcome in tuple(RelationshipConversionOutcome) for item in compilation.conversions
     )
+    # every row reports either a projection or the exact gate that stopped it
+    projected = {RelationshipConversionOutcome.DECODED, RelationshipConversionOutcome.QUALIFIED}
+    assert all(
+        (item.reason == "projected") is (item.outcome in projected)
+        for item in compilation.conversions
+    )
+    # the closed guard rows keep the exact gate that refuses them
+    assert [
+        (_conversion(compilation, suffix).outcome, _conversion(compilation, suffix).reason)
+        for suffix in (_TRAILING_MILL, _RECURSION, _ARMY_PAIR)
+    ] == [
+        (RelationshipConversionOutcome.UNSUPPORTED, "source_clause_unbound"),
+        (RelationshipConversionOutcome.CONTRADICTION, "zone_supply_contradiction:graveyard"),
+        (RelationshipConversionOutcome.UNSUPPORTED, "source_clause_unbound"),
+    ]
     # the projected rows and the stored rows stay in the same stored order
     assert [row.finding_id for row in compilation.relationships] == [
         item.finding_id for item in compilation.conversions
@@ -657,3 +839,357 @@ def test_qualification_quoting_another_card_fails_source_validation() -> None:
     )
     with pytest.raises(PrerequisiteProjectionError):
         validate_relationship_sources(relationship=forged, cards=cards, pins=pins)
+
+
+def test_frozen_recruit_payoff_keeps_the_discard_condition_and_the_draw_discard_order() -> None:
+    """Recruit stays qualified by its real nonland-discard clause, never an optional self-draw."""
+    artifact = _confirmation()
+    stored = _stored(artifact, _RECRUIT)
+    assert stored.prerequisite_projection is None
+    relationship = _row(_compile(artifact), _RECRUIT)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    source = projection.source
+    assert (source.card_id, source.capability_id, source.role.value, source.face_index) == (
+        103381,
+        _RECRUIT_CAPABILITY,
+        "token_maker",
+        None,
+    )
+    # the keyword instruction alone carries no typed clause, so both statements are retained
+    assert source.prerequisites == ()
+    qualifications = {item.kind: item for item in source.qualifications}
+    assert set(qualifications) == {QualificationKind.CONDITION, QualificationKind.TIMING}
+    assert qualifications[QualificationKind.CONDITION].selector == _RECRUIT_CONDITION
+    assert qualifications[QualificationKind.TIMING].selector == _RECRUIT_FRAME
+    # every citation is the complete printed instruction, draw before discard and condition after
+    assert all(item.evidence.quote == _RECRUIT_INSTRUCTION for item in source.qualifications)
+    # no fabricated starting-hand requirement and no optional draw or discard appears anywhere
+    retained = [f"{item.selector}\n{item.evidence.quote}" for item in source.qualifications]
+    assert not [text for text in retained if "starting hand" in text]
+    assert not [text for text in retained if "may draw" in text or "may discard" in text]
+    _revalidate(artifact, relationship)
+
+
+def test_adventure_amass_face_keeps_its_closed_keyword_instruction() -> None:
+    """A reminder-free Adventure face keeps one exact mode and no invented creation quantity."""
+    artifact = _confirmation()
+    compilation = _compile(artifact)
+    relationship = _row(compilation, _ADVENTURE_AMASS)
+    conversion = _conversion(compilation, _ADVENTURE_AMASS)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert conversion.outcome is RelationshipConversionOutcome.QUALIFIED
+    source = projection.source
+    assert (
+        source.card_id,
+        source.capability_id,
+        source.role.value,
+        source.face_index,
+        source.face_name,
+    ) == (103449, _ADVENTURE_AMASS_CAPABILITY, "token_maker", 1, "Clap! Snap!")
+    assert source.prerequisites == ()
+    assert [item.kind for item in source.qualifications] == [QualificationKind.MODE]
+    mode = source.qualifications[0]
+    assert mode.selector == _ADVENTURE_AMASS_INSTRUCTION
+    # the closed keyword body creates one Army; the number counts the counters it grows, never
+    # tokens, so its reminder is neither printed here nor copied from another amass instruction
+    assert "counters on an Army" not in mode.selector
+    assert "counters on an Army" not in mode.evidence.quote
+    assert _ADVENTURE_REMINDER in mode.evidence.quote
+    assert not [
+        clause
+        for clause in (*source.prerequisites, *projection.target.prerequisites)
+        if clause.operation == "create"
+    ]
+
+
+def test_amass_capability_pinned_to_the_other_face_never_borrows_its_instruction() -> None:
+    """A capability pinned to the creature face cannot read the Adventure face's amass line."""
+    artifact = _confirmation()
+    variant = _with_capability(
+        artifact,
+        _ADVENTURE_AMASS_CAPABILITY,
+        claim={"face_index": 0, "face_name": _WRONG_FACE_NAME},
+        evidence=(OracleEvidence(card_id=103449, face_index=0, quote=_MENACE_LINE),),
+    )
+    _without_projection(
+        _compile(variant),
+        variant,
+        _ADVENTURE_AMASS,
+        RelationshipConversionOutcome.UNSUPPORTED,
+        "source_clause_unbound",
+    )
+
+
+def test_azog_controlled_amass_never_projects_as_unqualified_self_supply() -> None:
+    """Azog's controller branch survives even when the stored fact cites only the reminder."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _AZOG)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    source = projection.source
+    assert (source.card_id, source.capability_id, source.role.value) == (
+        103435,
+        _AZOG_CAPABILITY,
+        "token_maker",
+    )
+    assert source.prerequisites == ()
+    qualifications = {item.kind: item for item in source.qualifications}
+    assert set(qualifications) == {
+        QualificationKind.CONDITION,
+        QualificationKind.MODE,
+        QualificationKind.PARTY,
+        QualificationKind.TIMING,
+    }
+    # the instruction keeps the destruction frame, the controller amass and the own-controller draw
+    assert qualifications[QualificationKind.MODE].selector == _AZOG_MODE
+    assert qualifications[QualificationKind.PARTY].selector == _AZOG_PARTY
+    assert qualifications[QualificationKind.CONDITION].selector == _AZOG_CONDITION
+    assert qualifications[QualificationKind.TIMING].selector == _AZOG_TIMING
+    # the same row from a reminder-only citation still resolves the complete instruction line, so
+    # the reminder's own wording can never be presented as the player's unqualified supply
+    reminder_only = _with_capability(
+        artifact,
+        _AZOG_CAPABILITY,
+        evidence=(OracleEvidence(card_id=103435, face_index=None, quote=_AZOG_REMINDER),),
+    )
+    variant = _row(_compile(reminder_only), _AZOG)
+    variant_projection = variant.prerequisite_projection
+    assert variant_projection is not None
+    assert variant_projection.outcome.value == "qualified"
+    retained = {item.kind: item for item in variant_projection.source.qualifications}
+    assert set(retained) == set(qualifications)
+    assert retained[QualificationKind.PARTY].selector == _AZOG_PARTY
+
+
+def test_misty_chapter_keeps_the_post_treasure_threshold_and_conditional_sacrifice() -> None:
+    """The Dragon needs four Treasures and a sacrifice on any chapter, never a finished Saga."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _MISTY)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    source = projection.source
+    assert (source.card_id, source.capability_id, source.role.value) == (
+        103482,
+        _MISTY_CAPABILITY,
+        "token_maker",
+    )
+    assert source.prerequisites == ()
+    qualifications = {item.kind: item for item in source.qualifications}
+    assert set(qualifications) == {
+        QualificationKind.CONDITION,
+        QualificationKind.QUANTITY,
+        QualificationKind.TIMING,
+    }
+    # the payoff is the whole post-Treasure sequence: threshold, sacrifice, then conditional Dragon
+    condition = qualifications[QualificationKind.CONDITION]
+    assert condition.selector.startswith(_MISTY_SEQUENCE)
+    assert condition.selector.index(_MISTY_QUANTITY) < condition.selector.index("If you do, create")
+    # the count is checked after the Treasure is created, and no single chapter substitutes for it
+    assert qualifications[QualificationKind.QUANTITY].selector == _MISTY_QUANTITY
+    assert qualifications[QualificationKind.TIMING].selector == _MISTY_RANGE
+    assert not [item for item in source.qualifications if item.selector == "IV"]
+    assert not [item for item in source.qualifications if "Sacrifice after IV" in item.selector]
+    # every citation stays the complete printed chapter, Treasure reminder included
+    assert all(item.evidence.quote == _MISTY_CHAPTER for item in source.qualifications)
+
+
+def test_two_line_chosen_type_payoff_round_trips_as_one_complete_citation() -> None:
+    """The chosen-type choice and its selected-type payoff stay one complete-line citation."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _CHOSEN_TYPE)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    target = projection.target
+    assert (target.card_id, target.capability_id, target.face_index) == (
+        103397,
+        _CHOSEN_TYPE_CAPABILITY,
+        0,
+    )
+    retained = (*target.prerequisites, *target.qualifications)
+    assert len(retained) == 1
+    assert retained[0].evidence.quote == _CHOSEN_TYPE_PARAGRAPH
+    assert _CHOSEN_TYPE_CHOICE in retained[0].evidence.quote
+    assert _CHOSEN_TYPE_PAYOFF in retained[0].evidence.quote
+    # the compiled row survives its own JSON round trip and re-proves against the pinned cards
+    restored = CardRelationship.from_json(json.loads(json.dumps(relationship.to_json())))
+    restored_target = restored.prerequisite_projection.target
+    restored_retained = (*restored_target.prerequisites, *restored_target.qualifications)
+    assert restored_retained[0].evidence.quote == _CHOSEN_TYPE_PARAGRAPH
+    _revalidate(artifact, restored)
+
+
+def test_chosen_type_evidence_citing_only_the_choice_line_never_binds_the_payoff() -> None:
+    """A citation of the choice line alone cannot borrow the selected-type payoff sentence."""
+    artifact = _confirmation()
+    variant = _with_capability(
+        artifact,
+        _CHOSEN_TYPE_CAPABILITY,
+        evidence=(OracleEvidence(card_id=103397, face_index=0, quote=_CHOSEN_TYPE_CHOICE),),
+    )
+    _without_projection(
+        _compile(variant),
+        variant,
+        _CHOSEN_TYPE,
+        RelationshipConversionOutcome.UNSUPPORTED,
+        "target_clause_unbound",
+    )
+
+
+def test_chosen_type_evidence_on_another_face_never_yields_a_projection() -> None:
+    """A face pin whose retained prerequisite lies on the other face is unusable evidence."""
+    artifact = _confirmation()
+    variant = _with_capability(
+        artifact,
+        _CHOSEN_TYPE_CAPABILITY,
+        claim={"face_index": 1, "face_name": "At the Door"},
+        evidence=(
+            OracleEvidence(card_id=103397, face_index=1, quote="Create X 2/2 red Dwarf creature tokens."),
+        ),
+    )
+    _without_projection(
+        _compile(variant),
+        variant,
+        _CHOSEN_TYPE,
+        RelationshipConversionOutcome.MISSING_EVIDENCE,
+        "target_capability_fact_unusable",
+    )
+
+
+def test_repeated_chosen_type_paragraph_is_ambiguous_evidence() -> None:
+    """A face that prints the paragraph twice resolves to no window, so nothing is borrowed."""
+    artifact = _confirmation()
+    _without_projection(
+        _compile(artifact),
+        artifact,
+        _REPEATED_PAYOFF,
+        RelationshipConversionOutcome.UNSUPPORTED,
+        "target_clause_unbound",
+    )
+
+
+def _capability_subtype(artifact: SemanticEnrichmentArtifact, capability: str) -> str | None:
+    """Return the coarse token subtype one stored capability fact retains, or None."""
+    fact = next(
+        item for item in artifact.oracle_facts if item.finding_id.endswith(f":{capability}")
+    )
+    return json.loads(fact.claim)["qualifier"]["subtype"]
+
+
+def test_goblin_army_satisfies_a_goblin_only_sacrifice_outlet() -> None:
+    """A Goblin Army token is a Goblin even though its qualifier states two words at once."""
+    artifact = _confirmation()
+    compilation = _compile(artifact)
+    relationship = _row(compilation, _GOBLIN_ARMY_OUTLET)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    assert projection.source.capability_id == "103442-amass-goblin-army-token"
+    target = projection.target
+    assert (target.card_id, target.capability_id) == (103529, _OUTLET_CAPABILITY)
+    assert target.prerequisites == ()
+    qualifications = {item.kind: item for item in target.qualifications}
+    assert set(qualifications) == {QualificationKind.CONDITION, QualificationKind.COST}
+    assert qualifications[QualificationKind.CONDITION].selector == _GOBLIN_OUTLET_QUOTE
+    assert qualifications[QualificationKind.COST].selector == _GOBLIN_OUTLET_COST
+    conversion = _conversion(compilation, _GOBLIN_ARMY_OUTLET)
+    assert conversion.outcome is RelationshipConversionOutcome.QUALIFIED
+
+
+def test_human_soldier_tokens_never_satisfy_a_goblin_only_sacrifice_outlet() -> None:
+    """A recruit whose qualifier omits its subtype still contradicts a Goblin-only outlet."""
+    artifact = _confirmation()
+    # the coarse qualifier states no subtype at all: the produced subtype is read from the exact
+    # token instruction, so a missing word is never treated as compatible
+    assert _capability_subtype(artifact, _LOOKOUT_CAPABILITY) is None
+    _without_projection(
+        _compile(artifact),
+        artifact,
+        _LOOKOUT_OUTLET,
+        RelationshipConversionOutcome.CONTRADICTION,
+        "token_subtype_contradiction",
+    )
+
+
+def test_human_soldier_tokens_never_satisfy_an_elf_anthem() -> None:
+    """The same recruit family contradicts an Elf anthem instead of borrowing a match."""
+    artifact = _confirmation()
+    assert _capability_subtype(artifact, _COMPANY_CAPABILITY) is None
+    _without_projection(
+        _compile(artifact),
+        artifact,
+        _COMPANY_ANTHEM,
+        RelationshipConversionOutcome.CONTRADICTION,
+        "token_subtype_contradiction",
+    )
+
+
+def test_non_bear_tokens_reach_beorn_only_through_its_own_type_conversion() -> None:
+    """A Human Soldier reaches the Bear payoff only with Beorn's own conversion instruction."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _BEORN)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    assert projection.source.capability_id == _RECRUIT_CAPABILITY
+    target = projection.target
+    assert (target.card_id, target.capability_id) == (103499, _BEORN_CAPABILITY)
+    assert target.prerequisites == ()
+    selectors = [item.selector for item in target.qualifications]
+    assert _BEORN_PAYOFF in selectors
+    conversions = [
+        item
+        for item in target.qualifications
+        if item.kind is QualificationKind.CONDITION and item.selector.startswith(_BEORN_CONVERSION)
+    ]
+    assert len(conversions) == 1
+    # the conversion and the payoff are cited from the same face's complete lines
+    assert conversions[0].evidence.quote == f"{_BEORN_PAYOFF}\n{_BEORN_COMBAT_ABILITY}"
+
+
+def test_sacrifice_cost_keeps_its_artifact_or_creature_and_mana_alternatives() -> None:
+    """The recovered cost keeps both the sacrifice alternative and the {4} mana alternative."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _SACRIFICE_COST)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    target = projection.target
+    assert (target.card_id, target.capability_id) == (103460, _SACRIFICE_COST_CAPABILITY)
+    assert target.prerequisites == ()
+    qualifications = {item.kind: item for item in target.qualifications}
+    assert set(qualifications) == {
+        QualificationKind.CHOICE,
+        QualificationKind.CONDITION,
+        QualificationKind.COST,
+    }
+    assert qualifications[QualificationKind.COST].selector == _SACRIFICE_STATEMENT
+    choice = qualifications[QualificationKind.CHOICE]
+    assert choice.selector == _SACRIFICE_CHOICE
+    # paying {4} is the stated alternative, so sacrificing is never presented as mandatory
+    assert "sacrifice an artifact or creature" in choice.selector
+    assert "pay {4}" in choice.selector
+
+
+def test_sacrifice_outlet_keeps_its_alternatives_and_activation_restrictions() -> None:
+    """A creature-or-artifact outlet keeps its printed restrictions after recovery."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _SACRIFICE_OUTLET)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    target = projection.target
+    assert (target.card_id, target.capability_id) == (103491, _SACRIFICE_OUTLET_CAPABILITY)
+    assert target.prerequisites == ()
+    qualifications = {item.kind: item for item in target.qualifications}
+    assert set(qualifications) == {
+        QualificationKind.CONDITION,
+        QualificationKind.COST,
+        QualificationKind.TIMING,
+    }
+    assert qualifications[QualificationKind.COST].selector == _OUTLET_COST
+    assert qualifications[QualificationKind.TIMING].selector == _OUTLET_RESTRICTION

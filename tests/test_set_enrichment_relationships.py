@@ -45,6 +45,7 @@ from draftomen.semantic_relationship_records import (
     RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
+    oracle_evidence_window,
     role_anchor_covered,
     validate_prerequisite_projection,
     validate_prerequisite_sources,
@@ -5508,3 +5509,286 @@ def test_participant_serializes_qualifications_only_when_declared() -> None:
     qualification = _paid_qualification()
     with pytest.raises(SemanticEnrichmentError):
         _paid_source_participant(qualifications=(qualification, qualification))
+
+
+# docs/audits/hob-587-relationship-ledger.json quote_registry: 103397 An Unexpected Party, whose
+# face-0 payoff is one paragraph of two complete lines.  The capability quotes both lines while
+# its retained prerequisite cites the second one only, so its window is the whole paragraph; the
+# ability printed below it must never enter any window of that paragraph.
+CHOSEN_TYPE_CARD_ID = 397
+CHOSEN_TYPE_CHOICE_LINE = "As this enchantment enters, choose a creature type."
+CHOSEN_TYPE_PAYOFF_LINE = "Creatures you control of the chosen type get +2/+2."
+CHOSEN_TYPE_QUOTE = f"{CHOSEN_TYPE_CHOICE_LINE}\n{CHOSEN_TYPE_PAYOFF_LINE}"
+CHOSEN_TYPE_NEIGHBOR_LINE = "Other Elves you control get +1/+1."
+CHOSEN_TYPE_FACE_TEXT = f"{CHOSEN_TYPE_QUOTE}\n{CHOSEN_TYPE_NEIGHBOR_LINE}"
+
+
+def _chosen_type_evidence(**overrides: Any) -> OracleEvidence:
+    """Return exact face-0 evidence inside the audit's chosen-type paragraph."""
+    values: dict[str, Any] = {
+        "card_id": CHOSEN_TYPE_CARD_ID,
+        "face_index": 0,
+        "quote": CHOSEN_TYPE_QUOTE,
+    }
+    values.update(overrides)
+    return OracleEvidence(**values)
+
+
+def _chosen_type_capability_prerequisite(**overrides: Any) -> CapabilityPrerequisite:
+    """Build the retained prerequisite that cites only the paragraph's second line."""
+    values: dict[str, Any] = {
+        "kind": PrerequisiteKind.CONDITION,
+        "quantity": None,
+        "timing": None,
+        "source_zone": None,
+        "destination_zone": None,
+        "evidence": _chosen_type_evidence(quote=CHOSEN_TYPE_PAYOFF_LINE),
+    }
+    values.update(overrides)
+    return CapabilityPrerequisite(**values)
+
+
+def _chosen_type_clause(**overrides: Any) -> RelationshipPrerequisite:
+    """Build the chosen-type payoff clause bound to the whole two-line paragraph."""
+    values: dict[str, Any] = {
+        "kind": PrerequisiteKind.CONDITION,
+        "subject": "participant",
+        "operation": "control",
+        "object_kind": "permanent",
+        "card_types": ("creature",),
+        "type_operator": "all_of",
+        "token_restriction": "unrestricted",
+        "exclusion": "none",
+        "subtype": None,
+        "color_operator": "unrestricted",
+        "colors": (),
+        "controller": "you",
+        "owner": "not_applicable",
+        "quantity": None,
+        "source_zone": None,
+        "destination_zone": None,
+        "timing": _record_timing(),
+        "required_card_id": None,
+        "evidence": _chosen_type_evidence(),
+        "operation_quote": "control",
+        "operation_occurrence": 0,
+        "object_quote": "Creatures you control",
+        "object_occurrence": 0,
+        "capability_prerequisite_indices": (0,),
+    }
+    values.update(overrides)
+    return RelationshipPrerequisite(**values)
+
+
+def _chosen_type_participant(**overrides: Any) -> RelationshipParticipant:
+    """Build the face-0 payoff participant whose whole evidence is one two-line paragraph."""
+    values: dict[str, Any] = {
+        "card_id": CHOSEN_TYPE_CARD_ID,
+        "capability_id": "capability-chosen-type-payoff",
+        "card_name": "An Unexpected Party",
+        "face_index": 0,
+        "face_name": "An Unexpected Party",
+        "card_source_sha256": hashlib.sha256(CHOSEN_TYPE_FACE_TEXT.encode("utf-8")).hexdigest(),
+        "role": Role.GO_WIDE_PAYOFF,
+        "capability_prerequisites": (_chosen_type_capability_prerequisite(),),
+        "prerequisites": (_chosen_type_clause(),),
+    }
+    values.update(overrides)
+    return RelationshipParticipant(**values)
+
+
+def _chosen_type_projection(**overrides: Any) -> RelationshipPrerequisiteProjection:
+    """Build one complete projection whose target cites the two-line chosen-type paragraph."""
+    values: dict[str, Any] = {
+        "source": _record_participant(),
+        "target": _chosen_type_participant(),
+    }
+    values.update(overrides)
+    return RelationshipPrerequisiteProjection(**values)
+
+
+def _chosen_type_oracle_text() -> dict[tuple[int, int | None], str]:
+    """Return the frozen face text each projection participant binds to."""
+    return {
+        (CHOSEN_TYPE_CARD_ID, 0): CHOSEN_TYPE_FACE_TEXT,
+        (RECORD_SOURCE_CARD_ID, None): RECORD_SOURCE_TEXT,
+    }
+
+
+def _chosen_type_evidence_map() -> dict[tuple[int, int | None], tuple[OracleEvidence, ...]]:
+    """Return capability evidence for both participants of the chosen-type projection."""
+    return {
+        (CHOSEN_TYPE_CARD_ID, 0): (_chosen_type_evidence(),),
+        (RECORD_SOURCE_CARD_ID, None): (
+            OracleEvidence(
+                card_id=RECORD_SOURCE_CARD_ID,
+                face_index=None,
+                quote=RECORD_TOKEN_PARAGRAPH,
+            ),
+        ),
+    }
+
+
+def test_oracle_evidence_window_resolves_the_complete_lines_of_a_quote() -> None:
+    """A fragment resolves to its line, a multiline quote to the lines it spans, and never more."""
+    face = CHOSEN_TYPE_FACE_TEXT
+    assert (
+        oracle_evidence_window(oracle_text=face, quote="choose a creature type")
+        == CHOSEN_TYPE_CHOICE_LINE
+    )
+    assert (
+        oracle_evidence_window(oracle_text=face, quote="Creatures you control of the chosen type")
+        == CHOSEN_TYPE_PAYOFF_LINE
+    )
+    assert oracle_evidence_window(oracle_text=face, quote=CHOSEN_TYPE_QUOTE) == CHOSEN_TYPE_QUOTE
+    assert (
+        oracle_evidence_window(
+            oracle_text=face,
+            quote=f"choose a creature type.\n{CHOSEN_TYPE_PAYOFF_LINE}",
+        )
+        == CHOSEN_TYPE_QUOTE
+    )
+    assert (
+        oracle_evidence_window(oracle_text=face, quote="Other Elves")
+        == CHOSEN_TYPE_NEIGHBOR_LINE
+    )
+    assert oracle_evidence_window(oracle_text=face, quote="") is None
+    assert oracle_evidence_window(oracle_text=face, quote="Absent line.") is None
+
+
+def test_repeated_oracle_evidence_resolves_to_no_window() -> None:
+    """A quote the face prints twice is ambiguous evidence, so no window may borrow one copy."""
+    repeated = f"{CHOSEN_TYPE_QUOTE}\n{CHOSEN_TYPE_NEIGHBOR_LINE}\n{CHOSEN_TYPE_NEIGHBOR_LINE}"
+    assert oracle_evidence_window(oracle_text=repeated, quote=CHOSEN_TYPE_NEIGHBOR_LINE) is None
+    assert oracle_evidence_window(oracle_text=repeated, quote=CHOSEN_TYPE_QUOTE) == CHOSEN_TYPE_QUOTE
+
+
+def test_two_line_chosen_type_evidence_round_trips_its_own_source() -> None:
+    """The capability's whole two-line paragraph binds, survives its JSON round trip and re-proves."""
+    projection = _chosen_type_projection()
+    validate_prerequisite_sources(projection=projection, oracle_text=_chosen_type_oracle_text())
+    clause = projection.target.prerequisites[0]
+    assert clause.evidence.quote == CHOSEN_TYPE_QUOTE
+    assert (clause.operation_quote, clause.object_quote) == ("control", "Creatures you control")
+    assert clause.capability_prerequisite_indices == (0,)
+    restored = RelationshipPrerequisiteProjection.from_json(json.loads(json.dumps(projection.to_json())))
+    assert restored == projection
+    assert restored.target.prerequisites[0].evidence.quote == CHOSEN_TYPE_QUOTE
+    validate_prerequisite_sources(projection=restored, oracle_text=_chosen_type_oracle_text())
+
+
+@pytest.mark.parametrize(
+    ("quote", "retained_quote"),
+    (
+        (
+            "Creatures you control of the chosen type get +2/+2",
+            "Creatures you control of the chosen type",
+        ),
+        (f"choose a creature type.\n{CHOSEN_TYPE_PAYOFF_LINE}", CHOSEN_TYPE_PAYOFF_LINE),
+        (f"{CHOSEN_TYPE_PAYOFF_LINE}\nOther Elves", CHOSEN_TYPE_PAYOFF_LINE),
+    ),
+    ids=("mid-line-fragment", "cut-before-the-line", "cut-after-the-line"),
+)
+def test_partial_projection_paragraph_never_binds_its_complete_lines(
+    quote: str,
+    retained_quote: str,
+) -> None:
+    """A quote cutting into any physical line of its paragraph is not complete-line evidence."""
+    participant = replace(
+        _chosen_type_participant(),
+        capability_prerequisites=(
+            _chosen_type_capability_prerequisite(
+                evidence=_chosen_type_evidence(quote=retained_quote)
+            ),
+        ),
+        prerequisites=(_chosen_type_clause(evidence=_chosen_type_evidence(quote=quote)),),
+    )
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        validate_prerequisite_sources(
+            projection=_chosen_type_projection(target=participant),
+            oracle_text=_chosen_type_oracle_text(),
+        )
+    assert error.value.code == "contradiction"
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        OracleEvidence(card_id=FOREIGN_CARD_ID, face_index=0, quote=CHOSEN_TYPE_QUOTE),
+        OracleEvidence(card_id=CHOSEN_TYPE_CARD_ID, face_index=1, quote=CHOSEN_TYPE_QUOTE),
+    ),
+    ids=("foreign-card", "other-face"),
+)
+def test_mismatched_evidence_pins_never_bind_the_quoting_participant(
+    evidence: OracleEvidence,
+) -> None:
+    """Evidence pinned to another card or face contradicts instead of borrowing the quote."""
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        _chosen_type_projection(
+            target=replace(
+                _chosen_type_participant(),
+                prerequisites=(_chosen_type_clause(evidence=evidence),),
+            )
+        )
+    assert error.value.code == "contradiction"
+
+
+def test_evidence_behind_the_wrong_face_text_never_binds() -> None:
+    """A face pin whose own text omits the quote contradicts rather than resolving elsewhere."""
+    face_one_text = "Create X 2/2 red Dwarf creature tokens."
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        validate_prerequisite_sources(
+            projection=_chosen_type_projection(),
+            oracle_text={
+                (CHOSEN_TYPE_CARD_ID, 0): f"{face_one_text}\n{CHOSEN_TYPE_NEIGHBOR_LINE}",
+                (RECORD_SOURCE_CARD_ID, None): RECORD_SOURCE_TEXT,
+            },
+        )
+    assert error.value.code == "contradiction"
+
+
+def test_unrelated_same_face_quote_never_binds_another_ability() -> None:
+    """A qualification quoting the face's other ability contradicts its capability evidence."""
+    participant = replace(
+        _chosen_type_participant(),
+        qualifications=(
+            RelationshipQualification(
+                kind=QualificationKind.CONDITION,
+                evidence=_chosen_type_evidence(quote=CHOSEN_TYPE_NEIGHBOR_LINE),
+                selector="Other Elves",
+                occurrence=0,
+            ),
+        ),
+    )
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        validate_prerequisite_sources(
+            projection=_chosen_type_projection(target=participant),
+            oracle_text=_chosen_type_oracle_text(),
+            participant_evidence=_chosen_type_evidence_map(),
+        )
+    assert error.value.code == "contradiction"
+
+
+def test_ambiguous_same_face_quote_never_binds_a_window() -> None:
+    """A paragraph the face prints twice resolves to no window, so its evidence is rejected."""
+    repeated_face = f"{CHOSEN_TYPE_QUOTE}\n{CHOSEN_TYPE_NEIGHBOR_LINE}\n{CHOSEN_TYPE_NEIGHBOR_LINE}"
+    participant = replace(
+        _chosen_type_participant(),
+        qualifications=(
+            RelationshipQualification(
+                kind=QualificationKind.CONDITION,
+                evidence=_chosen_type_evidence(quote=CHOSEN_TYPE_NEIGHBOR_LINE),
+                selector="Other Elves",
+                occurrence=0,
+            ),
+        ),
+    )
+    with pytest.raises(PrerequisiteProjectionError) as error:
+        validate_prerequisite_sources(
+            projection=_chosen_type_projection(target=participant),
+            oracle_text={
+                (CHOSEN_TYPE_CARD_ID, 0): repeated_face,
+                (RECORD_SOURCE_CARD_ID, None): RECORD_SOURCE_TEXT,
+            },
+        )
+    assert error.value.code == "contradiction"
