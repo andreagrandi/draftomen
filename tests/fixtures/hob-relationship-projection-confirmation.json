@@ -37,6 +37,42 @@
       "unknown": false
     },
     {
+      "arena_id": 103382,
+      "collector_number": "14",
+      "colors": [
+        "W"
+      ],
+      "faces": [],
+      "grp_id": 103382,
+      "image_uri": "https://cards.scryfall.io/normal/front/b/0/b02142f3-5e55-40dc-a02c-9113fb7d763c.jpg?1785496367",
+      "keywords": [
+        "Storied"
+      ],
+      "layout": "normal",
+      "mana_cost": "{3}{W}",
+      "mana_value": 4.0,
+      "name": "Fíli the Pathfinder",
+      "oracle_text": "Storied (If you control three or more artifacts, legendaries, and/or Sagas, you have an enduring story for the rest of the game.)\nAs long as you have an enduring story, creatures you control get +1/+1.\nWhenever Fíli or another nontoken Dwarf you control enters, create a 2/2 red Dwarf creature token.",
+      "oracle_id": "c91c7d6b-a502-4b66-9509-3c1eda00e763",
+      "power": "2",
+      "produced_mana": [],
+      "rarity": "rare",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Dwarf",
+        "Scout"
+      ],
+      "toughness": "2",
+      "type_line": "Legendary Creature — Dwarf Scout",
+      "types": [
+        "Legendary Creature — Dwarf Scout"
+      ],
+      "unknown": false
+    },
+    {
       "arena_id": 103386,
       "collector_number": "18",
       "colors": [
@@ -131,6 +167,43 @@
       "type_line": "Enchantment // Sorcery — Adventure",
       "types": [
         "Enchantment // Sorcery — Adventure"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": 103420,
+      "collector_number": "47",
+      "colors": [
+        "U"
+      ],
+      "faces": [],
+      "grp_id": 103420,
+      "image_uri": "https://cards.scryfall.io/normal/front/a/d/addcefdd-e012-4adf-9052-e60376a8d2d3.jpg?1784798124",
+      "keywords": [
+        "Vigilance",
+        "Mill"
+      ],
+      "layout": "normal",
+      "mana_cost": "{1}{U}",
+      "mana_value": 2.0,
+      "name": "Master's Councillors",
+      "oracle_text": "Vigilance\nThis creature gets +2/+0 for each graveyard with seven or more cards in it.\nWhenever you draw your second card each turn, target player mills three cards. (They put the top three cards of their library into their graveyard.)",
+      "oracle_id": "b9079564-5c86-4765-988a-f2334e016fa6",
+      "power": "1",
+      "produced_mana": [],
+      "rarity": "uncommon",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Human",
+        "Advisor"
+      ],
+      "toughness": "3",
+      "type_line": "Creature — Human Advisor",
+      "types": [
+        "Creature — Human Advisor"
       ],
       "unknown": false
     },
@@ -342,6 +415,41 @@
       "unknown": false
     },
     {
+      "arena_id": 103451,
+      "collector_number": "75",
+      "colors": [
+        "B"
+      ],
+      "faces": [],
+      "grp_id": 103451,
+      "image_uri": "https://cards.scryfall.io/normal/front/3/f/3ffe34d4-72f4-4562-a948-8909b9321e59.jpg?1785152416",
+      "keywords": [
+        "Flash"
+      ],
+      "layout": "normal",
+      "mana_cost": "{2}{B}{B}",
+      "mana_value": 4.0,
+      "name": "Head of the Hunt",
+      "oracle_text": "Flash\nIf a creature an opponent controls would die, exile it instead. When you do, create a 2/2 green Wolf creature token.",
+      "oracle_id": "0523e271-5e0b-4e4b-9eac-86f915d18952",
+      "power": "4",
+      "produced_mana": [],
+      "rarity": "rare",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Wolf"
+      ],
+      "toughness": "3",
+      "type_line": "Creature — Wolf",
+      "types": [
+        "Creature — Wolf"
+      ],
+      "unknown": false
+    },
+    {
       "arena_id": 103460,
       "collector_number": "84",
       "colors": [
@@ -481,6 +589,146 @@
       "type_line": "Legendary Creature — Bear Shapeshifter Warrior",
       "types": [
         "Legendary Creature — Bear Shapeshifter Warrior"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": 103503,
+      "collector_number": "123",
+      "colors": [
+        "G"
+      ],
+      "faces": [],
+      "grp_id": 103503,
+      "image_uri": "https://cards.scryfall.io/normal/front/5/5/550cd0b6-ca61-4db7-9d20-0b68c48066f9.jpg?1785236704",
+      "keywords": [
+        "Landfall"
+      ],
+      "layout": "normal",
+      "mana_cost": "{3}{G}{G}",
+      "mana_value": 5.0,
+      "name": "Dancing from Dark to Dawn",
+      "oracle_text": "Whenever you cast a creature spell, put X +1/+1 counters on target creature you control, where X is that spell's mana value.\nLandfall — Whenever a land you control enters, create a 2/2 green Bear creature token.",
+      "oracle_id": "5ba482e9-fbb0-4d9f-a3a9-414892bcdfed",
+      "power": null,
+      "produced_mana": [],
+      "rarity": "mythic",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [],
+      "toughness": null,
+      "type_line": "Enchantment",
+      "types": [
+        "Enchantment"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": 103504,
+      "collector_number": "124",
+      "colors": [
+        "G"
+      ],
+      "faces": [],
+      "grp_id": 103504,
+      "image_uri": "https://cards.scryfall.io/normal/front/c/8/c8aa5179-475b-4cc8-b21e-205b475eb4cf.jpg?1784895042",
+      "keywords": [],
+      "layout": "saga",
+      "mana_cost": "{2}{G}",
+      "mana_value": 3.0,
+      "name": "Down in the Valley",
+      "oracle_text": "(As this Saga enters and after your draw step, add a lore counter. Sacrifice after IV.)\nI — Search your library for a basic land card, reveal it, put it into your hand, then shuffle.\nII — This Saga gains \"Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token.\"\nIII, IV — Elves you control get +1/+0 and gain vigilance until end of turn.",
+      "oracle_id": "e3491542-569e-48a8-b625-fa7c4aa2792a",
+      "power": null,
+      "produced_mana": [],
+      "rarity": "rare",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Saga"
+      ],
+      "toughness": null,
+      "type_line": "Enchantment — Saga",
+      "types": [
+        "Enchantment — Saga"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": 103521,
+      "collector_number": "141",
+      "colors": [
+        "G"
+      ],
+      "faces": [],
+      "grp_id": 103521,
+      "image_uri": "https://cards.scryfall.io/normal/front/6/3/63078f42-f404-4c61-86be-45d934393b0a.jpg?1785236564",
+      "keywords": [
+        "Ferocious"
+      ],
+      "layout": "normal",
+      "mana_cost": "{4}{G}",
+      "mana_value": 5.0,
+      "name": "Wilderland Scrounger",
+      "oracle_text": "Ferocious — Whenever this creature attacks while you control a creature with power 4 or greater, put a +1/+1 counter on each creature you control.",
+      "oracle_id": "8a2946ad-7a7b-4cda-8591-da8c7da5e072",
+      "power": "3",
+      "produced_mana": [],
+      "rarity": "uncommon",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Wolf"
+      ],
+      "toughness": "6",
+      "type_line": "Creature — Wolf",
+      "types": [
+        "Creature — Wolf"
+      ],
+      "unknown": false
+    },
+    {
+      "arena_id": 103524,
+      "collector_number": "144",
+      "colors": [
+        "W",
+        "U"
+      ],
+      "faces": [],
+      "grp_id": 103524,
+      "image_uri": "https://cards.scryfall.io/normal/front/c/0/c05c2aa6-29c7-40f8-872e-91099b9225c4.jpg?1784377008",
+      "keywords": [
+        "Reach",
+        "Vigilance"
+      ],
+      "layout": "normal",
+      "mana_cost": "{4}{W}{U}",
+      "mana_value": 6.0,
+      "name": "Bard, King of Dale",
+      "oracle_text": "Reach, vigilance\nIf you would draw a card except the first one you draw in each of your draw steps, draw two cards instead.\nIf one or more tokens would be created under your control, twice that many of those tokens are created instead.",
+      "oracle_id": "d05db2c1-a19a-4803-8e8a-fa2f9b798181",
+      "power": "3",
+      "produced_mana": [],
+      "rarity": "mythic",
+      "set": "hob",
+      "source_provenance": [
+        "scryfall"
+      ],
+      "subtypes": [
+        "Human",
+        "Noble",
+        "Archer"
+      ],
+      "toughness": "5",
+      "type_line": "Legendary Creature — Human Noble Archer",
+      "types": [
+        "Legendary Creature — Human Noble Archer"
       ],
       "unknown": false
     },
@@ -780,7 +1028,7 @@
     "schema_version": 1,
     "set_code": "hob",
     "set_source_id": "draftomen-card-data-v1-hob",
-    "set_source_sha256": "37f234b80e3ac4373b67f9d7e658898a61af223bd31cdeb33a50afd40a61ecb3",
+    "set_source_sha256": "70bdd697bb0ea9c399d53279a2683520a8ac8dd9fb86801172b9b997f84e533f",
     "created_at": "2026-09-14T18:25:30.788004Z",
     "cards": [
       {
@@ -788,6 +1036,12 @@
         "oracle_id": "84597236-2cfc-4654-b126-a8ee252f4d14",
         "collector_number": "13",
         "sha256": "d9135085761c434017226d332e57d217f7e6bb8e43533582255f72e11acb8235"
+      },
+      {
+        "card_id": 103382,
+        "oracle_id": "c91c7d6b-a502-4b66-9509-3c1eda00e763",
+        "collector_number": "14",
+        "sha256": "47f47f30d6cd751e19e411ae09029f5862a90c7a45f0c6466e640cb9107c05c0"
       },
       {
         "card_id": 103386,
@@ -800,6 +1054,12 @@
         "oracle_id": "38503d34-f4f9-4eeb-9b1e-4fec1df921b3",
         "collector_number": "29",
         "sha256": "3b5ae0250a8ada9b249457e36a2349f2df009f353e683866bc6cf19b30274686"
+      },
+      {
+        "card_id": 103420,
+        "oracle_id": "b9079564-5c86-4765-988a-f2334e016fa6",
+        "collector_number": "47",
+        "sha256": "9b01e04ad94e2dab0395c5bd0eb159c5c7351b81888b7cd8257a8dda3ed89e57"
       },
       {
         "card_id": 103422,
@@ -826,6 +1086,12 @@
         "sha256": "905076ac62607751b48fce01feb82812351c95d57e5d5503645231300d0be79f"
       },
       {
+        "card_id": 103451,
+        "oracle_id": "0523e271-5e0b-4e4b-9eac-86f915d18952",
+        "collector_number": "75",
+        "sha256": "ea66c99d98b6e4bfdeae2e1bc6161a4425df302354d7f05febd96cf0b95c0625"
+      },
+      {
         "card_id": 103460,
         "oracle_id": "dda607bd-f419-4b7f-b052-a5ce6ce22bfe",
         "collector_number": "84",
@@ -848,6 +1114,30 @@
         "oracle_id": "30ca8e92-5955-46a1-86c1-094a873f518f",
         "collector_number": "119",
         "sha256": "16142bf2ec984d71da8a7ac21b6ee0cdb738bd0f990ef220cd569a562ba76b15"
+      },
+      {
+        "card_id": 103503,
+        "oracle_id": "5ba482e9-fbb0-4d9f-a3a9-414892bcdfed",
+        "collector_number": "123",
+        "sha256": "0800a776b70cf8e0e644d658b69890dc3217f250eea0fe6cce7de39ec98ddd20"
+      },
+      {
+        "card_id": 103504,
+        "oracle_id": "e3491542-569e-48a8-b625-fa7c4aa2792a",
+        "collector_number": "124",
+        "sha256": "ed8634338b74c66291507da8c7d0cb416101068ccbd866bbf03bdd05e73d1f96"
+      },
+      {
+        "card_id": 103521,
+        "oracle_id": "8a2946ad-7a7b-4cda-8591-da8c7da5e072",
+        "collector_number": "141",
+        "sha256": "fedf8768b529eec6768e765e043bbb18a596fd15a8eec7232d04a88b30e6cd4e"
+      },
+      {
+        "card_id": 103524,
+        "oracle_id": "d05db2c1-a19a-4803-8e8a-fa2f9b798181",
+        "collector_number": "144",
+        "sha256": "161d07b0137a494064f3e2dcdbf220a9958b20bdf0799bebb44882cec60b5e5f"
       },
       {
         "card_id": 103526,
@@ -943,6 +1233,27 @@
         "cost_usd": "0"
       },
       {
+        "run_id": "work-04305bfa8e104ce7cb4defc846903b9d2b30faeed836cae48e006775c331151e",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "c6cf831d411bcad78294d41e3a6c020b6d411158eeb736e391b45e9b5e797fb1",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T13:25:04.201167Z",
+        "completed_at": "2026-09-14T13:25:21.628113Z",
+        "input_tokens": 3005,
+        "output_tokens": 1717,
+        "reasoning_tokens": 1094,
+        "cost_usd": "0.0024481"
+      },
+      {
         "completed_at": "2026-09-14T11:51:01.313007Z",
         "cost_usd": "0.0024086",
         "input_tokens": 3111,
@@ -1027,6 +1338,48 @@
         "cost_usd": "0.002326"
       },
       {
+        "run_id": "work-5b195b6224d3c6f212310428879c5040d8a2bd365b4fcbc229ae622b51f42aa2",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "4bda8ec69b3950f32162edb0a40d5bbf3f8e1b97f930644759ce3f4771328360",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T13:52:26.849816Z",
+        "completed_at": "2026-09-14T13:52:50.177116Z",
+        "input_tokens": 3043,
+        "output_tokens": 2228,
+        "reasoning_tokens": 1336,
+        "cost_usd": "0.0030708"
+      },
+      {
+        "run_id": "work-68351340dc29728275a33a1c5893af1ae4a195cdcabde9e4165d59ad0ff08ffd",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "38ff0cdcdf811a2340639ed7e0690f60b3f26bd069e91c771aa9002142e784bb",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T13:33:55.696865Z",
+        "completed_at": "2026-09-14T13:34:20.590657Z",
+        "input_tokens": 2983,
+        "output_tokens": 2245,
+        "reasoning_tokens": 1801,
+        "cost_usd": "0.0030762"
+      },
+      {
         "completed_at": "2026-09-14T13:44:55.025370Z",
         "cost_usd": "0.0045505",
         "input_tokens": 3053,
@@ -1046,6 +1399,27 @@
         "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
         "run_id": "work-77e6062b2d33474549da5e92b2301c204e744879943f0a63e24666d242a2f45a",
         "started_at": "2026-09-14T13:44:20.833799Z"
+      },
+      {
+        "run_id": "work-afa354e06341442409f6b911f5e3298c4a07a4f2dc3d0417a9fbd3d09c2537cc",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "d5640d15eb28df04a90227575605b001be52cf327103d6aefd3b596a97ab1bed",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T13:58:29.752215Z",
+        "completed_at": "2026-09-14T13:58:59.417901Z",
+        "input_tokens": 3009,
+        "output_tokens": 2605,
+        "reasoning_tokens": 1820,
+        "cost_usd": "0.0035147"
       },
       {
         "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9",
@@ -1132,6 +1506,48 @@
         "cost_usd": "0.00275595"
       },
       {
+        "run_id": "work-e13f2fe12f1177d27c277caa00ec7bc92f9f10de82bee814e220aa645c68c0d5",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "aa91b071bee3e238a67664a7dc682bbc797e4c7e55b6b779408080891579465a",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T11:45:49.352179Z",
+        "completed_at": "2026-09-14T11:46:18.235028Z",
+        "input_tokens": 3037,
+        "output_tokens": 2898,
+        "reasoning_tokens": 1798,
+        "cost_usd": "0.0038733"
+      },
+      {
+        "run_id": "work-e466f17b58d00ace3c3a7ef1eacdbc6acc67f113b7c6f912fd61985dedb4f609",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "437718ddeff32bcd2c0820cca26bdc56a885b5a34670f5609ea4947422132057",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T13:57:22.937497Z",
+        "completed_at": "2026-09-14T13:57:45.998962Z",
+        "input_tokens": 2985,
+        "output_tokens": 2417,
+        "reasoning_tokens": 1003,
+        "cost_usd": "0.0032831"
+      },
+      {
         "completed_at": "2026-09-14T14:01:14.053322Z",
         "cost_usd": "0.00295505",
         "input_tokens": 2988,
@@ -1172,6 +1588,27 @@
         "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
         "run_id": "work-f38c535bec7f4f442718a563000c2a9f2db0609867d97e044c156a80de17c354",
         "started_at": "2026-09-14T13:47:11.736160Z"
+      },
+      {
+        "run_id": "work-f510b05ec2c9f50aafd9ef8f4ae77edbd52842050916717ced12c0686907297e",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning": {
+          "enabled": null,
+          "effort": "medium",
+          "max_tokens": null,
+          "exclude": null
+        },
+        "prompt_id": "draftomen-card-capability-extraction-v2",
+        "prompt_sha256": "b04ec27498b94c77c1e2b60b118bc266dff9ecaca9140a343fdf36298e6a3376",
+        "response_schema_id": "draftomen-card-capability-extraction-response-v2",
+        "response_schema_sha256": "eb817640a83327d43989237b1ee424b285b4a0b3b43bd75e19f7837702d21eb8",
+        "started_at": "2026-09-14T13:52:11.888351Z",
+        "completed_at": "2026-09-14T13:52:26.845386Z",
+        "input_tokens": 3000,
+        "output_tokens": 1521,
+        "reasoning_tokens": 516,
+        "cost_usd": "0.00221165"
       },
       {
         "completed_at": "2026-09-14T13:59:54.681988Z",
@@ -1238,312 +1675,6 @@
       }
     ],
     "oracle_facts": [
-      {
-        "finding_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d:103381-go-wide-power",
-        "card_id": 103381,
-        "kind": "go_wide_payoff",
-        "claim": "{\"action\":\"count\",\"card_name\":\"Esgaroth Garrison\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103381,
-            "face_index": null,
-            "quote": "Esgaroth Garrison's power is equal to the number of creatures you control."
-          }
-        ],
-        "review": {
-          "status": "uncertain",
-          "reason": "capability requires semantic review beyond exact-source validation."
-        },
-        "run_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d"
-      },
-      {
-        "card_id": 103381,
-        "claim": "{\"action\":\"create\",\"card_name\":\"Esgaroth Garrison\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103381,\"face_index\":null,\"quote\":\"If you discarded a nonland card, create a 1/1 white Human Soldier creature token.\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":null,\"timing\":null},{\"destination_zone\":null,\"evidence\":{\"card_id\":103381,\"face_index\":null,\"quote\":\"When this creature enters, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"when this creature enters\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"human soldier\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"stack\",\"timing\":\"when this creature enters\",\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103381,
-            "face_index": null,
-            "quote": "When this creature enters, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
-          }
-        ],
-        "finding_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d:103381-recruit-token",
-        "kind": "token_maker",
-        "review": {
-          "reason": "The created token has two subtypes, Human and Soldier, while the qualifier schema provides only one subtype field; both are preserved together as the exact Oracle phrase.",
-          "status": "uncertain"
-        },
-        "run_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d"
-      },
-      {
-        "card_id": 103386,
-        "claim": "{\"action\":\"create\",\"card_name\":\"Lake-town Lookout\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"graveyard\",\"evidence\":{\"card_id\":103386,\"face_index\":null,\"quote\":\"If you discarded a nonland card\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"hand\",\"timing\":null},{\"destination_zone\":\"graveyard\",\"evidence\":{\"card_id\":103386,\"face_index\":null,\"quote\":\"When this creature dies\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"stack\",\"timing\":null,\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103386,
-            "face_index": null,
-            "quote": "When this creature dies, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
-          }
-        ],
-        "finding_id": "work-c86c86138c6e405399dff519703c2be4d1d031f56db946a879808c3478792b50:103386-dies-create-token-token-maker",
-        "kind": "token_maker",
-        "review": {
-          "reason": "token_maker is derived from the quoted ability, which creates a creature token.",
-          "status": "uncertain"
-        },
-        "run_id": "work-c86c86138c6e405399dff519703c2be4d1d031f56db946a879808c3478792b50"
-      },
-      {
-        "card_id": 103397,
-        "claim": "{\"action\":\"other\",\"card_name\":\"An Unexpected Party // At the Door\",\"destination_zone\":null,\"face_index\":0,\"face_name\":\"An Unexpected Party\",\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103397,\"face_index\":0,\"quote\":\"Creatures you control of the chosen type get +2/+2.\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"static\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":\"static\",\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103397,
-            "face_index": 0,
-            "quote": "As this enchantment enters, choose a creature type.\nCreatures you control of the chosen type get +2/+2."
-          }
-        ],
-        "finding_id": "work-0e30fcfe9ea48d1d90ca8d48d105d2736dcdf1c753b80f1d326dc7c50b2bb26d:103397-f0-go-wide-payoff",
-        "kind": "go_wide_payoff",
-        "review": {
-          "reason": "capability requires semantic review beyond exact-source validation.",
-          "status": "uncertain"
-        },
-        "run_id": "work-0e30fcfe9ea48d1d90ca8d48d105d2736dcdf1c753b80f1d326dc7c50b2bb26d"
-      },
-      {
-        "finding_id": "work-d6ecb2cef8ae51a45631412a6c72d54ed4cf20161247ca4aa26c8a634272a9d9:103422-0-threshold-graveyard-payoff",
-        "card_id": 103422,
-        "kind": "graveyard_payoff",
-        "claim": "{\"action\":\"other\",\"card_name\":\"Most Decrepit Old Bird // Speak Secrets\",\"destination_zone\":null,\"face_index\":0,\"face_name\":\"Most Decrepit Old Bird\",\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103422,\"face_index\":0,\"quote\":\"Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.\"},\"kind\":\"condition\",\"quantity\":{\"relation\":\"at_least\",\"value\":7},\"source_zone\":\"graveyard\",\"timing\":\"as long as\"}],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"graveyard_payoff\",\"source_zone\":\"battlefield\",\"timing\":\"as long as\",\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103422,
-            "face_index": 0,
-            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
-          }
-        ],
-        "review": {
-          "status": "uncertain",
-          "reason": "capability requires semantic review beyond exact-source validation."
-        },
-        "run_id": "work-d6ecb2cef8ae51a45631412a6c72d54ed4cf20161247ca4aa26c8a634272a9d9"
-      },
-      {
-        "card_id": 103435,
-        "claim": "{\"action\":\"create\",\"card_name\":\"Azog, Moria's Ruin\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103435,\"face_index\":null,\"quote\":\"If they don't control an Army\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":null},{\"destination_zone\":null,\"evidence\":{\"card_id\":103435,\"face_index\":null,\"quote\":\"When Azog enters\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"when Azog enters\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"goblin\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"when Azog enters\",\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103435,
-            "face_index": null,
-            "quote": "If they don't control an Army, they create a 0/0 black Goblin Army creature token first."
-          }
-        ],
-        "finding_id": "work-f8edf5f4581d574455a05d4c8dd9b8def5b739f944d677d02cb727cb15525749:103435-token-maker-1",
-        "kind": "token_maker",
-        "review": {
-          "reason": "The created token is stated to have both Goblin and Army subtypes, but the schema permits only one subtype field; Goblin is retained as the primary typal subtype.",
-          "status": "uncertain"
-        },
-        "run_id": "work-f8edf5f4581d574455a05d4c8dd9b8def5b739f944d677d02cb727cb15525749"
-      },
-      {
-        "finding_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07:103442-amass-goblin-army-token",
-        "card_id": 103442,
-        "kind": "token_maker",
-        "claim": "{\"action\":\"create\",\"card_name\":\"Gathering of Darkness\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103442,\"face_index\":null,\"quote\":\"If you don't control an Army, create a 0/0 black Goblin Army creature token first.\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"goblin army\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103442,
-            "face_index": null,
-            "quote": "Amass Goblins 3. (Put three +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)"
-          }
-        ],
-        "review": {
-          "status": "uncertain",
-          "reason": "capability requires semantic review beyond exact-source validation."
-        },
-        "run_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07"
-      },
-      {
-        "finding_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07:103442-return-creature-card",
-        "card_id": 103442,
-        "kind": "recursion",
-        "claim": "{\"action\":\"return\",\"card_name\":\"Gathering of Darkness\",\"destination_zone\":\"hand\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"at_most\",\"value\":1},\"role\":\"recursion\",\"source_zone\":\"graveyard\",\"timing\":null,\"zone\":\"hand\"}",
-        "evidence": [
-          {
-            "card_id": 103442,
-            "face_index": null,
-            "quote": "Return up to one target creature card from your graveyard to your hand."
-          }
-        ],
-        "review": {
-          "status": "uncertain",
-          "reason": "capability requires semantic review beyond exact-source validation."
-        },
-        "run_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07"
-      },
-      {
-        "card_id": 103449,
-        "claim": "{\"action\":\"create\",\"card_name\":\"Great Ugly-Looking Goblin // Clap! Snap!\",\"destination_zone\":\"battlefield\",\"face_index\":1,\"face_name\":\"Clap! Snap!\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"goblin\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"variable\",\"value\":null},\"role\":\"token_maker\",\"source_zone\":\"stack\",\"timing\":\"resolution\",\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103449,
-            "face_index": 1,
-            "quote": "Amass Goblins 2."
-          }
-        ],
-        "finding_id": "work-d034a06054629ec6d0dd19edb1cc9aadb1bc14b1cf9dda95bacc35ffbba24aa9:103449-f1-amass-token",
-        "kind": "token_maker",
-        "review": {
-          "reason": "capability requires semantic review beyond exact-source validation.",
-          "status": "uncertain"
-        },
-        "run_id": "work-d034a06054629ec6d0dd19edb1cc9aadb1bc14b1cf9dda95bacc35ffbba24aa9"
-      },
-      {
-        "card_id": 103460,
-        "claim": "{\"action\":\"sacrifice\",\"card_name\":\"Stir Up Trouble\",\"destination_zone\":\"graveyard\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"artifact\",\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"sacrifice_outlet\",\"source_zone\":\"battlefield\",\"timing\":\"as an additional cost to cast this spell\",\"zone\":\"graveyard\"}",
-        "evidence": [
-          {
-            "card_id": 103460,
-            "face_index": null,
-            "quote": "As an additional cost to cast this spell, sacrifice an artifact or creature or pay {4}."
-          }
-        ],
-        "finding_id": "work-fac848e4104ae1466af57053e9787fd2a36ccbcee9acae5ad8c836e1d27a72eb:103460-sacrifice-cost",
-        "kind": "sacrifice_outlet",
-        "review": {
-          "reason": "capability requires semantic review beyond exact-source validation.",
-          "status": "uncertain"
-        },
-        "run_id": "work-fac848e4104ae1466af57053e9787fd2a36ccbcee9acae5ad8c836e1d27a72eb"
-      },
-      {
-        "card_id": 103482,
-        "claim": "{\"action\":\"create\",\"card_name\":\"The Misty Mountains Cold\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103482,\"face_index\":null,\"quote\":\"if you control four or more Treasures\"},\"kind\":\"condition\",\"quantity\":{\"relation\":\"at_least\",\"value\":4},\"source_zone\":\"battlefield\",\"timing\":null},{\"destination_zone\":null,\"evidence\":{\"card_id\":103482,\"face_index\":null,\"quote\":\"I, II, III, IV\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"I, II, III, IV\"},{\"destination_zone\":null,\"evidence\":{\"card_id\":103482,\"face_index\":null,\"quote\":\"If you do\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":null,\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"dragon\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"I, II, III, IV\",\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103482,
-            "face_index": null,
-            "quote": "I, II, III, IV — Create a Treasure token. Then if you control four or more Treasures, sacrifice this Saga. If you do, create a 6/6 red Dragon creature token with flying. (A Treasure token is an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")"
-          }
-        ],
-        "finding_id": "work-77e6062b2d33474549da5e92b2301c204e744879943f0a63e24666d242a2f45a:103482-dragon-token-1",
-        "kind": "token_maker",
-        "review": {
-          "reason": "capability requires semantic review beyond exact-source validation.",
-          "status": "uncertain"
-        },
-        "run_id": "work-77e6062b2d33474549da5e92b2301c204e744879943f0a63e24666d242a2f45a"
-      },
-      {
-        "card_id": 103491,
-        "claim": "{\"action\":\"sacrifice\",\"card_name\":\"Snowslope Hunter\",\"destination_zone\":\"graveyard\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"artifact\",\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"sacrifice_outlet\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"graveyard\"}",
-        "evidence": [
-          {
-            "card_id": 103491,
-            "face_index": null,
-            "quote": "Sacrifice another creature or artifact: Exile the top card of your library. You may play it until the end of your next turn. Activate only during your turn and only once each turn."
-          }
-        ],
-        "finding_id": "work-f38c535bec7f4f442718a563000c2a9f2db0609867d97e044c156a80de17c354:103491-sacrifice-outlet",
-        "kind": "sacrifice_outlet",
-        "review": {
-          "reason": "capability requires semantic review beyond exact-source validation.",
-          "status": "uncertain"
-        },
-        "run_id": "work-f38c535bec7f4f442718a563000c2a9f2db0609867d97e044c156a80de17c354"
-      },
-      {
-        "card_id": 103499,
-        "claim": "{\"action\":\"other\",\"card_name\":\"Beorn the Fierce\",\"destination_zone\":null,\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":\"bear\",\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103499,
-            "face_index": null,
-            "quote": "Other Bears you control get +2/+2."
-          }
-        ],
-        "finding_id": "work-435e4fd24cb848b20dc6c0c6acd9470fba0c352f73aa5bf7707ed51a678f3fbb:103499-bear-buff-go-wide",
-        "kind": "go_wide_payoff",
-        "review": {
-          "reason": "capability requires semantic review beyond exact-source validation.",
-          "status": "uncertain"
-        },
-        "run_id": "work-435e4fd24cb848b20dc6c0c6acd9470fba0c352f73aa5bf7707ed51a678f3fbb"
-      },
-      {
-        "card_id": 103526,
-        "claim": "{\"action\":\"create\",\"card_name\":\"Bard's Company\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103526,\"face_index\":null,\"quote\":\"Whenever this creature enters or attacks, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"when this creature enters or attacks\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"token\"},\"quantity\":null,\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"when this creature enters or attacks\",\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103526,
-            "face_index": null,
-            "quote": "Whenever this creature enters or attacks, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
-          }
-        ],
-        "finding_id": "work-f6ad24756115f873ba8e34318cf65df315e26c6e093ed299c3b9ab7d8dcacd86:103526-recruit-attack-token-maker",
-        "kind": "token_maker",
-        "review": {
-          "reason": "token_maker is derived from the quoted ability, which creates a creature token.",
-          "status": "uncertain"
-        },
-        "run_id": "work-f6ad24756115f873ba8e34318cf65df315e26c6e093ed299c3b9ab7d8dcacd86"
-      },
-      {
-        "card_id": 103529,
-        "claim": "{\"action\":\"sacrifice\",\"card_name\":\"Bolg's Company\",\"destination_zone\":\"graveyard\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":\"goblin\",\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"sacrifice_outlet\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"graveyard\"}",
-        "evidence": [
-          {
-            "card_id": 103529,
-            "face_index": null,
-            "quote": "{T}, Sacrifice another Goblin: Add {B}{R}."
-          }
-        ],
-        "finding_id": "work-e62947aa7ee6a48c565cc7722acc0f7d26511c8b8bf7c748692d267c88deed3d:103529-sacrifice-outlet",
-        "kind": "sacrifice_outlet",
-        "review": {
-          "reason": "capability requires semantic review beyond exact-source validation.",
-          "status": "uncertain"
-        },
-        "run_id": "work-e62947aa7ee6a48c565cc7722acc0f7d26511c8b8bf7c748692d267c88deed3d"
-      },
-      {
-        "card_id": 103546,
-        "claim": "{\"action\":\"other\",\"card_name\":\"Thranduil, Sindarin Liege // Silvan Rally\",\"destination_zone\":\"battlefield\",\"face_index\":0,\"face_name\":\"Thranduil, Sindarin Liege\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"elf\",\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
-        "evidence": [
-          {
-            "card_id": 103546,
-            "face_index": 0,
-            "quote": "Other Elves you control get +1/+1."
-          }
-        ],
-        "finding_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9:103546-f0-go-wide-payoff",
-        "kind": "go_wide_payoff",
-        "review": {
-          "reason": "capability requires semantic review beyond exact-source validation.",
-          "status": "uncertain"
-        },
-        "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9"
-      },
-      {
-        "finding_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9:103546-f1-self-mill",
-        "card_id": 103546,
-        "kind": "self_mill",
-        "claim": "{\"action\":\"mill\",\"card_name\":\"Thranduil, Sindarin Liege // Silvan Rally\",\"destination_zone\":\"graveyard\",\"face_index\":1,\"face_name\":\"Silvan Rally\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":4},\"role\":\"self_mill\",\"source_zone\":\"library\",\"timing\":\"as this spell resolves\",\"zone\":\"graveyard\"}",
-        "evidence": [
-          {
-            "card_id": 103546,
-            "face_index": 1,
-            "quote": "Mill four cards, then put up to two land cards from among them into your hand."
-          }
-        ],
-        "review": {
-          "status": "uncertain",
-          "reason": "capability requires semantic review beyond exact-source validation."
-        },
-        "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9"
-      },
       {
         "finding_id": "fixture-projection-facts:990001-fixture-trailing-mill",
         "card_id": 990001,
@@ -1633,6 +1764,510 @@
           "reason": "fixture fact requires review."
         },
         "run_id": "fixture-projection-facts"
+      },
+      {
+        "finding_id": "work-04305bfa8e104ce7cb4defc846903b9d2b30faeed836cae48e006775c331151e:103420-graveyard-scaling",
+        "card_id": 103420,
+        "kind": "graveyard_payoff",
+        "claim": "{\"action\":\"other\",\"card_name\":\"Master's Councillors\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"graveyard\",\"evidence\":{\"card_id\":103420,\"face_index\":null,\"quote\":\"This creature gets +2/+0 for each graveyard with seven or more cards in it.\"},\"kind\":\"threshold\",\"quantity\":{\"relation\":\"at_least\",\"value\":7},\"source_zone\":\"graveyard\",\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"graveyard_payoff\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103420,
+            "face_index": null,
+            "quote": "This creature gets +2/+0 for each graveyard with seven or more cards in it."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-04305bfa8e104ce7cb4defc846903b9d2b30faeed836cae48e006775c331151e"
+      },
+      {
+        "card_id": 103397,
+        "claim": "{\"action\":\"other\",\"card_name\":\"An Unexpected Party // At the Door\",\"destination_zone\":null,\"face_index\":0,\"face_name\":\"An Unexpected Party\",\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103397,\"face_index\":0,\"quote\":\"Creatures you control of the chosen type get +2/+2.\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"static\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":\"static\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103397,
+            "face_index": 0,
+            "quote": "As this enchantment enters, choose a creature type.\nCreatures you control of the chosen type get +2/+2."
+          }
+        ],
+        "finding_id": "work-0e30fcfe9ea48d1d90ca8d48d105d2736dcdf1c753b80f1d326dc7c50b2bb26d:103397-f0-go-wide-payoff",
+        "kind": "go_wide_payoff",
+        "review": {
+          "reason": "capability requires semantic review beyond exact-source validation.",
+          "status": "uncertain"
+        },
+        "run_id": "work-0e30fcfe9ea48d1d90ca8d48d105d2736dcdf1c753b80f1d326dc7c50b2bb26d"
+      },
+      {
+        "finding_id": "work-0e30fcfe9ea48d1d90ca8d48d105d2736dcdf1c753b80f1d326dc7c50b2bb26d:103397-f1-token-maker",
+        "card_id": 103397,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"An Unexpected Party // At the Door\",\"destination_zone\":\"battlefield\",\"face_index\":1,\"face_name\":\"At the Door\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"dwarf\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"variable\",\"value\":null},\"role\":\"token_maker\",\"source_zone\":\"stack\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103397,
+            "face_index": 1,
+            "quote": "Create X 2/2 red Dwarf creature tokens."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-0e30fcfe9ea48d1d90ca8d48d105d2736dcdf1c753b80f1d326dc7c50b2bb26d"
+      },
+      {
+        "finding_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d:103381-go-wide-power",
+        "card_id": 103381,
+        "kind": "go_wide_payoff",
+        "claim": "{\"action\":\"count\",\"card_name\":\"Esgaroth Garrison\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103381,
+            "face_index": null,
+            "quote": "Esgaroth Garrison's power is equal to the number of creatures you control."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d"
+      },
+      {
+        "card_id": 103381,
+        "claim": "{\"action\":\"create\",\"card_name\":\"Esgaroth Garrison\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103381,\"face_index\":null,\"quote\":\"If you discarded a nonland card, create a 1/1 white Human Soldier creature token.\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":null,\"timing\":null},{\"destination_zone\":null,\"evidence\":{\"card_id\":103381,\"face_index\":null,\"quote\":\"When this creature enters, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"when this creature enters\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"human soldier\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"stack\",\"timing\":\"when this creature enters\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103381,
+            "face_index": null,
+            "quote": "When this creature enters, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+          }
+        ],
+        "finding_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d:103381-recruit-token",
+        "kind": "token_maker",
+        "review": {
+          "reason": "The created token has two subtypes, Human and Soldier, while the qualifier schema provides only one subtype field; both are preserved together as the exact Oracle phrase.",
+          "status": "uncertain"
+        },
+        "run_id": "work-22053f751b99d9575a3f7aaa0fc2cf70c079056c0d18f38613a359401d313c1d"
+      },
+      {
+        "card_id": 103499,
+        "claim": "{\"action\":\"other\",\"card_name\":\"Beorn the Fierce\",\"destination_zone\":null,\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":\"bear\",\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103499,
+            "face_index": null,
+            "quote": "Other Bears you control get +2/+2."
+          }
+        ],
+        "finding_id": "work-435e4fd24cb848b20dc6c0c6acd9470fba0c352f73aa5bf7707ed51a678f3fbb:103499-bear-buff-go-wide",
+        "kind": "go_wide_payoff",
+        "review": {
+          "reason": "capability requires semantic review beyond exact-source validation.",
+          "status": "uncertain"
+        },
+        "run_id": "work-435e4fd24cb848b20dc6c0c6acd9470fba0c352f73aa5bf7707ed51a678f3fbb"
+      },
+      {
+        "finding_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07:103442-amass-goblin-army-token",
+        "card_id": 103442,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Gathering of Darkness\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103442,\"face_index\":null,\"quote\":\"If you don't control an Army, create a 0/0 black Goblin Army creature token first.\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"goblin army\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103442,
+            "face_index": null,
+            "quote": "Amass Goblins 3. (Put three +1/+1 counters on an Army you control. It's also a Goblin. If you don't control an Army, create a 0/0 black Goblin Army creature token first.)"
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07"
+      },
+      {
+        "finding_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07:103442-return-creature-card",
+        "card_id": 103442,
+        "kind": "recursion",
+        "claim": "{\"action\":\"return\",\"card_name\":\"Gathering of Darkness\",\"destination_zone\":\"hand\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"at_most\",\"value\":1},\"role\":\"recursion\",\"source_zone\":\"graveyard\",\"timing\":null,\"zone\":\"hand\"}",
+        "evidence": [
+          {
+            "card_id": 103442,
+            "face_index": null,
+            "quote": "Return up to one target creature card from your graveyard to your hand."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07"
+      },
+      {
+        "finding_id": "work-5b195b6224d3c6f212310428879c5040d8a2bd365b4fcbc229ae622b51f42aa2:103504-landfall-1-token-maker",
+        "card_id": 103504,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Down in the Valley\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103504,\"face_index\":null,\"quote\":\"Landfall — Whenever a land you control enters\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"whenever a land you control enters\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"chapter II\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103504,
+            "face_index": null,
+            "quote": "II — This Saga gains \"Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token.\""
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "token_maker is derived from the quoted ability, which creates a creature token."
+        },
+        "run_id": "work-5b195b6224d3c6f212310428879c5040d8a2bd365b4fcbc229ae622b51f42aa2"
+      },
+      {
+        "finding_id": "work-68351340dc29728275a33a1c5893af1ae4a195cdcabde9e4165d59ad0ff08ffd:103451-death-token-token-maker",
+        "card_id": 103451,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Head of the Hunt\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103451,\"face_index\":null,\"quote\":\"When you do, create a 2/2 green Wolf creature token.\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":null,\"timing\":\"when you do\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"when you do\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103451,
+            "face_index": null,
+            "quote": "When you do, create a 2/2 green Wolf creature token."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "token_maker is derived from the quoted ability, which creates a creature token."
+        },
+        "run_id": "work-68351340dc29728275a33a1c5893af1ae4a195cdcabde9e4165d59ad0ff08ffd"
+      },
+      {
+        "card_id": 103482,
+        "claim": "{\"action\":\"create\",\"card_name\":\"The Misty Mountains Cold\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103482,\"face_index\":null,\"quote\":\"if you control four or more Treasures\"},\"kind\":\"condition\",\"quantity\":{\"relation\":\"at_least\",\"value\":4},\"source_zone\":\"battlefield\",\"timing\":null},{\"destination_zone\":null,\"evidence\":{\"card_id\":103482,\"face_index\":null,\"quote\":\"I, II, III, IV\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"I, II, III, IV\"},{\"destination_zone\":null,\"evidence\":{\"card_id\":103482,\"face_index\":null,\"quote\":\"If you do\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":null,\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"dragon\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"I, II, III, IV\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103482,
+            "face_index": null,
+            "quote": "I, II, III, IV — Create a Treasure token. Then if you control four or more Treasures, sacrifice this Saga. If you do, create a 6/6 red Dragon creature token with flying. (A Treasure token is an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")"
+          }
+        ],
+        "finding_id": "work-77e6062b2d33474549da5e92b2301c204e744879943f0a63e24666d242a2f45a:103482-dragon-token-1",
+        "kind": "token_maker",
+        "review": {
+          "reason": "capability requires semantic review beyond exact-source validation.",
+          "status": "uncertain"
+        },
+        "run_id": "work-77e6062b2d33474549da5e92b2301c204e744879943f0a63e24666d242a2f45a"
+      },
+      {
+        "finding_id": "work-afa354e06341442409f6b911f5e3298c4a07a4f2dc3d0417a9fbd3d09c2537cc:103524-token-creation-replacement",
+        "card_id": 103524,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Bard, King of Dale\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103524,\"face_index\":null,\"quote\":\"If one or more tokens would be created under your control, twice that many of those tokens are created instead.\"},\"kind\":\"trigger\",\"quantity\":{\"relation\":\"at_least\",\"value\":1},\"source_zone\":null,\"timing\":null}],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"variable\",\"value\":null},\"role\":\"token_maker\",\"source_zone\":null,\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103524,
+            "face_index": null,
+            "quote": "If one or more tokens would be created under your control, twice that many of those tokens are created instead."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "The ability creates twice as many tokens but does not specify whether the tokens are creature tokens; token_maker is therefore semantically uncertain under the role definition."
+        },
+        "run_id": "work-afa354e06341442409f6b911f5e3298c4a07a4f2dc3d0417a9fbd3d09c2537cc"
+      },
+      {
+        "card_id": 103546,
+        "claim": "{\"action\":\"other\",\"card_name\":\"Thranduil, Sindarin Liege // Silvan Rally\",\"destination_zone\":\"battlefield\",\"face_index\":0,\"face_name\":\"Thranduil, Sindarin Liege\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"elf\",\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103546,
+            "face_index": 0,
+            "quote": "Other Elves you control get +1/+1."
+          }
+        ],
+        "finding_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9:103546-f0-go-wide-payoff",
+        "kind": "go_wide_payoff",
+        "review": {
+          "reason": "capability requires semantic review beyond exact-source validation.",
+          "status": "uncertain"
+        },
+        "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9"
+      },
+      {
+        "finding_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9:103546-f0-token-maker",
+        "card_id": 103546,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Thranduil, Sindarin Liege // Silvan Rally\",\"destination_zone\":\"battlefield\",\"face_index\":0,\"face_name\":\"Thranduil, Sindarin Liege\",\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103546,\"face_index\":0,\"quote\":\"Whenever a land you control enters\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"whenever a land you control enters\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"elf\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"whenever a land you control enters\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103546,
+            "face_index": 0,
+            "quote": "Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9"
+      },
+      {
+        "finding_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9:103546-f1-recursion",
+        "card_id": 103546,
+        "kind": "recursion",
+        "claim": "{\"action\":\"return\",\"card_name\":\"Thranduil, Sindarin Liege // Silvan Rally\",\"destination_zone\":\"hand\",\"face_index\":1,\"face_name\":\"Silvan Rally\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"land\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"at_most\",\"value\":2},\"role\":\"recursion\",\"source_zone\":\"graveyard\",\"timing\":\"as this spell resolves\",\"zone\":\"hand\"}",
+        "evidence": [
+          {
+            "card_id": 103546,
+            "face_index": 1,
+            "quote": "Mill four cards, then put up to two land cards from among them into your hand."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9"
+      },
+      {
+        "finding_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9:103546-f1-self-mill",
+        "card_id": 103546,
+        "kind": "self_mill",
+        "claim": "{\"action\":\"mill\",\"card_name\":\"Thranduil, Sindarin Liege // Silvan Rally\",\"destination_zone\":\"graveyard\",\"face_index\":1,\"face_name\":\"Silvan Rally\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":4},\"role\":\"self_mill\",\"source_zone\":\"library\",\"timing\":\"as this spell resolves\",\"zone\":\"graveyard\"}",
+        "evidence": [
+          {
+            "card_id": 103546,
+            "face_index": 1,
+            "quote": "Mill four cards, then put up to two land cards from among them into your hand."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-bf9ac4898854feda58741a34216757d6f4e0f69bed2b2929814df4294f4a98f9"
+      },
+      {
+        "card_id": 103386,
+        "claim": "{\"action\":\"create\",\"card_name\":\"Lake-town Lookout\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"graveyard\",\"evidence\":{\"card_id\":103386,\"face_index\":null,\"quote\":\"If you discarded a nonland card\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"hand\",\"timing\":null},{\"destination_zone\":\"graveyard\",\"evidence\":{\"card_id\":103386,\"face_index\":null,\"quote\":\"When this creature dies\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"stack\",\"timing\":null,\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103386,
+            "face_index": null,
+            "quote": "When this creature dies, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+          }
+        ],
+        "finding_id": "work-c86c86138c6e405399dff519703c2be4d1d031f56db946a879808c3478792b50:103386-dies-create-token-token-maker",
+        "kind": "token_maker",
+        "review": {
+          "reason": "token_maker is derived from the quoted ability, which creates a creature token.",
+          "status": "uncertain"
+        },
+        "run_id": "work-c86c86138c6e405399dff519703c2be4d1d031f56db946a879808c3478792b50"
+      },
+      {
+        "card_id": 103449,
+        "claim": "{\"action\":\"create\",\"card_name\":\"Great Ugly-Looking Goblin // Clap! Snap!\",\"destination_zone\":\"battlefield\",\"face_index\":1,\"face_name\":\"Clap! Snap!\",\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"goblin\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"variable\",\"value\":null},\"role\":\"token_maker\",\"source_zone\":\"stack\",\"timing\":\"resolution\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103449,
+            "face_index": 1,
+            "quote": "Amass Goblins 2."
+          }
+        ],
+        "finding_id": "work-d034a06054629ec6d0dd19edb1cc9aadb1bc14b1cf9dda95bacc35ffbba24aa9:103449-f1-amass-token",
+        "kind": "token_maker",
+        "review": {
+          "reason": "capability requires semantic review beyond exact-source validation.",
+          "status": "uncertain"
+        },
+        "run_id": "work-d034a06054629ec6d0dd19edb1cc9aadb1bc14b1cf9dda95bacc35ffbba24aa9"
+      },
+      {
+        "finding_id": "work-d6ecb2cef8ae51a45631412a6c72d54ed4cf20161247ca4aa26c8a634272a9d9:103422-0-threshold-graveyard-payoff",
+        "card_id": 103422,
+        "kind": "graveyard_payoff",
+        "claim": "{\"action\":\"other\",\"card_name\":\"Most Decrepit Old Bird // Speak Secrets\",\"destination_zone\":null,\"face_index\":0,\"face_name\":\"Most Decrepit Old Bird\",\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103422,\"face_index\":0,\"quote\":\"Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard.\"},\"kind\":\"condition\",\"quantity\":{\"relation\":\"at_least\",\"value\":7},\"source_zone\":\"graveyard\",\"timing\":\"as long as\"}],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"graveyard_payoff\",\"source_zone\":\"battlefield\",\"timing\":\"as long as\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103422,
+            "face_index": 0,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-d6ecb2cef8ae51a45631412a6c72d54ed4cf20161247ca4aa26c8a634272a9d9"
+      },
+      {
+        "finding_id": "work-e13f2fe12f1177d27c277caa00ec7bc92f9f10de82bee814e220aa645c68c0d5:103382-dwarf-token-trigger",
+        "card_id": 103382,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Fíli the Pathfinder\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103382,\"face_index\":null,\"quote\":\"Whenever Fíli or another nontoken Dwarf you control enters, create a 2/2 red Dwarf creature token.\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"whenever Fíli or another nontoken Dwarf you control enters\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"dwarf\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"whenever\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103382,
+            "face_index": null,
+            "quote": "Whenever Fíli or another nontoken Dwarf you control enters, create a 2/2 red Dwarf creature token."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-e13f2fe12f1177d27c277caa00ec7bc92f9f10de82bee814e220aa645c68c0d5"
+      },
+      {
+        "finding_id": "work-e13f2fe12f1177d27c277caa00ec7bc92f9f10de82bee814e220aa645c68c0d5:103382-enduring-story-anthem",
+        "card_id": 103382,
+        "kind": "go_wide_payoff",
+        "claim": "{\"action\":\"control\",\"card_name\":\"Fíli the Pathfinder\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103382,\"face_index\":null,\"quote\":\"As long as you have an enduring story, creatures you control get +1/+1.\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":null,\"timing\":\"as long as\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":\"static\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103382,
+            "face_index": null,
+            "quote": "As long as you have an enduring story, creatures you control get +1/+1."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-e13f2fe12f1177d27c277caa00ec7bc92f9f10de82bee814e220aa645c68c0d5"
+      },
+      {
+        "finding_id": "work-e466f17b58d00ace3c3a7ef1eacdbc6acc67f113b7c6f912fd61985dedb4f609:103521-go-wide-payoff-1",
+        "card_id": 103521,
+        "kind": "go_wide_payoff",
+        "claim": "{\"action\":\"other\",\"card_name\":\"Wilderland Scrounger\",\"destination_zone\":null,\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103521,\"face_index\":null,\"quote\":\"Whenever this creature attacks\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"whenever this creature attacks\"},{\"destination_zone\":null,\"evidence\":{\"card_id\":103521,\"face_index\":null,\"quote\":\"while you control a creature with power 4 or greater\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":null}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"go_wide_payoff\",\"source_zone\":\"battlefield\",\"timing\":\"whenever this creature attacks\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103521,
+            "face_index": null,
+            "quote": "Ferocious — Whenever this creature attacks while you control a creature with power 4 or greater, put a +1/+1 counter on each creature you control."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-e466f17b58d00ace3c3a7ef1eacdbc6acc67f113b7c6f912fd61985dedb4f609"
+      },
+      {
+        "card_id": 103529,
+        "claim": "{\"action\":\"sacrifice\",\"card_name\":\"Bolg's Company\",\"destination_zone\":\"graveyard\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[],\"mana_value\":null,\"subtype\":\"goblin\",\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"sacrifice_outlet\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"graveyard\"}",
+        "evidence": [
+          {
+            "card_id": 103529,
+            "face_index": null,
+            "quote": "{T}, Sacrifice another Goblin: Add {B}{R}."
+          }
+        ],
+        "finding_id": "work-e62947aa7ee6a48c565cc7722acc0f7d26511c8b8bf7c748692d267c88deed3d:103529-sacrifice-outlet",
+        "kind": "sacrifice_outlet",
+        "review": {
+          "reason": "capability requires semantic review beyond exact-source validation.",
+          "status": "uncertain"
+        },
+        "run_id": "work-e62947aa7ee6a48c565cc7722acc0f7d26511c8b8bf7c748692d267c88deed3d"
+      },
+      {
+        "card_id": 103491,
+        "claim": "{\"action\":\"sacrifice\",\"card_name\":\"Snowslope Hunter\",\"destination_zone\":\"graveyard\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"artifact\",\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"sacrifice_outlet\",\"source_zone\":\"battlefield\",\"timing\":null,\"zone\":\"graveyard\"}",
+        "evidence": [
+          {
+            "card_id": 103491,
+            "face_index": null,
+            "quote": "Sacrifice another creature or artifact: Exile the top card of your library. You may play it until the end of your next turn. Activate only during your turn and only once each turn."
+          }
+        ],
+        "finding_id": "work-f38c535bec7f4f442718a563000c2a9f2db0609867d97e044c156a80de17c354:103491-sacrifice-outlet",
+        "kind": "sacrifice_outlet",
+        "review": {
+          "reason": "capability requires semantic review beyond exact-source validation.",
+          "status": "uncertain"
+        },
+        "run_id": "work-f38c535bec7f4f442718a563000c2a9f2db0609867d97e044c156a80de17c354"
+      },
+      {
+        "finding_id": "work-f510b05ec2c9f50aafd9ef8f4ae77edbd52842050916717ced12c0686907297e:103503-token-maker-1",
+        "card_id": 103503,
+        "kind": "token_maker",
+        "claim": "{\"action\":\"create\",\"card_name\":\"Dancing from Dark to Dawn\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103503,\"face_index\":null,\"quote\":\"Landfall — Whenever a land you control enters, create a 2/2 green Bear creature token.\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":null,\"timing\":\"Whenever a land you control enters\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"bear\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"Whenever a land you control enters\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103503,
+            "face_index": null,
+            "quote": "Landfall — Whenever a land you control enters, create a 2/2 green Bear creature token."
+          }
+        ],
+        "review": {
+          "status": "uncertain",
+          "reason": "capability requires semantic review beyond exact-source validation."
+        },
+        "run_id": "work-f510b05ec2c9f50aafd9ef8f4ae77edbd52842050916717ced12c0686907297e"
+      },
+      {
+        "card_id": 103526,
+        "claim": "{\"action\":\"create\",\"card_name\":\"Bard's Company\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":\"battlefield\",\"evidence\":{\"card_id\":103526,\"face_index\":null,\"quote\":\"Whenever this creature enters or attacks, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"when this creature enters or attacks\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"token\"},\"quantity\":null,\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"when this creature enters or attacks\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103526,
+            "face_index": null,
+            "quote": "Whenever this creature enters or attacks, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+          }
+        ],
+        "finding_id": "work-f6ad24756115f873ba8e34318cf65df315e26c6e093ed299c3b9ab7d8dcacd86:103526-recruit-attack-token-maker",
+        "kind": "token_maker",
+        "review": {
+          "reason": "token_maker is derived from the quoted ability, which creates a creature token.",
+          "status": "uncertain"
+        },
+        "run_id": "work-f6ad24756115f873ba8e34318cf65df315e26c6e093ed299c3b9ab7d8dcacd86"
+      },
+      {
+        "card_id": 103435,
+        "claim": "{\"action\":\"create\",\"card_name\":\"Azog, Moria's Ruin\",\"destination_zone\":\"battlefield\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[{\"destination_zone\":null,\"evidence\":{\"card_id\":103435,\"face_index\":null,\"quote\":\"If they don't control an Army\"},\"kind\":\"condition\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":null},{\"destination_zone\":null,\"evidence\":{\"card_id\":103435,\"face_index\":null,\"quote\":\"When Azog enters\"},\"kind\":\"trigger\",\"quantity\":null,\"source_zone\":\"battlefield\",\"timing\":\"when Azog enters\"}],\"qualifier\":{\"card_types\":[\"creature\"],\"mana_value\":null,\"subtype\":\"goblin\",\"token_restriction\":\"token\"},\"quantity\":{\"relation\":\"exactly\",\"value\":1},\"role\":\"token_maker\",\"source_zone\":\"battlefield\",\"timing\":\"when Azog enters\",\"zone\":\"battlefield\"}",
+        "evidence": [
+          {
+            "card_id": 103435,
+            "face_index": null,
+            "quote": "If they don't control an Army, they create a 0/0 black Goblin Army creature token first."
+          }
+        ],
+        "finding_id": "work-f8edf5f4581d574455a05d4c8dd9b8def5b739f944d677d02cb727cb15525749:103435-token-maker-1",
+        "kind": "token_maker",
+        "review": {
+          "reason": "The created token is stated to have both Goblin and Army subtypes, but the schema permits only one subtype field; Goblin is retained as the primary typal subtype.",
+          "status": "uncertain"
+        },
+        "run_id": "work-f8edf5f4581d574455a05d4c8dd9b8def5b739f944d677d02cb727cb15525749"
+      },
+      {
+        "card_id": 103460,
+        "claim": "{\"action\":\"sacrifice\",\"card_name\":\"Stir Up Trouble\",\"destination_zone\":\"graveyard\",\"face_index\":null,\"face_name\":null,\"prerequisites\":[],\"qualifier\":{\"card_types\":[\"artifact\",\"creature\"],\"mana_value\":null,\"subtype\":null,\"token_restriction\":\"unrestricted\"},\"quantity\":null,\"role\":\"sacrifice_outlet\",\"source_zone\":\"battlefield\",\"timing\":\"as an additional cost to cast this spell\",\"zone\":\"graveyard\"}",
+        "evidence": [
+          {
+            "card_id": 103460,
+            "face_index": null,
+            "quote": "As an additional cost to cast this spell, sacrifice an artifact or creature or pay {4}."
+          }
+        ],
+        "finding_id": "work-fac848e4104ae1466af57053e9787fd2a36ccbcee9acae5ad8c836e1d27a72eb:103460-sacrifice-cost",
+        "kind": "sacrifice_outlet",
+        "review": {
+          "reason": "capability requires semantic review beyond exact-source validation.",
+          "status": "uncertain"
+        },
+        "run_id": "work-fac848e4104ae1466af57053e9787fd2a36ccbcee9acae5ad8c836e1d27a72eb"
       }
     ],
     "guide_claims": [],
@@ -2194,6 +2829,440 @@
           "reason": null
         },
         "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103503:103503-token-maker-1:103381:103381-go-wide-power",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103381,
+          103503
+        ],
+        "claim": "Dancing from Dark to Dawn supports Esgaroth Garrison through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103381,
+            "face_index": null,
+            "quote": "Esgaroth Garrison's power is equal to the number of creatures you control."
+          },
+          {
+            "card_id": 103503,
+            "face_index": null,
+            "quote": "Landfall — Whenever a land you control enters, create a 2/2 green Bear creature token."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103451:103451-death-token-token-maker:103381:103381-go-wide-power",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103381,
+          103451
+        ],
+        "claim": "Head of the Hunt supports Esgaroth Garrison through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103381,
+            "face_index": null,
+            "quote": "Esgaroth Garrison's power is equal to the number of creatures you control."
+          },
+          {
+            "card_id": 103451,
+            "face_index": null,
+            "quote": "When you do, create a 2/2 green Wolf creature token."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103451:103451-death-token-token-maker:103546:103546-f0-go-wide-payoff",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103451,
+          103546
+        ],
+        "claim": "Head of the Hunt supports Thranduil, Sindarin Liege // Silvan Rally through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103451,
+            "face_index": null,
+            "quote": "When you do, create a 2/2 green Wolf creature token."
+          },
+          {
+            "card_id": 103546,
+            "face_index": 0,
+            "quote": "Other Elves you control get +1/+1."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103504:103504-landfall-1-token-maker:103529:103529-sacrifice-outlet",
+        "mechanism": "token-sacrifice-outlet",
+        "participants": [
+          103504,
+          103529
+        ],
+        "claim": "Down in the Valley supports Bolg's Company through token-sacrifice-outlet.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103504,
+            "face_index": null,
+            "quote": "II — This Saga gains \"Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token.\""
+          },
+          {
+            "card_id": 103529,
+            "face_index": null,
+            "quote": "{T}, Sacrifice another Goblin: Add {B}{R}."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103504:103504-landfall-1-token-maker:103546:103546-f0-go-wide-payoff",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103504,
+          103546
+        ],
+        "claim": "Down in the Valley supports Thranduil, Sindarin Liege // Silvan Rally through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103504,
+            "face_index": null,
+            "quote": "II — This Saga gains \"Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token.\""
+          },
+          {
+            "card_id": 103546,
+            "face_index": 0,
+            "quote": "Other Elves you control get +1/+1."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103504:103504-landfall-1-token-maker:103499:103499-bear-buff-go-wide",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103499,
+          103504
+        ],
+        "claim": "Down in the Valley supports Beorn the Fierce through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103499,
+            "face_index": null,
+            "quote": "Other Bears you control get +2/+2."
+          },
+          {
+            "card_id": 103504,
+            "face_index": null,
+            "quote": "II — This Saga gains \"Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token.\""
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103546:103546-f0-token-maker:103381:103381-go-wide-power",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103381,
+          103546
+        ],
+        "claim": "Thranduil, Sindarin Liege // Silvan Rally supports Esgaroth Garrison through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103381,
+            "face_index": null,
+            "quote": "Esgaroth Garrison's power is equal to the number of creatures you control."
+          },
+          {
+            "card_id": 103546,
+            "face_index": 0,
+            "quote": "Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103546:103546-f1-recursion:103420:103420-graveyard-scaling",
+        "mechanism": "recursion-graveyard-payoff",
+        "participants": [
+          103420,
+          103546
+        ],
+        "claim": "Thranduil, Sindarin Liege // Silvan Rally supports Master's Councillors through recursion-graveyard-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103420,
+            "face_index": null,
+            "quote": "This creature gets +2/+0 for each graveyard with seven or more cards in it."
+          },
+          {
+            "card_id": 103546,
+            "face_index": 1,
+            "quote": "Mill four cards, then put up to two land cards from among them into your hand."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103546:103546-f1-recursion:103422:103422-0-threshold-graveyard-payoff",
+        "mechanism": "recursion-graveyard-payoff",
+        "participants": [
+          103422,
+          103546
+        ],
+        "claim": "Thranduil, Sindarin Liege // Silvan Rally supports Most Decrepit Old Bird // Speak Secrets through recursion-graveyard-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103422,
+            "face_index": 0,
+            "quote": "Threshold — This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+          },
+          {
+            "card_id": 103546,
+            "face_index": 1,
+            "quote": "Mill four cards, then put up to two land cards from among them into your hand."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103397:103397-f1-token-maker:103521:103521-go-wide-payoff-1",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103397,
+          103521
+        ],
+        "claim": "An Unexpected Party // At the Door supports Wilderland Scrounger through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103397,
+            "face_index": 1,
+            "quote": "Create X 2/2 red Dwarf creature tokens."
+          },
+          {
+            "card_id": 103521,
+            "face_index": null,
+            "quote": "Ferocious — Whenever this creature attacks while you control a creature with power 4 or greater, put a +1/+1 counter on each creature you control."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103482:103482-dragon-token-1:103382:103382-enduring-story-anthem",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103382,
+          103482
+        ],
+        "claim": "The Misty Mountains Cold supports Fíli the Pathfinder through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103382,
+            "face_index": null,
+            "quote": "As long as you have an enduring story, creatures you control get +1/+1."
+          },
+          {
+            "card_id": 103482,
+            "face_index": null,
+            "quote": "I, II, III, IV — Create a Treasure token. Then if you control four or more Treasures, sacrifice this Saga. If you do, create a 6/6 red Dragon creature token with flying. (A Treasure token is an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")"
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103382:103382-dwarf-token-trigger:103460:103460-sacrifice-cost",
+        "mechanism": "token-sacrifice-outlet",
+        "participants": [
+          103382,
+          103460
+        ],
+        "claim": "Fíli the Pathfinder supports Stir Up Trouble through token-sacrifice-outlet.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103382,
+            "face_index": null,
+            "quote": "Whenever Fíli or another nontoken Dwarf you control enters, create a 2/2 red Dwarf creature token."
+          },
+          {
+            "card_id": 103460,
+            "face_index": null,
+            "quote": "As an additional cost to cast this spell, sacrifice an artifact or creature or pay {4}."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103386:103386-dies-create-token-token-maker:103546:103546-f0-go-wide-payoff",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103386,
+          103546
+        ],
+        "claim": "Lake-town Lookout supports Thranduil, Sindarin Liege // Silvan Rally through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103386,
+            "face_index": null,
+            "quote": "When this creature dies, recruit. (Draw a card, then discard a card. If you discarded a nonland card, create a 1/1 white Human Soldier creature token.)"
+          },
+          {
+            "card_id": 103546,
+            "face_index": 0,
+            "quote": "Other Elves you control get +1/+1."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
+      },
+      {
+        "finding_id": "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103524:103524-token-creation-replacement:103546:103546-f0-go-wide-payoff",
+        "mechanism": "token-go-wide-payoff",
+        "participants": [
+          103524,
+          103546
+        ],
+        "claim": "Bard, King of Dale supports Thranduil, Sindarin Liege // Silvan Rally through token-go-wide-payoff.",
+        "prerequisites": [
+          "declared role compatibility between typed capabilities",
+          "structured capability parameters prove compatibility"
+        ],
+        "oracle_evidence": [
+          {
+            "card_id": 103524,
+            "face_index": null,
+            "quote": "If one or more tokens would be created under your control, twice that many of those tokens are created instead."
+          },
+          {
+            "card_id": 103546,
+            "face_index": 0,
+            "quote": "Other Elves you control get +1/+1."
+          }
+        ],
+        "guide_evidence": [],
+        "review": {
+          "status": "accepted",
+          "reason": null
+        },
+        "run_id": "local-c7a4f08030a1bfb7"
       }
     ],
     "rejected_findings": [],
@@ -2207,20 +3276,34 @@
       "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:990001:990001-fixture-trailing-mill:103422:103422-0-threshold-graveyard-payoff",
       "local-c7a4f08030a1bfb7:relationship:mill-graveyard-payoff:990002:990002-fixture-next-action-mill:103422:103422-0-threshold-graveyard-payoff",
       "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103442:103442-return-creature-card:103422:103422-0-threshold-graveyard-payoff",
-      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103381:103381-recruit-token:103499:103499-bear-buff-go-wide",
-      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103381:103381-recruit-token:990010:990010-fixture-wide-payoff",
-      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103435:103435-token-maker-1:103381:103381-go-wide-power",
       "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103442:103442-amass-goblin-army-token:103381:103381-go-wide-power",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:990003:990003-fixture-army-maker:990010:990010-fixture-wide-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103381:103381-recruit-token:990010:990010-fixture-wide-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103449:103449-f1-amass-token:990010:990010-fixture-wide-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103435:103435-token-maker-1:103381:103381-go-wide-power",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103482:103482-dragon-token-1:103381:103381-go-wide-power",
       "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103442:103442-amass-goblin-army-token:103397:103397-f0-go-wide-payoff",
       "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103442:103442-amass-goblin-army-token:990020:990020-fixture-repeated-payoff",
-      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103449:103449-f1-amass-token:990010:990010-fixture-wide-payoff",
-      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103482:103482-dragon-token-1:103381:103381-go-wide-power",
-      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103526:103526-recruit-attack-token-maker:103546:103546-f0-go-wide-payoff",
-      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:990003:990003-fixture-army-maker:990010:990010-fixture-wide-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103442:103442-amass-goblin-army-token:103529:103529-sacrifice-outlet",
       "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103386:103386-dies-create-token-token-maker:103529:103529-sacrifice-outlet",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103526:103526-recruit-attack-token-maker:103546:103546-f0-go-wide-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103381:103381-recruit-token:103499:103499-bear-buff-go-wide",
       "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103442:103442-amass-goblin-army-token:103460:103460-sacrifice-cost",
       "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103442:103442-amass-goblin-army-token:103491:103491-sacrifice-outlet",
-      "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103442:103442-amass-goblin-army-token:103529:103529-sacrifice-outlet"
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103503:103503-token-maker-1:103381:103381-go-wide-power",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103451:103451-death-token-token-maker:103381:103381-go-wide-power",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103451:103451-death-token-token-maker:103546:103546-f0-go-wide-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103504:103504-landfall-1-token-maker:103529:103529-sacrifice-outlet",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103504:103504-landfall-1-token-maker:103546:103546-f0-go-wide-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103504:103504-landfall-1-token-maker:103499:103499-bear-buff-go-wide",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103546:103546-f0-token-maker:103381:103381-go-wide-power",
+      "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103546:103546-f1-recursion:103420:103420-graveyard-scaling",
+      "local-c7a4f08030a1bfb7:relationship:recursion-graveyard-payoff:103546:103546-f1-recursion:103422:103422-0-threshold-graveyard-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103397:103397-f1-token-maker:103521:103521-go-wide-payoff-1",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103482:103482-dragon-token-1:103382:103382-enduring-story-anthem",
+      "local-c7a4f08030a1bfb7:relationship:token-sacrifice-outlet:103382:103382-dwarf-token-trigger:103460:103460-sacrifice-cost",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103386:103386-dies-create-token-token-maker:103546:103546-f0-go-wide-payoff",
+      "local-c7a4f08030a1bfb7:relationship:token-go-wide-payoff:103524:103524-token-creation-replacement:103546:103546-f0-go-wide-payoff"
     ]
   }
 }

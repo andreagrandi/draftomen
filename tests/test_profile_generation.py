@@ -2786,3 +2786,77 @@ def test_qualified_conversions_round_trip_through_the_generated_profile(
         and item.prerequisite_projection.outcome is QualificationOutcome.QUALIFIED
     )
     assert loaded_qualified == reported_qualified
+
+LANDFALL_SOURCE_CARD_ID = 401
+LANDFALL_PAYOFF_CARD_ID = 402
+LANDFALL_ENTRY_PARAGRAPH = (
+    "Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token."
+)
+LANDFALL_RAMP_PARAGRAPH = (
+    "Search your library for a basic land card, put it onto the battlefield tapped, then shuffle."
+)
+
+
+def _landfall_database() -> CardDatabase:
+    """Build the generation card database around one landfall helper pair."""
+    return CardDatabase(
+        cards={
+            **_database().cards,
+            LANDFALL_SOURCE_CARD_ID: _typed_card(
+                LANDFALL_SOURCE_CARD_ID,
+                "Landfall Ramp",
+                LANDFALL_RAMP_PARAGRAPH,
+            ),
+            LANDFALL_PAYOFF_CARD_ID: _typed_card(
+                LANDFALL_PAYOFF_CARD_ID,
+                "Landfall Payoff",
+                LANDFALL_ENTRY_PARAGRAPH,
+            ),
+        }
+    )
+
+
+def _landfall_artifact() -> SemanticEnrichmentArtifact:
+    """Build one artifact whose pinned faces state a landfall helper pair."""
+    database = _landfall_database()
+    return _enrichment_artifact(
+        sources=_enrichment_sources(cards=database),
+    )
+
+
+def test_generated_enhancement_carries_the_derived_condition_map() -> None:
+    """The real generation path publishes the derived map beside reviewed rows."""
+    database = _landfall_database()
+    artifact = _landfall_artifact()
+    first = _enhanced_generation(enrichment=artifact, card_database=database)
+    second = _enhanced_generation(
+        enrichment=_landfall_artifact(),
+        card_database=database,
+    )
+    assert first.profile_bytes == second.profile_bytes
+    enhancement = first.profile.enhancement
+    assert enhancement is not None
+    condition_map = enhancement.condition_map
+    assert condition_map is not None
+    assert condition_map.scope == "draft_potential"
+    landfall = tuple(
+        capability for capability in condition_map.capabilities if capability.family == "landfall"
+    )
+    assert {capability.kind for capability in landfall} == {
+        "land_entry",
+        "land_entry_event",
+    }
+    landfall_edges = tuple(
+        interaction
+        for interaction in condition_map.interactions
+        if interaction.enabler_id
+        in {capability.capability_id for capability in landfall if capability.role == "enabler"}
+    )
+    assert landfall_edges
+    assert all(interaction.support == "can_enable" for interaction in landfall_edges)
+    assert [item.finding_id for item in enhancement.relationships] == [
+        item.finding_id for item in artifact.confirmed_relationships
+    ]
+    assert first.report.to_json()["enhancement"]["relationship_count"] == len(
+        enhancement.relationships
+    )

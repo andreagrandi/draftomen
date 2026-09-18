@@ -125,7 +125,7 @@ class ProviderAccessDenied(RuntimeError):
     """Raised when the probe reaches any provider, guide, or download entry point."""
 
 
-def guard_provider_entry_points() -> dict[str, object]:
+def guard_provider_entry_points(*, probe: str) -> dict[str, object]:
     """Record and fail every provider, guide, card-data and profile-network entry point."""
     calls: list[str] = []
     guarded: list[str] = []
@@ -134,7 +134,7 @@ def guard_provider_entry_points() -> dict[str, object]:
     def denial(entry: str):
         def _deny(*_args: object, **_kwargs: object) -> object:
             calls.append(entry)
-            raise ProviderAccessDenied(f"hob-590 probe: {entry} is unavailable offline")
+            raise ProviderAccessDenied(f"{probe} probe: {entry} is unavailable offline")
 
         return _deny
 
@@ -167,17 +167,17 @@ def guard_provider_entry_points() -> dict[str, object]:
 class Report:
     """Collects the probe's JSON document and its pass/fail gates."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, probe: str, scoped_mechanisms: tuple[str, ...]) -> None:
         self.checks: list[dict[str, object]] = []
         self.failures: list[dict[str, object]] = []
         self.data: dict[str, object] = {
-            "probe": "hob-590-recovery",
+            "probe": probe,
             "probe_revision": 1,
             "schema_version": 1,
             "run_dir": str(RUN_DIR),
             "ledger_path": str(LEDGER_PATH),
             "ratings_path": str(RATINGS_PATH),
-            "scoped_mechanisms": list(SCOPED_MECHANISMS),
+            "scoped_mechanisms": list(scoped_mechanisms),
             "findings": [],
         }
 
@@ -1149,9 +1149,9 @@ def main() -> int:
     args = parser.parse_args()
 
     started = time.monotonic()
-    report = Report()
+    report = Report(probe="hob-590-recovery", scoped_mechanisms=SCOPED_MECHANISMS)
     denial = trace_probe.deny_network()
-    provider = guard_provider_entry_points()
+    provider = guard_provider_entry_points(probe="hob-590-recovery")
     report.data["network"] = {
         "denial": denial,
         "blocked_attempts": denial["blocked_attempts"],

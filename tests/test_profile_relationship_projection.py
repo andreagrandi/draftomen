@@ -74,6 +74,7 @@ _ARMY_PAIR = (
 _MILL_CAPABILITY = "103546-f1-self-mill"
 _THRESHOLD_CAPABILITY = "103422-0-threshold-graveyard-payoff"
 _ARMY_CAPABILITY = "990003-fixture-army-maker"
+_ARMY_INSTRUCTION = "Create a 0/0 black Goblin Army creature token."
 _LOCAL_RUN = "local-c7a4f08030a1bfb7"
 _SOURCE_RUN = "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07"
 # The real threshold line, cited with retained kinds and spans no typed clause can bind: the
@@ -183,6 +184,66 @@ _SACRIFICE_STATEMENT = (
 _SACRIFICE_CHOICE = "sacrifice an artifact or creature or pay {4}"
 _OUTLET_COST = "Sacrifice another creature or artifact"
 _OUTLET_RESTRICTION = "Activate only during your turn and only once each turn."
+# The recovered condition-family rows of the expanded confirmation, keyed by finding subject.
+_LANDFALL_BEAR = "token-go-wide-payoff:103503:103503-token-maker-1:103381:103381-go-wide-power"
+_CHAPTER_LANDFALL = (
+    "token-go-wide-payoff:103504:103504-landfall-1-token-maker:"
+    "103546:103546-f0-go-wide-payoff"
+)
+_CHAPTER_BEAR = (
+    "token-go-wide-payoff:103504:103504-landfall-1-token-maker:103499:103499-bear-buff-go-wide"
+)
+_THRANDUIL_LANDFALL = (
+    "token-go-wide-payoff:103546:103546-f0-token-maker:103381:103381-go-wide-power"
+)
+_FILI_DWARVES = "token-sacrifice-outlet:103382:103382-dwarf-token-trigger:103460:103460-sacrifice-cost"
+_WOLF_CREATION = (
+    "token-go-wide-payoff:103451:103451-death-token-token-maker:103381:103381-go-wide-power"
+)
+_WOLF_ANTHEM = (
+    "token-go-wide-payoff:103451:103451-death-token-token-maker:"
+    "103546:103546-f0-go-wide-payoff"
+)
+_LOOKOUT_ANTHEM = (
+    "token-go-wide-payoff:103386:103386-dies-create-token-token-maker:"
+    "103546:103546-f0-go-wide-payoff"
+)
+_ELF_OUTLET = (
+    "token-sacrifice-outlet:103504:103504-landfall-1-token-maker:103529:103529-sacrifice-outlet"
+)
+_VARIABLE_DWARVES = (
+    "token-go-wide-payoff:103397:103397-f1-token-maker:103521:103521-go-wide-payoff-1"
+)
+_RECURSION_SCALING = (
+    "recursion-graveyard-payoff:103546:103546-f1-recursion:103420:103420-graveyard-scaling"
+)
+_RECURSION_THRESHOLD = (
+    "recursion-graveyard-payoff:103546:103546-f1-recursion:"
+    "103422:103422-0-threshold-graveyard-payoff"
+)
+_STORIED_ANTHEM = (
+    "token-go-wide-payoff:103482:103482-dragon-token-1:103382:103382-enduring-story-anthem"
+)
+_BARD_REPLACEMENT = (
+    "token-go-wide-payoff:103524:103524-token-creation-replacement:"
+    "103546:103546-f0-go-wide-payoff"
+)
+_BEAR_INSTRUCTION = (
+    "Landfall — Whenever a land you control enters, create a 2/2 green Bear creature token."
+)
+_ELF_INSTRUCTION = (
+    "Landfall — Whenever a land you control enters, create a 1/1 green Elf creature token."
+)
+_DWARF_INSTRUCTION = (
+    "Whenever Fíli or another nontoken Dwarf you control enters, create a 2/2 red Dwarf creature "
+    "token."
+)
+_WOLF_PARENT = "If a creature an opponent controls would die, exile it instead."
+_WOLF_INSTRUCTION = "When you do, create a 2/2 green Wolf creature token."
+_VARIABLE_INSTRUCTION = "Create X 2/2 red Dwarf creature tokens."
+_MILL_RETURN_INSTRUCTION = (
+    "Mill four cards, then put up to two land cards from among them into your hand."
+)
 
 
 def _cards() -> tuple[CardInfo, ...]:
@@ -486,15 +547,43 @@ def test_condition_on_the_next_instruction_does_not_taint_the_first_mill() -> No
 
 
 @pytest.mark.parametrize("subtype", ("goblin", "army", None))
-def test_partial_or_derived_token_subtype_never_yields_a_projection(subtype: str | None) -> None:
-    """A retained subtype must state the whole explicit "Goblin Army" sequence, or none."""
+def test_partial_retained_subtype_never_binds_a_clause_but_keeps_the_family(
+    subtype: str | None,
+) -> None:
+    """A partial retained subtype binds no typed clause; the printed instruction still decides."""
     artifact = _confirmation()
     stored = _stored(artifact, _ARMY_PAIR)
     assert stored.prerequisite_projection is None
     variant = _with_subtype(artifact, _ARMY_CAPABILITY, subtype)
-    relationship = _row(_compile(variant), _ARMY_PAIR)
-    assert relationship is _stored(variant, _ARMY_PAIR)
-    assert relationship.prerequisite_projection is None
+    compilation = _compile(variant)
+    relationship = _row(compilation, _ARMY_PAIR)
+    assert relationship is not _stored(variant, _ARMY_PAIR)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    # the partial claim binds no typed clause, so the cited creation instruction carries the pair
+    assert projection.source.prerequisites == ()
+    selectors = [item.selector for item in projection.source.qualifications]
+    assert _ARMY_INSTRUCTION in selectors
+    assert _conversion(compilation, _ARMY_PAIR).outcome is RelationshipConversionOutcome.QUALIFIED
+
+
+def test_storied_anthem_keeps_the_reminder_it_references() -> None:
+    """Fíli's anthem cites both its payoff and the Storied reminder that defines the story."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _STORIED_ANTHEM)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    target = projection.target
+    assert (target.card_id, target.capability_id) == (103382, "103382-enduring-story-anthem")
+    reminder = "Storied (If you control three or more artifacts, legendaries, and/or Sagas, you have an enduring story for the rest of the game.)"
+    storied = next(item for item in target.qualifications if reminder in item.selector)
+    assert storied.kind is QualificationKind.CONDITION
+    # the reminder and the bound clause are cited from the same face's complete lines
+    assert reminder in storied.evidence.quote
+    assert "As long as you have an enduring story" in storied.evidence.quote
+    _revalidate(artifact, relationship)
 
 
 def test_complete_token_subtype_still_compiles_the_pair() -> None:
@@ -685,9 +774,8 @@ def test_compilation_preserves_the_artifact_bytes_and_stored_rows() -> None:
         (row is stored_rows[row.finding_id]) is (item.outcome in unconverted)
         for row, item in zip(rows, compilation.conversions)
     )
-    # a recovered row is recompiled while the unbound fixture maker keeps its own payload
+    # a recovered row is recompiled into a fresh record that carries its compiled projection
     assert _row(compilation, _AMASS) is not _stored(artifact, _AMASS)
-    assert _row(compilation, _ARMY_PAIR) is _stored(artifact, _ARMY_PAIR)
     # the closed guards stay unprojected whichever way their gate refuses them
     assert _row(compilation, _TRAILING_MILL).prerequisite_projection is None
     assert _row(compilation, _RECURSION).prerequisite_projection is None
@@ -700,7 +788,7 @@ def test_every_stored_relationship_receives_one_conversion_in_stored_order() -> 
     """The compilation accounts for each stored row once, with a closed outcome and reason."""
     artifact = _confirmation()
     compilation = _compile(artifact)
-    assert len(artifact.confirmed_relationships) == 18
+    assert len(artifact.confirmed_relationships) == 32
     assert [item.finding_id for item in compilation.conversions] == [
         row.finding_id for row in artifact.confirmed_relationships
     ]
@@ -716,14 +804,14 @@ def test_every_stored_relationship_receives_one_conversion_in_stored_order() -> 
         (item.reason == "projected") is (item.outcome in projected)
         for item in compilation.conversions
     )
-    # the closed guard rows keep the exact gate that refuses them
+    # the closed guard rows keep the exact gate that decides them
     assert [
         (_conversion(compilation, suffix).outcome, _conversion(compilation, suffix).reason)
         for suffix in (_TRAILING_MILL, _RECURSION, _ARMY_PAIR)
     ] == [
         (RelationshipConversionOutcome.UNSUPPORTED, "source_clause_unbound"),
         (RelationshipConversionOutcome.CONTRADICTION, "zone_supply_contradiction:graveyard"),
-        (RelationshipConversionOutcome.UNSUPPORTED, "source_clause_unbound"),
+        (RelationshipConversionOutcome.QUALIFIED, "projected"),
     ]
     # the projected rows and the stored rows stay in the same stored order
     assert [row.finding_id for row in compilation.relationships] == [
@@ -1193,3 +1281,133 @@ def test_sacrifice_outlet_keeps_its_alternatives_and_activation_restrictions() -
     }
     assert qualifications[QualificationKind.COST].selector == _OUTLET_COST
     assert qualifications[QualificationKind.TIMING].selector == _OUTLET_RESTRICTION
+
+
+@pytest.mark.parametrize(
+    ("suffix", "card_id", "selector"),
+    (
+        (_LANDFALL_BEAR, 103503, _BEAR_INSTRUCTION),
+        (_THRANDUIL_LANDFALL, 103546, _ELF_INSTRUCTION),
+        (_FILI_DWARVES, 103382, _DWARF_INSTRUCTION),
+    ),
+)
+def test_cited_creation_instruction_carries_a_landfall_or_storied_token_maker(
+    suffix: str,
+    card_id: int,
+    selector: str,
+) -> None:
+    """The cited creation instruction, not the role, decides what a token maker produces."""
+    artifact = _confirmation()
+    compilation = _compile(artifact)
+    relationship = _row(compilation, suffix)
+    assert relationship is not _stored(artifact, suffix)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    source = projection.source
+    assert source.card_id == card_id
+    # the retained instruction is the complete printed statement and cites its own line
+    qualification = next(
+        item for item in source.qualifications if item.selector == selector
+    )
+    assert qualification.evidence.card_id == card_id
+    assert selector in qualification.evidence.quote
+    assert _conversion(compilation, suffix).outcome is RelationshipConversionOutcome.QUALIFIED
+
+
+def test_chapter_granted_landfall_keeps_the_chapter_that_grants_it() -> None:
+    """A Saga that gains the landfall clause retains the chapter and does not imply it earlier."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _CHAPTER_LANDFALL)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    selectors = [item.selector for item in projection.source.qualifications]
+    granted = next(item for item in selectors if "create a 1/1 green Elf creature token" in item)
+    assert granted.startswith("II — This Saga gains")
+
+
+def test_conditional_wolf_creation_keeps_its_parent_condition() -> None:
+    """Head of the Hunt's Wolf stays conditional on the exile replacement that precedes it."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _WOLF_CREATION)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    source = projection.source
+    selectors = [item.selector for item in source.qualifications]
+    assert _WOLF_INSTRUCTION in selectors
+    parent = next(item for item in source.qualifications if item.selector == _WOLF_PARENT)
+    assert parent.kind is QualificationKind.CONDITION
+    # the opposing creature in the trigger decides nothing about who receives the token
+    assert QualificationKind.PARTY not in {item.kind for item in source.qualifications}
+
+
+def test_creation_subtype_contradictions_keep_no_projection() -> None:
+    """The audited token-subtype negatives stay contradictions however the target would bind."""
+    artifact = _confirmation()
+    compilation = _compile(artifact)
+    for suffix in (_WOLF_ANTHEM, _ELF_OUTLET, _COMPANY_ANTHEM, _LOOKOUT_ANTHEM, _LOOKOUT_OUTLET):
+        _without_projection(
+            compilation,
+            artifact,
+            suffix,
+            RelationshipConversionOutcome.CONTRADICTION,
+            "token_subtype_contradiction",
+        )
+
+
+def test_variable_dwarf_creation_keeps_the_printed_x() -> None:
+    """At the Door's variable X stays printed, so the pair against Scrounger stays qualified."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _VARIABLE_DWARVES)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    source = projection.source
+    assert source.prerequisites == ()
+    assert [item.selector for item in source.qualifications] == [_VARIABLE_INSTRUCTION]
+
+
+def test_elf_tokens_never_reach_the_bear_anthem_without_beorns_conversion() -> None:
+    """An Elf source reaches Beorn only through his own same-face type conversion."""
+    artifact = _confirmation()
+    relationship = _row(_compile(artifact), _CHAPTER_BEAR)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    target = projection.target
+    assert (target.card_id, target.capability_id) == (103499, _BEORN_CAPABILITY)
+    conversions = [
+        item
+        for item in target.qualifications
+        if item.kind is QualificationKind.CONDITION and item.selector.startswith(_BEORN_CONVERSION)
+    ]
+    assert len(conversions) == 1
+
+
+def test_mill_then_return_grammar_recovers_the_adventure_recursion_rows() -> None:
+    """Both saved recursion rows recover from the closed mill-then-return instruction alone."""
+    artifact = _confirmation()
+    compilation = _compile(artifact)
+    for suffix in (_RECURSION_SCALING, _RECURSION_THRESHOLD):
+        relationship = _row(compilation, suffix)
+        projection = relationship.prerequisite_projection
+        assert projection is not None
+        assert projection.outcome.value == "qualified"
+        source = projection.source
+        assert (source.card_id, source.face_index) == (103546, 1)
+        assert source.prerequisites == ()
+        assert [item.selector for item in source.qualifications] == [_MILL_RETURN_INSTRUCTION]
+        # the Adventure face never acquires a landfall clause it does not print
+        assert "Whenever a land you control enters" not in source.qualifications[0].evidence.quote
+        _revalidate(artifact, relationship)
+
+
+def test_bard_replacement_wording_declares_no_creation_family() -> None:
+    """A token-replacement instruction redirects another creator and stays an accounted defect."""
+    artifact = _confirmation()
+    compilation = _compile(artifact)
+    relationship = _row(compilation, _BARD_REPLACEMENT)
+    assert relationship.prerequisite_projection is None
+    assert _conversion(compilation, _BARD_REPLACEMENT).outcome is RelationshipConversionOutcome.UNSUPPORTED

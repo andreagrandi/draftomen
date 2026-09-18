@@ -15,6 +15,14 @@ from draftomen.semantic_capability_records import (
     PrerequisiteKind,
     QuantityRelation,
 )
+from draftomen.semantic_condition_records import (
+    CONDITION_MAP_SCHEMA_VERSION,
+    ConditionCapability,
+    ConditionEvidence,
+    ConditionInteraction,
+    ConditionMap,
+    ConditionSource,
+)
 from draftomen.semantic_enrichment import SEMANTIC_ENRICHMENT_SCHEMA_VERSION
 from draftomen.semantic_enrichment_records import OracleEvidence
 from draftomen.semantic_relationship_records import (
@@ -1490,3 +1498,181 @@ def test_profile_round_trip_preserves_qualified_relationships() -> None:
         legacy_payload["enhancement"]["relationships"][0]["prerequisite_projection"]["source"]  # type: ignore[index]
     )
     assert SetProfile.from_json(legacy_payload).to_bytes() == legacy.to_bytes()
+
+
+def _fixture_condition_map(
+    *,
+    source_card_id: int = FIXTURE_SOURCE_CARD_ID,
+    source_sha256: str | None = None,
+) -> ConditionMap:
+    """Build one self-consistent condition map over the enhanced fixture pins."""
+    payload = _enhanced_payload()
+    pins = {
+        pin["card_id"]: pin["sha256"]
+        for pin in payload["enhancement"]["cards"]  # type: ignore[index]
+    }
+    token_source = ConditionSource.create(
+        card_id=source_card_id,
+        face_index=None,
+        card_source_sha256=source_sha256 or pins[FIXTURE_SOURCE_CARD_ID],
+        type_line="Creature — Goblin",
+        oracle_text=FIXTURE_TOKEN_QUOTE,
+        power="1",
+    )
+    payoff_source = ConditionSource.create(
+        card_id=FIXTURE_TARGET_CARD_ID,
+        face_index=None,
+        card_source_sha256=pins[FIXTURE_TARGET_CARD_ID],
+        type_line="Creature — Goblin Warrior",
+        oracle_text=FIXTURE_ATTACK_QUOTE,
+        power="2",
+    )
+    enabler = ConditionCapability.create(
+        source=token_source,
+        family="ferocious",
+        role="enabler",
+        kind="created_creature_power",
+        controller="you",
+        quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
+        evidence=(
+            ConditionEvidence(
+                field="oracle_text",
+                kind=QualificationKind.CONDITION,
+                selector="a 1/1 red Goblin creature token",
+                occurrence=0,
+            ),
+        ),
+        source_finding_ids=("relationship-token-go-wide",),
+    )
+    payoff = ConditionCapability.create(
+        source=payoff_source,
+        family="ferocious",
+        role="payoff",
+        kind="power_threshold",
+        controller="any",
+        quantity=CapabilityQuantity(value=4, relation=QuantityRelation.AT_LEAST),
+        evidence=(
+            ConditionEvidence(
+                field="oracle_text",
+                kind=QualificationKind.TIMING,
+                selector="Whenever a creature you control attacks",
+                occurrence=0,
+            ),
+        ),
+    )
+    return ConditionMap(
+        schema_version=CONDITION_MAP_SCHEMA_VERSION,
+        scope="draft_potential",
+        sources=(token_source, payoff_source),
+        capabilities=(enabler, payoff),
+        interactions=(
+            ConditionInteraction(
+                enabler_id=enabler.capability_id,
+                payoff_id=payoff.capability_id,
+                support="can_enable",
+            ),
+        ),
+    )
+
+
+def _payload_with_condition_map() -> dict[str, object]:
+    """Return the enhanced fixture payload carrying the derived condition map."""
+    payload = _enhanced_payload_with_projection()
+    payload["enhancement"]["condition_map"] = json.loads(  # type: ignore[index]
+        json.dumps(_fixture_condition_map().to_json())
+    )
+    return payload
+
+
+def test_profile_round_trip_preserves_the_condition_map_beside_reviewed_rows() -> None:
+    """A derived condition map survives the profile bytes without changing reviewed content."""
+    payload = _payload_with_condition_map()
+    profile = SetProfile.from_json(payload)
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    condition_map = enhancement.condition_map
+    assert condition_map == _fixture_condition_map()
+    assert condition_map is not None
+    enabler = next(item for item in condition_map.capabilities if item.role == "enabler")
+    assert enabler.source_finding_ids == ("relationship-token-go-wide",)
+    assert [item.support for item in condition_map.interactions] == ["can_enable"]
+    assert [item.family for item in condition_map.capabilities] == ["ferocious", "ferocious"]
+
+    restored = SetProfile.from_json(json.loads(profile.to_bytes().decode()))
+    assert restored.to_bytes() == profile.to_bytes()
+    restored_enhancement = restored.enhancement
+    assert restored_enhancement is not None
+    assert restored_enhancement.condition_map == condition_map
+
+    plain = SetProfile.from_json(_enhanced_payload_with_projection())
+    plain_enhancement = plain.enhancement
+    assert plain_enhancement is not None
+    assert plain_enhancement.condition_map is None
+    assert plain_enhancement.relationships == enhancement.relationships
+    assert plain_enhancement.runs == enhancement.runs
+    assert plain_enhancement.confidence == enhancement.confidence
+    assert plain.fingerprint != profile.fingerprint
+    assert {
+        key: value for key, value in enhancement.to_json().items() if key != "condition_map"
+    } == plain_enhancement.to_json()
+
+
+def test_schema_three_profile_without_the_condition_map_keeps_its_original_bytes() -> None:
+    """A missing or null condition map stays absent from the serialized enhancement."""
+    profile = SetProfile.from_json(_enhanced_payload())
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    assert enhancement.condition_map is None
+    assert "condition_map" not in enhancement.to_json()
+    assert sorted(enhancement.to_json()) == [
+        "artifact_schema_version",
+        "artifact_sha256",
+        "card_data",
+        "cards",
+        "confidence",
+        "created_at",
+        "guides",
+        "mechanics",
+        "relationships",
+        "review",
+        "runs",
+        "set_code",
+        "set_source_id",
+        "set_source_sha256",
+    ]
+    assert "condition_map" not in profile.to_bytes().decode()
+
+    explicit_null = _enhanced_payload()
+    explicit_null["enhancement"]["condition_map"] = None  # type: ignore[index]
+    assert SetProfile.from_json(explicit_null).to_bytes() == profile.to_bytes()
+
+
+def test_enhanced_profile_reader_rejects_invalid_condition_maps() -> None:
+    unpinned = _payload_with_condition_map()
+    unpinned["enhancement"]["condition_map"] = json.loads(  # type: ignore[index]
+        json.dumps(_fixture_condition_map(source_card_id=999).to_json())
+    )
+    with pytest.raises(SetProfileSchemaError, match="pinned card sources"):
+        SetProfile.from_json(unpinned)
+
+    mismatched = _payload_with_condition_map()
+    mismatched["enhancement"]["condition_map"] = json.loads(  # type: ignore[index]
+        json.dumps(_fixture_condition_map(source_sha256="0" * 64).to_json())
+    )
+    with pytest.raises(SetProfileSchemaError, match="card source pin"):
+        SetProfile.from_json(mismatched)
+
+    unsupported = _payload_with_condition_map()
+    unsupported["enhancement"]["condition_map"]["schema_version"] = 2  # type: ignore[index]
+    with pytest.raises(SetProfileSchemaError, match="Invalid enhancement"):
+        SetProfile.from_json(unsupported)
+
+    malformed = _payload_with_condition_map()
+    malformed["enhancement"]["condition_map"] = []  # type: ignore[index]
+    with pytest.raises(SetProfileSchemaError, match="enhancement.condition_map must be an object"):
+        SetProfile.from_json(malformed)
+
+    manipulated = _payload_with_condition_map()
+    manipulated["enhancement"]["condition_map"]["capabilities"][0]["kind"] = "land_card"  # type: ignore[index]
+    with pytest.raises(SetProfileSchemaError, match="Invalid enhancement"):
+        SetProfile.from_json(manipulated)
