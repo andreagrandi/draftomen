@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 
 from draftomen.carddb import CardDatabase
 from draftomen.profile_relationship_projection import (
+    RelationshipConversion,
     compile_confirmed_relationship_projections,
 )
 from draftomen.semantic_enrichment import (
@@ -54,6 +56,26 @@ class ProfileEnhancementError(ValueError):
     """Raised when an enrichment artifact cannot be compiled into a profile."""
 
 
+@dataclass(frozen=True, slots=True)
+class CompiledProfileEnhancement:
+    """One compiled enhancement block with its per-finding relationship conversions."""
+
+    enhancement: SetProfileEnhancement
+    conversions: tuple[RelationshipConversion, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enhancement, SetProfileEnhancement):
+            raise ProfileEnhancementError(
+                "enhancement must be a SetProfileEnhancement record."
+            )
+        if not isinstance(self.conversions, tuple) or any(
+            type(item) is not RelationshipConversion for item in self.conversions
+        ):
+            raise ProfileEnhancementError(
+                "conversions must be a tuple of RelationshipConversion records."
+            )
+
+
 _LOCAL_IDENTITY_PREFIXES = ("/", "\\", "~", "./", ".\\", "../", "..\\")
 _LOCAL_IDENTITY_DRIVE = re.compile(r"[A-Za-z]:[\\/]")
 
@@ -71,7 +93,7 @@ def compile_profile_enhancement(
     artifact: SemanticEnrichmentArtifact,
     set_code: str,
     card_database: CardDatabase,
-) -> SetProfileEnhancement:
+) -> CompiledProfileEnhancement:
     """Compile one confirmed artifact against the generation inputs.
 
     The source artifact stays authoritative: its digest, review, provenance, and
@@ -79,7 +101,8 @@ def compile_profile_enhancement(
     compiled surface: eligible relationships gain a deterministic typed
     projection derived only from the retained capability facts of this artifact
     and the pinned card database, while every other relationship is returned
-    exactly as reviewed.
+    exactly as reviewed. The returned block also carries one conversion per
+    stored relationship, in stored order, naming the gate that decided it.
     """
 
     if not isinstance(artifact, SemanticEnrichmentArtifact):
@@ -111,13 +134,13 @@ def compile_profile_enhancement(
         for claim in artifact.guide_claims
         if claim.category == "mechanic" and claim.review.status is FindingStatus.ACCEPTED
     )
-    relationships = compile_confirmed_relationship_projections(
+    compilation = compile_confirmed_relationship_projections(
         artifact=artifact,
         card_database=card_database,
     )
-    if not mechanics and not relationships:
+    if not mechanics and not compilation.relationships:
         raise ProfileEnhancementError(NO_FINDINGS_ERROR)
-    referenced_runs = {item.run_id for item in (*mechanics, *relationships)}
+    referenced_runs = {item.run_id for item in (*mechanics, *compilation.relationships)}
     runs = tuple(run for run in artifact.runs if run.run_id in referenced_runs)
     published_identities = (
         *(pin.guide_id for pin in artifact.guides),
@@ -138,7 +161,7 @@ def compile_profile_enhancement(
         sum(1 for item in typed if item.review.status is FindingStatus.ACCEPTED) / len(typed)
     )
     try:
-        return SetProfileEnhancement(
+        enhancement = SetProfileEnhancement(
             artifact_schema_version=artifact.schema_version,
             artifact_sha256=hashlib.sha256(artifact.to_bytes()).hexdigest(),
             set_code=artifact.set_code,
@@ -150,12 +173,21 @@ def compile_profile_enhancement(
             guides=artifact.guides,
             runs=runs,
             mechanics=mechanics,
-            relationships=relationships,
+            relationships=compilation.relationships,
             review=artifact.review,
             confidence=confidence,
         )
     except SetProfileSchemaError as error:
         raise ProfileEnhancementError(COMPILE_ERROR) from error
+    return CompiledProfileEnhancement(
+        enhancement=enhancement,
+        conversions=compilation.conversions,
+    )
 
 
-__all__ = ["ProfileEnhancementError", "compile_profile_enhancement", "published_identity_is_safe"]
+__all__ = [
+    "CompiledProfileEnhancement",
+    "ProfileEnhancementError",
+    "compile_profile_enhancement",
+    "published_identity_is_safe",
+]

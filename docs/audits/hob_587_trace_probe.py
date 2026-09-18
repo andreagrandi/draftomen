@@ -15,7 +15,7 @@ Stages are independent.  A stage that cannot run reports "blocked" with its
 exception; a stage that reports byte-level facts without the runtime object
 reports "partial".  Exit code 0 whenever the structured report was written.
 
-Load path notes (probe revision 3):
+Load path notes (probe revision 4; unchanged since revision 3):
   * The artifact is loaded with the frozen guide from `sources/guide.json`, the
     same coverage the production validator requires
     (draftomen/semantic_enrichment.py:332-341).  Revision 1 passed `guides=()`
@@ -33,10 +33,13 @@ Load path notes (probe revision 3):
     them.
 
 This is the checked-in copy of the executed revision 3 (the executed copy lived
-at /tmp/hob_587_trace_probe.py, sha256 79bb6834...).  The only differences are
-the default paths: REPO_ROOT is derived from this file's location and RUN_DIR
-from the home directory, while DRAFTOMEN_REPO, HOB587_RUN_DIR and
-HOB587_INSTALLED_PROFILE still override them."""
+at /tmp/hob_587_trace_probe.py, sha256 79bb6834...), revised to 4 for issue
+#589: the generated-representation classifier now runs the production
+zone-supply gate itself and reports the compiler's own per-relationship
+conversion outcomes, so the revision-3 probe hashes no longer describe this
+file.  The default paths are unchanged from revision 3: REPO_ROOT is derived
+from this file's location and RUN_DIR from the home directory, while
+DRAFTOMEN_REPO, HOB587_RUN_DIR and HOB587_INSTALLED_PROFILE still override them."""
 
 
 from __future__ import annotations
@@ -187,7 +190,7 @@ class Report:
     def __init__(self) -> None:
         self.data: dict[str, object] = {
             "probe": "hob-587-trace",
-            "probe_revision": 3,
+            "probe_revision": 4,
             "schema_version": 1,
             "run_dir": str(RUN_DIR),
             "context": {},
@@ -342,11 +345,12 @@ def load_enhancement(context: Context) -> None:
 
     if context.artifact is not None:
         try:
-            context.enhancement = compile_profile_enhancement(
+            compiled_enhancement = compile_profile_enhancement(
                 artifact=context.artifact,
                 set_code="hob",
                 card_database=context.require("card_database"),
             )
+            context.enhancement = compiled_enhancement.enhancement
             context.enhancement_origin = "artifact_compile"
             return
         except BaseException as error:  # noqa: BLE001 - fallback is recorded
@@ -463,73 +467,52 @@ def stage_saved_evidence(context: Context) -> dict[str, object]:
 
 
 def classify_relationship(relationship, facts, pins, cards) -> str:
-    """Mirror the real compile decision order and name the first failing gate.
+    """Cross-check one stored row against the production conversion path.
 
-    Reads current module internals on purpose: the probe fails loudly instead of
-    silently mislabeling if those names move.
+    The probe resolves the stored pair through the production helpers and runs
+    the production zone-supply gate itself after the card gates; a row the gate
+    rejects reports the production `contradiction` outcome, and every surviving
+    row is delegated to the module's own per-row conversion, whose outcome the
+    label is.  No gate string is restated here, so a moved gate fails loudly
+    against the compiler's own conversions instead of drifting from the probe.
     """
     from draftomen.profile_relationship_projection import (
         _ROLE_LINKS,
-        _compile_participant,
+        _compile_relationship,
         _local_pair,
-        _projected_relationship,
-        _validate_projection,
+        _zone_supply_contradiction,
+        RelationshipConversionOutcome,
     )
-    from draftomen.semantic_relationship_records import RelationshipPrerequisiteProjection
 
     pair = _local_pair(relationship)
-    if pair is None:
-        return "finding_id_not_a_local_pair"
-    link = _ROLE_LINKS.get(pair.mechanism)
-    if link is None:
-        return "mechanism_has_no_role_link"
-    source = facts.get((pair.source_card_id, pair.source_capability_id))
-    if source is None:
-        return "source_capability_fact_unusable"
-    target = facts.get((pair.target_card_id, pair.target_capability_id))
-    if target is None:
-        return "target_capability_fact_unusable"
-    if source.role is not link.enabler:
-        return "source_role_mismatch"
-    if target.role is not link.payoff:
-        return "target_role_mismatch"
-    source_card = cards.get(source.card_id)
-    target_card = cards.get(target.card_id)
-    if source_card is None or target_card is None:
-        return "participant_card_missing"
-    if source_card.unknown or target_card.unknown:
-        return "participant_card_unknown"
-    source_participant = _compile_participant(capability=source, other=target, card=source_card)
-    if source_participant is None:
-        return "source_clause_unbound"
-    target_participant = _compile_participant(capability=target, other=source, card=target_card)
-    if target_participant is None:
-        return "target_clause_unbound"
-    try:
-        projection = RelationshipPrerequisiteProjection(
-            source=source_participant,
-            target=target_participant,
-        )
-        _validate_projection(
-            projection=projection,
-            source=source,
-            target=target,
-            source_card=source_card,
-            target_card=target_card,
-        )
-    except Exception as error:  # noqa: BLE001 - classification only
-        return f"projection_validation_rejected:{type(error).__name__}"
-    try:
-        _projected_relationship(
-            relationship=relationship, projection=projection, pins=pins, cards=cards
-        )
-    except Exception as error:  # noqa: BLE001 - classification only
-        return f"post_projection_validation_rejected:{type(error).__name__}"
-    return "projected"
+    link = None if pair is None else _ROLE_LINKS.get(pair.mechanism)
+    if pair is not None and link is not None:
+        source = facts.get((pair.source_card_id, pair.source_capability_id))
+        target = facts.get((pair.target_card_id, pair.target_capability_id))
+        if source is not None and target is not None:
+            source_card = cards.get(source.card_id)
+            target_card = cards.get(target.card_id)
+            if (
+                source.role is link.enabler
+                and target.role is link.payoff
+                and source_card is not None
+                and target_card is not None
+                and not source_card.unknown
+                and not target_card.unknown
+                and pins.get(source.card_id) is not None
+                and pins.get(target.card_id) is not None
+                and _zone_supply_contradiction(source=source, target=target, facts=facts)
+            ):
+                return RelationshipConversionOutcome.CONTRADICTION.value
+    compiled = _compile_relationship(
+        relationship=relationship, facts=facts, pins=pins, cards=cards
+    )
+    return compiled.outcome.value
 
 
 def stage_generated_representation(context: Context) -> dict[str, object]:
     from draftomen.profile_relationship_projection import (
+        RelationshipConversionOutcome,
         _capability_facts,
         compile_confirmed_relationship_projections,
     )
@@ -569,6 +552,10 @@ def stage_generated_representation(context: Context) -> dict[str, object]:
         facts = _capability_facts(context.artifact)
         pins = {pin.card_id: pin for pin in context.artifact.cards}
         cards = card_database.cards
+        projected_outcomes = {
+            RelationshipConversionOutcome.DECODED.value,
+            RelationshipConversionOutcome.QUALIFIED.value,
+        }
         reasons: dict[str, int] = {}
         per_mechanism: dict[str, dict[str, int]] = {}
         for relationship in context.artifact.relationships:
@@ -578,21 +565,32 @@ def stage_generated_representation(context: Context) -> dict[str, object]:
                 relationship.mechanism, {"total": 0, "projected": 0}
             )
             entry["total"] += 1
-            if reason == "projected":
+            if reason in projected_outcomes:
                 entry["projected"] += 1
+        compiler_outcomes: dict[str, int] = {}
+        compiler_reasons: dict[str, int] = {}
+        for conversion in compiled.conversions:
+            label = conversion.outcome.value
+            compiler_outcomes[label] = compiler_outcomes.get(label, 0) + 1
+            compiler_reasons[conversion.reason] = compiler_reasons.get(conversion.reason, 0) + 1
         compiled_projected = sum(
-            1 for relationship in compiled if relationship.prerequisite_projection is not None
+            1
+            for relationship in compiled.relationships
+            if relationship.prerequisite_projection is not None
         )
         value["compile_recomputed"] = {
-            "relationships": len(compiled),
+            "relationships": len(compiled.relationships),
             "projected_relationships": compiled_projected,
+            "outcomes": compiler_outcomes,
+            "reasons": compiler_reasons,
         }
         value["failure_reasons"] = dict(sorted(reasons.items(), key=lambda item: -item[1]))
         value["per_mechanism"] = dict(
             sorted(per_mechanism.items(), key=lambda item: -item[1]["total"])
         )
         value["classifier_matches_compiler"] = (
-            reasons.get("projected", 0) == compiled_projected
+            reasons == compiler_outcomes
+            and sum(reasons.get(label, 0) for label in projected_outcomes) == compiled_projected
             and compiled_projected == len(projected)
         )
     else:

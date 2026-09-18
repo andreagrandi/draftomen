@@ -14,17 +14,23 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.profile_relationship_projection import compile_confirmed_relationship_projections
+from draftomen.profile_relationship_projection import (
+    RelationshipConversion,
+    RelationshipConversionOutcome,
+    RelationshipProjectionCompilation,
+    compile_confirmed_relationship_projections,
+)
 from draftomen.semantic_enrichment import EnrichmentSources, SemanticEnrichmentArtifact
-from draftomen.semantic_enrichment_records import OracleFact
+from draftomen.semantic_enrichment_records import OracleEvidence, OracleFact
 from draftomen.semantic_relationship_records import (
     CardRelationship,
+    PrerequisiteProjectionError,
+    RelationshipQualification,
     validate_relationship_pins,
     validate_relationship_sources,
 )
@@ -64,6 +70,18 @@ _THRESHOLD_CAPABILITY = "103422-0-threshold-graveyard-payoff"
 _ARMY_CAPABILITY = "990003-fixture-army-maker"
 _LOCAL_RUN = "local-c7a4f08030a1bfb7"
 _SOURCE_RUN = "work-50c6eb907e6820331f23105b216a8fad1807a8c3e308f147b386801762c09a07"
+# The real threshold line, cited with retained kinds and spans no typed clause can bind: the
+# statement itself is never rewritten, only the retained kind and the cited span change.
+_THRESHOLD_STATEMENT = (
+    "This creature gets +1/+1 as long as there are seven or more cards in your graveyard."
+)
+_THRESHOLD_COUNT = "seven or more cards in your graveyard."
+_UNTYPABLE_PREREQUISITES = (
+    ("trigger", _THRESHOLD_STATEMENT, "timing"),
+    ("cost", _THRESHOLD_STATEMENT, "cost"),
+    ("condition", _THRESHOLD_COUNT, "condition"),
+    ("threshold", _THRESHOLD_COUNT, "quantity"),
+)
 
 
 def _cards() -> tuple[CardInfo, ...]:
@@ -81,7 +99,7 @@ def _confirmation() -> SemanticEnrichmentArtifact:
     return SemanticEnrichmentArtifact.from_json(_FIXTURE["artifact"], sources=_sources())
 
 
-def _compile(artifact: SemanticEnrichmentArtifact) -> tuple[CardRelationship, ...]:
+def _compile(artifact: SemanticEnrichmentArtifact) -> RelationshipProjectionCompilation:
     """Compile one artifact's confirmed projections against its own pinned cards."""
     return compile_confirmed_relationship_projections(
         artifact=artifact,
@@ -89,9 +107,19 @@ def _compile(artifact: SemanticEnrichmentArtifact) -> tuple[CardRelationship, ..
     )
 
 
-def _row(rows: Sequence[CardRelationship], suffix: str) -> CardRelationship:
-    """Return the one stored row whose finding id ends with a local subject."""
-    return next(row for row in rows if row.finding_id.endswith(suffix))
+def _row(compilation: RelationshipProjectionCompilation, suffix: str) -> CardRelationship:
+    """Return the one compiled row whose finding id ends with a local subject."""
+    return next(row for row in compilation.relationships if row.finding_id.endswith(suffix))
+
+
+def _stored(artifact: SemanticEnrichmentArtifact, suffix: str) -> CardRelationship:
+    """Return the one stored relationship whose finding id ends with a local subject."""
+    return next(row for row in artifact.confirmed_relationships if row.finding_id.endswith(suffix))
+
+
+def _conversion(compilation: RelationshipProjectionCompilation, suffix: str) -> RelationshipConversion:
+    """Return the one stored-order conversion whose finding id ends with a local subject."""
+    return next(item for item in compilation.conversions if item.finding_id.endswith(suffix))
 
 
 def _with_facts(
@@ -100,6 +128,33 @@ def _with_facts(
 ) -> SemanticEnrichmentArtifact:
     """Rebuild the confirmation around a different stored fact set."""
     return dataclasses.replace(artifact, oracle_facts=facts, sources=_sources())
+
+
+def _with_prerequisite(
+    artifact: SemanticEnrichmentArtifact,
+    capability: str,
+    *,
+    kind: str,
+    quote: str,
+) -> SemanticEnrichmentArtifact:
+    """Rebuild the confirmation with a different retained kind and span for one prerequisite."""
+    facts: list[OracleFact] = []
+    for fact in artifact.oracle_facts:
+        if fact.finding_id.endswith(f":{capability}"):
+            claim = json.loads(fact.claim)
+            claim["prerequisites"][0]["kind"] = kind
+            claim["prerequisites"][0]["evidence"]["quote"] = quote
+            fact = dataclasses.replace(
+                fact,
+                claim=json.dumps(claim, separators=(",", ":"), sort_keys=True),
+            )
+        facts.append(fact)
+    return _with_facts(artifact, tuple(facts))
+
+
+def _without_card(card_id: int) -> CardDatabase:
+    """Return the pinned card database without the card one participant needs."""
+    return CardDatabase(cards={card.grp_id: card for card in _cards() if card.grp_id != card_id})
 
 
 def _with_relationships(
@@ -137,7 +192,7 @@ def _with_subtype(
 def test_safe_mill_pair_gains_a_source_bound_projection() -> None:
     """A confirmed self-mill/counted-state pair gains exact typed clauses under the gates."""
     artifact = _confirmation()
-    stored = _row(artifact.confirmed_relationships, _MILL)
+    stored = _stored(artifact, _MILL)
     relationship = _row(_compile(artifact), _MILL)
     projection = relationship.prerequisite_projection
     assert stored.prerequisite_projection is None
@@ -210,13 +265,58 @@ def test_safe_mill_pair_gains_a_source_bound_projection() -> None:
     )
 
 
-def test_trailing_condition_inside_the_action_never_yields_a_projection() -> None:
-    """A mill instruction that states its own "if ..." condition states no clean effect."""
+@pytest.mark.parametrize(("kind", "quote", "qualification_kind"), _UNTYPABLE_PREREQUISITES)
+def test_untypable_prerequisite_kinds_project_as_retained_qualifications(
+    kind: str,
+    quote: str,
+    qualification_kind: str,
+) -> None:
+    """A prerequisite no typed clause can bind keeps its exact statement under its own kind."""
     artifact = _confirmation()
-    stored = _row(artifact.confirmed_relationships, _TRAILING_MILL)
-    relationship = _row(_compile(artifact), _TRAILING_MILL)
+    variant = _with_prerequisite(artifact, _THRESHOLD_CAPABILITY, kind=kind, quote=quote)
+    compilation = _compile(variant)
+    relationship = _row(compilation, _MILL)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    assert projection.outcome.value == "qualified"
+    assert _conversion(compilation, _MILL).outcome is RelationshipConversionOutcome.QUALIFIED
+    assert _conversion(compilation, _MILL).reason == "projected"
+    # the payoff keeps no typed clause for the retained prerequisite, only its exact statement
+    assert projection.target.prerequisites == ()
+    assert projection.target.capability_prerequisites[0].kind.value == kind
+    qualification = projection.target.qualifications[0]
+    assert qualification.kind.value == qualification_kind
+    assert qualification.selector == quote
+    assert qualification.occurrence == 0
+    assert qualification.evidence.card_id == 103422
+    assert qualification.evidence.face_index == 0
+    assert qualification.evidence.quote == (
+        "Threshold — This creature gets +1/+1 as long as there are seven or more cards in "
+        "your graveyard."
+    )
+    assert qualification.selector in qualification.evidence.quote
+    # the source keeps its own typed effect clause: only the untranslated half is retained
+    assert [clause.object_quote for clause in projection.source.prerequisites] == ["four cards"]
+    # the retained statement reaches the relationship's own evidence union and re-proves
+    assert any(item.quote == qualification.evidence.quote for item in relationship.oracle_evidence)
+    validate_relationship_sources(
+        relationship=relationship,
+        cards={card.grp_id: card for card in _cards()},
+        pins={pin.card_id: pin for pin in artifact.cards},
+    )
+
+
+def test_trailing_condition_inside_the_action_never_yields_a_projection() -> None:
+    """A mill instruction that states its own "if ..." condition binds no clean effect clause."""
+    artifact = _confirmation()
+    stored = _stored(artifact, _TRAILING_MILL)
+    compilation = _compile(artifact)
+    relationship = _row(compilation, _TRAILING_MILL)
     assert relationship is stored
     assert relationship.prerequisite_projection is None
+    conversion = _conversion(compilation, _TRAILING_MILL)
+    assert conversion.outcome is RelationshipConversionOutcome.UNSUPPORTED
+    assert conversion.reason == "source_clause_unbound"
 
 
 def test_condition_on_the_next_instruction_does_not_taint_the_first_mill() -> None:
@@ -240,11 +340,11 @@ def test_condition_on_the_next_instruction_does_not_taint_the_first_mill() -> No
 def test_partial_or_derived_token_subtype_never_yields_a_projection(subtype: str | None) -> None:
     """A retained subtype must state the whole explicit "Goblin Army" sequence, or none."""
     artifact = _confirmation()
-    stored = _row(artifact.confirmed_relationships, _ARMY_PAIR)
+    stored = _stored(artifact, _ARMY_PAIR)
     assert stored.prerequisite_projection is None
     variant = _with_subtype(artifact, _ARMY_CAPABILITY, subtype)
     relationship = _row(_compile(variant), _ARMY_PAIR)
-    assert relationship is _row(variant.confirmed_relationships, _ARMY_PAIR)
+    assert relationship is _stored(variant, _ARMY_PAIR)
     assert relationship.prerequisite_projection is None
 
 
@@ -268,7 +368,7 @@ def test_unrepresentable_amass_antecedent_leaves_the_relationship_unprojected() 
     facts = {(fact.card_id, fact.finding_id.rsplit(":", 1)[-1]) for fact in artifact.oracle_facts}
     assert (103442, "103442-amass-goblin-army-token") in facts
     assert (103381, "103381-go-wide-power") in facts
-    stored = _row(artifact.confirmed_relationships, _AMASS)
+    stored = _stored(artifact, _AMASS)
     relationship = _row(_compile(artifact), _AMASS)
     assert relationship is stored
     assert relationship.prerequisite_projection is None
@@ -296,10 +396,11 @@ def test_missing_capability_fact_never_yields_a_projection(
         ),
     )
     assert len(stripped.oracle_facts) == len(artifact.oracle_facts) - 1
-    rows = _compile(stripped)
+    compilation = _compile(stripped)
     for suffix in affected:
-        relationship = _row(rows, suffix)
-        assert relationship is _row(stripped.confirmed_relationships, suffix)
+        relationship = _row(compilation, suffix)
+        assert relationship is _stored(stripped, suffix)
+        assert _conversion(compilation, suffix).outcome is RelationshipConversionOutcome.MISSING_EVIDENCE
         assert relationship.prerequisite_projection is None
 
 
@@ -319,7 +420,7 @@ def test_conflicting_capability_facts_never_yield_a_projection() -> None:
     )
     variant = _with_facts(artifact, (*artifact.oracle_facts, conflicting))
     relationship = _row(_compile(variant), _MILL)
-    assert relationship is _row(variant.confirmed_relationships, _MILL)
+    assert relationship is _stored(variant, _MILL)
     assert relationship.prerequisite_projection is None
 
 
@@ -357,7 +458,7 @@ def test_unreadable_capability_claim_never_introduces_a_projection(claim: str) -
             for item in artifact.oracle_facts
         ),
     )
-    rows = _compile(variant)
+    rows = _compile(variant).relationships
     assert not any(row.prerequisite_projection is not None for row in rows)
     assert all(
         row is stored
@@ -368,7 +469,7 @@ def test_unreadable_capability_claim_never_introduces_a_projection(claim: str) -
 def test_model_decided_relationship_is_returned_exactly_as_stored() -> None:
     """A relationship that is not this artifact's local pair matcher keeps its stored payload."""
     artifact = _confirmation()
-    stored = _row(artifact.confirmed_relationships, _RECURSION)
+    stored = _stored(artifact, _RECURSION)
     legacy = dataclasses.replace(
         stored,
         finding_id=f"relationship:{_RECURSION}",
@@ -376,8 +477,8 @@ def test_model_decided_relationship_is_returned_exactly_as_stored() -> None:
     )
     variant = _with_relationships(artifact, (legacy,))
     rows = _compile(variant)
-    assert rows == variant.confirmed_relationships
-    assert rows[0] is variant.confirmed_relationships[0]
+    assert rows.relationships == variant.confirmed_relationships
+    assert rows.relationships[0] is variant.confirmed_relationships[0]
 
 
 def test_already_projected_relationship_is_returned_exactly_as_stored() -> None:
@@ -386,31 +487,173 @@ def test_already_projected_relationship_is_returned_exactly_as_stored() -> None:
     first = _compile(artifact)
     assert _row(first, _MILL).prerequisite_projection is not None
     # rebuilding the confirmation around the compiled rows re-validates every projection source
-    variant = _with_relationships(artifact, first)
-    rows = _compile(variant)
+    variant = _with_relationships(artifact, first.relationships)
+    compiled = _compile(variant)
     stored = {row.finding_id: row for row in variant.confirmed_relationships}
-    assert [row is stored[row.finding_id] for row in rows] == [True] * len(rows)
-    assert _row(rows, _MILL).to_json() == _row(first, _MILL).to_json()
+    assert [row is stored[row.finding_id] for row in compiled.relationships] == [True] * len(
+        compiled.relationships
+    )
+    assert _row(compiled, _MILL).to_json() == _row(first, _MILL).to_json()
 
 
 def test_compilation_preserves_the_artifact_bytes_and_stored_rows() -> None:
     """The compiler keeps stored order and leaves the confirmation it reads byte-identical."""
     artifact = _confirmation()
     before = artifact.to_bytes()
-    rows = _compile(artifact)
+    compilation = _compile(artifact)
+    rows = compilation.relationships
     assert artifact.to_bytes() == before
     assert [row.finding_id for row in rows] == [
         row.finding_id for row in artifact.confirmed_relationships
     ]
+    # the recursion pair is rejected by the zone gate, so only the two mill pairs project
     assert [row.prerequisite_projection is not None for row in rows] == [
         True,
         False,
         True,
-        True,
+        False,
         False,
         False,
     ]
-    assert _row(rows, _AMASS) is _row(artifact.confirmed_relationships, _AMASS)
+    assert _row(compilation, _AMASS) is _stored(artifact, _AMASS)
     assert all(
         "prerequisite_projection" not in stored for stored in json.loads(before)["relationships"]
     )
+
+
+def test_every_stored_relationship_receives_one_conversion_in_stored_order() -> None:
+    """The compilation accounts for each stored row once, with a closed outcome and reason."""
+    artifact = _confirmation()
+    compilation = _compile(artifact)
+    assert len(artifact.confirmed_relationships) == 6
+    assert [item.finding_id for item in compilation.conversions] == [
+        row.finding_id for row in artifact.confirmed_relationships
+    ]
+    assert [(item.outcome.value, item.reason) for item in compilation.conversions] == [
+        ("decoded", "projected"),
+        ("unsupported", "source_clause_unbound"),
+        ("decoded", "projected"),
+        ("contradiction", "zone_supply_contradiction:graveyard"),
+        ("unsupported", "target_clause_unbound"),
+        ("unsupported", "source_clause_unbound"),
+    ]
+    assert [item.mechanism for item in compilation.conversions] == [
+        row.mechanism for row in artifact.confirmed_relationships
+    ]
+    assert all(
+        item.outcome in tuple(RelationshipConversionOutcome) for item in compilation.conversions
+    )
+    # the projected rows and the stored rows stay in the same stored order
+    assert [row.finding_id for row in compilation.relationships] == [
+        item.finding_id for item in compilation.conversions
+    ]
+
+
+def test_graveyard_consumption_of_a_counted_zone_is_rejected() -> None:
+    """An enabler that removes a counted zone cannot supply the payoff's own count."""
+    artifact = _confirmation()
+    compilation = _compile(artifact)
+    stored = _stored(artifact, _RECURSION)
+    rejected = _row(compilation, _RECURSION)
+    assert rejected is stored
+    assert rejected.prerequisite_projection is None
+    conversion = _conversion(compilation, _RECURSION)
+    assert conversion.outcome is RelationshipConversionOutcome.CONTRADICTION
+    assert conversion.reason == "zone_supply_contradiction:graveyard"
+    # the mill pairs read the same counted zone but move cards into it, so they keep projecting
+    for suffix in (_MILL, _NEXT_ACTION_MILL):
+        assert _row(compilation, suffix).prerequisite_projection is not None
+        assert _conversion(compilation, suffix).outcome is RelationshipConversionOutcome.DECODED
+
+
+def test_missing_evidence_reports_the_unusable_fact_or_the_unpinned_card() -> None:
+    """A pair without a usable fact or a resolvable pinned card reports missing evidence."""
+    artifact = _confirmation()
+    stripped = _with_facts(
+        artifact,
+        tuple(
+            fact
+            for fact in artifact.oracle_facts
+            if not fact.finding_id.endswith(f":{_MILL_CAPABILITY}")
+        ),
+    )
+    compilation = _compile(stripped)
+    conversion = _conversion(compilation, _MILL)
+    assert conversion.outcome is RelationshipConversionOutcome.MISSING_EVIDENCE
+    assert conversion.reason == "source_capability_fact_unusable"
+    # an artifact pins every source card it stores, so the unpinned variant drops the card from
+    # the pinned card database the compiler resolves participants against
+    unpinned = compile_confirmed_relationship_projections(
+        artifact=artifact,
+        card_database=_without_card(103546),
+    )
+    conversion = _conversion(unpinned, _MILL)
+    assert conversion.outcome is RelationshipConversionOutcome.MISSING_EVIDENCE
+    assert conversion.reason == "participant_card_unpinned"
+    unpinned_target = compile_confirmed_relationship_projections(
+        artifact=artifact,
+        card_database=_without_card(103422),
+    )
+    assert _conversion(unpinned_target, _MILL).outcome is RelationshipConversionOutcome.MISSING_EVIDENCE
+    assert _conversion(unpinned_target, _MILL).reason == "participant_card_unpinned"
+
+
+def test_two_compilations_produce_identical_rows_and_conversions() -> None:
+    """Identical pinned inputs produce byte-identical rows, conversions and JSON."""
+    first = _compile(_confirmation())
+    second = _compile(_confirmation())
+    assert [row.to_json() for row in first.relationships] == [
+        row.to_json() for row in second.relationships
+    ]
+    assert [item.to_json() for item in first.conversions] == [
+        item.to_json() for item in second.conversions
+    ]
+    assert json.dumps([item.to_json() for item in first.conversions], sort_keys=True) == json.dumps(
+        [item.to_json() for item in second.conversions], sort_keys=True
+    )
+
+
+def test_qualification_quoting_another_card_fails_source_validation() -> None:
+    """A retained qualification that quotes another card's line cannot re-prove its source."""
+    artifact = _confirmation()
+    variant = _with_prerequisite(
+        artifact,
+        _THRESHOLD_CAPABILITY,
+        kind="trigger",
+        quote=_THRESHOLD_STATEMENT,
+    )
+    relationship = _row(_compile(variant), _MILL)
+    projection = relationship.prerequisite_projection
+    assert projection is not None
+    cards = {card.grp_id: card for card in _cards()}
+    pins = {pin.card_id: pin for pin in artifact.cards}
+    validate_relationship_sources(relationship=relationship, cards=cards, pins=pins)
+    qualification = projection.target.qualifications[0]
+    other_line = next(
+        line
+        for line in (cards[990010].oracle_text or "").split("\n")
+        if "seven or more creatures you control" in line
+    )
+    tampered = RelationshipQualification(
+        kind=qualification.kind,
+        evidence=OracleEvidence(
+            card_id=qualification.evidence.card_id,
+            face_index=qualification.evidence.face_index,
+            quote=other_line,
+        ),
+        selector="seven or more creatures you control",
+        occurrence=0,
+    )
+    forged = dataclasses.replace(
+        relationship,
+        oracle_evidence=(
+            *relationship.oracle_evidence,
+            tampered.evidence,
+        ),
+        prerequisite_projection=dataclasses.replace(
+            projection,
+            target=dataclasses.replace(projection.target, qualifications=(tampered,)),
+        ),
+    )
+    with pytest.raises(PrerequisiteProjectionError):
+        validate_relationship_sources(relationship=forged, cards=cards, pins=pins)

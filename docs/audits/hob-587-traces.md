@@ -2,7 +2,7 @@
 
 Scope: AC5 (trace from saved evidence through generated representation, pool support and rendered advice for representative failures) and AC6 (original artifact, source and response digests, no provider calls, no changes to paid inputs).
 
-Owner: TraceAudit. Evidence files: `docs/audits/hob-587-run-fingerprint.json`, `docs/audits/hob-587-trace-cases.json`, `docs/audits/hob-587-run-manifest.sha256`, `docs/audits/hob-587-trace-out.json` (durable copy of the final run, sha256 `74244c03...`), `docs/audits/hob-587-trace-out-r2.json` (earlier successful run, sha256 `61bc5f54...`). Probe: `docs/audits/hob_587_trace_probe.py`, the checked-in revision 3, sha256 `24ac41a8...`; it is content-identical to the executed copy at `/tmp/hob_587_trace_probe.py` (sha256 `79bb6834...`) except for the portable default paths noted under Reproduction.
+Owner: TraceAudit. Evidence files: `docs/audits/hob-587-run-fingerprint.json`, `docs/audits/hob-587-trace-cases.json`, `docs/audits/hob-587-run-manifest.sha256`, `docs/audits/hob-587-trace-out.json` (durable copy of the final run, sha256 `74244c03...`), `docs/audits/hob-587-trace-out-r2.json` (earlier successful run, sha256 `61bc5f54...`). Probe: `docs/audits/hob_587_trace_probe.py` — the capture used the checked-in revision 3, sha256 `24ac41a8...`, content-identical to the executed copy at `/tmp/hob_587_trace_probe.py` (sha256 `79bb6834...`) except for the portable default paths noted under Reproduction; the current checkout carries revision 4 for #589 (see the Reproduction note).
 
 Status: the final run observed all four stages with zero blockers, `enhancement_origin: artifact_compile`, zero network-denial blocks and unchanged fingerprints. The rendered evidence is a component-level offscreen render of `CardPreview.qml` fed the published `Recommendation` payload; the full application window, live session and user journey were not launched, so nothing here speaks to them. No production code was changed.
 
@@ -80,8 +80,10 @@ That teardown message is the warning seen earlier, now attributed: it fires afte
 
 ## Reproduction
 
+Note: #589 changed the projection gates after this capture with qualified prerequisite emission, zone-supply rejection, and per-finding conversion outcomes, so a rerun of the checked-in revision-4 probe classifies more rows as projected/qualified and no longer reproduces the committed `failure_reasons`, projected counts, or the revision-3 probe sha256.
+
 ```
-shasum -a 256 docs/audits/hob_587_trace_probe.py   # expect 24ac41a8f553af0df2724226227e1f6c2965556d61855ae9cb7d4d536fd8adbc
+shasum -a 256 docs/audits/hob_587_trace_probe.py   # expect 829a85df505890582b689d0e3a546acb384c94d142078ae4618365b8d95a145c (revision 4; the capture above used revision 3, 24ac41a8...)
 cd /Users/andrea/Projects/draftomen
 QT_QPA_PLATFORM=offscreen uv run --no-sync python docs/audits/hob_587_trace_probe.py --out /tmp/hob-587-trace-out.json
 jq '.stage_status, .context.enhancement_origin, .blockers, .qt_messages_by_phase' /tmp/hob-587-trace-out.json
@@ -91,7 +93,7 @@ jq '.stages.rendered_advice.qml_rendered_texts, .stages.rendered_advice.qml_rend
 jq '.run_tree_unchanged, .run_tree_matches_manifest, .network_denial.blocked_attempts' /tmp/hob-587-trace-out.json
 ```
 
-The checked-in utility is the executed revision 3 with two portable default expressions (`REPO_ROOT` derived from the utility's own checked-in location, `RUN_DIR` under the home directory; the `DRAFTOMEN_REPO` and `HOB587_RUN_DIR` overrides are unchanged) plus the docstring run path; its diff against the executed `/tmp` copy is those lines only. A rerun from the checkout should therefore reproduce the committed final output, except for the timing-dependent Qt font-alias message and the phase list it appears in, so compare with those keys dropped:
+The capture ran the executed revision 3 with two portable default expressions (`REPO_ROOT` derived from the utility's own checked-in location, `RUN_DIR` under the home directory; the `DRAFTOMEN_REPO` and `HOB587_RUN_DIR` overrides are unchanged) plus the docstring run path; its diff against the executed `/tmp` copy is those lines only. The checkout now carries revision 4 for #589, so a rerun from the checkout no longer reproduces the committed final output beyond the timing-dependent Qt font-alias message and the phase list it appears in — compare with those keys dropped only to confirm determinism of the new gates, not to reproduce this capture:
 
 ```
 diff <(jq 'del(.qt_messages_by_phase, .qt_phases_seen)' /tmp/hob-587-trace-out.json) \

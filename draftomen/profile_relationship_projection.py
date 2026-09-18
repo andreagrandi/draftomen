@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from draftomen.carddb import CardDatabase, CardInfo
@@ -17,6 +18,7 @@ from draftomen.semantic_capability_records import (
     CardCapability,
     PrerequisiteKind,
     QuantityRelation,
+    _enum_member,
 )
 from draftomen.semantic_enrichment import (
     SemanticEnrichmentArtifact,
@@ -29,13 +31,17 @@ from draftomen.semantic_enrichment_records import (
     OracleEvidence,
     OracleFact,
     SemanticEnrichmentError,
+    _exact_text,
 )
 from draftomen.semantic_relationship_records import (
     CardRelationship,
     PrerequisiteProjectionError,
+    QualificationKind,
+    QualificationOutcome,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
+    RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
     _CARD_TYPE_WORDS,
@@ -67,7 +73,12 @@ from draftomen.set_enrichment_extraction import (
     _relationship_participant,
 )
 
-__all__ = ["compile_confirmed_relationship_projections"]
+__all__ = [
+    "RelationshipConversion",
+    "RelationshipConversionOutcome",
+    "RelationshipProjectionCompilation",
+    "compile_confirmed_relationship_projections",
+]
 
 _LOCAL_RUN_PREFIX = "local-"
 _LOCAL_SEED_LENGTH = 16
@@ -198,6 +209,82 @@ _COPULA_SIGNALS = frozenset({"there are", "there is"})
 _COUNTED_STATE_PATTERN = re.compile(r"\bthere (?:are|is)\b", re.IGNORECASE)
 _FACT_CLAIM_KEYS = frozenset({"card_id", "evidence", "finding_id", "review", "run_id"})
 _ROLE_LINKS = {link.mechanism: link for link in ROLE_COMPATIBILITY_RULES}
+# A retained prerequisite keeps its own statement, so its closed kind decides the closed
+# qualification kind; the mapping carries no semantic verdict beyond that statement.
+_QUALIFICATION_KINDS: Mapping[PrerequisiteKind, QualificationKind] = {
+    PrerequisiteKind.COST: QualificationKind.COST,
+    PrerequisiteKind.TRIGGER: QualificationKind.TIMING,
+    PrerequisiteKind.CONDITION: QualificationKind.CONDITION,
+    PrerequisiteKind.THRESHOLD: QualificationKind.QUANTITY,
+}
+
+
+class RelationshipConversionOutcome(StrEnum):
+    """Closed outcome of one stored relationship's offline projection attempt."""
+
+    DECODED = "decoded"
+    QUALIFIED = "qualified"
+    CONTRADICTION = "contradiction"
+    MISSING_EVIDENCE = "missing_evidence"
+    UNSUPPORTED = "unsupported"
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipConversion:
+    """One stored relationship's deterministic outcome with the gate that decided it."""
+
+    finding_id: str
+    mechanism: str
+    outcome: RelationshipConversionOutcome
+    reason: str
+
+    def __post_init__(self) -> None:
+        _exact_text(self.finding_id, "finding_id")
+        _exact_text(self.mechanism, "mechanism")
+        _enum_member(self.outcome, "outcome", RelationshipConversionOutcome)
+        _exact_text(self.reason, "reason")
+
+    def to_json(self) -> dict[str, object]:
+        """Return a fresh JSON-compatible conversion object."""
+        return {
+            "finding_id": self.finding_id,
+            "mechanism": self.mechanism,
+            "outcome": self.outcome.value,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipProjectionCompilation:
+    """One artifact's compiled relationship rows and their per-finding conversions."""
+
+    relationships: tuple[CardRelationship, ...]
+    conversions: tuple[RelationshipConversion, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.relationships, tuple) or any(
+            type(item) is not CardRelationship for item in self.relationships
+        ):
+            raise SemanticEnrichmentError("relationships must be a tuple of CardRelationship records.")
+        if not isinstance(self.conversions, tuple) or any(
+            type(item) is not RelationshipConversion for item in self.conversions
+        ):
+            raise SemanticEnrichmentError("conversions must be a tuple of RelationshipConversion records.")
+        if tuple(row.finding_id for row in self.relationships) != tuple(
+            item.finding_id for item in self.conversions
+        ):
+            raise SemanticEnrichmentError(
+                "conversions must account for every stored relationship in stored order."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class _CompiledRelationship:
+    """One stored relationship row together with the gate that decided its conversion."""
+
+    relationship: CardRelationship
+    outcome: RelationshipConversionOutcome
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,27 +311,36 @@ def compile_confirmed_relationship_projections(
     *,
     artifact: SemanticEnrichmentArtifact,
     card_database: CardDatabase,
-) -> tuple[CardRelationship, ...]:
-    """Compile eligible projections while preserving confirmed rows and source identity."""
+) -> RelationshipProjectionCompilation:
+    """Compile eligible projections with one deterministic conversion per stored relationship."""
     if not isinstance(artifact, SemanticEnrichmentArtifact):
         raise SemanticEnrichmentError("artifact must be a SemanticEnrichmentArtifact record.")
     if not isinstance(card_database, CardDatabase):
         raise SemanticEnrichmentError("card_database must be a CardDatabase record.")
     facts = _capability_facts(artifact)
     pins = {pin.card_id: pin for pin in artifact.cards}
-    projected: list[CardRelationship] = []
+    relationships: list[CardRelationship] = []
+    conversions: list[RelationshipConversion] = []
     for relationship in artifact.confirmed_relationships:
-        if relationship.prerequisite_projection is not None:
-            projected.append(relationship)
-            continue
         compiled = _compile_relationship(
             relationship=relationship,
             facts=facts,
             pins=pins,
             cards=card_database.cards,
         )
-        projected.append(relationship if compiled is None else compiled)
-    return tuple(projected)
+        relationships.append(compiled.relationship)
+        conversions.append(
+            RelationshipConversion(
+                finding_id=relationship.finding_id,
+                mechanism=relationship.mechanism,
+                outcome=compiled.outcome,
+                reason=compiled.reason,
+            )
+        )
+    return RelationshipProjectionCompilation(
+        relationships=tuple(relationships),
+        conversions=tuple(conversions),
+    )
 
 
 def _capability_facts(artifact: SemanticEnrichmentArtifact) -> Mapping[tuple[int, str], CardCapability]:
@@ -341,30 +437,81 @@ def _compile_relationship(
     facts: Mapping[tuple[int, str], CardCapability],
     pins: Mapping[int, CardSourcePin],
     cards: Mapping[int, CardInfo],
-) -> CardRelationship | None:
-    """Compile, fully validate and return one projected relationship, or None when it is ineligible."""
+) -> _CompiledRelationship:
+    """Compile one projection or name the first gate that decided the stored row's conversion."""
+    if relationship.prerequisite_projection is not None:
+        outcome = (
+            RelationshipConversionOutcome.QUALIFIED
+            if relationship.prerequisite_projection.outcome is QualificationOutcome.QUALIFIED
+            else RelationshipConversionOutcome.DECODED
+        )
+        return _CompiledRelationship(relationship=relationship, outcome=outcome, reason="projected")
     pair = _local_pair(relationship)
     if pair is None:
-        return None
+        return _unconverted(relationship, RelationshipConversionOutcome.UNSUPPORTED, "not_a_local_pair")
     link = _ROLE_LINKS.get(pair.mechanism)
     if link is None:
-        return None
+        return _unconverted(
+            relationship, RelationshipConversionOutcome.UNSUPPORTED, "mechanism_unlinked"
+        )
     source = facts.get((pair.source_card_id, pair.source_capability_id))
+    if source is None:
+        return _unconverted(
+            relationship,
+            RelationshipConversionOutcome.MISSING_EVIDENCE,
+            "source_capability_fact_unusable",
+        )
     target = facts.get((pair.target_card_id, pair.target_capability_id))
-    if source is None or target is None:
-        return None
-    if source.role is not link.enabler or target.role is not link.payoff:
-        return None
+    if target is None:
+        return _unconverted(
+            relationship,
+            RelationshipConversionOutcome.MISSING_EVIDENCE,
+            "target_capability_fact_unusable",
+        )
+    if source.role is not link.enabler:
+        return _unconverted(
+            relationship,
+            RelationshipConversionOutcome.MISSING_EVIDENCE,
+            "source_capability_fact_unusable",
+        )
+    if target.role is not link.payoff:
+        return _unconverted(
+            relationship,
+            RelationshipConversionOutcome.MISSING_EVIDENCE,
+            "target_capability_fact_unusable",
+        )
     source_card = cards.get(source.card_id)
     target_card = cards.get(target.card_id)
-    if source_card is None or target_card is None or source_card.unknown or target_card.unknown:
-        return None
+    if (
+        source_card is None
+        or target_card is None
+        or source_card.unknown
+        or target_card.unknown
+        or pins.get(source.card_id) is None
+        or pins.get(target.card_id) is None
+    ):
+        return _unconverted(
+            relationship,
+            RelationshipConversionOutcome.MISSING_EVIDENCE,
+            "participant_card_unpinned",
+        )
+    contradicted = _zone_supply_contradiction(source=source, target=target, facts=facts)
+    if contradicted:
+        return _unconverted(
+            relationship,
+            RelationshipConversionOutcome.CONTRADICTION,
+            "zone_supply_contradiction:" + ",".join(zone.value for zone in contradicted),
+        )
     source_participant = _compile_participant(capability=source, other=target, card=source_card)
     if source_participant is None:
-        return None
+        return _unconverted(
+            relationship, RelationshipConversionOutcome.UNSUPPORTED, "source_clause_unbound"
+        )
     target_participant = _compile_participant(capability=target, other=source, card=target_card)
     if target_participant is None:
-        return None
+        return _unconverted(
+            relationship, RelationshipConversionOutcome.UNSUPPORTED, "target_clause_unbound"
+        )
     try:
         projection = RelationshipPrerequisiteProjection(
             source=source_participant,
@@ -377,9 +524,87 @@ def _compile_relationship(
             source_card=source_card,
             target_card=target_card,
         )
-        return _projected_relationship(relationship=relationship, projection=projection, pins=pins, cards=cards)
-    except (SemanticEnrichmentError, PrerequisiteProjectionError):
-        return None
+        projected = _projected_relationship(
+            relationship=relationship, projection=projection, pins=pins, cards=cards
+        )
+    except (SemanticEnrichmentError, PrerequisiteProjectionError) as error:
+        return _unconverted(
+            relationship,
+            RelationshipConversionOutcome.UNSUPPORTED,
+            f"publish_validation_rejected:{type(error).__name__}",
+        )
+    outcome = (
+        RelationshipConversionOutcome.QUALIFIED
+        if projection.outcome is QualificationOutcome.QUALIFIED
+        else RelationshipConversionOutcome.DECODED
+    )
+    return _CompiledRelationship(relationship=projected, outcome=outcome, reason="projected")
+
+
+def _unconverted(
+    relationship: CardRelationship,
+    outcome: RelationshipConversionOutcome,
+    reason: str,
+) -> _CompiledRelationship:
+    """Return one stored relationship unchanged with the gate that stopped its conversion."""
+    return _CompiledRelationship(relationship=relationship, outcome=outcome, reason=reason)
+
+
+def _counted_zones(*, capability: CardCapability) -> frozenset[CapabilityZone]:
+    """Return every zone one capability's counted prerequisites read."""
+    return frozenset(
+        zone
+        for prerequisite in capability.prerequisites
+        if prerequisite.quantity is not None
+        for zone, _, _ in _stated_zones(prerequisite.evidence.quote)
+    )
+
+
+def _removed_zones(*, capability: CardCapability) -> frozenset[CapabilityZone]:
+    """Return every zone one capability's own statements consume without stating a return."""
+    removed: set[CapabilityZone] = set()
+    if (
+        capability.action is not CapabilityAction.COUNT
+        and capability.source_zone is not None
+        and capability.source_zone is not capability.destination_zone
+    ):
+        removed.add(capability.source_zone)
+    for prerequisite in capability.prerequisites:
+        if prerequisite.source_zone is not None and prerequisite.destination_zone is None:
+            removed.add(prerequisite.source_zone)
+    return frozenset(removed)
+
+
+def _refilled(
+    *,
+    capability: CardCapability,
+    zone: CapabilityZone,
+    facts: Mapping[tuple[int, str], CardCapability],
+) -> bool:
+    """Return whether another capability of the same card face moves cards into one zone."""
+    return any(
+        other is not capability
+        and other.card_id == capability.card_id
+        and other.face_index == capability.face_index
+        and other.destination_zone is zone
+        and other.source_zone in (CapabilityZone.LIBRARY, CapabilityZone.HAND)
+        for other in facts.values()
+    )
+
+
+def _zone_supply_contradiction(
+    *,
+    source: CardCapability,
+    target: CardCapability,
+    facts: Mapping[tuple[int, str], CardCapability],
+) -> tuple[CapabilityZone, ...]:
+    """Return the zones one enabler consumes as the supply another participant counts."""
+    contradicted = {
+        zone
+        for zone in _counted_zones(capability=target) & _removed_zones(capability=source)
+        if not _refilled(capability=source, zone=zone, facts=facts)
+    }
+    return tuple(sorted(contradicted, key=lambda zone: zone.value))
 
 
 def _compile_participant(
@@ -388,10 +613,11 @@ def _compile_participant(
     other: CardCapability,
     card: CardInfo,
 ) -> RelationshipParticipant | None:
-    """Compile every clause one participant may declare, or None when it cannot bind them all."""
+    """Compile every clause and retained qualification one participant declares, or None."""
     lines = _participant_oracle_text(capability, card).split("\n")
     if capability.prerequisites:
         clauses: list[RelationshipPrerequisite] = []
+        qualifications: list[RelationshipQualification] = []
         for index, prerequisite in enumerate(capability.prerequisites):
             clause = _compile_bound_clause(
                 capability=capability,
@@ -400,16 +626,61 @@ def _compile_participant(
                 index=index,
                 lines=lines,
             )
-            if clause is None:
+            if clause is not None:
+                clauses.append(clause)
+                continue
+            qualification = _retained_qualification(
+                capability=capability,
+                prerequisite=prerequisite,
+                lines=lines,
+            )
+            if qualification is None:
                 return None
-            clauses.append(clause)
+            qualifications.append(qualification)
     else:
         clause = _compile_effect_clause(capability=capability, other=other, lines=lines)
         if clause is None:
             return None
         clauses = [clause]
+        qualifications = []
     try:
-        return _relationship_participant(capability=capability, card=card, clauses=tuple(clauses))
+        return _relationship_participant(
+            capability=capability,
+            card=card,
+            clauses=tuple(clauses),
+            qualifications=tuple(qualifications),
+        )
+    except SemanticEnrichmentError:
+        return None
+
+
+def _retained_qualification(
+    *,
+    capability: CardCapability,
+    prerequisite: CapabilityPrerequisite,
+    lines: Sequence[str],
+) -> RelationshipQualification | None:
+    """Retain one untypable prerequisite verbatim inside its own cited paragraph, or None."""
+    quote = prerequisite.evidence.quote
+    containing = [line for line in lines if quote in line]
+    if len(containing) != 1:
+        return None
+    paragraph = containing[0]
+    if not any(item.quote in paragraph for item in capability.evidence):
+        return None
+    if len(_occurrences(paragraph, quote)) != 1:
+        return None
+    try:
+        return RelationshipQualification(
+            kind=_QUALIFICATION_KINDS[prerequisite.kind],
+            evidence=OracleEvidence(
+                card_id=capability.card_id,
+                face_index=capability.face_index,
+                quote=paragraph,
+            ),
+            selector=quote,
+            occurrence=0,
+        )
     except SemanticEnrichmentError:
         return None
 

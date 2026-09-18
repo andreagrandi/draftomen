@@ -375,8 +375,11 @@ projections, pool support, and rendered advice are separate stages; a compatible
 profile alone does not prove useful coverage.
 
 The audit reconciles all 583 capability facts and 685 relationship findings.
-The offline compiler produces three executable projections; this is a diagnosis,
-not a recovery target. Network-denied compiler, pool and offscreen QML component
+The offline compiler at capture time produced three executable projections; this is a diagnosis,
+not a recovery target. #589 later recovered qualified prerequisites through the same pipeline
+(see the projection contract above): on the same frozen run the compiler now reports 433 projected
+rows (2 decoded, 431 qualified), 16 zone-supply contradictions, and 236 unsupported, with no paid
+input changed. Network-denied compiler, pool and offscreen QML component
 traces leave the 1,638-file paid-run fingerprint unchanged.
 
 The approved missing-work tickets are native children of
@@ -1954,6 +1957,30 @@ Declared qualifications close `incomplete` verdicts while contradictions are nev
 participant with no decoded clause is admissible only when it declares one. The key is absent when
 empty, so it changes no profile schema version (still 3, with 1–3 supported for reading) and a present
 but invalid qualification is rejected rather than dropped.
+
+The offline compiler emits projections from translated prerequisites only. A prerequisite that binds
+to a typed clause is emitted as that clause; a prerequisite that cannot bind is retained verbatim as
+a qualification when its cited statement occurs exactly once inside the participant's own frozen
+evidence paragraph, with its closed kind mapping to the qualification kind: cost to `cost`, trigger
+to `timing`, condition to `condition`, threshold to `quantity`. A prerequisite that yields neither
+leaves the participant unbound and the relationship unprojected. Every stored relationship gets one
+deterministic conversion outcome with a source-linked reason, in stored order, returned by
+`compile_confirmed_relationship_projections` and reported by `compile_profile_enhancement` alongside
+the block. `decoded` means the projection carries no retained qualification, `qualified` means it
+carries at least one, and both report the reason `projected`. `missing_evidence` means a participant
+capability fact is unusable or names the wrong role, reported as `source_capability_fact_unusable` or
+`target_capability_fact_unusable`, or a participant card is missing, unknown, or unpinned, reported
+as `participant_card_unpinned`. `contradiction` means the enabler consumes a zone the payoff counts,
+either because its own stated source zone differs from its destination or because a prerequisite
+states a source zone and no destination, unless another capability of the same enabler card face
+refills that zone from the library or hand, and is reported as
+`zone_supply_contradiction:<zone>[,<zone>]`. `unsupported` means
+a non-local finding id, reported as `not_a_local_pair`; an unlinked mechanism; an unbound participant
+clause, reported as `source_clause_unbound` or `target_clause_unbound`; or a compiled projection
+rejected by its own re-validation, reported as `publish_validation_rejected:<ExceptionName>`.
+`generate-profile` records the conversions in the generation report under `relationship_conversions`,
+present only when non-empty, so the report accounts for every stored relationship without carrying
+clause text.
 Relationship validation now uses the pinned `draftomen-relationship-validation-v2`
 request and response contract, while guide and card extraction stay on their
 existing version, so retained v1 relationship results remain readable but are not

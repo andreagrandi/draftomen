@@ -3,6 +3,18 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Recover qualified relationships through the offline profile pipeline. The
+  projection compiler now emits qualified rows: a prerequisite that cannot bind a
+  typed clause is retained verbatim as an exact-quote qualification inside the
+  participant's own frozen evidence paragraph, so a relationship with one
+  untypable statement is projected instead of dropped, and every stored
+  relationship gets exactly one deterministic conversion outcome with a
+  source-linked reason, one of `decoded`, `qualified`, `missing_evidence`,
+  `contradiction`, or `unsupported`, recorded by `generate-profile` in the
+  generation report under `relationship_conversions`. The compiler also rejects
+  an enabler that consumes a zone its payoff counts, reporting
+  `zone_supply_contradiction:<zone>`, unless another capability of the enabler's
+  own card face refills that zone from the library or hand. (#589)
 - Retain source-bound conditional draft synergies as qualified relationship projections.
   A projection participant may declare the stated cost, choice, condition, mode, party,
   quantity, and timing requirements the clause grammar cannot certify as exact
