@@ -22,8 +22,8 @@ from typing import Any, TypeAlias
 
 from draftomen.carddb import CardFace, CardInfo, UNKNOWN_SOURCE_PROVENANCE
 
-ROLE_SCHEMA_VERSION = 4
-CLASSIFIER_VERSION = "1.3"
+ROLE_SCHEMA_VERSION = 5
+CLASSIFIER_VERSION = "1.4"
 PROFILE_SCHEMA_VERSION = 2
 RESULT_SCHEMA_VERSION = 1
 OVERRIDE_SCHEMA_VERSION = 1
@@ -36,6 +36,18 @@ _FRIENDLY_UNTAP_PATTERN = re.compile(
 _TOKEN_REPLACEMENT_PATTERN = re.compile(
     r"(?P<selector>If one or more tokens would be created under your control, "
     r"twice that many of those tokens are created instead)\.?",
+    re.IGNORECASE,
+)
+_GIFT_HEADER_PATTERN = re.compile(
+    r"\bGift (?:a|an) (?P<gift>[A-Za-z][A-Za-z ]*?)(?=\s*\()",
+    re.IGNORECASE,
+)
+_GIFT_OPTION_PATTERN = re.compile(
+    r"You may promise an opponent a gift as you cast this spell",
+    re.IGNORECASE,
+)
+_GIFT_EFFECT_PATTERN = re.compile(
+    r"If the gift was promised, (?P<effect>[^.\n]+)",
     re.IGNORECASE,
 )
 
@@ -106,6 +118,7 @@ class Role(str, Enum):
     MODIFIED = "modified"
     COUNTERS = "counters"
     UNTAP_SUPPORT = "untap_support"
+    GIFT = "gift"
     # Lands and mana
     MANA_PRODUCER = "mana_producer"
     FIXING = "fixing"
@@ -185,6 +198,7 @@ _ROLE_DEFINITIONS: dict[Role, str] = {
     Role.MODIFIED: "References the modified state of a permanent.",
     Role.COUNTERS: "Places or references counters on a permanent.",
     Role.UNTAP_SUPPORT: "Untaps another permanent you control so it can be used again.",
+    Role.GIFT: "Optionally promises an opponent a gift and qualifies another effect of the spell.",
     # Lands and mana
     Role.MANA_PRODUCER: "Produces mana according to the declared produced-mana metadata in the request.",
     Role.FIXING: "Produces more than one color or resource, or is itself more than one color.",
@@ -444,6 +458,51 @@ class TokenReplacementCharacteristics:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class GiftCharacteristics:
+    """Typed choice and qualified branch of one Gift instruction."""
+
+    gift: str
+    recipient: str
+    optional: bool
+    qualified_effect: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.gift, str) or re.fullmatch(r"[a-z][a-z ]*", self.gift) is None:
+            raise RoleSchemaError("Gift characteristics need a normalized gift object.")
+        if self.recipient != "opponent":
+            raise RoleSchemaError("Gift characteristics have an unsupported recipient.")
+        if self.optional is not True:
+            raise RoleSchemaError("Gift characteristics must preserve the optional choice.")
+        if not isinstance(self.qualified_effect, str) or not self.qualified_effect.strip():
+            raise RoleSchemaError("Gift characteristics need the qualified effect text.")
+        object.__setattr__(self, "qualified_effect", self.qualified_effect.strip())
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "gift": self.gift,
+            "kind": "gift",
+            "optional": self.optional,
+            "qualified_effect": self.qualified_effect,
+            "recipient": self.recipient,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> GiftCharacteristics:
+        _object(value, "gift parameters")
+        if value.get("kind") != "gift":
+            raise RoleSchemaError("Gift parameters have an invalid kind.")
+        return cls(
+            gift=_required_str(value.get("gift"), "gift.gift"),
+            recipient=_required_str(value.get("recipient"), "gift.recipient"),
+            optional=_required_bool(value.get("optional"), "gift.optional"),
+            qualified_effect=_required_str(
+                value.get("qualified_effect"),
+                "gift.qualified_effect",
+            ),
+        )
+
+
 def friendly_untap_statement(text: str) -> tuple[str, UntapCharacteristics] | None:
     """Return exact text and typed restrictions for one friendly untap instruction."""
     if not isinstance(text, str):
@@ -480,6 +539,26 @@ def token_replacement_statement(
     )
 
 
+def gift_statement(text: str) -> tuple[str, GiftCharacteristics] | None:
+    """Return exact text and typed restrictions for one complete Gift instruction."""
+    if not isinstance(text, str):
+        return None
+    header = _GIFT_HEADER_PATTERN.search(text)
+    optional = _GIFT_OPTION_PATTERN.search(text)
+    effect = _GIFT_EFFECT_PATTERN.search(text)
+    if header is None or optional is None or effect is None:
+        return None
+    return (
+        header.group(0),
+        GiftCharacteristics(
+            gift=header.group("gift").casefold(),
+            recipient="opponent",
+            optional=True,
+            qualified_effect=effect.group("effect"),
+        ),
+    )
+
+
 RoleParameters: TypeAlias = (
     RemovalCharacteristics
     | TypalIdentity
@@ -487,6 +566,7 @@ RoleParameters: TypeAlias = (
     | ThresholdParameters
     | UntapCharacteristics
     | TokenReplacementCharacteristics
+    | GiftCharacteristics
 )
 
 
@@ -531,6 +611,7 @@ class RoleAssignment:
             Role.SPELL_COUNT_THRESHOLD: (ThresholdParameters,),
             Role.UNTAP_SUPPORT: (UntapCharacteristics,),
             Role.TOKEN_REPLACEMENT: (TokenReplacementCharacteristics,),
+            Role.GIFT: (GiftCharacteristics,),
         }
         expected = allowed.get(role, ())
         optional_parameter_roles = {Role.CONDITIONAL_REMOVAL}
@@ -570,6 +651,10 @@ class RoleAssignment:
             else None
         )
 
+    @property
+    def gift(self) -> GiftCharacteristics | None:
+        return self.parameters if isinstance(self.parameters, GiftCharacteristics) else None
+
     def to_json(self) -> dict[str, object]:
         result: dict[str, object] = {
             "confidence": self.confidence,
@@ -601,6 +686,8 @@ class RoleAssignment:
                 parameters = UntapCharacteristics.from_json(parameters_value)
             elif kind == "token_replacement":
                 parameters = TokenReplacementCharacteristics.from_json(parameters_value)
+            elif kind == "gift":
+                parameters = GiftCharacteristics.from_json(parameters_value)
             else:
                 raise RoleSchemaError(f"Unsupported role parameter kind {kind!r}.")
         return cls(
@@ -1282,6 +1369,8 @@ SUPPORTED_MECHANICS = frozenset(
         "craft",
         "plot",
         "disguise",
+        "gift",
+        "treasure",
     }
 )
 
@@ -1432,13 +1521,14 @@ def _infer_assignments_single(
         *,
         confidence: float = 0.82,
         parameters: RoleParameters | None = None,
-        why: str,
+        why: str | tuple[str, ...],
     ) -> None:
+        explanations = (why,) if isinstance(why, str) else why
         add(
             RoleAssignment(
                 role=semantic_role,
                 confidence=confidence,
-                evidence=(why, *evidence),
+                evidence=(*explanations, *evidence),
                 parameters=parameters,
             )
         )
@@ -1610,7 +1700,18 @@ def _infer_assignments_single(
             parameters=characteristics,
             why=selector,
         )
-    if token_match or re.search(r"\bcreate\s+[^.;]*\btoken\b", lower):
+    gift = gift_statement(text)
+    if gift is not None:
+        selector, characteristics = gift
+        role(
+            Role.GIFT,
+            confidence=0.98,
+            parameters=characteristics,
+            why=(selector, characteristics.qualified_effect),
+        )
+    if gift is None and (
+        token_match or re.search(r"\bcreate\s+[^.;]*\btoken\b", lower)
+    ):
         role(Role.TOKEN_MAKER, confidence=0.88, why="creates one or more tokens")
         if token_match:
             count = _number_token(token_match.group(1))

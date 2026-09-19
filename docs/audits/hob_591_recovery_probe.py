@@ -1769,6 +1769,7 @@ def _generation_snapshot(
         "replacement_rows": None,
         "replacement_sources": None,
         "replacement_rows_valid": False,
+        "gift_capability_valid": False,
         "profile_error": None,
         "round_trip_error": None,
     }
@@ -1781,6 +1782,35 @@ def _generation_snapshot(
             snapshot["content_sha256"] = probe590.sha256_bytes(content)
             profile = SetProfile.from_json(json.loads(content.decode("utf-8")))
             snapshot["profile_sha256"] = probe590.sha256_bytes(profile.to_bytes())
+            role_card = (
+                None
+                if profile.role_profile is None
+                else profile.role_profile.card("arena_id:103372")
+            )
+            if role_card is not None:
+                gift = tuple(
+                    assignment
+                    for assignment in role_card.assignments
+                    if assignment.role.value == "gift"
+                )
+                snapshot["gift_capability_valid"] = (
+                    len(gift) == 1
+                    and gift[0].evidence[0] == "Gift a Treasure"
+                    and gift[0].evidence[1] == "players can't cast spells this turn"
+                    and gift[0].parameters is not None
+                    and gift[0].parameters.to_json()
+                    == {
+                        "gift": "treasure",
+                        "kind": "gift",
+                        "optional": True,
+                        "qualified_effect": "players can't cast spells this turn",
+                        "recipient": "opponent",
+                    }
+                    and all(
+                        assignment.role.value != "token_maker"
+                        for assignment in role_card.assignments
+                    )
+                )
             enhancement = profile.enhancement
             if enhancement is not None:
                 published_ids = {row.finding_id for row in enhancement.relationships}
@@ -1973,6 +2003,12 @@ def stage_generations(
                 for run in runs
             ]
         ),
+        cause_class=probe590.COMPILER_GAP,
+    )
+    report.gate(
+        "generation_gift_capability",
+        ok=all(run["gift_capability_valid"] for run in runs),
+        detail=_canonical([run["gift_capability_valid"] for run in runs]),
         cause_class=probe590.COMPILER_GAP,
     )
 

@@ -10,6 +10,7 @@ import draftomen.semantic_roles as semantic_roles
 from draftomen.carddb import CardFace, CardInfo
 from draftomen.semantic_roles import (
     CLASSIFIER_VERSION,
+    GiftCharacteristics,
     ROLE_DEFINITIONS,
     ROLE_SCHEMA_VERSION,
     CompiledRoleProfile,
@@ -49,14 +50,14 @@ _GENERIC_DEFINITION_WORDS = frozenset(
         "discarding", "discards", "do", "domain", "drawing", "draws", "dying", "each", "effect", "event",
         "enables", "enchantment", "enchantments", "end", "enters", "entry", "equip", "equipment",
         "equipped", "evasion", "excess", "exile", "exiles", "extra", "fills", "filters", "five",
-        "flying", "food", "for", "four", "from", "gains", "graveyard", "group", "hand", "in",
+        "flying", "food", "for", "four", "from", "gains", "gift", "graveyard", "group", "hand", "in",
         "instead", "instruction", "into", "is", "it", "its", "itself", "keeps", "keywords", "land",
         "lands", "less", "lets", "library", "life", "lifelink", "loss", "maker", "makes", "mana",
         "many", "meets", "membership", "menace", "metadata", "milling", "modified", "more", "multiplies",
         "net-positive", "next", "nonland", "not", "number", "of", "off", "on", "one", "only",
-        "onto", "opposing", "optional", "or", "orders", "other", "owner's", "package", "payment",
+        "onto", "opponent", "opposing", "optional", "optionally", "or", "orders", "other", "owner's", "package", "payment",
         "pays", "per-creature", "permanent", "permanents", "places", "planeswalker", "play",
-        "playing", "power", "produced-mana", "produces", "provides", "puts", "putting", "qualify",
+        "playing", "power", "produced-mana", "produces", "promises", "provides", "puts", "putting", "qualifies", "qualify",
         "records", "recursion", "references", "refers", "removal", "replacing", "request",
         "required", "requires", "resource", "return", "returns", "rewards", "role", "sacrificed",
         "sacrifices", "satisfies", "scales", "searches", "second", "selection", "separate", "shadow", "source",
@@ -249,6 +250,68 @@ def test_token_replacement_requires_a_separate_source() -> None:
     actual_source = classify_card(_fixtures()["role-token-wide"])
     assert Role.TOKEN_MAKER in _roles(actual_source)
     assert Role.TOKEN_REPLACEMENT not in _roles(actual_source)
+
+
+def test_gift_preserves_optional_opponent_choice_and_qualified_effect() -> None:
+    oracle_text = (
+        "Gift a Treasure (You may promise an opponent a gift as you cast this spell. "
+        "If you do, they create a Treasure token before its other effects.)\n"
+        "Return target spell to its owner's hand. If the gift was promised, "
+        "players can't cast spells this turn."
+    )
+    bilbo = classify_card(
+        {
+            "oracle_id": "gift",
+            "name": "Promised Reprieve",
+            "set": "tst",
+            "layout": "normal",
+            "oracle_text": oracle_text,
+            "type_line": "Instant",
+            "types": ["Instant"],
+            "keywords": ["Gift", "Treasure"],
+            "mana_value": 2,
+        }
+    )
+    assignment = next(item for item in bilbo.assignments if item.role is Role.GIFT)
+    assert Role.TOKEN_MAKER not in _roles(bilbo)
+    assert assignment.gift == GiftCharacteristics(
+        gift="treasure",
+        recipient="opponent",
+        optional=True,
+        qualified_effect="players can't cast spells this turn",
+    )
+    assert assignment.evidence[0] == "Gift a Treasure"
+    assert assignment.evidence[1] == "players can't cast spells this turn"
+    assert RoleAssignment.from_json(assignment.to_json()) == assignment
+
+    unrelated_optional = classify_card(
+        {
+            "oracle_id": "optional-opponent-benefit",
+            "name": "Friendly Offer",
+            "set": "tst",
+            "layout": "normal",
+            "oracle_text": "You may have target opponent create a Treasure token.",
+            "type_line": "Sorcery",
+            "types": ["Sorcery"],
+            "mana_value": 1,
+        }
+    )
+    incomplete_gift = classify_card(
+        {
+            "oracle_id": "incomplete-gift",
+            "name": "Unqualified Gift",
+            "set": "tst",
+            "layout": "normal",
+            "oracle_text": (
+                "Gift a Treasure (You may promise an opponent a gift as you cast this spell.)"
+            ),
+            "type_line": "Instant",
+            "types": ["Instant"],
+            "mana_value": 1,
+        }
+    )
+    assert Role.GIFT not in _roles(unrelated_optional)
+    assert Role.GIFT not in _roles(incomplete_gift)
 
 
 def test_multiface_roles_are_union_and_order_is_stable() -> None:

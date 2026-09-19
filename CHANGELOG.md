@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Recover Bilbo's Gambit's complete Gift instruction with its optional opponent promise, Treasure
+  object, and qualified spell-lock branch in offline role profiles. (#608)
 - Derive qualified source-to-replacement relationships from distinct explicit HOB token creators,
   excluding Army growth, opponent-controlled creation, and duplicate printed instructions. (#612)
 - Represent token-creation replacement effects as source-dependent modifiers so they cannot be

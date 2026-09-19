@@ -45,6 +45,10 @@ friendly untap support with typed target restrictions, token-creation replacemen
 their separate-source dependency, land/mana (including typed produced resources), and numeric
 power/permanent and other state thresholds. One card can have any number of assignments.
 
+Gift is retained as an optional promise to an opponent with a typed gift object and the specific
+effect branch that the promise qualifies. Opponent benefits and unrelated optional text do not
+become Gift roles without the complete printed instruction.
+
 Token-replacement relationships point from a distinct, explicit token-creation instruction to the
 replacement payoff. The replacement card never supplies a token itself, and Army growth or an
 opponent-controlled creation branch does not become an independent source.
