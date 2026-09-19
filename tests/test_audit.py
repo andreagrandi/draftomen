@@ -534,29 +534,13 @@ def test_audit_persists_confirmed_relationship_support_evidence(
     assert [record["record_type"] for record in records] == ["decision_evaluated"]
     decision = records[0]
     assert decision["pool_before_pick"] == [RELATIONSHIP_SOURCE_ID]
-    assert decision["role_ledger"]["relationship_support"] == [
-        {
-            "finding_id": RELATIONSHIP_FINDING_ID,
-            "mechanism": RELATIONSHIP_MECHANISM,
-            "source": {
-                "count": 1,
-                "grp_id": RELATIONSHIP_SOURCE_ID,
-                "name": RELATIONSHIP_SOURCE_NAME,
-                "role": Role.TOKEN_MAKER.value,
-                "role_confidence": 0.9,
-            },
-            "target": {
-                "grp_id": RELATIONSHIP_TARGET_ID,
-                "name": RELATIONSHIP_TARGET_NAME,
-                "role": Role.GO_WIDE_PAYOFF.value,
-                "role_confidence": 0.8,
-            },
-            "satisfied_prerequisites": [
-                RELATIONSHIP_SOURCE_PREREQUISITE,
-                RELATIONSHIP_TARGET_PREREQUISITE,
-            ],
-        }
-    ]
+    assert scored_pack.role_ledger is not None
+    support = scored_pack.role_ledger.relationship_support[0]
+    assert decision["role_ledger"]["relationship_support"] == [support.to_json()]
+    assert support.outcome.value == "supported"
+    assert support.profile_fingerprint == profile.fingerprint
+    assert support.source_prerequisites
+    assert support.target_prerequisites
 
     candidate = next(
         candidate

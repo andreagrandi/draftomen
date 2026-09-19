@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- Classify drafted-pool relationship evidence as supported, conditional, incompatible, or
+  unsupported while retaining exact clause, qualification, card, and profile provenance. (#606)
 - Recover typed Hone counter sources and Equipment payoffs, including Dwalin-to-Equipment relationships and Sting's qualified self interaction, from saved HOB evidence without provider calls (#607).
 - Recover Bilbo's Gambit's complete Gift instruction with its optional opponent promise, Treasure
   object, and qualified spell-lock branch in offline role profiles. (#608)

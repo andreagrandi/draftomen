@@ -22,6 +22,7 @@ from draftomen.semantic_capability_records import (
 )
 from draftomen.semantic_enrichment import card_source_sha256
 from draftomen.semantic_relationship_records import (
+    RelationshipQualification,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
@@ -265,31 +266,54 @@ class RemovalContribution:
     value: float
 
 
+class RelationshipSupportOutcome(StrEnum):
+    """Closed pool verdict for one drafted source and offered-strategy relationship."""
+
+    SUPPORTED = "supported"
+    CONDITIONAL = "conditional"
+    INCOMPATIBLE = "incompatible"
+    UNSUPPORTED = "unsupported"
+
+
 @dataclass(frozen=True, slots=True)
 class RelationshipSupport:
-    """One exact, source-bound typed relationship satisfied by the projected pool.
-    The source participant is a drafted card that survives the likely-deck
-    projection; the target participant is joined later by exact offered grp_id.
+    """One source-bound relationship evaluated against the authoritative pool.
+    The target participant is joined later by exact offered grp_id.
     """
 
     finding_id: str
     mechanism: str
+    outcome: RelationshipSupportOutcome
+    profile_fingerprint: str
     source_card_id: int
     source_card_name: str
     source_card_count: int
+    source_in_projected_deck: bool
     source_role: Role
     source_role_confidence: float
     target_card_id: int
     target_card_name: str
     target_role: Role
     target_role_confidence: float
-    satisfied_prerequisites: tuple[str, ...]
+    prerequisites: tuple[str, ...]
+    source_prerequisites: tuple[RelationshipPrerequisite, ...]
+    target_prerequisites: tuple[RelationshipPrerequisite, ...]
+    source_qualifications: tuple[RelationshipQualification, ...] = ()
+    target_qualifications: tuple[RelationshipQualification, ...] = ()
 
     def __post_init__(self) -> None:
-        for field_name in ("finding_id", "mechanism", "source_card_name", "target_card_name"):
+        for field_name in (
+            "finding_id",
+            "mechanism",
+            "profile_fingerprint",
+            "source_card_name",
+            "target_card_name",
+        ):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"Relationship support {field_name} must be a non-empty string.")
+        if not isinstance(self.outcome, RelationshipSupportOutcome):
+            raise ValueError("Relationship support outcome must be a RelationshipSupportOutcome.")
         for field_name in ("source_card_id", "source_card_count", "target_card_id"):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -306,39 +330,72 @@ class RelationshipSupport:
                 or not 0.0 <= float(value) <= 1.0
             ):
                 raise ValueError(f"Relationship support {field_name} must be bounded from 0 to 1.")
-        prerequisites = self.satisfied_prerequisites
+        if type(self.source_in_projected_deck) is not bool:
+            raise ValueError("Relationship support source_in_projected_deck must be a boolean.")
+        for field_name, expected_type in (
+            ("source_prerequisites", RelationshipPrerequisite),
+            ("target_prerequisites", RelationshipPrerequisite),
+            ("source_qualifications", RelationshipQualification),
+            ("target_qualifications", RelationshipQualification),
+        ):
+            values = getattr(self, field_name)
+            if not isinstance(values, tuple) or any(
+                type(item) is not expected_type for item in values
+            ):
+                raise ValueError(
+                    f"Relationship support {field_name} must contain "
+                    f"{expected_type.__name__} records."
+                )
+        prerequisites = self.prerequisites
         if (
             not isinstance(prerequisites, tuple)
-            or not prerequisites
             or any(
                 not isinstance(item, str)
                 or _PREREQUISITE_TEXT_PATTERN.fullmatch(item) is None
                 for item in prerequisites
             )
         ):
+            raise ValueError("Relationship support prerequisites must contain canonical text.")
+        if not prerequisites and not (
+            self.source_qualifications or self.target_qualifications
+        ):
             raise ValueError(
-                "Relationship support satisfied_prerequisites must contain canonical prerequisite text."
+                "Relationship support requires prerequisite or qualification provenance."
             )
 
     def to_json(self) -> dict[str, object]:
         return {
             "finding_id": self.finding_id,
             "mechanism": self.mechanism,
+            "outcome": self.outcome.value,
+            "profile_fingerprint": self.profile_fingerprint,
             "source": {
                 "count": self.source_card_count,
                 "grp_id": self.source_card_id,
+                "in_projected_deck": self.source_in_projected_deck,
                 "name": self.source_card_name,
+                "prerequisites": [item.to_json() for item in self.source_prerequisites],
+                "qualifications": [item.to_json() for item in self.source_qualifications],
                 "role": self.source_role.value,
                 "role_confidence": self.source_role_confidence,
             },
             "target": {
                 "grp_id": self.target_card_id,
                 "name": self.target_card_name,
+                "prerequisites": [item.to_json() for item in self.target_prerequisites],
+                "qualifications": [item.to_json() for item in self.target_qualifications],
                 "role": self.target_role.value,
                 "role_confidence": self.target_role_confidence,
             },
-            "satisfied_prerequisites": list(self.satisfied_prerequisites),
+            "prerequisites": list(self.prerequisites),
         }
+
+    @property
+    def satisfied_prerequisites(self) -> tuple[str, ...]:
+        """Return proven prerequisites only for a fully supported relationship."""
+        if self.outcome is RelationshipSupportOutcome.SUPPORTED:
+            return self.prerequisites
+        return ()
 
 
 def _participant_identity(
@@ -832,6 +889,7 @@ def _evaluate_pool(
     )
     return _evaluate(
         pool_grp_ids=projected_pool,
+        relationship_pool=source_cards,
         pool_size=len(pool_grp_ids),
         unique_card_count=len(source_cards),
         card_database=card_database,
@@ -903,6 +961,7 @@ def evaluate_completed_pool_role_ledger(
 def _evaluate(
     *,
     pool_grp_ids: tuple[int, ...],
+    relationship_pool: tuple[tuple[CardInfo, int], ...],
     pool_size: int,
     unique_card_count: int,
     card_database: CardDatabase,
@@ -927,6 +986,18 @@ def _evaluate(
             ),
         )
         for card, quantity in cards
+    )
+    projected_ids = frozenset(card.grp_id for card, _, _ in resolved)
+    relationship_cards = tuple(
+        (
+            card,
+            quantity,
+            resolve_card_roles(
+                card,
+                profile=None if set_profile is None else set_profile.role_profile,
+            ),
+        )
+        for card, quantity in relationship_pool
     )
     role_counts_counter: Counter[str] = Counter()
     removal_counts: Counter[str] = Counter()
@@ -972,7 +1043,8 @@ def _evaluate(
     )
     urgency = _urgency(target_coverage=target_coverage, stage=stage)
     relationship_support = _relationship_support(
-        projected_cards=resolved,
+        pool_cards=relationship_cards,
+        projected_ids=projected_ids,
         card_database=card_database,
         set_profile=set_profile,
         mode=mode,
@@ -1019,7 +1091,8 @@ def _evaluate(
 
 def _relationship_support(
     *,
-    projected_cards: tuple[tuple[CardInfo, int, ResolutionResult], ...],
+    pool_cards: tuple[tuple[CardInfo, int, ResolutionResult], ...],
+    projected_ids: frozenset[int],
     card_database: CardDatabase,
     set_profile: SetProfile | None,
     mode: LedgerMode,
@@ -1038,9 +1111,9 @@ def _relationship_support(
     enhancement = set_profile.enhancement
     if enhancement is None:
         return ()
-    projected = {
+    pool = {
         card.grp_id: (card, quantity, resolution)
-        for card, quantity, resolution in projected_cards
+        for card, quantity, resolution in pool_cards
     }
     records: list[RelationshipSupport] = []
     for relationship in enhancement.relationships:
@@ -1048,7 +1121,8 @@ def _relationship_support(
             relationship=relationship,
             set_profile=set_profile,
             card_database=card_database,
-            projected=projected,
+            pool=pool,
+            projected_ids=projected_ids,
         )
         if record is not None:
             records.append(record)
@@ -1092,7 +1166,8 @@ def _matched_relationship_support(
     relationship: CardRelationship,
     set_profile: SetProfile,
     card_database: CardDatabase,
-    projected: Mapping[int, tuple[CardInfo, int, ResolutionResult]],
+    pool: Mapping[int, tuple[CardInfo, int, ResolutionResult]],
+    projected_ids: frozenset[int],
 ) -> RelationshipSupport | None:
     projection = relationship.prerequisite_projection
     if projection is None:
@@ -1106,42 +1181,71 @@ def _matched_relationship_support(
         projection.source,
         set_profile=set_profile,
         card_database=card_database,
-        projected=projected,
+        projected=pool,
     )
-    if source_identity is None or projection.source.card_id not in projected:
+    if source_identity is None or projection.source.card_id not in pool:
         return None
     target_identity = _participant_identity(
         projection.target,
         set_profile=set_profile,
         card_database=card_database,
-        projected=projected,
+        projected=pool,
     )
     if target_identity is None:
         return None
-    source_card, source_card_count, _ = projected[projection.source.card_id]
+    source_card, source_card_count, _ = pool[projection.source.card_id]
     satisfied = _matched_prerequisites(
         mechanism=relationship.mechanism,
         source=projection.source,
         target=projection.target,
         source_count=source_card_count,
     )
-    if satisfied is None:
-        return None
+    outcome = _relationship_outcome(
+        source=projection.source,
+        target=projection.target,
+        source_count=source_card_count,
+        matched=satisfied is not None,
+    )
+    prerequisites = (
+        satisfied
+        if satisfied is not None
+        else tuple(
+            sorted(
+                {
+                    *(
+                        _prerequisite_text("source", clause)
+                        for clause in projection.source.prerequisites
+                    ),
+                    *(
+                        _prerequisite_text("target", clause)
+                        for clause in projection.target.prerequisites
+                    ),
+                }
+            )
+        )
+    )
     source_card, source_confidence = source_identity
     target_card, target_confidence = target_identity
     return RelationshipSupport(
         finding_id=relationship.finding_id,
         mechanism=relationship.mechanism,
+        outcome=outcome,
+        profile_fingerprint=set_profile.fingerprint,
         source_card_id=projection.source.card_id,
         source_card_name=source_card.name,
         source_card_count=source_card_count,
+        source_in_projected_deck=projection.source.card_id in projected_ids,
         source_role=projection.source.role,
         source_role_confidence=source_confidence,
         target_card_id=projection.target.card_id,
         target_card_name=target_card.name,
         target_role=projection.target.role,
         target_role_confidence=target_confidence,
-        satisfied_prerequisites=satisfied,
+        prerequisites=prerequisites,
+        source_prerequisites=projection.source.prerequisites,
+        target_prerequisites=projection.target.prerequisites,
+        source_qualifications=projection.source.qualifications,
+        target_qualifications=projection.target.qualifications,
     )
 
 
@@ -1235,6 +1339,157 @@ def _matched_prerequisites(
     if matcher is None:
         return None
     return matcher(source=source, target=target, source_count=source_count)
+
+
+def _relationship_outcome(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+    matched: bool,
+) -> RelationshipSupportOutcome:
+    """Classify one drafted relationship without turning uncertainty into proof."""
+    if matched:
+        if source.qualifications or target.qualifications:
+            return RelationshipSupportOutcome.CONDITIONAL
+        return RelationshipSupportOutcome.SUPPORTED
+    if _relationship_has_explicit_conflict(source=source, target=target):
+        return RelationshipSupportOutcome.INCOMPATIBLE
+    if (
+        source.qualifications
+        or target.qualifications
+        or _relationship_has_uncertain_quantity(
+            source=source,
+            target=target,
+            source_count=source_count,
+        )
+        or _relationship_has_conditional_timing(source=source, target=target)
+    ):
+        return RelationshipSupportOutcome.CONDITIONAL
+    return RelationshipSupportOutcome.UNSUPPORTED
+
+
+def _relationship_has_uncertain_quantity(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+    source_count: int,
+) -> bool:
+    """Return whether quantity bounds prevent an exact support conclusion."""
+    for anchor in source.prerequisites:
+        source_quantity = anchor.quantity
+        if source_quantity is None:
+            continue
+        for requirement in target.prerequisites:
+            target_quantity = requirement.quantity
+            if target_quantity is None:
+                continue
+            if source_quantity.relation in (
+                QuantityRelation.AT_MOST,
+                QuantityRelation.VARIABLE,
+            ) or target_quantity.relation is QuantityRelation.VARIABLE:
+                return True
+            if (
+                source_quantity.relation is QuantityRelation.AT_LEAST
+                and target_quantity.relation in (
+                    QuantityRelation.EXACTLY,
+                    QuantityRelation.AT_MOST,
+                )
+            ):
+                return True
+            caps = tuple(
+                limit
+                for limit in (
+                    anchor.timing.max_per_turn,
+                    requirement.timing.max_per_turn,
+                )
+                if limit is not None
+            )
+            if (
+                caps
+                and source_quantity.relation is QuantityRelation.EXACTLY
+                and source_quantity.value * source_count > min(caps)
+            ):
+                return True
+    return False
+
+
+def _relationship_has_conditional_timing(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+) -> bool:
+    """Return whether unmatched clauses retain a timing or per-turn condition."""
+    return any(
+        not _timing_qualifiers_agree(source=anchor, target=requirement)
+        for anchor in source.prerequisites
+        for requirement in target.prerequisites
+    )
+
+
+def _relationship_has_explicit_conflict(
+    *,
+    source: RelationshipParticipant,
+    target: RelationshipParticipant,
+) -> bool:
+    """Return whether every possible anchor states a genuine target conflict."""
+    if not source.prerequisites or not target.prerequisites:
+        return False
+    return any(
+        all(
+            _clauses_explicitly_conflict(
+                source=anchor,
+                target=requirement,
+                source_participant=source,
+            )
+            for anchor in source.prerequisites
+        )
+        for requirement in target.prerequisites
+    )
+
+
+def _clauses_explicitly_conflict(
+    *,
+    source: RelationshipPrerequisite,
+    target: RelationshipPrerequisite,
+    source_participant: RelationshipParticipant,
+) -> bool:
+    """Compare only closed fields where both clauses state contradictory values."""
+    source_types = set(source.card_types)
+    target_types = set(target.card_types)
+    if source_types and target_types:
+        if target.type_operator == "all_of" and not target_types <= source_types:
+            return True
+        if target.type_operator == "any_of" and not target_types & source_types:
+            return True
+    object_token = _supported_object_token_identity(source, source_participant)
+    if object_token is not None and target.token_restriction in ("token", "nontoken"):
+        if object_token != target.token_restriction:
+            return True
+    if source.subtype is not None and target.subtype is not None:
+        if source.subtype != target.subtype:
+            return True
+    if source.color_operator != "unrestricted" and target.color_operator != "unrestricted":
+        if not _color_qualifiers_agree(source=source, target=target):
+            return True
+    if source.controller in ("you", "opponent") and target.controller in ("you", "opponent"):
+        if source.controller != target.controller:
+            return True
+    if source.owner in ("you", "opponent") and target.owner in ("you", "opponent"):
+        if source.owner != target.owner:
+            return True
+    source_zone = _source_location_zone(source, source_participant)
+    target_zone = _target_origin_zone(target)
+    if source_zone is not None and target_zone is not None:
+        if source_zone.zone is not target_zone.zone:
+            return True
+        if "any" not in (source_zone.player, target_zone.player):
+            if source_zone.player != target_zone.player:
+                return True
+    if source.required_card_id is not None and target.required_card_id is not None:
+        if source.required_card_id != target.required_card_id:
+            return True
+    return False
 
 
 def _supported_object_token_identity(

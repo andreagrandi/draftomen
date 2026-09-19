@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import pytest
 
-from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.carddb import CardDatabase, CardFace, CardInfo
 from draftomen.config import DECK_BUILDER
 from draftomen.pickengine import PickEngine
 from draftomen.pool_ledger import (
@@ -16,6 +16,7 @@ from draftomen.pool_ledger import (
     LedgerMode,
     PoolRoleLedger,
     RelationshipSupport,
+    RelationshipSupportOutcome,
     _likely_projection,
     evaluate_completed_pool_role_ledger,
     project_pool_role_ledger,
@@ -40,9 +41,11 @@ from draftomen.semantic_enrichment_records import (
 )
 from draftomen.semantic_relationship_records import (
     CardRelationship,
+    QualificationKind,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
+    RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
 )
@@ -1187,6 +1190,7 @@ def _relationship_participant(
     card: CardInfo,
     role: Role,
     *prerequisites: RelationshipPrerequisite,
+    qualifications: tuple[RelationshipQualification, ...] = (),
 ) -> RelationshipParticipant:
     return RelationshipParticipant(
         card_id=card.grp_id,
@@ -1198,6 +1202,7 @@ def _relationship_participant(
         role=role,
         capability_prerequisites=(),
         prerequisites=prerequisites,
+        qualifications=qualifications,
     )
 
 
@@ -1211,9 +1216,9 @@ def _relationship(
 ) -> CardRelationship:
     evidence = tuple(
         dict.fromkeys(
-            clause.evidence
+            item.evidence
             for participant in (source, target)
-            for clause in participant.prerequisites
+            for item in (*participant.prerequisites, *participant.qualifications)
         )
     )
     return CardRelationship(
@@ -1366,7 +1371,7 @@ class _RelationshipCase:
 
 @dataclass(frozen=True)
 class _WithheldCase:
-    """One typed relationship that must never reach the ledger."""
+    """One typed relationship that cannot be accepted as unconditional support."""
 
     profile: SetProfile
     database: CardDatabase
@@ -1982,73 +1987,334 @@ def test_pre_pick_relationship_support_matches_supported_typed_categories(
     assert isinstance(support, RelationshipSupport)
     assert support.finding_id == case.relationship.finding_id
     assert support.mechanism == case.mechanism
+    assert support.outcome is RelationshipSupportOutcome.SUPPORTED
+    assert support.profile_fingerprint == ledger.profile_fingerprint
     assert support.source_card_id == case.source.grp_id
     assert support.source_card_name == case.source.name
     assert support.source_card_count == case.source_count
+    assert support.source_in_projected_deck is True
     assert support.source_role is case.source_role
     assert support.source_role_confidence == case.source_confidence
     assert support.target_card_id == case.target.grp_id
     assert support.target_card_name == case.target.name
     assert support.target_role is case.target_role
     assert support.target_role_confidence == case.target_confidence
+    assert support.prerequisites == case.prerequisites
     assert support.satisfied_prerequisites == case.prerequisites
-    assert support.to_json() == {
-        "finding_id": case.relationship.finding_id,
-        "mechanism": case.mechanism,
-        "source": {
-            "count": case.source_count,
-            "grp_id": case.source.grp_id,
-            "name": case.source.name,
-            "role": case.source_role.value,
-            "role_confidence": case.source_confidence,
-        },
-        "target": {
-            "grp_id": case.target.grp_id,
-            "name": case.target.name,
-            "role": case.target_role.value,
-            "role_confidence": case.target_confidence,
-        },
-        "satisfied_prerequisites": list(case.prerequisites),
-    }
+    projection = case.relationship.prerequisite_projection
+    assert projection is not None
+    assert support.source_prerequisites == projection.source.prerequisites
+    assert support.target_prerequisites == projection.target.prerequisites
+    assert support.source_qualifications == ()
+    assert support.target_qualifications == ()
+    payload = support.to_json()
+    assert payload["outcome"] == "supported"
+    assert payload["profile_fingerprint"] == ledger.profile_fingerprint
+    assert payload["source"]["in_projected_deck"] is True
+    assert payload["source"]["prerequisites"]
+    assert payload["target"]["prerequisites"]
     assert ledger.to_json()["relationship_support"] == [support.to_json()]
+
+
+def test_retained_optional_action_is_conditional_with_exact_provenance() -> None:
+    case = _directional_enabler_payoff_case()
+    projection = case.relationship.prerequisite_projection
+    assert projection is not None
+    qualification = RelationshipQualification(
+        kind=QualificationKind.CHOICE,
+        evidence=projection.source.prerequisites[0].evidence,
+        selector=TOKEN_PARAGRAPH,
+        occurrence=0,
+    )
+    relationship = replace(
+        case.relationship,
+        prerequisite_projection=replace(
+            projection,
+            source=replace(projection.source, qualifications=(qualification,)),
+        ),
+    )
+    ledger = replace(case, relationship=relationship).ledger()
+
+    support = ledger.relationship_support[0]
+    assert support.outcome is RelationshipSupportOutcome.CONDITIONAL
+    assert support.source_qualifications == (qualification,)
+    assert support.target_qualifications == ()
+    assert support.to_json()["source"]["qualifications"] == [qualification.to_json()]
+    assert support.profile_fingerprint == ledger.profile_fingerprint
+
+
+def test_distinct_drafted_enablers_aggregate_without_irrelevant_cards() -> None:
+    profile, cards, pool = _multi_relationship_profile()
+    irrelevant = _relationship_card(999, "Irrelevant", "Vigilance.")
+    database = _database(*cards, irrelevant)
+
+    def supports(values: tuple[int, ...]) -> tuple[RelationshipSupport, ...]:
+        return project_pool_role_ledger(
+            pool_before_pick=values,
+            pack_number=0,
+            pick_number=4,
+            global_pick_index=5,
+            estimated_remaining_picks=37,
+            card_database=database,
+            set_profile=profile,
+        ).relationship_support
+
+    both = tuple(item for item in supports(pool) if item.target_card_id == TYPAL_ID)
+    removed = tuple(
+        item
+        for item in supports(tuple(item for item in pool if item != TOKEN_SOURCE_ID))
+        if item.target_card_id == TYPAL_ID
+    )
+    with_irrelevant = tuple(
+        item
+        for item in supports((*pool, irrelevant.grp_id))
+        if item.target_card_id == TYPAL_ID
+    )
+
+    assert {item.source_card_id for item in both} == {
+        TOKEN_SOURCE_ID,
+        UPKEEP_SOURCE_ID,
+    }
+    assert {item.source_card_id for item in removed} == {UPKEEP_SOURCE_ID}
+    assert with_irrelevant == both
+
+
+def test_repeated_army_growth_never_becomes_repeated_token_creation() -> None:
+    army = _relationship_card(998, "Army Growth", "Amass Orcs 2.")
+    qualification = RelationshipQualification(
+        kind=QualificationKind.MODE,
+        evidence=OracleEvidence(
+            card_id=army.grp_id,
+            face_index=None,
+            quote=army.oracle_text or "",
+        ),
+        selector="Amass Orcs 2",
+        occurrence=0,
+    )
+    relationship = _relationship(
+        mechanism="token-go-wide-payoff",
+        source=_relationship_participant(
+            army,
+            Role.TOKEN_MAKER,
+            qualifications=(qualification,),
+        ),
+        target=_relationship_participant(
+            THRESHOLD,
+            Role.GO_WIDE_PAYOFF,
+            _threshold_clause(),
+        ),
+    )
+    profile = _relationship_profile(
+        cards=(army, THRESHOLD),
+        relationships=(relationship,),
+        role_cards=(
+            _role_card(army, Role.TOKEN_MAKER, 0.9),
+            _role_card(THRESHOLD, Role.GO_WIDE_PAYOFF, 0.8),
+        ),
+    )
+    ledger = project_pool_role_ledger(
+        pool_before_pick=(army.grp_id, army.grp_id),
+        pack_number=0,
+        pick_number=4,
+        global_pick_index=5,
+        estimated_remaining_picks=37,
+        card_database=_database(army, THRESHOLD),
+        set_profile=profile,
+    )
+
+    assert len(ledger.relationship_support) == 1
+    support = ledger.relationship_support[0]
+    assert support.source_card_count == 2
+    assert support.outcome is RelationshipSupportOutcome.CONDITIONAL
+    assert support.outcome is not RelationshipSupportOutcome.SUPPORTED
+
+
+def test_adventure_faces_contribute_one_drafted_card_identity() -> None:
+    adventure = replace(
+        TOKEN_SOURCE,
+        name="Adventurer // Muster the Company",
+        layout="adventure",
+        faces=(
+            CardFace(name="Adventurer", oracle_text="Vigilance."),
+            CardFace(name="Muster the Company", oracle_text=TOKEN_PARAGRAPH),
+        ),
+    )
+    source_clause = replace(
+        _token_output_clause(adventure),
+        evidence=OracleEvidence(
+            card_id=adventure.grp_id,
+            face_index=1,
+            quote=TOKEN_PARAGRAPH,
+        ),
+    )
+    source = replace(
+        _relationship_participant(adventure, Role.TOKEN_MAKER, source_clause),
+        face_index=1,
+        face_name="Muster the Company",
+    )
+    relationship = _relationship(
+        mechanism="token-go-wide-payoff",
+        source=source,
+        target=_relationship_participant(
+            ANTHEM,
+            Role.GO_WIDE_PAYOFF,
+            _anthem_clause(),
+        ),
+    )
+    profile = _relationship_profile(
+        cards=(adventure, ANTHEM),
+        relationships=(relationship,),
+        role_cards=(
+            _role_card(adventure, Role.TOKEN_MAKER, 0.9),
+            _role_card(ANTHEM, Role.GO_WIDE_PAYOFF, 0.8),
+        ),
+    )
+    ledger = project_pool_role_ledger(
+        pool_before_pick=(adventure.grp_id,),
+        pack_number=0,
+        pick_number=4,
+        global_pick_index=5,
+        estimated_remaining_picks=37,
+        card_database=_database(adventure, ANTHEM),
+        set_profile=profile,
+    )
+
+    assert len(ledger.relationship_support) == 1
+    support = ledger.relationship_support[0]
+    assert support.source_card_id == adventure.grp_id
+    assert support.source_card_count == 1
+    assert support.source_prerequisites[0].evidence.face_index == 1
+
+
+@pytest.mark.parametrize(
+    ("build", "expected"),
+    (
+        pytest.param(
+            _color_withheld_case,
+            RelationshipSupportOutcome.INCOMPATIBLE,
+            id="color-mismatch",
+        ),
+        pytest.param(
+            _type_withheld_case,
+            RelationshipSupportOutcome.INCOMPATIBLE,
+            id="type-mismatch",
+        ),
+        pytest.param(
+            _subtype_withheld_case,
+            RelationshipSupportOutcome.INCOMPATIBLE,
+            id="subtype-mismatch",
+        ),
+        pytest.param(
+            _token_restriction_withheld_case,
+            RelationshipSupportOutcome.INCOMPATIBLE,
+            id="token-restriction-mismatch",
+        ),
+        pytest.param(
+            _controller_withheld_case,
+            RelationshipSupportOutcome.INCOMPATIBLE,
+            id="controller-mismatch",
+        ),
+        pytest.param(
+            _timing_withheld_case,
+            RelationshipSupportOutcome.CONDITIONAL,
+            id="timing-turn-condition",
+        ),
+        pytest.param(
+            _quantity_withheld_case,
+            RelationshipSupportOutcome.UNSUPPORTED,
+            id="insufficient-fixed-quantity",
+        ),
+        pytest.param(
+            _object_identity_withheld_case,
+            RelationshipSupportOutcome.UNSUPPORTED,
+            id="required-object-identity",
+        ),
+        pytest.param(
+            _return_only_recursion_case,
+            RelationshipSupportOutcome.INCOMPATIBLE,
+            id="return-only-recursion-payoff",
+        ),
+        pytest.param(
+            _returned_fodder_case,
+            RelationshipSupportOutcome.UNSUPPORTED,
+            id="fodder-returns-to-hand-not-graveyard",
+        ),
+        pytest.param(
+            _owner_withheld_case,
+            RelationshipSupportOutcome.UNSUPPORTED,
+            id="owner-not-declared-by-source",
+        ),
+        pytest.param(
+            _zone_player_withheld_case,
+            RelationshipSupportOutcome.INCOMPATIBLE,
+            id="graveyard-zone-player-mismatch",
+        ),
+        pytest.param(
+            _partial_requirement_withheld_case,
+            RelationshipSupportOutcome.INCOMPATIBLE,
+            id="unproven-conjunct-requirement",
+        ),
+        pytest.param(
+            _at_least_exactly_withheld_case,
+            RelationshipSupportOutcome.CONDITIONAL,
+            id="at-least-source-exact-target",
+        ),
+        pytest.param(
+            _at_least_at_most_withheld_case,
+            RelationshipSupportOutcome.CONDITIONAL,
+            id="at-least-source-at-most-target",
+        ),
+        pytest.param(
+            _at_most_source_withheld_case,
+            RelationshipSupportOutcome.CONDITIONAL,
+            id="at-most-source-condition",
+        ),
+        pytest.param(
+            _variable_target_quantity_withheld_case,
+            RelationshipSupportOutcome.CONDITIONAL,
+            id="variable-target-quantity",
+        ),
+        pytest.param(
+            _capped_supply_withheld_case,
+            RelationshipSupportOutcome.CONDITIONAL,
+            id="both-caps-condition",
+        ),
+        pytest.param(
+            _quote_only_graveyard_withheld_case,
+            RelationshipSupportOutcome.UNSUPPORTED,
+            id="quote-only-graveyard-predicate",
+        ),
+    ),
+)
+def test_pre_pick_relationship_support_classifies_unproven_interactions(
+    build: Callable[[], _WithheldCase],
+    expected: RelationshipSupportOutcome,
+) -> None:
+    case = build()
+    support = _evaluate_withheld_case(case).relationship_support
+
+    assert len(support) == 1
+    assert support[0].outcome is expected
+    assert support[0].prerequisites
+    if expected is not RelationshipSupportOutcome.SUPPORTED:
+        assert support[0].satisfied_prerequisites == ()
 
 
 @pytest.mark.parametrize(
     "build",
     (
-        pytest.param(_color_withheld_case, id="color-mismatch"),
-        pytest.param(_type_withheld_case, id="type-mismatch"),
-        pytest.param(_subtype_withheld_case, id="subtype-mismatch"),
-        pytest.param(_token_restriction_withheld_case, id="token-restriction-mismatch"),
-        pytest.param(_controller_withheld_case, id="controller-mismatch"),
-        pytest.param(_timing_withheld_case, id="timing-turn-mismatch"),
-        pytest.param(_quantity_withheld_case, id="insufficient-fixed-quantity"),
-        pytest.param(_object_identity_withheld_case, id="required-object-identity"),
         pytest.param(_role_mechanism_withheld_case, id="role-mechanism-mismatch"),
         pytest.param(_free_text_withheld_case, id="free-text-without-projection"),
         pytest.param(_missing_source_card_case, id="missing-source-card"),
-        pytest.param(_return_only_recursion_case, id="return-only-recursion-payoff"),
-        pytest.param(_returned_fodder_case, id="fodder-returns-to-hand-not-graveyard"),
-        pytest.param(_owner_withheld_case, id="owner-not-declared-by-source"),
-        pytest.param(_zone_player_withheld_case, id="graveyard-zone-player-mismatch"),
-        pytest.param(_partial_requirement_withheld_case, id="unproven-conjunct-requirement"),
-        pytest.param(_at_least_exactly_withheld_case, id="at-least-source-exact-target"),
-        pytest.param(_at_least_at_most_withheld_case, id="at-least-source-at-most-target"),
-        pytest.param(_at_most_source_withheld_case, id="at-most-source-withholds"),
-        pytest.param(_variable_target_quantity_withheld_case, id="variable-target-quantity"),
-        pytest.param(_capped_supply_withheld_case, id="both-caps-cap-the-supply"),
-        pytest.param(_quote_only_graveyard_withheld_case, id="quote-only-graveyard-predicate"),
     ),
 )
-def test_pre_pick_relationship_support_withholds_cross_clause_incompatibility(
+def test_relationship_support_omits_unverifiable_records(
     build: Callable[[], _WithheldCase],
 ) -> None:
-    case = build()
-
-    assert _evaluate_withheld_case(case).relationship_support == ()
+    assert _evaluate_withheld_case(build()).relationship_support == ()
 
 
-def test_relationship_support_requires_the_source_to_survive_the_likely_projection() -> None:
+def test_relationship_support_uses_full_pre_pick_pool_without_changing_projected_deck() -> None:
     case = _cut_source_case()
     set_profile = case.profile
     ratings_data = _ProjectionRatings(high_rating_grp_ids=frozenset(_CUT_CASE_FILLER_IDS))
@@ -2063,7 +2329,11 @@ def test_relationship_support_requires_the_source_to_survive_the_likely_projecti
     assert OFF_PLAN_SOURCE_ID not in projected
     assert set(projected) <= set(_CUT_CASE_FILLER_IDS)
     assert len(projected) == DECK_BUILDER.target_spell_count
-    assert _evaluate_withheld_case(case).relationship_support == ()
+    support = _evaluate_withheld_case(case).relationship_support
+    assert len(support) == 1
+    assert support[0].outcome is RelationshipSupportOutcome.SUPPORTED
+    assert support[0].source_card_id == OFF_PLAN_SOURCE_ID
+    assert support[0].source_in_projected_deck is False
 
 
 def test_relationship_support_caps_supply_with_the_smaller_declared_limit() -> None:
@@ -2074,7 +2344,8 @@ def test_relationship_support_caps_supply_with_the_smaller_declared_limit() -> N
     capped = _capped_supply_withheld_case()
 
     assert len(uncapped.ledger().relationship_support) == 1
-    assert _evaluate_withheld_case(capped).relationship_support == ()
+    support = _evaluate_withheld_case(capped).relationship_support
+    assert support[0].outcome is RelationshipSupportOutcome.CONDITIONAL
 
 
 def test_relationship_support_requires_a_compiled_profile_role_assignment() -> None:
@@ -2099,6 +2370,25 @@ def test_completed_pool_evaluation_stays_relationship_neutral() -> None:
     assert completed.relationship_support == ()
     assert completed.to_json()["relationship_support"] == []
     assert len(case.ledger().relationship_support) == 1
+
+
+def test_disabling_relationships_only_removes_relationship_results() -> None:
+    case = _directional_enabler_payoff_case()
+    enabled = case.ledger()
+    disabled = project_pool_role_ledger(
+        pool_before_pick=(case.source.grp_id,),
+        pack_number=0,
+        pick_number=4,
+        global_pick_index=5,
+        estimated_remaining_picks=37,
+        card_database=_database(*case.cards),
+        set_profile=case.profile(),
+        enhanced_relationships_enabled=False,
+    )
+
+    assert enabled.relationship_support
+    assert disabled.relationship_support == ()
+    assert disabled == replace(enabled, relationship_support=())
 
 
 def test_relationship_support_orders_records_and_keeps_raw_model_text_out() -> None:

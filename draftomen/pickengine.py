@@ -21,6 +21,7 @@ from draftomen.pool_ledger import (
     PoolRoleLedger,
     PRE_PICK_PROJECTION,
     RelationshipSupport,
+    RelationshipSupportOutcome,
     TargetCoverage,
     project_pool_role_ledger,
 )
@@ -1485,6 +1486,11 @@ def _relationship_synergy_term(
 
     candidates: list[tuple[float, str]] = []
     for support in ledger.relationship_support:
+        if (
+            support.outcome is not RelationshipSupportOutcome.SUPPORTED
+            or not support.source_in_projected_deck
+        ):
+            continue
         if support.target_card_id != card.grp_id:
             continue
         factor = _RELATIONSHIP_SUPPORT_FACTORS.get(support.mechanism)
@@ -1509,7 +1515,7 @@ def _relationship_evidence(*, support: RelationshipSupport) -> str:
         f"relationship {support.finding_id} ({support.mechanism}) "
         f"for {support.target_card_name} [{support.target_card_id}]: "
         f"drafted {support.source_card_name} [{support.source_card_id}] "
-        f"satisfies {'; '.join(support.satisfied_prerequisites)}"
+        f"satisfies {'; '.join(support.prerequisites)}"
     )
 
 
