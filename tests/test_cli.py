@@ -1754,6 +1754,50 @@ def test_test_draft_prints_ordered_trace_and_build_output(
     )
 
 
+def test_test_draft_prints_relationship_advice_for_an_enhanced_pick(
+    tmp_path: Path,
+) -> None:
+    step = _test_draft_step(
+        pack_number=1,
+        pick_number=4,
+        offered=((7, "Enhanced Pick"), (9, "Runner Up")),
+        accepted_grp_id=7,
+    )
+    recommendation = step.before.snapshot.recommendations.cards[0]
+    enhanced = replace(
+        recommendation,
+        relationship_contributions=(object(),),  # type: ignore[arg-type]
+        explanation="Works with the drafted token maker.",
+    )
+    result = TestDraftRunResult(
+        steps=(
+            replace(
+                step,
+                before=replace(
+                    step.before,
+                    snapshot=replace(
+                        step.before.snapshot,
+                        recommendations=replace(
+                            step.before.snapshot.recommendations,
+                            cards=(
+                                enhanced,
+                                step.before.snapshot.recommendations.cards[1],
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        completed=LiveSessionSnapshot(),
+        build=LiveSessionSnapshot(),
+    )
+
+    assert cli._format_test_draft_trace(result=result) == (
+        "Pack 2 pick 5: Enhanced Pick (grpId 7)\n"
+        "  AI-enhanced advice: Works with the drafted token maker.\n"
+    )
+
+
 @pytest.mark.parametrize("stage", ["startup", "drafting", "build"])
 def test_test_draft_reports_failures_without_deck_output(
     tmp_path: Path,
@@ -4824,7 +4868,6 @@ def test_list_enrichment_reports_an_unreadable_manifest(
     assert captured.out == ""
     assert captured.err == f"list-enrichment failed: {PUBLICATION_ERROR}\n"
 
-
 def test_list_enrichment_reports_an_unreadable_profile_object(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -4864,4 +4907,3 @@ def test_list_enrichment_reports_an_unreadable_profile_object(
     assert exit_code == 1
     assert captured.out == ""
     assert captured.err == f"list-enrichment failed: {PUBLICATION_ERROR}\n"
-

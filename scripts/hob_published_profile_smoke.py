@@ -1,0 +1,355 @@
+"""Verify published HOB relationship advice through Draftmancer and QML.
+The smoke stays offline apart from the caller-managed local Draftmancer server.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from collections.abc import Sequence
+from dataclasses import replace
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen.profile_client import ProfileNetworkPolicy
+from draftomen.qt_adapter import GuiPreferencesAdapter, SessionAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.session import ChangeAiEnhancedSuggestions, RequestBuild
+from draftomen.test_draft import (
+    DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
+    DEFAULT_TEST_DRAFT_SERVER_URL,
+    DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
+    TestDraftInspection,
+    create_test_draft_runtime,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_PICKS = 42
+
+
+class HobPublishedProfileSmokeError(RuntimeError):
+    """Report a failed published-profile journey.
+    The message is suitable for the command-line failure summary.
+    """
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the published HOB profile smoke parser.
+    Every external input stays explicit and local.
+    """
+
+    parser = argparse.ArgumentParser(
+        description="Verify recovered HOB advice through real Draftmancer and QML"
+    )
+    parser.add_argument("--draftmancer-dir", type=Path, required=True)
+    parser.add_argument(
+        "--scryfall-bulk-file",
+        type=Path,
+        default=DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
+    )
+    parser.add_argument("--app-dir", type=Path, required=True)
+    parser.add_argument("--report", type=Path, default=None)
+    parser.add_argument("--screenshot", type=Path, required=True)
+    parser.add_argument("--server-url", default=DEFAULT_TEST_DRAFT_SERVER_URL)
+    parser.add_argument(
+        "--timeout", type=float, default=DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS
+    )
+    return parser
+
+
+def _advice_row(inspection: TestDraftInspection):
+    """Return the first relationship-bearing recommendation in one real offer.
+    The offer order is retained so the evidence remains reproducible.
+    """
+
+    return next(
+        (
+            row
+            for row in inspection.snapshot.recommendations.cards
+            if row.relationship_contributions and row.explanation
+        ),
+        None,
+    )
+
+
+def _offer_evidence(*, inspection: TestDraftInspection) -> dict[str, object]:
+    """Project one server offer into bounded relationship-advice evidence."""
+
+    advice_rows = []
+    for row in inspection.snapshot.recommendations.cards:
+        if not row.relationship_contributions:
+            continue
+        advice_rows.append(
+            {
+                "grp_id": row.card.grp_id,
+                "name": row.card.name,
+                "rank": row.rank,
+                "relationships": [
+                    {
+                        "effective_contribution": contribution.effective_contribution,
+                        "finding_id": contribution.support.finding_id,
+                        "mechanism": contribution.support.mechanism,
+                        "outcome": contribution.support.outcome.value,
+                    }
+                    for contribution in row.relationship_contributions
+                ],
+            }
+        )
+    return {
+        "pack": inspection.offer.pack_number + 1,
+        "pick": inspection.offer.pick_number + 1,
+        "offered_grp_ids": list(inspection.offer.offered_grp_ids),
+        "pool_grp_ids": list(inspection.offer.pool_grp_ids),
+        "advice_rows": advice_rows,
+        "no_advice_reason": (
+            None
+            if advice_rows
+            else "no offered recommendation had relationship support from the drafted pool"
+        ),
+    }
+
+
+def _render_advice(
+    *,
+    inspection: TestDraftInspection,
+    grp_id: int,
+    app_dir: Path,
+    screenshot: Path,
+) -> str:
+    """Render one real recommendation through the production CardPreview QML.
+    The label text is read back before the offscreen window is captured.
+    """
+
+    QQuickStyle.setStyle("Fusion")
+    application = QGuiApplication.instance() or QGuiApplication([])
+    recommendations = replace(
+        inspection.snapshot.recommendations,
+        selected_grp_id=grp_id,
+    )
+    snapshot = replace(inspection.snapshot, recommendations=recommendations)
+    provider = SessionAdapter(snapshot=snapshot)
+    preferences = GuiPreferencesAdapter(app_dir=app_dir, parent=application)
+    engine = QQmlApplicationEngine()
+    qml_directory = REPO_ROOT / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", _fixed_font_family())
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("guiPreferences", preferences)
+    component = QQmlComponent(engine)
+    component.setData(
+        b"""
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+
+ApplicationWindow {
+    id: host
+    width: 700
+    height: 760
+    visible: true
+    readonly property var selectedRecommendation: {
+        const state = sessionProvider.state.recommendations
+        for (let index = 0; index < state.cards.length; index++) {
+            if (state.cards[index].card.grp_id === state.selected_grp_id)
+                return state.cards[index]
+        }
+        return null
+    }
+    CardPreview {
+        id: preview
+        objectName: "publishedProfileCardPreview"
+        anchors.fill: parent
+        detailedIntel: true
+        recommendation: host.selectedRecommendation
+        imageState: sessionProvider.state.card_image
+    }
+}
+""",
+        QUrl.fromLocalFile(str(qml_directory / "PublishedProfileSmoke.qml")),
+    )
+    if component.status() != QQmlComponent.Status.Ready:
+        raise HobPublishedProfileSmokeError(
+            "; ".join(error.toString() for error in component.errors())
+        )
+    host = component.create()
+    if host is None:
+        raise HobPublishedProfileSmokeError("CardPreview QML did not create a window")
+    application.processEvents()
+    preview = host.findChild(QObject, "publishedProfileCardPreview")
+    explanation = (
+        None
+        if preview is None
+        else preview.findChild(QObject, "cardPreviewExplanation")
+    )
+    if explanation is None:
+        raise HobPublishedProfileSmokeError("CardPreview explanation label is missing")
+    rendered = explanation.property("text")
+    if not isinstance(rendered, str) or not rendered:
+        raise HobPublishedProfileSmokeError("CardPreview explanation label is empty")
+    screenshot.parent.mkdir(parents=True, exist_ok=True)
+    image = host.grabWindow()
+    if image.isNull() or not image.save(str(screenshot)):
+        raise HobPublishedProfileSmokeError(
+            f"could not save QML screenshot to {screenshot}"
+        )
+    host.close()
+    preferences.shutdown()
+    del engine
+    return rendered
+
+
+def _run(args: argparse.Namespace) -> dict[str, object]:
+    """Complete one rank-one HOB draft and prove advice on, off, and in QML.
+    The profile client is forced offline and no model provider is constructed.
+    """
+
+    runtime = create_test_draft_runtime(
+        draftmancer_dir=args.draftmancer_dir,
+        scryfall_bulk_file=args.scryfall_bulk_file,
+        server_url=args.server_url,
+        set_code="HOB",
+        timeout_seconds=args.timeout,
+        source_app_dir=args.app_dir,
+        profile_manifest_url=None,
+        profile_network_policy=ProfileNetworkPolicy.OFFLINE,
+        splash_enabled=True,
+        contextual_adjustments_enabled=True,
+        ai_enhanced_suggestions_enabled=True,
+    )
+    advice_inspection = None
+    advice_grp_id = None
+    advice_off_verified = False
+    steps = []
+    offers = []
+    try:
+        inspection = runtime.controller.start()
+        while True:
+            offer_evidence = _offer_evidence(inspection=inspection)
+            advice = _advice_row(inspection)
+            if advice is not None and advice_inspection is None:
+                advice_inspection = inspection
+                advice_grp_id = advice.card.grp_id
+                runtime.session.dispatch(
+                    command=ChangeAiEnhancedSuggestions(enabled=False)
+                )
+                disabled = next(
+                    row
+                    for row in runtime.session.snapshot.recommendations.cards
+                    if row.card.grp_id == advice_grp_id
+                )
+                advice_off_verified = not disabled.relationship_contributions
+                runtime.session.dispatch(
+                    command=ChangeAiEnhancedSuggestions(enabled=True)
+                )
+                inspection = runtime.controller.inspect()
+            top = inspection.snapshot.recommendations.cards[0]
+            offer_evidence["chosen_grp_id"] = top.card.grp_id
+            offers.append(offer_evidence)
+            step = runtime.controller.confirm(
+                grp_id=top.card.grp_id,
+                expected_offer=inspection.offer,
+            )
+            steps.append(step)
+            if step.after.draft is not None and step.after.draft.completed:
+                break
+            inspection = runtime.controller.inspect()
+        build = runtime.session.dispatch(command=RequestBuild())
+        if build.build is None:
+            raise HobPublishedProfileSmokeError(
+                "the completed draft did not produce a build"
+            )
+    finally:
+        runtime.close()
+
+    if len(steps) != EXPECTED_PICKS:
+        raise HobPublishedProfileSmokeError(
+            f"Draftmancer completed with {len(steps)} picks instead of {EXPECTED_PICKS}"
+        )
+    if advice_inspection is None or advice_grp_id is None:
+        raise HobPublishedProfileSmokeError(
+            "no relationship-bearing recommendation appeared in the complete draft"
+        )
+    if not advice_off_verified:
+        raise HobPublishedProfileSmokeError(
+            "the same offer retained relationship advice after the enhancement was disabled"
+        )
+    advice = next(
+        row
+        for row in advice_inspection.snapshot.recommendations.cards
+        if row.card.grp_id == advice_grp_id
+    )
+    rendered = _render_advice(
+        inspection=advice_inspection,
+        grp_id=advice_grp_id,
+        app_dir=args.app_dir,
+        screenshot=args.screenshot,
+    )
+    if rendered != advice.explanation:
+        raise HobPublishedProfileSmokeError(
+            "CardPreview did not render the recommendation explanation verbatim"
+        )
+    profile_path = args.app_dir / "set-profiles" / "hob-quickdraft.json"
+    profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    report = {
+        "schema_version": 1,
+        "profile_sha256": profile_sha256,
+        "selection_policy": "rank-one",
+        "offers": offers,
+        "same_offer_ai_off": {
+            "pack": advice_inspection.offer.pack_number + 1,
+            "pick": advice_inspection.offer.pick_number + 1,
+            "grp_id": advice_grp_id,
+            "relationship_contributions_removed": advice_off_verified,
+        },
+        "qml": {
+            "card": advice.card.name,
+            "explanation_matches": True,
+            "screenshot": str(args.screenshot),
+        },
+    }
+    if args.report is not None:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(
+            json.dumps(
+                report, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    return {
+        "status": "ok",
+        "set_code": "hob",
+        "selection_policy": "rank-one",
+        "picks": len(steps),
+        "packs": sorted({step.before.offer.pack_number + 1 for step in steps}),
+        "advice_pack": advice_inspection.offer.pack_number + 1,
+        "advice_pick": advice_inspection.offer.pick_number + 1,
+        "advice_card": advice.card.name,
+        "advice_off_verified": advice_off_verified,
+        "qml_rendered": True,
+        "report": None if args.report is None else str(args.report),
+        "screenshot": str(args.screenshot),
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the published-profile smoke and print one canonical summary."""
+
+    args = build_parser().parse_args(args=argv)
+    try:
+        result = _run(args)
+    except Exception as error:
+        print(f"HOB published profile smoke failed: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

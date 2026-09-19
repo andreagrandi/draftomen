@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Republish the recovered HOB Quick Draft enrichment and expose relationship advice in the
+  headless real-Draftmancer pick trace. (#595)
+
 - Show readable drafted-card relationship advice in focused card intel, including useful
   interactions whose effective score increment is zero, and explain the independent contextual
   scoring and AI-enhancement settings in the desktop UI. (#594)
