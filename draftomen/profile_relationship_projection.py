@@ -66,7 +66,11 @@ from draftomen.semantic_relationship_records import (
     validate_relationship_pins,
     validate_relationship_sources,
 )
-from draftomen.semantic_roles import Role, friendly_untap_statement
+from draftomen.semantic_roles import (
+    Role,
+    friendly_untap_statement,
+    token_replacement_statement,
+)
 from draftomen.set_enrichment_candidates import ROLE_COMPATIBILITY_RULES
 from draftomen.set_enrichment_extraction import (
     _canonical_evidence,
@@ -454,6 +458,22 @@ def _decode_capability(fact: OracleFact) -> CardCapability | None:
         and all(friendly_untap_statement(item.quote) is not None for item in capability.evidence)
     ):
         return replace(capability, role=Role.UNTAP_SUPPORT)
+    if (
+        capability.role is Role.TOKEN_MAKER
+        and capability.evidence
+        and all(
+            token_replacement_statement(item.quote) is not None
+            for item in capability.evidence
+        )
+    ):
+        return replace(
+            capability,
+            role=Role.TOKEN_REPLACEMENT,
+            action=CapabilityAction.REPLACE,
+            quantity=None,
+            source_zone=None,
+            destination_zone=None,
+        )
     return capability
 
 
@@ -533,6 +553,15 @@ def _compile_relationship(
             relationship,
             RelationshipConversionOutcome.MISSING_EVIDENCE,
             "target_capability_fact_unusable",
+        )
+    if (
+        source.role is Role.TOKEN_REPLACEMENT
+        and link.enabler is Role.TOKEN_MAKER
+    ):
+        return _unconverted(
+            relationship,
+            RelationshipConversionOutcome.UNSUPPORTED,
+            "token_replacement_requires_separate_source",
         )
     if source.role is not link.enabler:
         return _unconverted(

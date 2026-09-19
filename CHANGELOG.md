@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Represent token-creation replacement effects as source-dependent modifiers so they cannot be
+  counted as independent token supply during offline relationship conversion. (#610)
 - Recover friendly untap effects as typed support instead of disabling removal, including exact
   target, controller, and source-exclusion restrictions in regenerated role profiles. (#609)
 - Preserve Adventure component selection and printed exile-then-cast reminders as face-bound

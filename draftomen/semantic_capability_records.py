@@ -61,6 +61,7 @@ class CapabilityAction(StrEnum):
     ENTER = "enter"
     LEAVE = "leave"
     MILL = "mill"
+    REPLACE = "replace"
     RETURN = "return"
     SACRIFICE = "sacrifice"
     OTHER = "other"

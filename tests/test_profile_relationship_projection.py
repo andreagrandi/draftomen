@@ -462,6 +462,63 @@ def test_friendly_untap_fact_is_recovered_without_disabling_removal() -> None:
     assert capability.prerequisites[0].evidence.quote == "When this creature enters"
 
 
+def test_token_replacement_fact_is_recovered_without_token_supply() -> None:
+    """The offline decoder preserves Bard's dependency without producer semantics."""
+    template = _confirmation().oracle_facts[0]
+    quote = (
+        "If one or more tokens would be created under your control, "
+        "twice that many of those tokens are created instead."
+    )
+    claim = {
+        "action": "create",
+        "card_name": "Bard, King of Dale",
+        "destination_zone": "battlefield",
+        "face_index": None,
+        "face_name": None,
+        "prerequisites": [
+            {
+                "destination_zone": "battlefield",
+                "evidence": {"card_id": 103524, "face_index": None, "quote": quote},
+                "kind": "trigger",
+                "quantity": {"relation": "at_least", "value": 1},
+                "source_zone": None,
+                "timing": None,
+            }
+        ],
+        "qualifier": {
+            "card_types": [],
+            "mana_value": None,
+            "subtype": None,
+            "token_restriction": "unrestricted",
+        },
+        "quantity": {"relation": "variable", "value": None},
+        "role": "token_maker",
+        "source_zone": None,
+        "timing": None,
+        "zone": "battlefield",
+    }
+    fact = dataclasses.replace(
+        template,
+        finding_id=f"{template.run_id}:103524-token-creation-replacement",
+        card_id=103524,
+        kind="token_maker",
+        claim=json.dumps(claim, separators=(",", ":"), sort_keys=True),
+        evidence=(OracleEvidence(card_id=103524, face_index=None, quote=quote),),
+    )
+
+    capability = _decode_capability(fact)
+
+    assert capability is not None
+    assert capability.role.value == "token_replacement"
+    assert capability.action.value == "replace"
+    assert capability.quantity is None
+    assert capability.source_zone is None
+    assert capability.destination_zone is None
+    assert capability.prerequisites[0].quantity is not None
+    assert capability.prerequisites[0].quantity.value == 1
+    assert capability.evidence == fact.evidence
+
+
 def test_safe_mill_pair_gains_a_source_bound_projection() -> None:
     """A confirmed self-mill/counted-state pair gains exact typed clauses under the gates."""
     artifact = _confirmation()
@@ -1498,4 +1555,6 @@ def test_bard_replacement_wording_declares_no_creation_family() -> None:
     compilation = _compile(artifact)
     relationship = _row(compilation, _BARD_REPLACEMENT)
     assert relationship.prerequisite_projection is None
-    assert _conversion(compilation, _BARD_REPLACEMENT).outcome is RelationshipConversionOutcome.UNSUPPORTED
+    conversion = _conversion(compilation, _BARD_REPLACEMENT)
+    assert conversion.outcome is RelationshipConversionOutcome.UNSUPPORTED
+    assert conversion.reason == "token_replacement_requires_separate_source"

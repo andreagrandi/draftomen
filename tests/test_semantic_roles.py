@@ -22,6 +22,7 @@ from draftomen.semantic_roles import (
     RoleProfileError,
     RoleSchemaError,
     ThresholdParameters,
+    TokenReplacementCharacteristics,
     TypalIdentity,
     UntapCharacteristics,
     classify_card,
@@ -43,27 +44,27 @@ _GENERIC_DEFINITION_WORDS = frozenset(
         "basic", "battle", "battlefield", "be", "blocking", "build", "can", "card", "cards",
         "carries", "carrying", "cast", "casting", "causes", "changes", "chosen", "clues", "color",
         "combat", "condition", "contents", "control", "controlling", "converts", "cost", "count",
-        "counters", "counters-theme", "creates", "creature", "creature's", "creatures", "damage",
+        "counters", "counters-theme", "creates", "creation", "creature", "creature's", "creatures", "damage",
         "deals", "death", "declared", "dependent", "destroys", "die", "dies", "discard",
-        "discarding", "discards", "do", "domain", "drawing", "draws", "dying", "each", "effect",
+        "discarding", "discards", "do", "domain", "drawing", "draws", "dying", "each", "effect", "event",
         "enables", "enchantment", "enchantments", "end", "enters", "entry", "equip", "equipment",
         "equipped", "evasion", "excess", "exile", "exiles", "extra", "fills", "filters", "five",
         "flying", "food", "for", "four", "from", "gains", "graveyard", "group", "hand", "in",
         "instead", "instruction", "into", "is", "it", "its", "itself", "keeps", "keywords", "land",
         "lands", "less", "lets", "library", "life", "lifelink", "loss", "maker", "makes", "mana",
-        "many", "meets", "membership", "menace", "metadata", "milling", "modified", "more",
+        "many", "meets", "membership", "menace", "metadata", "milling", "modified", "more", "multiplies",
         "net-positive", "next", "nonland", "not", "number", "of", "off", "on", "one", "only",
         "onto", "opposing", "optional", "or", "orders", "other", "owner's", "package", "payment",
         "pays", "per-creature", "permanent", "permanents", "places", "planeswalker", "play",
         "playing", "power", "produced-mana", "produces", "provides", "puts", "putting", "qualify",
         "records", "recursion", "references", "refers", "removal", "replacing", "request",
-        "required", "resource", "return", "returns", "rewards", "role", "sacrificed",
-        "sacrifices", "satisfies", "scales", "searches", "second", "selection", "shadow",
+        "required", "requires", "resource", "return", "returns", "rewards", "role", "sacrificed",
+        "sacrifices", "satisfies", "scales", "searches", "second", "selection", "separate", "shadow", "source",
         "sharing", "so", "spell", "spells", "stack", "state", "stated", "static", "strips",
         "subtype", "such", "supplies", "supports", "taps", "target", "targeted", "temporarily",
         "text", "than", "that", "the", "them", "then", "this", "threshold", "through", "to",
         "token", "tokens", "top", "toughness", "treasure", "treasures", "trigger", "triggers",
-        "turn", "turns", "two", "typal", "type", "types", "unblockable", "untapping", "until",
+        "turn", "turns", "two", "typal", "type", "types", "unblockable", "under", "untapping", "until",
         "untaps", "used", "value", "variable", "when", "whenever", "whether", "whose", "with", "you", "your",
     }
 )
@@ -211,6 +212,43 @@ def test_friendly_untap_support_preserves_target_restrictions() -> None:
     assert Role.DISABLING_REMOVAL in _roles(
         classify_card(_fixtures()["role-disable"])
     )
+
+
+def test_token_replacement_requires_a_separate_source() -> None:
+    bard = classify_card(
+        {
+            "oracle_id": "token-replacement",
+            "name": "Token Multiplier",
+            "set": "tst",
+            "layout": "normal",
+            "oracle_text": (
+                "If one or more tokens would be created under your control, "
+                "twice that many of those tokens are created instead."
+            ),
+            "type_line": "Creature — Archer",
+            "types": ["Creature"],
+            "subtypes": ["Archer"],
+            "mana_value": 6,
+        }
+    )
+    assignment = next(
+        item for item in bard.assignments if item.role is Role.TOKEN_REPLACEMENT
+    )
+    assert Role.TOKEN_MAKER not in _roles(bard)
+    assert assignment.token_replacement == TokenReplacementCharacteristics(
+        controller="you",
+        multiplier=2,
+        requires_separate_source=True,
+    )
+    assert assignment.evidence[0] == (
+        "If one or more tokens would be created under your control, "
+        "twice that many of those tokens are created instead"
+    )
+    assert RoleAssignment.from_json(assignment.to_json()) == assignment
+
+    actual_source = classify_card(_fixtures()["role-token-wide"])
+    assert Role.TOKEN_MAKER in _roles(actual_source)
+    assert Role.TOKEN_REPLACEMENT not in _roles(actual_source)
 
 
 def test_multiface_roles_are_union_and_order_is_stable() -> None:

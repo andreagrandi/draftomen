@@ -22,8 +22,8 @@ from typing import Any, TypeAlias
 
 from draftomen.carddb import CardFace, CardInfo, UNKNOWN_SOURCE_PROVENANCE
 
-ROLE_SCHEMA_VERSION = 3
-CLASSIFIER_VERSION = "1.2"
+ROLE_SCHEMA_VERSION = 4
+CLASSIFIER_VERSION = "1.3"
 PROFILE_SCHEMA_VERSION = 2
 RESULT_SCHEMA_VERSION = 1
 OVERRIDE_SCHEMA_VERSION = 1
@@ -31,6 +31,11 @@ OVERRIDE_SCHEMA_VERSION = 1
 _FRIENDLY_UNTAP_PATTERN = re.compile(
     r"untap\s+(?P<another>another\s+)?target\s+"
     r"(?P<target>creature|permanent)\s+you\s+control",
+    re.IGNORECASE,
+)
+_TOKEN_REPLACEMENT_PATTERN = re.compile(
+    r"(?P<selector>If one or more tokens would be created under your control, "
+    r"twice that many of those tokens are created instead)\.?",
     re.IGNORECASE,
 )
 
@@ -75,6 +80,7 @@ class Role(str, Enum):
     EVASIVE_THREAT = "evasive_threat"
     LARGE_CREATURE = "large_creature"
     TOKEN_MAKER = "token_maker"
+    TOKEN_REPLACEMENT = "token_replacement"
     GO_WIDE_ENABLER = "go_wide_enabler"
     GO_WIDE_PAYOFF = "go_wide_payoff"
     TYPAL_MEMBER = "typal_member"
@@ -153,6 +159,7 @@ _ROLE_DEFINITIONS: dict[Role, str] = {
     Role.EVASIVE_THREAT: "Carries an evasion ability such as flying, menace, unblockable or shadow.",
     Role.LARGE_CREATURE: "Is a creature with power four or more, or mana value five or more.",
     Role.TOKEN_MAKER: "Creates one or more creature tokens; treasure, food and other artifact tokens alone do not qualify.",
+    Role.TOKEN_REPLACEMENT: "Multiplies a token creation event under your control and requires a separate token source.",
     Role.GO_WIDE_ENABLER: "Creates two or more creature tokens with one instruction.",
     Role.GO_WIDE_PAYOFF: "Rewards controlling many creatures, such as through a per-creature count or an attack trigger.",
     Role.TYPAL_MEMBER: "Is a creature carrying a subtype that a typal package can build around.",
@@ -394,6 +401,49 @@ class UntapCharacteristics:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class TokenReplacementCharacteristics:
+    """Typed restrictions on one token creation replacement effect."""
+
+    controller: str
+    multiplier: int
+    requires_separate_source: bool
+
+    def __post_init__(self) -> None:
+        if self.controller != "you":
+            raise RoleSchemaError("Token replacement must apply under your control.")
+        if (
+            isinstance(self.multiplier, bool)
+            or not isinstance(self.multiplier, int)
+            or self.multiplier < 2
+        ):
+            raise RoleSchemaError("Token replacement multiplier must be at least two.")
+        if type(self.requires_separate_source) is not bool:
+            raise RoleSchemaError("Token replacement source dependency must be a boolean.")
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "controller": self.controller,
+            "kind": "token_replacement",
+            "multiplier": self.multiplier,
+            "requires_separate_source": self.requires_separate_source,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> TokenReplacementCharacteristics:
+        _object(value, "token replacement parameters")
+        if value.get("kind") != "token_replacement":
+            raise RoleSchemaError("Token replacement parameters have an invalid kind.")
+        return cls(
+            controller=_required_str(value.get("controller"), "token_replacement.controller"),
+            multiplier=_required_int(value.get("multiplier"), "token_replacement.multiplier"),
+            requires_separate_source=_required_bool(
+                value.get("requires_separate_source"),
+                "token_replacement.requires_separate_source",
+            ),
+        )
+
+
 def friendly_untap_statement(text: str) -> tuple[str, UntapCharacteristics] | None:
     """Return exact text and typed restrictions for one friendly untap instruction."""
     if not isinstance(text, str):
@@ -411,12 +461,32 @@ def friendly_untap_statement(text: str) -> tuple[str, UntapCharacteristics] | No
     )
 
 
+def token_replacement_statement(
+    text: str,
+) -> tuple[str, TokenReplacementCharacteristics] | None:
+    """Return exact text and typed restrictions for one token replacement instruction."""
+    if not isinstance(text, str):
+        return None
+    match = _TOKEN_REPLACEMENT_PATTERN.search(text)
+    if match is None:
+        return None
+    return (
+        match.group("selector"),
+        TokenReplacementCharacteristics(
+            controller="you",
+            multiplier=2,
+            requires_separate_source=True,
+        ),
+    )
+
+
 RoleParameters: TypeAlias = (
     RemovalCharacteristics
     | TypalIdentity
     | ProducedResources
     | ThresholdParameters
     | UntapCharacteristics
+    | TokenReplacementCharacteristics
 )
 
 
@@ -460,6 +530,7 @@ class RoleAssignment:
             Role.PERMANENT_TYPE_THRESHOLD: (ThresholdParameters,),
             Role.SPELL_COUNT_THRESHOLD: (ThresholdParameters,),
             Role.UNTAP_SUPPORT: (UntapCharacteristics,),
+            Role.TOKEN_REPLACEMENT: (TokenReplacementCharacteristics,),
         }
         expected = allowed.get(role, ())
         optional_parameter_roles = {Role.CONDITIONAL_REMOVAL}
@@ -491,6 +562,14 @@ class RoleAssignment:
     def untap(self) -> UntapCharacteristics | None:
         return self.parameters if isinstance(self.parameters, UntapCharacteristics) else None
 
+    @property
+    def token_replacement(self) -> TokenReplacementCharacteristics | None:
+        return (
+            self.parameters
+            if isinstance(self.parameters, TokenReplacementCharacteristics)
+            else None
+        )
+
     def to_json(self) -> dict[str, object]:
         result: dict[str, object] = {
             "confidence": self.confidence,
@@ -520,6 +599,8 @@ class RoleAssignment:
                 parameters = ThresholdParameters.from_json(parameters_value)
             elif kind == "untap":
                 parameters = UntapCharacteristics.from_json(parameters_value)
+            elif kind == "token_replacement":
+                parameters = TokenReplacementCharacteristics.from_json(parameters_value)
             else:
                 raise RoleSchemaError(f"Unsupported role parameter kind {kind!r}.")
         return cls(
@@ -1520,6 +1601,15 @@ def _infer_assignments_single(
         r"([^.;]*?)\s+tokens?\b",
         lower,
     )
+    token_replacement = token_replacement_statement(text)
+    if token_replacement is not None:
+        selector, characteristics = token_replacement
+        role(
+            Role.TOKEN_REPLACEMENT,
+            confidence=0.98,
+            parameters=characteristics,
+            why=selector,
+        )
     if token_match or re.search(r"\bcreate\s+[^.;]*\btoken\b", lower):
         role(Role.TOKEN_MAKER, confidence=0.88, why="creates one or more tokens")
         if token_match:

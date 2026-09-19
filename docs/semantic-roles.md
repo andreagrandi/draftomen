@@ -41,8 +41,9 @@ arbitrary capitalized words, so an ordinary word cannot become a mechanic.
 The role vocabulary covers interaction (including typed effective-removal
 characteristics), card advantage/selection, creature and typal identity,
 tokens, sacrifice/death, graveyard, permanent types/equipment/counters,
-friendly untap support with typed target restrictions, land/mana (including typed produced resources), and numeric power/permanent and
-other state thresholds. One card can have any number of assignments.
+friendly untap support with typed target restrictions, token-creation replacement effects with
+their separate-source dependency, land/mana (including typed produced resources), and numeric
+power/permanent and other state thresholds. One card can have any number of assignments.
 
 ## Reviewed overrides
 
