@@ -655,37 +655,37 @@ def render_pick_rationale_detailed(
         f"Base rating: {scored_card.base_score:.2f} DO points.",
         f"Rating evidence: {rating_phrase}.",
     ]
-    maturity = scored_card.contextual_profile_maturity
-    if maturity is not None:
-        confidence = scored_card.contextual_profile_confidence
-        if confidence is None:
-            parts.append(
-                f"Profile evidence is {maturity}; "
-                "confidence in that evidence is unavailable."
-            )
-        else:
-            parts.append(
-                f"Profile evidence is {maturity}; "
-                f"confidence in that evidence is {confidence:.0%}, "
-                "not a win probability."
-            )
-
     for reason in rationale.reasons:
+        if reason.kind == "fixing":
+            continue
         if reason.kind == "color" or reason.kind in _TERM_BOUNDS:
             if _precise_contribution(reason.contribution) in {
                 "+0.00 DO points",
                 "-0.00 DO points",
             }:
                 continue
-            parts.append(_detailed_reason(reason=reason))
+            detail = _detailed_reason(reason=reason)
+            if detail:
+                parts.append(detail)
         elif reason.kind in {"splash", "tiebreaker"}:
             parts.append(_concise_reason(reason=reason))
-    parts.extend(
+    return " ".join(parts)
+
+
+def render_relationship_advice_summary(
+    *,
+    scored_card: ScoredCard,
+) -> str | None:
+    """Render only drafted-card relationship advice for a recommendation.
+    Ordinary rating and contextual rationale stay in the standard explanation.
+    """
+
+    advice = tuple(
         render_relationship_advice(contribution=contribution)
         for contribution in scored_card.relationship_contributions
         if contribution.raw_contribution > 0.0
     )
-    return " ".join(parts)
+    return " ".join(advice) or None
 
 
 def render_relationship_advice(
@@ -772,7 +772,7 @@ def _concise_reason(*, reason: PickReason) -> str:
     return "Additional pick evidence is available."
 
 
-def _detailed_reason(*, reason: PickReason) -> str:
+def _detailed_reason(*, reason: PickReason) -> str | None:
     contribution = _precise_contribution(reason.contribution)
     if reason.kind == "color":
         stem = (
@@ -786,16 +786,17 @@ def _detailed_reason(*, reason: PickReason) -> str:
             match = _ROLE_EVIDENCE_PATTERN.fullmatch(evidence)
             if match is None:
                 continue
-            target = match.group("target").replace("_", " ")
+            target_key = match.group("target")
+            if target_key == "mana_producer":
+                continue
+            target = target_key.replace("_", " ")
             descriptions.append(
                 f"Helps fill your deck's {target} gap: "
                 f"{match.group('count')} of {match.group('minimum')} preferred cards"
             )
-        stem = (
-            "; ".join(descriptions)
-            if descriptions
-            else "Helps fill a missing role in your deck"
-        )
+        if not descriptions:
+            return None
+        stem = "; ".join(descriptions)
     elif reason.kind == "synergy":
         stem = "Works with support already in your deck"
     else:
@@ -805,7 +806,7 @@ def _detailed_reason(*, reason: PickReason) -> str:
             ),
             "redundancy": "Overlaps with roles your deck already covers",
             "unsupported_payoff": "Needs support your deck does not yet have",
-            "fixing": "Helps your deck produce the colors it needs",
+            "fixing": "",
         }[reason.kind]
     return f"{stem} ({contribution})."
 

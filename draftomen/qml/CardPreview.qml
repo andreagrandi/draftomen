@@ -440,6 +440,30 @@ Rectangle {
                     font.pixelSize: Theme.textPixelSize(12)
                     wrapMode: Text.WordWrap
                 }
+
+                Label {
+                    objectName: "cardPreviewRelationshipHeading"
+                    Layout.fillWidth: true
+                    visible: Boolean(root.recommendation
+                        && root.recommendation.relationship_advice)
+                    text: "AI-ENHANCED RELATIONSHIP ADVICE"
+                    color: Theme.primary
+                    font.pixelSize: Theme.textPixelSize(11)
+                    font.bold: true
+                }
+
+                Label {
+                    objectName: "cardPreviewRelationshipAdvice"
+                    Layout.fillWidth: true
+                    visible: Boolean(root.recommendation
+                        && root.recommendation.relationship_advice)
+                    text: root.recommendation
+                        ? root.recommendation.relationship_advice || "" : ""
+                    textFormat: Text.PlainText
+                    color: Theme.text
+                    font.pixelSize: Theme.textPixelSize(12)
+                    wrapMode: Text.WordWrap
+                }
             }
         }
 
@@ -449,4 +473,3 @@ Rectangle {
         }
     }
 }
-

@@ -34,6 +34,7 @@ from draftomen.pickengine import (
     recommendation_confidence_summary,
     render_pick_rationale_concise,
     render_pick_rationale_detailed,
+    render_relationship_advice_summary,
     score_pack,
 )
 from draftomen.pool_ledger import (
@@ -341,11 +342,12 @@ def test_contextual_rationale_keeps_material_term_order_and_evidence() -> None:
         "synergy": "Works with support already in your deck",
         "redundancy": "Overlaps with roles your deck already covers",
         "unsupported_payoff": "Needs support your deck does not yet have",
-        "fixing": "Helps your deck produce the colors it needs",
     }
     for reason in contextual_reasons:
-        assert expected_stems[reason.kind] in detailed
-        assert f"({reason.contribution:+.2f} DO points)." in detailed
+        if reason.kind != "fixing":
+            assert expected_stems[reason.kind] in detailed
+            assert f"({reason.contribution:+.2f} DO points)." in detailed
+    assert "produce the colors it needs" not in detailed
     assert all(
         (
             reason.contribution > 0
@@ -421,8 +423,8 @@ def test_detailed_rationale_omits_rounded_zero_additive_terms() -> None:
     assert "-0.00 DO points" not in explanation
     assert "+0.004" not in explanation
     assert "-0.004" not in explanation
-    assert "(+0.01 DO points)." in explanation
-    assert "Helps your deck produce the colors it needs" in explanation
+    assert "(+0.01 DO points)." not in explanation
+    assert "produce the colors it needs" not in explanation
     assert "score accounting remainder" not in explanation
     assert "collective-cap" not in explanation
     assert "score-clamp" not in explanation
@@ -435,6 +437,35 @@ def test_detailed_rationale_omits_rounded_zero_additive_terms() -> None:
     assert tuple(
         reason.preserved_evidence for reason in scored_card.rationale.reasons
     ) == preserved_evidence
+
+
+def test_detailed_rationale_omits_mana_producer_gap_copy() -> None:
+    source_card = PickEngine(ratings_data=_ratings_data()).score_pack(
+        offered_grp_ids=(6,),
+        card_database=_card_database(),
+    ).cards[0]
+    rating_reason = next(
+        reason for reason in source_card.rationale.reasons if reason.kind == "rating"
+    )
+    scored_card = replace(
+        source_card,
+        rationale=PickRationale(
+            reasons=(
+                rating_reason,
+                PickReason(
+                    kind="role",
+                    contribution=0.25,
+                    phrase="fills a role deficit",
+                    evidence=("fills mana_producer deficit (0/2)",),
+                ),
+            ),
+        ),
+    )
+
+    explanation = render_pick_rationale_detailed(scored_card=scored_card)
+
+    assert "mana producer" not in explanation
+    assert "Helps fill a missing role" not in explanation
 
 
 def test_detailed_rationale_describes_material_color_fit_by_sign() -> None:
@@ -752,20 +783,14 @@ def test_detailed_rating_reasons_retain_source_facts_and_evidence_scope() -> Non
     )
 
     assert "neutral-prior estimate with no GIH data" in no_gih_explanation
-    assert "Profile evidence is mature" in no_gih_explanation
-    assert "confidence in that evidence is 42%, not a win probability" in (
-        no_gih_explanation
-    )
+    assert "Profile evidence" not in no_gih_explanation
+    assert "confidence in that evidence" not in no_gih_explanation
     assert "neutral-prior estimate with no GIH data, adjusted by ALSA 1.00" in (
         alsa_explanation
     )
     assert "profile estimate GIH win rate 72.0%" in profile_explanation
-    assert "confidence in that evidence is 42%, not a win probability" in (
-        profile_explanation
-    )
-    assert "Profile evidence is mature; confidence in that evidence is unavailable." in (
-        missing_confidence_explanation
-    )
+    assert "confidence in that evidence" not in profile_explanation
+    assert "Profile evidence" not in missing_confidence_explanation
     assert "Quick GIH win rate 55.0%" in no_profile_explanation
     assert "Profile evidence" not in no_profile_explanation
     assert "profile estimate" not in no_profile_explanation
@@ -3923,10 +3948,7 @@ def test_detailed_rationale_explains_base_rating_and_material_role_gap() -> None
     assert f"Base rating: {card.base_score:.2f} DO points." in explanation
     assert f"({role_reason.contribution:+.2f} DO points)." in explanation
     assert "Helps fill your deck's draw gap: 0 of 1 preferred cards" in explanation
-    assert (
-        "Profile evidence is mature; confidence in that evidence is 100%, "
-        "not a win probability."
-    ) in explanation
+    assert "confidence in that evidence" not in explanation
     assert "context WU" not in explanation
     assert "role +" not in explanation
     assert "urgency +" not in explanation
@@ -4061,10 +4083,7 @@ def test_contextual_adjustments_can_be_disabled_without_bypassing_profile_scorin
     assert "material terms:" not in explanation
     assert "context " not in explanation
     assert "Helps fill" not in explanation
-    assert (
-        "Profile evidence is mature; confidence in that evidence is 100%, "
-        "not a win probability."
-    ) in explanation
+    assert "confidence in that evidence" not in explanation
 
     wrapped = score_pack(
         offered_grp_ids=(7, 8),
@@ -4550,18 +4569,21 @@ def test_saturated_generic_synergy_keeps_generic_evidence_for_a_zero_increment()
     )
     assert synergy_reason.preserved_evidence == (generic_evidence,)
     detailed = render_pick_rationale_detailed(scored_card=supported_card)
+    advice = render_relationship_advice_summary(scored_card=supported_card)
     assert "Works with support already in your deck" in detailed
     assert "Confirmed relationship support" not in detailed
+    assert "Drafted Omen Scrapwright" not in detailed
+    assert advice is not None
     assert (
         "Drafted Omen Scrapwright supports Warhorn Outlet: it creates creature "
         "tokens for its sacrifice ability."
-    ) in detailed
+    ) in advice
     assert (
         "It adds no extra DO points after existing synergy overlap and the synergy "
         "limit is applied."
-    ) in detailed
-    assert "relationship:" not in detailed
-    assert "source:condition" not in detailed
+    ) in advice
+    assert "relationship:" not in advice
+    assert "source:condition" not in advice
 
 
 def test_relationship_support_aggregates_distinct_sources_without_stacking_copies() -> None:
@@ -4748,19 +4770,22 @@ def test_relationship_synergy_evidence_reaches_rationale_and_detailed_renderer()
     assert synergy_reason.contribution == card.contextual_breakdown.synergy
     assert synergy_reason.preserved_evidence == card.contextual_evidence
     detailed = render_pick_rationale_detailed(scored_card=card)
+    advice = render_relationship_advice_summary(scored_card=card)
+    assert advice is not None
     assert (
         "Drafted Omen Scrapwright supports Warhorn Outlet: it creates creature "
         "tokens for its sacrifice ability. Its effective score impact is +0.11 "
         "DO points."
-    ) in detailed
+    ) in advice
+    assert "Drafted Omen Scrapwright" not in detailed
     assert f"({card.contextual_breakdown.synergy:+.2f} DO points)." in detailed
     concise = render_pick_rationale_concise(scored_card=card)
     assert "Synergy contributes" in concise
     assert "Confirmed relationship support" not in concise
-    assert _RELATIONSHIP_CLAIM not in detailed
-    assert _RELATIONSHIP_SUMMARY not in detailed
-    assert "relationship:" not in detailed
-    assert "source:condition" not in detailed
+    assert _RELATIONSHIP_CLAIM not in advice
+    assert _RELATIONSHIP_SUMMARY not in advice
+    assert "relationship:" not in advice
+    assert "source:condition" not in advice
 
 
 @pytest.mark.parametrize(

@@ -6852,6 +6852,25 @@ def explanation_text(root):
     return explanation.property("text")
 
 
+def relationship_advice_text(root):
+    preview = root.findChild(QObject, "wideLiveCardPreview")
+    assert preview is not None
+    advice = preview.findChild(QObject, "cardPreviewRelationshipAdvice")
+    assert advice is not None
+    return advice.property("text")
+
+
+def relationship_advice_visible(root):
+    preview = root.findChild(QObject, "wideLiveCardPreview")
+    assert preview is not None
+    heading = preview.findChild(QObject, "cardPreviewRelationshipHeading")
+    advice = preview.findChild(QObject, "cardPreviewRelationshipAdvice")
+    assert heading is not None
+    assert advice is not None
+    assert heading.property("text") == "AI-ENHANCED RELATIONSHIP ADVICE"
+    return heading.property("visible") and advice.property("visible")
+
+
 QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
 
@@ -6940,17 +6959,19 @@ with TemporaryDirectory() as directory:
     root.setProperty("currentSurface", "live")
     wait_until(
         lambda: "Drafted Omen Scrapwright supports Warhorn Outlet"
-        in explanation_text(root),
+        in relationship_advice_text(root),
         "rendered relationship advice",
     )
     both_on = recommendation()
     assert both_on["card"]["grp_id"] == 602
     assert both_on["relationship_contributions"][0]["effective_contribution"] == 0.0
-    explanation = explanation_text(root)
-    assert "creates creature tokens for its sacrifice ability" in explanation
-    assert "adds no extra DO points" in explanation
-    assert "relationship:" not in explanation
-    assert "source:condition" not in explanation
+    advice = relationship_advice_text(root)
+    assert relationship_advice_visible(root) is True
+    assert "creates creature tokens for its sacrifice ability" in advice
+    assert "adds no extra DO points" in advice
+    assert "relationship:" not in advice
+    assert "source:condition" not in advice
+    assert "Drafted Omen Scrapwright" not in explanation_text(root)
     both_on_score = both_on["score"]
 
     root.setProperty("currentSurface", "settings")
@@ -6968,6 +6989,8 @@ with TemporaryDirectory() as directory:
     assert recommendation()["card"]["grp_id"] == 602
     assert recommendation()["score"] == both_on_score
     assert recommendation()["relationship_contributions"] == []
+    assert recommendation()["relationship_advice"] is None
+    assert relationship_advice_visible(root) is False
     assert "receives" in recommendation()["explanation"]
     assert "Drafted Omen Scrapwright" not in recommendation()["explanation"]
     assert status_message.property("text") in advice_message.property("text")
@@ -7000,6 +7023,8 @@ with TemporaryDirectory() as directory:
     )
     assert recommendation()["score"] == both_off_score
     assert recommendation()["relationship_contributions"] == []
+    assert recommendation()["relationship_advice"] is None
+    assert relationship_advice_visible(root) is False
     assert status_message.property("text") in advice_message.property("text")
 
     contextual_switch.forceActiveFocus()
@@ -7016,9 +7041,10 @@ with TemporaryDirectory() as directory:
     )
     root.setProperty("currentSurface", "live")
     wait_until(
-        lambda: "adds no extra DO points" in explanation_text(root),
+        lambda: "adds no extra DO points" in relationship_advice_text(root),
         "restored rendered relationship advice",
     )
+    assert relationship_advice_visible(root) is True
 
     preferences.shutdown()
     del root

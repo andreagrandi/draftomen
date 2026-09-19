@@ -58,6 +58,7 @@ from draftomen.pickengine import (
     recommendation_confidence_summary,
     render_pick_rationale_concise,
     render_pick_rationale_detailed,
+    render_relationship_advice_summary,
 )
 from draftomen.pool import (
     AccountProfile,
@@ -238,6 +239,7 @@ class Recommendation:
     )
     contextual_evidence: tuple[str, ...] = ()
     relationship_contributions: tuple[RelationshipScoreContribution, ...] = ()
+    relationship_advice: str | None = None
     contextual_pair: str | None = None
     contextual_theme: str | None = None
     contextual_profile_maturity: str | None = None
@@ -2575,6 +2577,9 @@ class LiveSession:
             contextual_breakdown=scored_card.contextual_breakdown,
             contextual_evidence=scored_card.contextual_evidence,
             relationship_contributions=scored_card.relationship_contributions,
+            relationship_advice=render_relationship_advice_summary(
+                scored_card=scored_card,
+            ),
             contextual_pair=scored_card.contextual_pair,
             contextual_theme=scored_card.contextual_theme,
             contextual_profile_maturity=scored_card.contextual_profile_maturity,

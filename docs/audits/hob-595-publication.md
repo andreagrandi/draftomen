@@ -54,13 +54,16 @@ bytes above, and the
 production test-draft controller. It follows a predeclared rank-one selection policy for all three
 14-pick packs, records every server-originated offer and pool, builds the completed pool, toggles
 AI enhancement off and on against the same live offer, and renders the recovered recommendation
-through `CardPreview.qml` before saving an offscreen screenshot under `/tmp`. This proves scoring,
-the AI off/on behavior, and rendering. It does not prove remote acquisition or deployment.
+through the complete `Main.qml` Live Draft surface before saving an offscreen screenshot under
+`/tmp`. The smoke requires a visible `AI-ENHANCED RELATIONSHIP ADVICE` block, exact agreement with
+the recommendation data, and absence of the rejected confidence and mana-production copy. This
+proves scoring, the AI off/on behavior, and rendering. It does not prove remote acquisition or
+deployment.
 
 The checked-in `hob-595-draft-evidence.json` records a full 42-offer candidate run and explicitly
 labels profile acquisition as `preinstalled-offline`. At pack 1 pick 2, `Rhovanion Rampager`
 received relationship evidence; disabling AI enhancement on that same offer removed the
-relationship contributions. Re-enabling it restored the advice, and the QML explanation read back
+relationship contributions. Re-enabling it restored the advice, and the QML advice block read back
 exactly matched the Python recommendation text.
 
 Two additional ordinary rank-one drafts completed the full 42-pick and build lifecycle through the
@@ -80,6 +83,13 @@ controls for five picks, including a rank-two selection, and observed the pool g
 The helper verified that the external pinned Draftmancer server answered before and after both
 journeys. A subsequent native manual draft confirmed contextual evidence and relationship advice
 were active together on the real surface.
+
+The final full-app QML run used production profile SHA-256
+`6b188ae9a248905bd5ad678f79008252ffa1889f52da9eb3b3012649d9419341`. At pack 1 pick 5,
+`Great Fierce Bee` visibly showed the separate relationship-advice heading and its conditional
+interaction with drafted `Bothersome Noisemaker`; disabling AI enhancement removed that same-offer
+relationship. The `/tmp` screenshot SHA-256 was
+`165a196b3daed7e86e0deda6597f982a23b10267d4334f3889cd5e76ca48bfe0`.
 
 ## Reproduction
 

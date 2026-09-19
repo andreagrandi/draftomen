@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Separate drafted-card relationship advice from ordinary scoring rationale and remove
+  confidence and mana-production filler from focused card explanations. (#595)
+
 - Give recovered enrichment publications a current timestamp so normal clients can replace an
   older cached profile instead of rejecting the recovered artifact as stale. (#595)
 

@@ -1767,7 +1767,7 @@ def test_test_draft_prints_relationship_advice_for_an_enhanced_pick(
     enhanced = replace(
         recommendation,
         relationship_contributions=(object(),),  # type: ignore[arg-type]
-        explanation="Works with the drafted token maker.",
+        relationship_advice="Works with the drafted token maker.",
     )
     result = TestDraftRunResult(
         steps=(

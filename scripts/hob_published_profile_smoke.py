@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QUrl
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 
 from draftomen.profile_client import ProfileNetworkPolicy
@@ -100,7 +100,7 @@ def _advice_row(inspection: TestDraftInspection):
         (
             row
             for row in inspection.snapshot.recommendations.cards
-            if row.relationship_contributions and row.explanation
+            if row.relationship_contributions and row.relationship_advice
         ),
         None,
     )
@@ -149,7 +149,7 @@ def _render_advice(
     grp_id: int,
     app_dir: Path,
     screenshot: Path,
-) -> str:
+) -> dict[str, object]:
     """Render one real recommendation through the production CardPreview QML.
     The label text is read back before the offscreen window is captured.
     """
@@ -170,56 +170,56 @@ def _render_advice(
     context.setContextProperty("fixedFontFamily", _fixed_font_family())
     context.setContextProperty("sessionProvider", provider)
     context.setContextProperty("guiPreferences", preferences)
-    component = QQmlComponent(engine)
-    component.setData(
-        b"""
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-
-ApplicationWindow {
-    id: host
-    width: 700
-    height: 760
-    visible: true
-    readonly property var selectedRecommendation: {
-        const state = sessionProvider.state.recommendations
-        for (let index = 0; index < state.cards.length; index++) {
-            if (state.cards[index].card.grp_id === state.selected_grp_id)
-                return state.cards[index]
-        }
-        return null
-    }
-    CardPreview {
-        id: preview
-        objectName: "publishedProfileCardPreview"
-        anchors.fill: parent
-        detailedIntel: true
-        recommendation: host.selectedRecommendation
-        imageState: sessionProvider.state.card_image
-    }
-}
-""",
-        QUrl.fromLocalFile(str(qml_directory / "PublishedProfileSmoke.qml")),
-    )
-    if component.status() != QQmlComponent.Status.Ready:
-        raise HobPublishedProfileSmokeError(
-            "; ".join(error.toString() for error in component.errors())
-        )
-    host = component.create()
-    if host is None:
-        raise HobPublishedProfileSmokeError("CardPreview QML did not create a window")
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "production-profile-smoke")
+    context.setContextProperty("initialSurface", "live")
+    context.setContextProperty("initialWindowWidth", 1540)
+    context.setContextProperty("initialWindowHeight", 1020)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    if not engine.rootObjects():
+        raise HobPublishedProfileSmokeError("the Draft Omen QML app did not load")
+    host = engine.rootObjects()[0]
     application.processEvents()
-    preview = host.findChild(QObject, "publishedProfileCardPreview")
+    preview = host.findChild(QObject, "wideLiveCardPreview")
     explanation = (
         None
         if preview is None
         else preview.findChild(QObject, "cardPreviewExplanation")
     )
+    heading = (
+        None
+        if preview is None
+        else preview.findChild(QObject, "cardPreviewRelationshipHeading")
+    )
+    advice = (
+        None
+        if preview is None
+        else preview.findChild(QObject, "cardPreviewRelationshipAdvice")
+    )
     if explanation is None:
         raise HobPublishedProfileSmokeError("CardPreview explanation label is missing")
-    rendered = explanation.property("text")
-    if not isinstance(rendered, str) or not rendered:
+    if heading is None or advice is None:
+        raise HobPublishedProfileSmokeError(
+            "CardPreview relationship advice block is missing"
+        )
+    rendered_explanation = explanation.property("text")
+    rendered_heading = heading.property("text")
+    rendered_advice = advice.property("text")
+    if not isinstance(rendered_explanation, str) or not rendered_explanation:
         raise HobPublishedProfileSmokeError("CardPreview explanation label is empty")
+    if rendered_heading != "AI-ENHANCED RELATIONSHIP ADVICE":
+        raise HobPublishedProfileSmokeError(
+            "CardPreview relationship advice heading is incorrect"
+        )
+    if not isinstance(rendered_advice, str) or not rendered_advice:
+        raise HobPublishedProfileSmokeError(
+            "CardPreview relationship advice label is empty"
+        )
+    if not heading.isVisible() or not advice.isVisible():
+        raise HobPublishedProfileSmokeError(
+            "CardPreview relationship advice block is not visible"
+        )
     screenshot.parent.mkdir(parents=True, exist_ok=True)
     image = host.grabWindow()
     if image.isNull() or not image.save(str(screenshot)):
@@ -229,7 +229,12 @@ ApplicationWindow {
     host.close()
     preferences.shutdown()
     del engine
-    return rendered
+    return {
+        "advice": rendered_advice,
+        "explanation": rendered_explanation,
+        "heading": rendered_heading,
+        "visible": True,
+    }
 
 
 def _run(args: argparse.Namespace) -> dict[str, object]:
@@ -318,9 +323,23 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         app_dir=args.app_dir,
         screenshot=args.screenshot,
     )
-    if rendered != advice.explanation:
+    if rendered["advice"] != advice.relationship_advice:
         raise HobPublishedProfileSmokeError(
-            "CardPreview did not render the recommendation explanation verbatim"
+            "CardPreview did not render relationship advice verbatim"
+        )
+    rejected_copy = (
+        "confidence in that evidence",
+        "mana producer gap",
+        "produce the colors it needs",
+    )
+    rendered_text = f"{rendered['explanation']} {rendered['advice']}".casefold()
+    unexpected_copy = next(
+        (phrase for phrase in rejected_copy if phrase in rendered_text),
+        None,
+    )
+    if unexpected_copy is not None:
+        raise HobPublishedProfileSmokeError(
+            f"CardPreview retained rejected copy: {unexpected_copy}"
         )
     profile_path = args.app_dir / "set-profiles" / "hob-quickdraft.json"
     profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
@@ -342,8 +361,11 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         },
         "qml": {
             "card": advice.card.name,
-            "explanation_matches": True,
+            "advice_matches": True,
+            "heading": rendered["heading"],
+            "rejected_copy_absent": True,
             "screenshot": str(args.screenshot),
+            "visible": rendered["visible"],
         },
     }
     if args.report is not None:
