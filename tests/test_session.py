@@ -1668,8 +1668,15 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     enabled_pack = enabled.current_scored_pack
     assert enabled.enhancement_availability.enabled is True
     assert enabled.enhancement_advice_message == (
-        "Relationship advice active for TST."
+        "AI relationship advice on 1 of 2 cards for TST."
     )
+    enabled_recommendations = {
+        card.card.grp_id: card for card in enabled.recommendations.cards
+    }
+    assert enabled_recommendations[target.grp_id].relationship_advice is not None
+    assert enabled_recommendations[target.grp_id].relationship_advice_enabled is True
+    assert enabled_recommendations[package_payoff.grp_id].relationship_advice is None
+    assert enabled_recommendations[package_payoff.grp_id].relationship_advice_enabled is True
     assert enabled_pack is not None
     assert [
         support.mechanism
@@ -1696,6 +1703,10 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     )
     assert enabled.contextual_evidence != ContextualEvidenceState()
     assert disabled.contextual_evidence == enabled.contextual_evidence
+    assert all(
+        recommendation.relationship_advice_enabled is False
+        for recommendation in disabled.recommendations.cards
+    )
     disabled_pack = disabled.current_scored_pack
     assert disabled_pack is not None
     assert disabled_pack.role_ledger.relationship_support == ()

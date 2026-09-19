@@ -266,6 +266,16 @@ class RemovalContribution:
     value: float
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticPoolCard:
+    """One drafted card and its source-backed semantic assignments."""
+
+    grp_id: int
+    name: str
+    count: int
+    assignments: tuple[RoleAssignment, ...]
+
+
 class RelationshipSupportOutcome(StrEnum):
     """Closed pool verdict for one drafted source and offered-strategy relationship."""
 
@@ -468,6 +478,7 @@ class PoolRoleLedger:
     profile_source: str = "generic"
     profile_fingerprint: str | None = None
     relationship_support: tuple[RelationshipSupport, ...] = ()
+    semantic_cards: tuple[SemanticPoolCard, ...] = ()
 
     def __post_init__(self) -> None:
         try:
@@ -487,6 +498,8 @@ class PoolRoleLedger:
             raise ValueError("Ledger urgency must be bounded from 0 to 1.")
         if any(not isinstance(item, RelationshipSupport) for item in self.relationship_support):
             raise ValueError("Ledger relationship support must contain RelationshipSupport records.")
+        if any(not isinstance(item, SemanticPoolCard) for item in self.semantic_cards):
+            raise ValueError("Ledger semantic cards must contain SemanticPoolCard records.")
 
     @property
     def pool_before_pick(self) -> bool:
@@ -1050,6 +1063,15 @@ def _evaluate(
         mode=mode,
         enhanced_relationships_enabled=enhanced_relationships_enabled,
     )
+    semantic_cards = tuple(
+        SemanticPoolCard(
+            grp_id=card.grp_id,
+            name=card.name,
+            count=quantity,
+            assignments=resolution.assignments,
+        )
+        for card, quantity, resolution in relationship_cards
+    )
     removal_contributions = tuple(
         RemovalContribution(
             kind=kind,
@@ -1086,6 +1108,7 @@ def _evaluate(
         profile_source=profile_source,
         profile_fingerprint=None if set_profile is None else set_profile.fingerprint,
         relationship_support=relationship_support,
+        semantic_cards=semantic_cards,
     )
 
 
@@ -1115,17 +1138,19 @@ def _relationship_support(
         card.grp_id: (card, quantity, resolution)
         for card, quantity, resolution in pool_cards
     }
+    profile_fingerprint = set_profile.fingerprint
     records: list[RelationshipSupport] = []
     for relationship in enhancement.relationships:
-        record = _matched_relationship_support(
-            relationship=relationship,
-            set_profile=set_profile,
-            card_database=card_database,
-            pool=pool,
-            projected_ids=projected_ids,
+        records.extend(
+            _matched_relationship_support(
+                relationship=relationship,
+                set_profile=set_profile,
+                card_database=card_database,
+                pool=pool,
+                projected_ids=projected_ids,
+                profile_fingerprint=profile_fingerprint,
+            )
         )
-        if record is not None:
-            records.append(record)
     return tuple(
         sorted(
             records,
@@ -1168,23 +1193,28 @@ def _matched_relationship_support(
     card_database: CardDatabase,
     pool: Mapping[int, tuple[CardInfo, int, ResolutionResult]],
     projected_ids: frozenset[int],
-) -> RelationshipSupport | None:
+    profile_fingerprint: str,
+) -> tuple[RelationshipSupport, ...]:
     projection = relationship.prerequisite_projection
     if projection is None:
-        return None
+        return ()
     link = _relationship_link(relationship)
     if link is None:
-        return None
+        return ()
     if not _projection_roles_match_link(projection=projection, link=link):
-        return None
+        return ()
+    pool_source = pool.get(projection.source.card_id)
+    pool_target = pool.get(projection.target.card_id)
+    if pool_source is None and pool_target is None:
+        return ()
     source_identity = _participant_identity(
         projection.source,
         set_profile=set_profile,
         card_database=card_database,
         projected=pool,
     )
-    if source_identity is None or projection.source.card_id not in pool:
-        return None
+    if source_identity is None:
+        return ()
     target_identity = _participant_identity(
         projection.target,
         set_profile=set_profile,
@@ -1192,8 +1222,8 @@ def _matched_relationship_support(
         projected=pool,
     )
     if target_identity is None:
-        return None
-    source_card, source_card_count, _ = pool[projection.source.card_id]
+        return ()
+    source_card_count = 1 if pool_source is None else pool_source[1]
     satisfied = _matched_prerequisites(
         mechanism=relationship.mechanism,
         source=projection.source,
@@ -1226,11 +1256,11 @@ def _matched_relationship_support(
     )
     source_card, source_confidence = source_identity
     target_card, target_confidence = target_identity
-    return RelationshipSupport(
+    forward = RelationshipSupport(
         finding_id=relationship.finding_id,
         mechanism=relationship.mechanism,
         outcome=outcome,
-        profile_fingerprint=set_profile.fingerprint,
+        profile_fingerprint=profile_fingerprint,
         source_card_id=projection.source.card_id,
         source_card_name=source_card.name,
         source_card_count=source_card_count,
@@ -1247,6 +1277,32 @@ def _matched_relationship_support(
         source_qualifications=projection.source.qualifications,
         target_qualifications=projection.target.qualifications,
     )
+    records = [forward] if pool_source is not None else []
+    if pool_target is not None:
+        records.append(
+            RelationshipSupport(
+                finding_id=relationship.finding_id,
+                mechanism=relationship.mechanism,
+                outcome=outcome,
+                profile_fingerprint=profile_fingerprint,
+                source_card_id=projection.target.card_id,
+                source_card_name=target_card.name,
+                source_card_count=pool_target[1],
+                source_in_projected_deck=projection.target.card_id in projected_ids,
+                source_role=projection.target.role,
+                source_role_confidence=target_confidence,
+                target_card_id=projection.source.card_id,
+                target_card_name=source_card.name,
+                target_role=projection.source.role,
+                target_role_confidence=source_confidence,
+                prerequisites=prerequisites,
+                source_prerequisites=projection.target.prerequisites,
+                target_prerequisites=projection.source.prerequisites,
+                source_qualifications=projection.target.qualifications,
+                target_qualifications=projection.source.qualifications,
+            )
+        )
+    return tuple(records)
 
 
 def relationship_enhancement_is_compatible(

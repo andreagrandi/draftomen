@@ -87,6 +87,7 @@ __all__ = [
     "RelationshipConversion",
     "RelationshipConversionOutcome",
     "RelationshipProjectionCompilation",
+    "compile_capability_facts",
     "compile_confirmed_relationship_projections",
     "compile_hone_relationships",
     "compile_token_replacement_relationships",
@@ -752,6 +753,22 @@ def _capability_facts(artifact: SemanticEnrichmentArtifact) -> Mapping[tuple[int
             ambiguous.add(key)
             facts.pop(key)
     return facts
+
+
+def compile_capability_facts(
+    *, artifact: SemanticEnrichmentArtifact
+) -> tuple[CardCapability, ...]:
+    """Return every unambiguous typed capability retained by an artifact.
+    Publication consumes these Oracle-derived facts independently of relationships.
+    """
+
+    return tuple(
+        capability
+        for _, capability in sorted(
+            _capability_facts(artifact).items(),
+            key=lambda item: item[0],
+        )
+    )
 
 
 def _capability_finding_id(finding_id: str) -> str:

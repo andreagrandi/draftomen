@@ -240,6 +240,7 @@ class Recommendation:
     contextual_evidence: tuple[str, ...] = ()
     relationship_contributions: tuple[RelationshipScoreContribution, ...] = ()
     relationship_advice: str | None = None
+    relationship_advice_enabled: bool = False
     contextual_pair: str | None = None
     contextual_theme: str | None = None
     contextual_profile_maturity: str | None = None
@@ -772,6 +773,7 @@ def enhancement_advice_message(
     *,
     availability: EnhancementAvailabilityState,
     contextual_adjustments_enabled: bool,
+    recommendations: RecommendationState | None = None,
 ) -> str:
     """Explain whether both independent gates allow relationship advice.
     Availability and preferences remain separate immutable session state.
@@ -788,7 +790,19 @@ def enhancement_advice_message(
         else f" for {availability.set_code}"
     )
     if availability.enabled and contextual_adjustments_enabled:
-        return f"Relationship advice active{set_suffix}."
+        cards = () if recommendations is None else recommendations.cards
+        if cards:
+            advice_count = sum(
+                recommendation.relationship_advice is not None
+                for recommendation in cards
+            )
+            if advice_count:
+                return (
+                    f"AI relationship advice on {advice_count} of "
+                    f"{len(cards)} cards{set_suffix}."
+                )
+            return f"No AI relationship matches in this pack{set_suffix}."
+        return f"Relationship advice enabled{set_suffix}; waiting for a draft pack."
     if availability.enabled:
         return (
             "AI-enhanced suggestions are on, but Contextual pick scoring is off. "
@@ -2579,6 +2593,10 @@ class LiveSession:
             relationship_contributions=scored_card.relationship_contributions,
             relationship_advice=render_relationship_advice_summary(
                 scored_card=scored_card,
+            ),
+            relationship_advice_enabled=(
+                self._contextual_adjustments_enabled
+                and self._current_enhancement_availability_locked().enabled
             ),
             contextual_pair=scored_card.contextual_pair,
             contextual_theme=scored_card.contextual_theme,
@@ -4688,6 +4706,7 @@ class LiveSession:
                     contextual_adjustments_enabled=(
                         self._contextual_adjustments_enabled
                     ),
+                    recommendations=snapshot.recommendations,
                 ),
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,

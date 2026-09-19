@@ -6712,7 +6712,7 @@ with TemporaryDirectory() as preferences_dir:
         status="available",
         availability_message="AI-enhanced suggestions available for OTJ.",
         advice_message=(
-            "Relationship advice active for OTJ."
+            "Relationship advice enabled for OTJ; waiting for a draft pack."
         ),
         color="#a78bfa",
         switch_enabled=True,
@@ -6756,7 +6756,7 @@ with TemporaryDirectory() as preferences_dir:
         status="available",
         availability_message="AI-enhanced suggestions available for OTJ.",
         advice_message=(
-            "Relationship advice active for OTJ."
+            "Relationship advice enabled for OTJ; waiting for a draft pack."
         ),
         color="#a78bfa",
         switch_enabled=True,
@@ -6908,7 +6908,7 @@ with TemporaryDirectory() as directory:
             set_code="TST",
             pack_number=2,
             pick_number=13,
-            offered_grp_ids=(602,),
+            offered_grp_ids=(602, 604),
             pool_grp_ids=(601, 603),
             account_id=None,
         ),
@@ -6953,7 +6953,7 @@ with TemporaryDirectory() as directory:
     assert status_message is not None
     assert contextual_switch.property("checked") is True
     assert ai_switch.property("checked") is True
-    assert "Relationship advice active" in advice_message.property("text")
+    assert "AI relationship advice on 1 of 2 cards" in advice_message.property("text")
     assert status_message.property("text") in advice_message.property("text")
 
     root.setProperty("currentSurface", "live")
@@ -6967,12 +6967,29 @@ with TemporaryDirectory() as directory:
     assert both_on["relationship_contributions"][0]["effective_contribution"] == 0.0
     advice = relationship_advice_text(root)
     assert relationship_advice_visible(root) is True
-    assert "creates creature tokens for its sacrifice ability" in advice
+    assert "connects creature tokens to a sacrifice ability" in advice
     assert "adds no extra DO points" in advice
     assert "relationship:" not in advice
     assert "source:condition" not in advice
     assert "Drafted Omen Scrapwright" not in explanation_text(root)
     both_on_score = both_on["score"]
+
+    provider.chooseRecommendation(604)
+    wait_until(
+        lambda: (
+            provider.state["recommendations"]["selected_grp_id"] == 604
+            and relationship_advice_text(root)
+            == "No supported relationship with your drafted cards for this card."
+        ),
+        "explicit no-match relationship result",
+    )
+    assert relationship_advice_visible(root) is True
+    provider.chooseRecommendation(602)
+    wait_until(
+        lambda: "Drafted Omen Scrapwright supports Warhorn Outlet"
+        in relationship_advice_text(root),
+        "relationship-bearing recommendation restored",
+    )
 
     root.setProperty("currentSurface", "settings")
     ai_switch.forceActiveFocus()
@@ -7033,7 +7050,7 @@ with TemporaryDirectory() as directory:
         lambda: (
             contextual_switch.property("checked") is True
             and ai_switch.property("checked") is True
-            and "Relationship advice active"
+            and "AI relationship advice on 1 of 2 cards"
             in advice_message.property("text")
             and recommendation()["score"] == both_on_score
         ),

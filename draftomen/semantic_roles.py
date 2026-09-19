@@ -1861,6 +1861,15 @@ def _infer_assignments_single(
         r"([^.;]*?)\s+tokens?\b",
         lower,
     )
+    creates_creature_token = bool(
+        re.search(
+            r"\bcreate\b[^.;]*(?:"
+            r"\bcreature\s+tokens?\b|"
+            r"\btokens?\s+(?:that's|that is)\s+[^.;]*\bcopy\s+of\b[^.;]*\bcreature\b"
+            r")",
+            lower,
+        )
+    )
     token_replacement = token_replacement_statement(text)
     if token_replacement is not None:
         selector, characteristics = token_replacement
@@ -1879,10 +1888,12 @@ def _infer_assignments_single(
             parameters=characteristics,
             why=(selector, characteristics.qualified_effect),
         )
-    if gift is None and (
-        token_match or re.search(r"\bcreate\s+[^.;]*\btoken\b", lower)
-    ):
-        role(Role.TOKEN_MAKER, confidence=0.88, why="creates one or more tokens")
+    if gift is None and creates_creature_token:
+        role(
+            Role.TOKEN_MAKER,
+            confidence=0.88,
+            why="creates one or more creature tokens",
+        )
         if token_match:
             count = _number_token(token_match.group(1))
             body = token_match.group(2)

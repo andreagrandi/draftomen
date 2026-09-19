@@ -445,7 +445,7 @@ Rectangle {
                     objectName: "cardPreviewRelationshipHeading"
                     Layout.fillWidth: true
                     visible: Boolean(root.recommendation
-                        && root.recommendation.relationship_advice)
+                        && root.recommendation.relationship_advice_enabled)
                     text: "AI-ENHANCED RELATIONSHIP ADVICE"
                     color: Theme.primary
                     font.pixelSize: Theme.textPixelSize(11)
@@ -456,11 +456,15 @@ Rectangle {
                     objectName: "cardPreviewRelationshipAdvice"
                     Layout.fillWidth: true
                     visible: Boolean(root.recommendation
-                        && root.recommendation.relationship_advice)
+                        && root.recommendation.relationship_advice_enabled)
                     text: root.recommendation
-                        ? root.recommendation.relationship_advice || "" : ""
+                        ? root.recommendation.relationship_advice
+                            || "No supported relationship with your drafted cards for this card."
+                        : ""
                     textFormat: Text.PlainText
-                    color: Theme.text
+                    color: root.recommendation
+                        && root.recommendation.relationship_advice
+                        ? Theme.text : Theme.textMuted
                     font.pixelSize: Theme.textPixelSize(12)
                     wrapMode: Text.WordWrap
                 }

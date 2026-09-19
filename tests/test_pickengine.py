@@ -52,6 +52,14 @@ from draftomen.semantic_capability_records import (
     PrerequisiteKind,
     QuantityRelation,
 )
+from draftomen.semantic_condition_records import (
+    CONDITION_MAP_SCHEMA_VERSION,
+    ConditionCapability,
+    ConditionEvidence,
+    ConditionInteraction,
+    ConditionMap,
+    ConditionSource,
+)
 from draftomen.semantic_enrichment import (
     SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
     card_source_sha256,
@@ -4575,8 +4583,8 @@ def test_saturated_generic_synergy_keeps_generic_evidence_for_a_zero_increment()
     assert "Drafted Omen Scrapwright" not in detailed
     assert advice is not None
     assert (
-        "Drafted Omen Scrapwright supports Warhorn Outlet: it creates creature "
-        "tokens for its sacrifice ability."
+        "Drafted Omen Scrapwright supports Warhorn Outlet: the pair connects "
+        "creature tokens to a sacrifice ability."
     ) in advice
     assert (
         "It adds no extra DO points after existing synergy overlap and the synergy "
@@ -4773,8 +4781,8 @@ def test_relationship_synergy_evidence_reaches_rationale_and_detailed_renderer()
     advice = render_relationship_advice_summary(scored_card=card)
     assert advice is not None
     assert (
-        "Drafted Omen Scrapwright supports Warhorn Outlet: it creates creature "
-        "tokens for its sacrifice ability. Its effective score impact is +0.11 "
+        "Drafted Omen Scrapwright supports Warhorn Outlet: the pair connects "
+        "creature tokens to a sacrifice ability. Its effective score impact is +0.11 "
         "DO points."
     ) in advice
     assert "Drafted Omen Scrapwright" not in detailed
@@ -4786,6 +4794,188 @@ def test_relationship_synergy_evidence_reaches_rationale_and_detailed_renderer()
     assert _RELATIONSHIP_SUMMARY not in advice
     assert "relationship:" not in advice
     assert "source:condition" not in advice
+
+
+def test_relationship_scores_an_enabler_when_its_payoff_is_already_drafted() -> None:
+    database = _relationship_database()
+    card = _score_relationship_target(
+        database=database,
+        profile=_relationship_profile(
+            relationships=(_token_sacrifice_relationship(),)
+        ),
+        offered_grp_ids=(601,),
+        pool_grp_ids=(602,),
+    )
+
+    assert card.card.grp_id == 601
+    assert len(card.relationship_contributions) == 1
+    contribution = card.relationship_contributions[0]
+    assert contribution.support.source_card_id == 602
+    assert contribution.support.target_card_id == 601
+    assert contribution.effective_contribution > 0.0
+    advice = render_relationship_advice_summary(scored_card=card)
+    assert advice is not None
+    assert (
+        "Drafted Warhorn Outlet supports Omen Scrapwright: the pair connects "
+        "creature tokens to a sacrifice ability."
+    ) in advice
+
+
+def test_oracle_draw_role_produces_named_second_card_advice_and_obeys_toggle() -> None:
+    base_database = _contextual_database()
+    database = CardDatabase(
+        cards={
+            **base_database.cards,
+            1: replace(
+                base_database.cards[1],
+                name="Bilbo Baggins, Burglar // Take a Glance",
+            ),
+            2: replace(base_database.cards[2], name="Lakeshore Apothecary"),
+        }
+    )
+    profile = _contextual_profile(
+        cards=(
+            ProfileCard(
+                key="arena_id:1",
+                card_name="Bilbo Baggins, Burglar // Take a Glance",
+                assignments=(RoleAssignment(Role.DRAW),),
+            ),
+            ProfileCard(
+                key="arena_id:2",
+                card_name="Lakeshore Apothecary",
+                assignments=(RoleAssignment(Role.DRAW_SECOND_PAYOFF),),
+            ),
+        ),
+    )
+
+    enabled = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(2,),
+        pool_grp_ids=(1,),
+    ).cards[0]
+    disabled = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(2,),
+        pool_grp_ids=(1,),
+        enhanced_relationships_enabled=False,
+    ).cards[0]
+
+    assert enabled.semantic_relationship_advice == (
+        "Drafted Bilbo Baggins, Burglar // Take a Glance works with Lakeshore "
+        "Apothecary: Bilbo Baggins, Burglar // Take a Glance can provide a card draw "
+        "toward Lakeshore Apothecary's second-card payoff.",
+    )
+    assert render_relationship_advice_summary(scored_card=enabled) == (
+        enabled.semantic_relationship_advice[0]
+    )
+    assert disabled.semantic_relationship_advice == ()
+    assert render_relationship_advice_summary(scored_card=disabled) is None
+
+
+def test_storied_condition_map_produces_named_bidirectional_advice() -> None:
+    database = _relationship_database()
+    profile = _relationship_profile(
+        relationships=(_token_go_wide_relationship(),),
+        assignments=(
+            (601, Role.LOW_COST_CREATURE, 1.0),
+            (602, Role.DRAW, 1.0),
+            (605, Role.GO_WIDE_PAYOFF, 1.0),
+        ),
+    )
+    enhancement = profile.enhancement
+    assert enhancement is not None
+    pins = {item.card_id: item.sha256 for item in enhancement.cards}
+    enabler_source = ConditionSource.create(
+        card_id=601,
+        face_index=None,
+        card_source_sha256=pins[601],
+        type_line="Legendary Creature — Dwarf",
+        oracle_text=None,
+        power="2",
+    )
+    payoff_source = ConditionSource.create(
+        card_id=602,
+        face_index=None,
+        card_source_sha256=pins[602],
+        type_line="Legendary Creature — Dwarf",
+        oracle_text="Storied — As long as you control three or more artifacts, legendary permanents, and/or Sagas, untap this during each other player's untap step.",
+        power="3",
+    )
+    enabler = ConditionCapability.create(
+        source=enabler_source,
+        family="storied",
+        role="enabler",
+        kind="qualifying_permanent",
+        controller="you",
+        quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
+        evidence=(
+            ConditionEvidence(
+                field="type_line",
+                kind=QualificationKind.CONDITION,
+                selector="Legendary",
+                occurrence=0,
+            ),
+        ),
+    )
+    payoff = ConditionCapability.create(
+        source=payoff_source,
+        family="storied",
+        role="payoff",
+        kind="storied_attainment",
+        controller="you",
+        quantity=CapabilityQuantity(value=3, relation=QuantityRelation.AT_LEAST),
+        evidence=(
+            ConditionEvidence(
+                field="oracle_text",
+                kind=QualificationKind.CONDITION,
+                selector="three or more artifacts, legendary permanents, and/or Sagas",
+                occurrence=0,
+            ),
+        ),
+    )
+    condition_map = ConditionMap(
+        schema_version=CONDITION_MAP_SCHEMA_VERSION,
+        scope="draft_potential",
+        sources=(enabler_source, payoff_source),
+        capabilities=(enabler, payoff),
+        interactions=(
+            ConditionInteraction(
+                enabler_id=enabler.capability_id,
+                payoff_id=payoff.capability_id,
+                support="contributes",
+            ),
+        ),
+    )
+    profile = replace(
+        profile,
+        enhancement=replace(enhancement, condition_map=condition_map),
+    )
+
+    offered_payoff = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(602,),
+        pool_grp_ids=(601,),
+    ).cards[0]
+    offered_enabler = _score_with_context(
+        database=database,
+        profile=profile,
+        offered_grp_ids=(601,),
+        pool_grp_ids=(602,),
+    ).cards[0]
+
+    assert offered_payoff.semantic_relationship_advice == (
+        "Drafted Omen Scrapwright works with Warhorn Outlet: Omen Scrapwright "
+        "counts toward the three artifacts, legendary permanents, or Sagas needed "
+        "by Warhorn Outlet's Storied ability.",
+    )
+    assert offered_enabler.semantic_relationship_advice == (
+        "Drafted Warhorn Outlet works with Omen Scrapwright: Omen Scrapwright counts "
+        "toward the three artifacts, legendary permanents, or Sagas needed by "
+        "Warhorn Outlet's Storied ability.",
+    )
 
 
 @pytest.mark.parametrize(
@@ -5042,6 +5232,7 @@ def _score_with_context(
     pool_grp_ids: tuple[int, ...],
     ratings_data: SeventeenLandsData | None = None,
     contextual_adjustments_enabled: bool = True,
+    enhanced_relationships_enabled: bool = True,
     pack_number: int = 2,
     pick_number: int = 6,
     global_pick_index: int = 35,
@@ -5063,6 +5254,7 @@ def _score_with_context(
         ratings_data=ratings_data,
         scoring_context=context,
         contextual_adjustments_enabled=contextual_adjustments_enabled,
+        enhanced_relationships_enabled=enhanced_relationships_enabled,
     ).score_pack(
         offered_grp_ids=offered_grp_ids,
         card_database=database,

@@ -44,6 +44,7 @@ from draftomen.profile_statistics import (
     shrink_mean,
 )
 from draftomen.semantic_enrichment import SemanticEnrichmentArtifact
+from draftomen.profile_relationship_projection import compile_capability_facts
 from draftomen.seventeen import (
     CURVE_BUCKETS,
     RELIABILITY_PREMIER_FACTOR,
@@ -60,6 +61,8 @@ from draftomen.semantic_roles import (
     Role,
     RoleAssignment,
     RoleClassifier,
+    ThresholdParameters,
+    TypalIdentity,
     compile_role_profile,
     resolve_card_roles,
 )
@@ -869,6 +872,7 @@ def generate_set_profile(
                 role_profile = _compile_enrichment_roles(
                     role_profile=role_profile,
                     enhancement=enhancement,
+                    artifact=enrichment,
                     card_database=requested_card_database,
                 )
         if normalized_stage == ProfileGenerationStage.MATURE:
@@ -1416,6 +1420,7 @@ def _compile_enrichment_roles(
     *,
     role_profile: CompiledRoleProfile | None,
     enhancement: SetProfileEnhancement,
+    artifact: SemanticEnrichmentArtifact,
     card_database: CardDatabase,
 ) -> CompiledRoleProfile | None:
     """Merge roles declared by confirmed projected relationships into one profile."""
@@ -1423,6 +1428,61 @@ def _compile_enrichment_roles(
     cards = {} if role_profile is None else {card.key: card for card in role_profile.cards}
     resolved: dict[str, ProfileCard | None] = {}
     added = False
+    for capability in compile_capability_facts(artifact=artifact):
+        card = card_database.cards.get(capability.card_id)
+        if card is None or card.unknown:
+            continue
+        index = profile_card_key(card)
+        if index not in resolved:
+            resolved[index] = _compiled_profile_card(card=card, role_profile=role_profile)
+        existing = resolved[index]
+        assignments = () if existing is None else existing.assignments
+        if any(assignment.role == capability.role for assignment in assignments):
+            continue
+        parameters = None
+        if capability.role in {Role.TYPAL_MEMBER, Role.TYPAL_PAYOFF}:
+            subtype = capability.qualifier.subtype
+            if subtype is None:
+                continue
+            parameters = TypalIdentity(subtypes=(subtype,))
+        elif capability.role in {
+            Role.POWER_THRESHOLD_ENABLER,
+            Role.POWER_THRESHOLD_PAYOFF,
+            Role.PERMANENT_TYPE_THRESHOLD,
+            Role.SPELL_COUNT_THRESHOLD,
+        }:
+            quantity = capability.quantity
+            if quantity is None or quantity.value is None:
+                continue
+            parameters = ThresholdParameters(
+                value=quantity.value,
+                relation=quantity.relation.value,
+                permanent_type=(
+                    capability.qualifier.card_types[0]
+                    if len(capability.qualifier.card_types) == 1
+                    else None
+                ),
+            )
+        try:
+            assignment = RoleAssignment(
+                role=capability.role,
+                confidence=enhancement.confidence,
+                provenance=("semantic-enrichment",),
+                evidence=(capability.finding_id,),
+                parameters=parameters,
+            )
+        except (TypeError, ValueError):
+            continue
+        key = index if existing is None else existing.key
+        merged = ProfileCard(
+            key=key,
+            card_name=card.name if existing is None else (existing.card_name or card.name),
+            assignments=(*assignments, assignment),
+        )
+        cards[key] = merged
+        resolved[index] = merged
+        added = True
+
     for relationship in enhancement.relationships:
         projection = relationship.prerequisite_projection
         if projection is None:

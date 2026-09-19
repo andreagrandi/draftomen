@@ -12,6 +12,8 @@ FocusScope {
     signal chosen(int grpId)
 
     readonly property bool recommended: recommendation.rank === 1
+    readonly property bool hasRelationshipAdvice:
+        Boolean(recommendation.relationship_advice)
     readonly property bool keyboardFocused: activeFocus
     readonly property string colorsText: recommendation.card.colors.length > 0
         ? recommendation.card.colors.join(" · ") : "Colorless"
@@ -50,7 +52,9 @@ FocusScope {
     Accessible.role: Accessible.ListItem
     Accessible.name: "Rank " + recommendation.rank + ", "
         + recommendation.card.name + ", DO score " + recommendation.score
-    Accessible.description: stateText + ". Press Enter or Space to choose this card."
+    Accessible.description: stateText
+        + (hasRelationshipAdvice ? ". AI relationship advice available" : "")
+        + ". Press Enter or Space to choose this card."
     activeFocusOnTab: true
 
     Keys.onReturnPressed: chosen(recommendation.card.grp_id)
@@ -212,6 +216,16 @@ FocusScope {
                     }
 
                     Label {
+                        objectName: "wideRecommendationRelationshipAdviceBadge"
+                        visible: root.hasRelationshipAdvice
+                        text: "AI ADVICE"
+                        color: Theme.primary
+                        font.pixelSize: Theme.textPixelSize(10)
+                        font.bold: true
+                        font.letterSpacing: 0.8
+                    }
+
+                    Label {
                         objectName: "recommendationStateBadge"
                         visible: root.stateText.length > 0
                         Layout.alignment: Qt.AlignVCenter
@@ -251,6 +265,16 @@ FocusScope {
                         font.bold: root.recommended || root.selected
                         wrapMode: Text.WrapAnywhere
                         elide: Text.ElideNone
+                    }
+
+                    Label {
+                        objectName: "narrowRecommendationRelationshipAdviceBadge"
+                        visible: root.hasRelationshipAdvice
+                        text: "AI ADVICE"
+                        color: Theme.primary
+                        font.pixelSize: Theme.textPixelSize(10)
+                        font.bold: true
+                        font.letterSpacing: 0.8
                     }
 
                     Label {

@@ -5,7 +5,12 @@
 ## [Unreleased]
 
 - Separate drafted-card relationship advice from ordinary scoring rationale and remove
-  confidence and mana-production filler from focused card explanations. (#595)
+  confidence and mana-production filler from focused card explanations. Mark cards that have
+  advice, show an explicit per-card no-match result, score either endpoint when its partner is
+  drafted, preserve all Oracle-derived capability roles in the published profile, and use
+  validated draw, exact shared-subtype, Landfall, Ferocious, and Storied evidence in live advice.
+  Restrict token-maker classification to creature tokens so Treasure creation cannot produce false
+  creature-token synergy claims. (#595)
 
 - Give recovered enrichment publications a current timestamp so normal clients can replace an
   older cached profile instead of rejecting the recovered artifact as stale. (#595)

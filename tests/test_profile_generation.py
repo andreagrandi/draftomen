@@ -2854,6 +2854,24 @@ def test_generated_enhancement_carries_the_derived_condition_map() -> None:
     )
     assert landfall_edges
     assert all(interaction.support == "can_enable" for interaction in landfall_edges)
+    role_profile = first.profile.role_profile
+    assert role_profile is not None
+    source_roles = resolve_card_roles(
+        database.cards[LANDFALL_SOURCE_CARD_ID],
+        profile=role_profile,
+    )
+    payoff_roles = resolve_card_roles(
+        database.cards[LANDFALL_PAYOFF_CARD_ID],
+        profile=role_profile,
+    )
+    assert source_roles.source == "compiled_profile"
+    assert payoff_roles.source == "compiled_profile"
+    assert Role.RAMP in {
+        assignment.role for assignment in source_roles.assignments
+    }
+    assert Role.LANDFALL_PAYOFF in {
+        assignment.role for assignment in payoff_roles.assignments
+    }
     assert [item.finding_id for item in enhancement.relationships] == [
         item.finding_id for item in artifact.confirmed_relationships
     ]

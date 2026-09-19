@@ -4,16 +4,27 @@ Issue: #595. Date: 2026-09-19. The recovery and every verification command ran w
 `OPENROUTER_API_KEY` and `OPENROUTER_KEY` removed from the environment. No model provider was
 constructed or contacted.
 
-## Published artifact
+## Candidate artifact
 
 The supported `republish-enrichment` command selected confirmed artifact
 `edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84` from run
 `9574d202eef14943`, used the local HOB Quick Draft ratings cache, and generated an `early`, schema-3
-profile with a current generation/publication timestamp. The production manifest selects gzip object
-`ba47f76ea308c8278bfdb9176165a220833ab6ca051f509f23a7c9e82966db4c`; its uncompressed canonical
-profile digest is `6b188ae9a248905bd5ad678f79008252ffa1889f52da9eb3b3012649d9419341`.
+profile with a current generation/publication timestamp. The checked-in manifest selects gzip object
+`ad2c9840b189e709f7419a1b7db95c7cd96e1d4e4f3cade7ec56d5b8ea6ff5b4`; its uncompressed canonical
+profile digest is `57d8abdb65f695f1caef65d14e8dca25e6012f179d20b41ff2442be0a220248a`.
 The profile retains 708 relationships, 657 of which carry executable qualified projections, and
 passes the runtime compatibility check against `website/public/card-data/hob.json.gz`.
+Those projections cover 60 unique cards: 43 source cards and 25 payoff cards overlap by eight.
+Five more cards occur only in unprojected relationships. Pairwise projections are no longer the
+only runtime input: publication now compiles all 583 unambiguous Oracle-derived capability facts
+into the role profile, producing 198 card entries and 769 assignments, including 278 assignments
+with `semantic-enrichment` provenance. Runtime advice also consumes the existing condition map's
+273 capabilities and 1,317 interactions. This covers ordinary card draw for second-card payoffs,
+typed creature families, and the published Landfall, Ferocious, and Storied requirements without
+making a new model call. Advice generation deliberately excludes broad package inferences for
+go-wide, sacrifice, graveyard, artifact, enchantment, Equipment, and generic threshold roles.
+Token-maker classification now requires creature-token creation, so Treasure creation such as
+Dori's cannot support a creature-token claim.
 
 The paid run matched all 1,638 lines in `hob-587-run-manifest.sha256` before and after publication.
 The confirmed artifact, frozen card database, and frozen guide remained at their audited digests
@@ -28,7 +39,7 @@ recovery attempt incorrectly retained the 2026-09-14 review timestamp, which was
 the production manifest and its selected HOB profile; normal clients would therefore reject it as
 stale. `republish-enrichment` now defaults new recovered profiles to the current UTC timestamp.
 
-After deployment, the live production manifest had SHA-256 `9cf0fac2...` and selected the exact
+The previous deployed production manifest had SHA-256 `9cf0fac2...` and selected the exact
 gzip object `ba47f76e...`; downloading that object from its production URL reproduced the same gzip
 digest. A clean application directory refreshed through the default production manifest with
 outcome `updated` and cached canonical profile SHA-256 `6b188ae9...`.
@@ -60,11 +71,26 @@ the recommendation data, and absence of the rejected confidence and mana-product
 proves scoring, the AI off/on behavior, and rendering. It does not prove remote acquisition or
 deployment.
 
+Live scoring treats either endpoint as the offered card when the other endpoint is already in the
+pool. A post-fix ordinary draft produced advice in 25 of 42 offers, covering 45 offered rows and
+108 relationship contributions. Of those contributions, 42 scored an offered source card against
+a drafted payoff; the former one-way implementation could never expose those interactions. The
+first reverse-direction example was `Goblin Plate Mail` offered at pack 2 pick 1 with drafted
+`Esgaroth Garrison` as its go-wide payoff.
+
 The checked-in `hob-595-draft-evidence.json` records a full 42-offer candidate run and explicitly
-labels profile acquisition as `preinstalled-offline`. At pack 1 pick 2, `Rhovanion Rampager`
-received relationship evidence; disabling AI enhancement on that same offer removed the
-relationship contributions. Re-enabling it restored the advice, and the QML advice block read back
-exactly matched the Python recommendation text.
+labels profile acquisition as `preinstalled-offline`. It uses the exact candidate digest above,
+records every semantic or projected advice row, and verifies that disabling AI enhancement on the
+same server offer removes the combined advice. Re-enabling it restores the advice, and the QML
+advice block read back exactly matches the Python recommendation text.
+
+The real Draftmancer run exposed Oracle-derived condition advice on the actual surface, including
+Storied advice that named the drafted qualifying permanent and the offered payoff. A prior run of
+the same candidate capabilities also showed `Bilbo, Luckwearer // Burglar's Plot` as a draw source
+for `Lakeshore Apothecary`'s second-card payoff and showed `Bombur, Gentle Dreamer` receiving
+Storied advice. Focused scoring tests cover the other direction, the AI-off gate, and the exact
+Bilbo/Bombur families. Self-pairs are rejected, and semantic advice is capped at three concise
+items per card.
 
 Two additional ordinary rank-one drafts completed the full 42-pick and build lifecycle through the
 headless `draftomen-tui test-draft` command. The trace exposed recovered advice during one run at
@@ -91,6 +117,13 @@ interaction with drafted `Bothersome Noisemaker`; disabling AI enhancement remov
 relationship. The `/tmp` screenshot SHA-256 was
 `165a196b3daed7e86e0deda6597f982a23b10267d4334f3889cd5e76ca48bfe0`.
 
+The final strict-advice full-app run completed all 42 picks. At pack 1 pick 2 it visibly showed
+`Óin the Brave` with drafted `Gollum, Silent Slinker // Meager Meal` named as a permanent that
+counts toward Óin's three-artifact, legendary-permanent, or Saga Storied requirement. It also
+rendered the explicit no-match state. The positive and no-match screenshot SHA-256 digests were
+`8481956dd0f87b70c48962e6a0497bbf3d4a6e7e6cc1f732a8740088babd64f2` and
+`99a2df870a6111a56c0769d8424c3a149ea76c98ab4a57b4c0012df754ab25f6`.
+
 ## Reproduction
 
 Start the pinned Draftmancer server as documented in `README.md`, prepare an application directory
@@ -107,11 +140,11 @@ QT_QPA_PLATFORM=offscreen env -u OPENROUTER_API_KEY -u OPENROUTER_KEY \
 ```
 
 The candidate evidence JSON has SHA-256
-`25757e520b83ef320329351ae73f6364239ba45f2a69a253407bffd54267b6f0`. The clean production-cache
-run is recorded separately; its evidence file has SHA-256
+`3b11d4a2497d282dfa20c35cdc1bf9a7c7f397cb1049e22a60f85b920c70bf8a`. The clean
+production-cache run is recorded separately; its evidence file has SHA-256
 `c2b3d758b956f419350481e1693137fee4867f74ea6b2bf9cacbbb18e9883204`.
 
 ## Epic audit
 
-#595 is ready to close after this final evidence update is committed and merged. #559 remains open
-because #578 still requires the separate LCI regeneration.
+#595 remains open while its advice quality is evaluated and refined. #559 also remains open because
+#578 still requires the separate LCI regeneration.

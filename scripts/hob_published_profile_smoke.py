@@ -100,7 +100,7 @@ def _advice_row(inspection: TestDraftInspection):
         (
             row
             for row in inspection.snapshot.recommendations.cards
-            if row.relationship_contributions and row.relationship_advice
+            if row.relationship_advice
         ),
         None,
     )
@@ -111,13 +111,14 @@ def _offer_evidence(*, inspection: TestDraftInspection) -> dict[str, object]:
 
     advice_rows = []
     for row in inspection.snapshot.recommendations.cards:
-        if not row.relationship_contributions:
+        if not row.relationship_advice:
             continue
         advice_rows.append(
             {
                 "grp_id": row.card.grp_id,
                 "name": row.card.name,
                 "rank": row.rank,
+                "advice": row.relationship_advice,
                 "relationships": [
                     {
                         "effective_contribution": contribution.effective_contribution,
@@ -154,8 +155,10 @@ def _render_advice(
     The label text is read back before the offscreen window is captured.
     """
 
-    QQuickStyle.setStyle("Fusion")
-    application = QGuiApplication.instance() or QGuiApplication([])
+    application = QGuiApplication.instance()
+    if application is None:
+        QQuickStyle.setStyle("Fusion")
+        application = QGuiApplication([])
     recommendations = replace(
         inspection.snapshot.recommendations,
         selected_grp_id=grp_id,
@@ -197,15 +200,21 @@ def _render_advice(
         if preview is None
         else preview.findChild(QObject, "cardPreviewRelationshipAdvice")
     )
+    status = host.findChild(QObject, "statusEnhancementMessage")
     if explanation is None:
         raise HobPublishedProfileSmokeError("CardPreview explanation label is missing")
     if heading is None or advice is None:
         raise HobPublishedProfileSmokeError(
             "CardPreview relationship advice block is missing"
         )
+    if status is None:
+        raise HobPublishedProfileSmokeError(
+            "Live Draft relationship status is missing"
+        )
     rendered_explanation = explanation.property("text")
     rendered_heading = heading.property("text")
     rendered_advice = advice.property("text")
+    rendered_status = status.property("text")
     if not isinstance(rendered_explanation, str) or not rendered_explanation:
         raise HobPublishedProfileSmokeError("CardPreview explanation label is empty")
     if rendered_heading != "AI-ENHANCED RELATIONSHIP ADVICE":
@@ -233,6 +242,7 @@ def _render_advice(
         "advice": rendered_advice,
         "explanation": rendered_explanation,
         "heading": rendered_heading,
+        "status": rendered_status,
         "visible": True,
     }
 
@@ -257,6 +267,8 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     )
     advice_inspection = None
     advice_grp_id = None
+    no_match_inspection = None
+    no_match_grp_id = None
     advice_off_verified = False
     steps = []
     offers = []
@@ -265,6 +277,11 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         while True:
             offer_evidence = _offer_evidence(inspection=inspection)
             advice = _advice_row(inspection)
+            if advice is None and no_match_inspection is None:
+                no_match_inspection = inspection
+                no_match_grp_id = (
+                    inspection.snapshot.recommendations.cards[0].card.grp_id
+                )
             if advice is not None and advice_inspection is None:
                 advice_inspection = inspection
                 advice_grp_id = advice.card.grp_id
@@ -276,7 +293,11 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
                     for row in runtime.session.snapshot.recommendations.cards
                     if row.card.grp_id == advice_grp_id
                 )
-                advice_off_verified = not disabled.relationship_contributions
+                advice_off_verified = (
+                    not disabled.relationship_contributions
+                    and disabled.relationship_advice is None
+                    and not disabled.relationship_advice_enabled
+                )
                 runtime.session.dispatch(
                     command=ChangeAiEnhancedSuggestions(enabled=True)
                 )
@@ -308,6 +329,10 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         raise HobPublishedProfileSmokeError(
             "no relationship-bearing recommendation appeared in the complete draft"
         )
+    if no_match_inspection is None or no_match_grp_id is None:
+        raise HobPublishedProfileSmokeError(
+            "no offer without relationship advice appeared in the complete draft"
+        )
     if not advice_off_verified:
         raise HobPublishedProfileSmokeError(
             "the same offer retained relationship advice after the enhancement was disabled"
@@ -323,9 +348,30 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         app_dir=args.app_dir,
         screenshot=args.screenshot,
     )
+    no_match_screenshot = args.screenshot.with_name(
+        f"{args.screenshot.stem}-no-match{args.screenshot.suffix}"
+    )
+    rendered_no_match = _render_advice(
+        inspection=no_match_inspection,
+        grp_id=no_match_grp_id,
+        app_dir=args.app_dir,
+        screenshot=no_match_screenshot,
+    )
     if rendered["advice"] != advice.relationship_advice:
         raise HobPublishedProfileSmokeError(
             "CardPreview did not render relationship advice verbatim"
+        )
+    if rendered_no_match["advice"] != (
+        "No supported relationship with your drafted cards for this card."
+    ):
+        raise HobPublishedProfileSmokeError(
+            "CardPreview did not render the explicit no-match result"
+        )
+    if "No AI relationship matches in this pack" not in str(
+        rendered_no_match["status"]
+    ):
+        raise HobPublishedProfileSmokeError(
+            "Live Draft status did not report that the pack has no AI matches"
         )
     rejected_copy = (
         "confidence in that evidence",
@@ -357,12 +403,15 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
             "pack": advice_inspection.offer.pack_number + 1,
             "pick": advice_inspection.offer.pick_number + 1,
             "grp_id": advice_grp_id,
-            "relationship_contributions_removed": advice_off_verified,
+            "relationship_advice_removed": advice_off_verified,
         },
         "qml": {
             "card": advice.card.name,
             "advice_matches": True,
             "heading": rendered["heading"],
+            "no_match_screenshot": str(no_match_screenshot),
+            "no_match_visible": rendered_no_match["visible"],
+            "pack_status": rendered["status"],
             "rejected_copy_absent": True,
             "screenshot": str(args.screenshot),
             "visible": rendered["visible"],
@@ -391,6 +440,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         "qml_rendered": True,
         "report": None if args.report is None else str(args.report),
         "screenshot": str(args.screenshot),
+        "no_match_screenshot": str(no_match_screenshot),
     }
 
 

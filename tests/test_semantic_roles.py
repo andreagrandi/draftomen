@@ -255,6 +255,34 @@ def test_token_replacement_requires_a_separate_source() -> None:
     assert Role.TOKEN_REPLACEMENT not in _roles(actual_source)
 
 
+def test_treasure_creation_is_not_creature_token_support() -> None:
+    dori = classify_card(
+        {
+            "oracle_id": "dori-treasure",
+            "name": "Dori, Bearer of Friends",
+            "set": "hob",
+            "layout": "normal",
+            "oracle_text": (
+                "Trample\nWhen Dori enters, create a Treasure token. "
+                "(It's an artifact with \"{T}, Sacrifice this token: Add one mana "
+                "of any color.\")"
+            ),
+            "type_line": "Legendary Creature — Dwarf Warrior",
+            "types": ["Creature"],
+            "subtypes": ["Dwarf", "Warrior"],
+            "keywords": ["Trample"],
+            "mana_value": 3,
+            "power": "3",
+            "produced_mana": ["W", "U", "B", "R", "G"],
+        }
+    )
+
+    assert Role.TOKEN_MAKER not in _roles(dori)
+    assert Role.GO_WIDE_ENABLER not in _roles(dori)
+    assert Role.SACRIFICE_FODDER not in _roles(dori)
+    assert Role.MANA_PRODUCER in _roles(dori)
+
+
 def test_gift_preserves_optional_opponent_choice_and_qualified_effect() -> None:
     oracle_text = (
         "Gift a Treasure (You may promise an opponent a gift as you cast this spell. "
@@ -580,7 +608,7 @@ def test_removal_negative_targets_are_not_removal() -> None:
 def test_token_ordering_fixings_and_ramp_boundaries() -> None:
     rows = _fixtures()
     token_roles = _roles(classify_card(rows["role-token-treasure"]))
-    assert Role.TOKEN_MAKER in token_roles
+    assert Role.TOKEN_MAKER not in token_roles
     assert Role.GO_WIDE_ENABLER not in token_roles
     loot_roles = _roles(classify_card(rows["role-loot"]))
     rummage_roles = _roles(classify_card(rows["role-rummage"]))
