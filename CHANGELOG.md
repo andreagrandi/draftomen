@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Preserve Adventure component selection and printed exile-then-cast reminders as face-bound
+  relationship qualifications while every face shares its parent drafted-card identity. (#592)
 - Reconcile saved HOB capability responses during offline resume. The workflow reparses retained
   paid response bytes with the current parser, recovers candidates that older successful results
   silently omitted, preserves stable provenance, and leaves every paid artifact unchanged. (#596)

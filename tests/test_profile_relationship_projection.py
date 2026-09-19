@@ -143,6 +143,9 @@ _RECRUIT_CONDITION = (
 )
 _ADVENTURE_AMASS_INSTRUCTION = "Amass Goblins 2."
 _ADVENTURE_REMINDER = "(Then exile this card."
+_ADVENTURE_SEQUENCE = (
+    "(Then exile this card. You may cast the creature later from exile.)"
+)
 _MENACE_LINE = "Each creature you control with a +1/+1 counter on it has menace."
 _WRONG_FACE_NAME = "Great Ugly-Looking Goblin"
 _AZOG_MODE = "Its controller amasses Goblins X, where X is that creature's power."
@@ -833,7 +836,12 @@ def test_graveyard_consumption_of_a_counted_zone_is_rejected() -> None:
     # the mill pairs read the same counted zone but move cards into it, so they keep projecting
     for suffix in (_MILL, _NEXT_ACTION_MILL):
         assert _row(compilation, suffix).prerequisite_projection is not None
-        assert _conversion(compilation, suffix).outcome is RelationshipConversionOutcome.DECODED
+        expected = (
+            RelationshipConversionOutcome.QUALIFIED
+            if suffix == _MILL
+            else RelationshipConversionOutcome.DECODED
+        )
+        assert _conversion(compilation, suffix).outcome is expected
 
 
 def test_missing_evidence_reports_the_unusable_fact_or_the_unpinned_card() -> None:
@@ -978,9 +986,17 @@ def test_adventure_amass_face_keeps_its_closed_keyword_instruction() -> None:
         source.face_name,
     ) == (103449, _ADVENTURE_AMASS_CAPABILITY, "token_maker", 1, "Clap! Snap!")
     assert source.prerequisites == ()
-    assert [item.kind for item in source.qualifications] == [QualificationKind.MODE]
-    mode = source.qualifications[0]
+    assert [item.kind for item in source.qualifications] == [
+        QualificationKind.MODE,
+        QualificationKind.MODE,
+    ]
+    qualifications = {item.selector: item for item in source.qualifications}
+    mode = qualifications[_ADVENTURE_AMASS_INSTRUCTION]
+    sequence = qualifications[_ADVENTURE_SEQUENCE]
     assert mode.selector == _ADVENTURE_AMASS_INSTRUCTION
+    assert sequence.selector == _ADVENTURE_SEQUENCE
+    assert sequence.evidence.face_index == 1
+    assert source.card_id == relationship.participants[0]
     # the closed keyword body creates one Army; the number counts the counters it grows, never
     # tokens, so its reminder is neither printed here nor copied from another amass instruction
     assert "counters on an Army" not in mode.selector
@@ -991,6 +1007,10 @@ def test_adventure_amass_face_keeps_its_closed_keyword_instruction() -> None:
         for clause in (*source.prerequisites, *projection.target.prerequisites)
         if clause.operation == "create"
     ]
+    assert all(
+        qualification.selector != _ADVENTURE_SEQUENCE
+        for qualification in projection.target.qualifications
+    )
 
 
 def test_amass_capability_pinned_to_the_other_face_never_borrows_its_instruction() -> None:
@@ -1366,7 +1386,10 @@ def test_variable_dwarf_creation_keeps_the_printed_x() -> None:
     assert projection.outcome.value == "qualified"
     source = projection.source
     assert source.prerequisites == ()
-    assert [item.selector for item in source.qualifications] == [_VARIABLE_INSTRUCTION]
+    assert {item.selector for item in source.qualifications} == {
+        _VARIABLE_INSTRUCTION,
+        "(Then exile this card. You may cast the enchantment later from exile.)",
+    }
 
 
 def test_elf_tokens_never_reach_the_bear_anthem_without_beorns_conversion() -> None:
@@ -1398,9 +1421,14 @@ def test_mill_then_return_grammar_recovers_the_adventure_recursion_rows() -> Non
         source = projection.source
         assert (source.card_id, source.face_index) == (103546, 1)
         assert source.prerequisites == ()
-        assert [item.selector for item in source.qualifications] == [_MILL_RETURN_INSTRUCTION]
+        assert {item.selector for item in source.qualifications} == {
+            _MILL_RETURN_INSTRUCTION,
+            _ADVENTURE_SEQUENCE,
+        }
         # the Adventure face never acquires a landfall clause it does not print
         assert "Whenever a land you control enters" not in source.qualifications[0].evidence.quote
+        assert all(item.evidence.face_index == 1 for item in source.qualifications)
+        assert source.card_id in relationship.participants
         _revalidate(artifact, relationship)
 
 

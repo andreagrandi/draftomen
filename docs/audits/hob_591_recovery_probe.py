@@ -18,8 +18,9 @@ Checked-in audit utility; run from the repository root:
 the saved 17Lands ratings file, exactly as the #590 probe does.  Exit code 0
 requires every gate to pass: the 143-row union (64 landfall, 37 ferocious and 49
 storied incidences) rebuilt with zero duplicates, all 685 stored relationships
-accounted for in saved order, the 136 useful rows projected (135 qualified plus
-the one already-decoded self-mill row), the four audited subtype contradictions
+accounted for in saved order, all 136 useful rows projected with retained qualifications,
+all 129 usable or conditional rows in the separate 143-row Adventure family report recovered,
+the four audited subtype contradictions
 rejected as ``token_subtype_contradiction``, the three known ``mrd`` token
 replacement defects reported separately, the derived condition map's printed
 targets and helper interactions present or absent exactly as declared, two
@@ -108,10 +109,13 @@ EXPECTED_FAMILY_CLASSES = {
 }
 EXPECTED_UNION_ROWS = 143
 EXPECTED_USEFUL_ROWS = 136
-EXPECTED_QUALIFIED_ROWS = 135
+EXPECTED_QUALIFIED_ROWS = 136
 EXPECTED_CONTRADICTION_ROWS = 4
 EXPECTED_RECORD_DEFECT_ROWS = 3
 SUBTYPE_CONTRADICTION_REASON = "token_subtype_contradiction"
+EXPECTED_ADVENTURE_ROWS = 143
+EXPECTED_ADVENTURE_USEFUL_ROWS = 129
+EXPECTED_ADVENTURE_CLASSES = {"uc": 123, "uac": 4, "ucc": 2, "mxd": 8, "mxe": 3, "mrd": 3}
 
 # The one useful row the frozen artifact already carries as a decoded projection.
 DECODED_SOURCE_CAPABILITY = "103546-f1-self-mill"
@@ -452,6 +456,39 @@ def reconstruct_scoped_rows(
     return scoped, facts
 
 
+def reconstruct_adventure_rows(ledger: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    """Return every ledger row with its Adventure endpoint and audit details."""
+    capabilities = ledger["capabilities"]  # type: ignore[index]
+    prefix = ledger["finding_id"]["prefix"]  # type: ignore[index]
+    rows: dict[str, dict[str, object]] = {}
+    for mechanism, findings in ledger["findings"].items():  # type: ignore[union-attr]
+        for source_index, target_index, audit_class, _ in findings:
+            source = capabilities[source_index]  # type: ignore[index]
+            target = capabilities[target_index]  # type: ignore[index]
+            if "adventures" not in source["mechanics"] and "adventures" not in target["mechanics"]:
+                continue
+            finding_id = (
+                f"{prefix}{mechanism}:{source['card_id']}:{source['id']}:"
+                f"{target['card_id']}:{target['id']}"
+            )
+            rows[finding_id] = {
+                "audit_class": str(audit_class),
+                "source": {
+                    "card_id": source["card_id"],
+                    "capability_id": source["id"],
+                    "face_index": source["face_index"],
+                    "adventure_face": "adventure_face" in source["conditions"],
+                },
+                "target": {
+                    "card_id": target["card_id"],
+                    "capability_id": target["id"],
+                    "face_index": target["face_index"],
+                    "adventure_face": "adventure_face" in target["conditions"],
+                },
+            }
+    return rows
+
+
 def _decoded_finding_id(scoped: Mapping[str, Mapping[str, object]]) -> str | None:
     """Return the one useful finding id the frozen artifact already decoded."""
     matches = [
@@ -620,10 +657,10 @@ def _bucket(audit_class: str) -> str:
     return "record_defect"
 
 
-def _expected(bucket: str, *, finding_id: str, decoded_id: str | None) -> str:
+def _expected(bucket: str) -> str:
     """Return the outcome one scoped finding must show without relabelling defects."""
     if bucket == "useful":
-        return "decoded" if finding_id == decoded_id else "qualified"
+        return "qualified"
     if bucket == "subtype_contradiction":
         return "contradiction"
     return "record_defect"
@@ -659,7 +696,6 @@ def evaluate_rows(
     scoped: Mapping[str, Mapping[str, object]],
     artifact: object,
     compilation: object,
-    decoded_id: str | None,
 ) -> list[dict[str, object]]:
     """Judge every scoped finding against its audit class and the compiler's own outcome."""
     compiled_rows = {
@@ -683,7 +719,7 @@ def evaluate_rows(
             "ledger_stage": scope["stage"],
             "ledger_gap": scope["gap"],
             "bucket": bucket,
-            "expected": _expected(bucket, finding_id=finding_id, decoded_id=decoded_id),
+            "expected": _expected(bucket),
             "outcome": None,
             "reason": None,
             "projection": None,
@@ -713,17 +749,7 @@ def evaluate_rows(
         record["card_faces"] = _card_faces(compiled)
         causes: list[str] = record["causes"]  # type: ignore[assignment]
         if bucket == "useful":
-            if finding_id == decoded_id:
-                if conversion.outcome.value != "decoded":
-                    causes.append(
-                        "compiler gap: already-decoded row changed to "
-                        f"outcome={conversion.outcome.value} reason={conversion.reason}"
-                    )
-                elif projection is None:
-                    causes.append(
-                        "compiler gap: decoded row no longer carries its stored projection"
-                    )
-            elif conversion.outcome.value != "qualified":
+            if conversion.outcome.value != "qualified":
                 causes.append(
                     f"compiler gap: outcome={conversion.outcome.value} reason={conversion.reason}"
                 )
@@ -766,6 +792,7 @@ def stage_compilation(
     artifact: object,
     card_database: object,
     scoped: Mapping[str, Mapping[str, object]],
+    adventure_rows: Mapping[str, Mapping[str, object]],
 ) -> tuple[object | None, list[dict[str, object]]]:
     """Compile twice, gate determinism, and evaluate every scoped finding."""
     first = None
@@ -797,9 +824,7 @@ def stage_compilation(
     deterministic = fingerprints[0] == fingerprints[1]
     payload = ARTIFACT_PATH.read_bytes()
     decoded_id = _decoded_finding_id(scoped)
-    records = evaluate_rows(
-        scoped=scoped, artifact=artifact, compilation=first, decoded_id=decoded_id
-    )
+    records = evaluate_rows(scoped=scoped, artifact=artifact, compilation=first)
     confirmed_ids = [
         row.finding_id for row in artifact.confirmed_relationships  # type: ignore[attr-defined]
     ]
@@ -840,6 +865,74 @@ def stage_compilation(
             else f"{len(conversion_ids)} stored relationships accounted for in stored order"
         ),
         cause_class=probe590.COMPILER_GAP,
+    )
+    conversions = {item.finding_id: item for item in first.conversions}
+    useful_adventures = {
+        finding_id: conversions.get(finding_id)
+        for finding_id, detail in adventure_rows.items()
+        if detail["audit_class"] in USEFUL_CLASSES
+    }
+    unresolved_adventures = {
+        finding_id: None if conversion is None else conversion.outcome.value
+        for finding_id, conversion in useful_adventures.items()
+        if conversion is None or conversion.outcome.value != "qualified"
+    }
+    adventure_classes = dict(
+        sorted(Counter(detail["audit_class"] for detail in adventure_rows.values()).items())
+    )
+    compiled_rows = {row.finding_id: row for row in first.relationships}
+    identity_failures: dict[str, list[str]] = {}
+    for finding_id in useful_adventures:
+        compiled = compiled_rows.get(finding_id)
+        projection = None if compiled is None else compiled.prerequisite_projection
+        failures: list[str] = []
+        if projection is not None:
+            for endpoint in ("source", "target"):
+                detail = adventure_rows[finding_id][endpoint]
+                if not detail["adventure_face"]:
+                    continue
+                participant = getattr(projection, endpoint)
+                if (
+                    participant.card_id != detail["card_id"]
+                    or participant.capability_id != detail["capability_id"]
+                    or participant.face_index != detail["face_index"]
+                ):
+                    failures.append(f"{endpoint}_component_identity")
+                if not any(item.kind.value == "mode" for item in participant.qualifications):
+                    failures.append(f"{endpoint}_sequence_mode")
+                if compiled.participants.count(participant.card_id) != 1:
+                    failures.append(f"{endpoint}_drafted_identity_count")
+        if failures:
+            identity_failures[finding_id] = failures
+    report.data["adventure_family"] = {
+        "rows": len(adventure_rows),
+        "expected_rows": EXPECTED_ADVENTURE_ROWS,
+        "classes": adventure_classes,
+        "expected_classes": EXPECTED_ADVENTURE_CLASSES,
+        "useful_rows": len(useful_adventures),
+        "expected_useful_rows": EXPECTED_ADVENTURE_USEFUL_ROWS,
+        "finding_ids": sorted(adventure_rows),
+        "useful_finding_ids": sorted(useful_adventures),
+        "unresolved_useful": unresolved_adventures,
+        "identity_or_sequence_failures": identity_failures,
+    }
+    report.gate(
+        "adventure_family_useful_rows_recovered",
+        ok=(
+            len(adventure_rows) == EXPECTED_ADVENTURE_ROWS
+            and adventure_classes == EXPECTED_ADVENTURE_CLASSES
+            and len(useful_adventures) == EXPECTED_ADVENTURE_USEFUL_ROWS
+            and not unresolved_adventures
+            and not identity_failures
+        ),
+        detail=(
+            f"rows={len(adventure_rows)} useful={len(useful_adventures)} "
+            f"unresolved={len(unresolved_adventures)} "
+            f"identity_or_sequence={len(identity_failures)} "
+            f"classes={_canonical(adventure_classes)}"
+        ),
+        cause_class=probe590.COMPILER_GAP,
+        finding_ids=sorted(set(unresolved_adventures) | set(identity_failures)),
     )
     report.gate(
         "compiled_artifact_unchanged",
@@ -903,12 +996,12 @@ def stage_compilation(
             not failing_useful
             and len(useful) == EXPECTED_USEFUL_ROWS
             and len(qualified) == EXPECTED_QUALIFIED_ROWS
-            and len(decoded) == 1
+            and not decoded
         ),
         detail=(
             f"useful={len(useful)} expected={EXPECTED_USEFUL_ROWS} "
             f"qualified={len(qualified)} expected={EXPECTED_QUALIFIED_ROWS} "
-            f"decoded={len(decoded)} "
+            f"decoded={len(decoded)} expected=0 "
             f"failing={len(failing_useful)}: "
             + probe590._summarize(
                 Counter(
@@ -1869,6 +1962,7 @@ def main() -> int:
         try:
             ledger = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
             scoped, facts = reconstruct_scoped_rows(ledger)
+            adventure_rows = reconstruct_adventure_rows(ledger)
             context = probe590.load_frozen_inputs()
             gate_scope(report, scoped=scoped, facts=facts, artifact=context.artifact)
             compilation, records = stage_compilation(
@@ -1876,6 +1970,7 @@ def main() -> int:
                 artifact=context.artifact,
                 card_database=context.card_database,
                 scoped=scoped,
+                adventure_rows=adventure_rows,
             )
             report.data["findings"] = records
             condition_map = stage_condition_map(
@@ -1941,6 +2036,13 @@ def main() -> int:
         f"decoded={len(row_groups.get('decoded_ids', []))} "  # type: ignore[union-attr]
         f"contradictions={row_groups.get('subtype_contradictions', {}).get('count')} "  # type: ignore[union-attr]
         f"record_defects={row_groups.get('record_defects', {}).get('count')}"  # type: ignore[union-attr]
+    )
+    adventure = report.data.get("adventure_family", {})
+    print(
+        "adventures: "
+        f"rows={adventure.get('rows')} "  # type: ignore[union-attr]
+        f"useful={adventure.get('useful_rows')} "  # type: ignore[union-attr]
+        f"unresolved={len(adventure.get('unresolved_useful', {}))}"  # type: ignore[union-attr]
     )
     map_facts = report.data.get("condition_map", {})
     print(

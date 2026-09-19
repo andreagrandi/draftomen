@@ -131,6 +131,9 @@ _CREATED_TOKEN_PATTERN = re.compile(r"\bcreate [^.;:]*?creature tokens?\b", re.I
 # Replacement wording only redirects another creator's event ("would create ... instead"), so it
 # declares no production family of its own even though it prints a create verb.
 _REPLACEMENT_CREATION_PATTERN = re.compile(r"\bwould (?:be )?create\b|\binstead\b", re.IGNORECASE)
+_ADVENTURE_SEQUENCE_PATTERN = re.compile(
+    r"\(Then exile this card\. You may cast the [A-Za-z]+ later from exile\.\)"
+)
 _REMINDER_PATTERN = re.compile(r"\s*\((?P<text>[^()]*)\)")
 _MODAL_FRAME_PATTERN = re.compile(r"^choose (?:one|two|three)\b[^:]*[—:-]\s*$", re.IGNORECASE)
 _TYPE_CHOICE_PATTERN = re.compile(r"\bchoose a creature type\b[^.]*\.", re.IGNORECASE)
@@ -568,9 +571,15 @@ def _compile_relationship(
         card=source_card,
         family=family,
     )
-    if source_participant is None and _mill_return_instruction(
-        capability=source,
-        oracle_text=_participant_oracle_text(source, source_card),
+    if source_participant is None and (
+        _mill_return_instruction(
+            capability=source,
+            oracle_text=_participant_oracle_text(source, source_card),
+        )
+        or (
+            source.action is CapabilityAction.RETURN
+            and (_is_adventure_card(source_card) or _is_adventure_card(target_card))
+        )
     ):
         source_participant = _qualified_effect_participant(
             capability=source,
@@ -759,6 +768,14 @@ def _compile_participant(
     if conditions is None:
         return None
     qualifications.extend(conditions)
+    adventure = _adventure_sequence_qualifications(
+        capability=capability,
+        card=card,
+        oracle_text=oracle_text,
+    )
+    if adventure is None:
+        return None
+    qualifications.extend(adventure)
     try:
         return _relationship_participant(
             capability=capability,
@@ -768,6 +785,64 @@ def _compile_participant(
         )
     except SemanticEnrichmentError:
         return None
+
+
+def _adventure_sequence_qualifications(
+    *,
+    capability: CardCapability,
+    card: CardInfo,
+    oracle_text: str,
+) -> tuple[RelationshipQualification, ...] | None:
+    """Retain the printed exile-then-cast sequence on an Adventure face.
+
+    The parent card id remains the drafted-card identity. Only the face whose type line declares
+    Adventure may carry the sequence. A face that omits reminder text keeps its exact capability
+    statement as the component-mode anchor; ambiguous source text blocks projection.
+    """
+    face_index = capability.face_index
+    if face_index is None or not 0 <= face_index < len(card.faces):
+        return ()
+    face = card.faces[face_index]
+    if "Adventure" not in face.subtypes and (
+        face.type_line is None or "Adventure" not in face.type_line.split()
+    ):
+        return ()
+    matches = tuple(_ADVENTURE_SEQUENCE_PATTERN.finditer(oracle_text))
+    if len(matches) > 1:
+        return None
+    if matches:
+        selector = matches[0].group(0)
+        evidence = oracle_text
+    else:
+        # Some printed Adventure faces omit reminder text. Their Adventure type and parent layout
+        # still define the same component sequence; retain the capability's exact cited statement
+        # as the mode anchor instead of inventing rules text that is absent from the source.
+        if len(capability.evidence) != 1:
+            return None
+        selector = capability.evidence[0].quote
+        evidence = _evidence_window(
+            oracle_text=oracle_text,
+            capability=capability,
+            quote=selector,
+        )
+        if evidence is None:
+            return None
+    qualification = _qualification(
+        kind=QualificationKind.MODE,
+        capability=capability,
+        evidence=evidence,
+        selector=selector,
+    )
+    return None if qualification is None else (qualification,)
+
+
+def _is_adventure_card(card: CardInfo) -> bool:
+    """Return whether canonical card data declares the Adventure layout."""
+    return card.layout == "adventure" and any(
+        "Adventure" in face.subtypes
+        or (face.type_line is not None and "Adventure" in face.type_line.split())
+        for face in card.faces
+    )
 
 
 def _condition_qualifications(
@@ -1220,6 +1295,14 @@ def _qualified_effect_participant(
     if conditions is None:
         return None
     qualifications.extend(conditions)
+    adventure = _adventure_sequence_qualifications(
+        capability=capability,
+        card=card,
+        oracle_text=oracle_text,
+    )
+    if adventure is None:
+        return None
+    qualifications.extend(adventure)
     try:
         return _relationship_participant(
             capability=capability,
