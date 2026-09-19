@@ -467,7 +467,7 @@ def test_audit_context_provenance_omits_pool_but_preserves_profile_and_evidence(
         assert recommendation[field] == expected
 
 
-def test_audit_persists_confirmed_relationship_support_evidence(
+def test_audit_persists_bounded_relationship_score_provenance(
     tmp_path: Path,
 ) -> None:
     profile = _relationship_profile(tmp_path)
@@ -490,15 +490,12 @@ def test_audit_persists_confirmed_relationship_support_evidence(
         for card in scored_pack.cards
         if card.card.grp_id == RELATIONSHIP_TARGET_ID
     )
-    evidence = (
-        f"relationship {RELATIONSHIP_FINDING_ID} ({RELATIONSHIP_MECHANISM}) "
-        f"for {RELATIONSHIP_TARGET_NAME} [{RELATIONSHIP_TARGET_ID}]: "
-        f"drafted {RELATIONSHIP_SOURCE_NAME} [{RELATIONSHIP_SOURCE_ID}] "
-        f"satisfies {RELATIONSHIP_SOURCE_PREREQUISITE}; "
-        f"{RELATIONSHIP_TARGET_PREREQUISITE}"
-    )
     assert scored_target.contextual_breakdown.synergy > 0.0
-    assert evidence in scored_target.contextual_evidence
+    assert len(scored_target.relationship_contributions) == 1
+    contribution = scored_target.relationship_contributions[0]
+    assert contribution.support.finding_id == RELATIONSHIP_FINDING_ID
+    assert contribution.raw_contribution > 0.0
+    assert contribution.effective_contribution == 0.0
 
     # The same offered target keeps no relationship support once its drafted
     # source is absent from the pre-pick pool.
@@ -550,7 +547,9 @@ def test_audit_persists_confirmed_relationship_support_evidence(
     assert candidate["scoring"]["contextual_evidence"] == list(
         scored_target.contextual_evidence
     )
-    assert evidence in candidate["scoring"]["contextual_evidence"]
+    assert candidate["scoring"]["relationship_contributions"] == [
+        contribution.to_json()
+    ]
     assert candidate["scoring"]["contextual_breakdown"]["synergy"] == (
         scored_target.contextual_breakdown.synergy
     )
@@ -560,17 +559,16 @@ def test_audit_persists_confirmed_relationship_support_evidence(
     assert candidate["explanation"] == render_pick_rationale_detailed(
         scored_card=scored_target
     )
-    assert (
-        f"Confirmed relationship support: {evidence} "
-        f"({scored_target.contextual_breakdown.synergy:+.2f} DO points)."
-        in candidate["explanation"]
-    )
+    assert "Confirmed relationship support" not in candidate["explanation"]
 
     recommendation = decision["recommendation"]
     assert recommendation["grp_id"] == RELATIONSHIP_TARGET_ID
     assert recommendation["contextual_evidence"] == (
         candidate["scoring"]["contextual_evidence"]
     )
+    assert recommendation["relationship_contributions"] == [
+        contribution.to_json()
+    ]
     assert recommendation["concise_explanation"] == candidate["concise_explanation"]
     assert recommendation["explanation"] == candidate["explanation"]
 
@@ -585,10 +583,12 @@ def test_audit_persists_confirmed_relationship_support_evidence(
     relationship_fields = (
         decision["role_ledger"]["relationship_support"],
         candidate["scoring"]["contextual_evidence"],
+        candidate["scoring"]["relationship_contributions"],
         candidate["rationale"],
         candidate["concise_explanation"],
         candidate["explanation"],
         recommendation["contextual_evidence"],
+        recommendation["relationship_contributions"],
         recommendation["rationale"],
         recommendation["concise_explanation"],
         recommendation["explanation"],

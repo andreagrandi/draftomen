@@ -52,6 +52,7 @@ from draftomen.pickengine import (
     PickEngine,
     PickRationale,
     PickScoringContext,
+    RelationshipScoreContribution,
     ScoredCard,
     ScoredPack,
     recommendation_confidence_summary,
@@ -236,6 +237,7 @@ class Recommendation:
         default_factory=ContextualScoreBreakdown
     )
     contextual_evidence: tuple[str, ...] = ()
+    relationship_contributions: tuple[RelationshipScoreContribution, ...] = ()
     contextual_pair: str | None = None
     contextual_theme: str | None = None
     contextual_profile_maturity: str | None = None
@@ -546,6 +548,7 @@ class BacktestPickResult:
     role_ledger: PoolRoleLedger | None = None
     scoring_context: PickScoringContext | None = None
     contextual_evidence: tuple[str, ...] = ()
+    relationship_contributions: tuple[RelationshipScoreContribution, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2526,6 +2529,7 @@ class LiveSession:
             no_data=scored_card.no_data,
             contextual_breakdown=scored_card.contextual_breakdown,
             contextual_evidence=scored_card.contextual_evidence,
+            relationship_contributions=scored_card.relationship_contributions,
             contextual_pair=scored_card.contextual_pair,
             contextual_theme=scored_card.contextual_theme,
             contextual_profile_maturity=scored_card.contextual_profile_maturity,
@@ -4914,6 +4918,7 @@ def _backtest_result(*, report: DomainBacktestReport) -> BacktestResult:
                 role_ledger=row.role_ledger,
                 scoring_context=row.scoring_context,
                 contextual_evidence=row.contextual_evidence,
+                relationship_contributions=row.relationship_contributions,
             )
             for row in report.rows
         ),

@@ -640,6 +640,10 @@ def _hob_project_row(row) -> dict[str, object]:
         "relationship_support": [
             support.to_json() for support in row.role_ledger.relationship_support
         ],
+        "relationship_contributions": [
+            contribution.to_json()
+            for contribution in row.relationship_contributions
+        ],
     }
 
 
@@ -709,10 +713,12 @@ def test_hob_relationship_scoring_exact_reviewed_deltas_and_evidence() -> None:
     assert r1_supports[0].mechanism == _HOB_R1_MECHANISM
     assert r1_supports[0].source_card_id == 103382
     assert r1_supports[0].target_card_id == 103526
-    r1_evidence = "\n".join(enhanced.rows[1].contextual_evidence)
-    assert _HOB_R1_FINDING_ID in r1_evidence
-    assert _HOB_R1_MECHANISM in r1_evidence
-    assert "Fíli the Pathfinder [103382]" in r1_evidence
+    assert len(enhanced.rows[1].relationship_contributions) == 1
+    r1_contribution = enhanced.rows[1].relationship_contributions[0]
+    assert r1_contribution.support.finding_id == _HOB_R1_FINDING_ID
+    assert r1_contribution.support.mechanism == _HOB_R1_MECHANISM
+    assert r1_contribution.raw_contribution > 0.0
+    assert r1_contribution.effective_contribution == 0.0
 
     r6_enhanced, r6_removed = enhanced.rows[2].recommended, removed.rows[2].recommended
     assert r6_enhanced.card.grp_id == 103458
@@ -723,15 +729,21 @@ def test_hob_relationship_scoring_exact_reviewed_deltas_and_evidence() -> None:
     assert round(r6_enhanced.raw_score, 6) - round(r6_removed.raw_score, 6) == pytest.approx(
         _HOB_R6_RAW_SCORE_DELTA, abs=1e-9
     )
-    r6_supports = enhanced.rows[2].role_ledger.relationship_support
+    r6_supports = tuple(
+        support
+        for support in enhanced.rows[2].role_ledger.relationship_support
+        if support.target_card_id == 103458
+    )
     assert [support.finding_id for support in r6_supports] == [_HOB_R6_FINDING_ID]
     assert r6_supports[0].mechanism == _HOB_R6_MECHANISM
     assert r6_supports[0].source_card_id == 103531
-    assert r6_supports[0].target_card_id == 103458
     r6_evidence = "\n".join(enhanced.rows[2].contextual_evidence)
     assert _HOB_R6_FINDING_ID in r6_evidence
     assert _HOB_R6_MECHANISM in r6_evidence
     assert "Chief Warg's Company [103531]" in r6_evidence
+    assert enhanced.rows[2].relationship_contributions[0].effective_contribution == (
+        pytest.approx(_HOB_R6_RAW_SCORE_DELTA)
+    )
 
 
 def test_hob_relationship_scoring_unsupported_and_saturated_rows() -> None:
@@ -775,6 +787,8 @@ def test_hob_relationship_scoring_unsupported_and_saturated_rows() -> None:
     assert saturation_supports[0].finding_id == _HOB_R1_FINDING_ID
     assert saturation_supports[0].target_card_id == 103526
     assert saturation_supports[0].target_card_id == saturated_enhanced.card.grp_id
+    assert len(enhanced.rows[3].relationship_contributions) == 1
+    assert enhanced.rows[3].relationship_contributions[0].effective_contribution == 0.0
     saturated_reasons = saturated_enhanced.rationale.reasons
     assert not any(
         _HOB_R1_FINDING_ID in (reason.evidence or "") for reason in saturated_reasons
@@ -828,7 +842,12 @@ def test_hob_relationship_scoring_gate_empties_ledger_support_and_terms() -> Non
         row.role_ledger.relationship_support == () for row in gated.rows
     )
     assert enhanced.rows[1].role_ledger.relationship_support
-    for index in (1, 2):
+    assert enhanced.rows[1].recommended.contextual_breakdown == (
+        gated.rows[1].recommended.contextual_breakdown
+    )
+    assert enhanced.rows[1].relationship_contributions
+    assert gated.rows[1].relationship_contributions == ()
+    for index in (2,):
         enhanced_recommended = enhanced.rows[index].recommended
         gated_recommended = gated.rows[index].recommended
         assert enhanced_recommended is not None
@@ -874,7 +893,12 @@ def test_hob_relationship_scoring_gate_overrides_a_supplied_default_engine() -> 
     assert all(row.role_ledger.relationship_support == () for row in gated.rows)
     assert enhanced.rows[1].role_ledger.relationship_support
     assert _hob_report_projections(gated) == _hob_report_projections(constructed_gated)
-    for index in (1, 2):
+    assert enhanced.rows[1].recommended.contextual_breakdown == (
+        gated.rows[1].recommended.contextual_breakdown
+    )
+    assert enhanced.rows[1].relationship_contributions
+    assert gated.rows[1].relationship_contributions == ()
+    for index in (2,):
         gated_recommended = gated.rows[index].recommended
         enhanced_recommended = enhanced.rows[index].recommended
         assert gated_recommended is not None
@@ -944,6 +968,12 @@ def test_hob_relationship_scoring_smoke_main_reports_contract(
         if factor["evidence"] == "hob-observed"
     }
     assert observed == {_HOB_R1_MECHANISM, _HOB_R6_MECHANISM}
+    assert report["relationship_outcome_factors"] == [
+        {"outcome": "conditional", "factor": 0.5},
+        {"outcome": "incompatible", "factor": 0.0},
+        {"outcome": "supported", "factor": 1.0},
+        {"outcome": "unsupported", "factor": 0.0},
+    ]
 
     assert [row["row"] for row in report["rows"]] == [
         "unsupported",
@@ -1022,4 +1052,3 @@ def test_hob_relationship_scoring_smoke_rejects_structurally_invalid_state(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("HOB relationship scoring smoke failed: ")
-

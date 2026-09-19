@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Score supported and conditional pool relationships within existing synergy bounds, preserve
+  zero-effective relationship provenance in audit and backtest output, and avoid generic synergy
+  double counting. (#611)
 - Classify drafted-pool relationship evidence as supported, conditional, incompatible, or
   unsupported while retaining exact clause, qualification, card, and profile provenance. (#606)
 - Recover typed Hone counter sources and Equipment payoffs, including Dwalin-to-Equipment relationships and Sting's qualified self interaction, from saved HOB evidence without provider calls (#607).

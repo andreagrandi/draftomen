@@ -39,6 +39,7 @@ from draftomen.pickengine import (
 from draftomen.pool_ledger import (
     COMPLETED_POOL,
     PoolRoleLedger,
+    RelationshipSupportOutcome,
     project_pool_role_ledger,
 )
 from draftomen.profile_generation import generate_set_profile
@@ -65,9 +66,11 @@ from draftomen.semantic_enrichment_records import (
 )
 from draftomen.semantic_relationship_records import (
     CardRelationship,
+    QualificationKind,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
+    RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
 )
@@ -4257,7 +4260,113 @@ def test_disabled_relationship_gate_clears_supplied_context_support_and_term() -
         enabled.cards[0].raw_score - relationship_term
     )
     assert disabled.cards[0].contextual_evidence == ()
+    assert disabled.cards[0].relationship_contributions == ()
     assert context.role_ledger.relationship_support == ledger.relationship_support
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_factor"),
+    (
+        (RelationshipSupportOutcome.SUPPORTED, 1.0),
+        (RelationshipSupportOutcome.CONDITIONAL, 0.5),
+        (RelationshipSupportOutcome.INCOMPATIBLE, 0.0),
+        (RelationshipSupportOutcome.UNSUPPORTED, 0.0),
+    ),
+)
+def test_relationship_outcomes_have_deterministic_bounded_treatment(
+    outcome: RelationshipSupportOutcome,
+    expected_factor: float,
+) -> None:
+    database = _relationship_database()
+    profile = _relationship_profile(
+        relationships=(_token_sacrifice_relationship(),)
+    )
+    ledger = _relationship_ledger(
+        database=database,
+        profile=profile,
+        pool_grp_ids=(601,),
+    )
+    support = ledger.relationship_support[0]
+    qualification = RelationshipQualification(
+        kind=QualificationKind.CHOICE,
+        evidence=support.source_prerequisites[0].evidence,
+        selector="Create",
+        occurrence=0,
+    )
+    support = replace(
+        support,
+        outcome=outcome,
+        source_in_projected_deck=False,
+        source_qualifications=(
+            (qualification,)
+            if outcome is RelationshipSupportOutcome.CONDITIONAL
+            else ()
+        ),
+    )
+    context = PickScoringContext(
+        set_profile=profile,
+        role_ledger=replace(ledger, relationship_support=(support,)),
+    )
+
+    card = PickEngine(scoring_context=context).score_pack(
+        offered_grp_ids=(602,),
+        card_database=database,
+        pool_grp_ids=(601,),
+    ).cards[0]
+
+    expected = MAX_SYNERGY_TERM * 0.5 * 0.15 * expected_factor
+    assert card.contextual_breakdown.synergy == pytest.approx(expected)
+    assert len(card.relationship_contributions) == 1
+    contribution = card.relationship_contributions[0]
+    assert contribution.support is support
+    assert contribution.raw_contribution == pytest.approx(expected)
+    assert contribution.effective_contribution == pytest.approx(expected)
+    payload = contribution.to_json()
+    assert payload["outcome"] == outcome.value
+    assert payload["profile_fingerprint"] == profile.fingerprint
+    assert payload["source"]["in_projected_deck"] is False
+    if outcome is RelationshipSupportOutcome.CONDITIONAL:
+        assert payload["source"]["qualifications"] == [qualification.to_json()]
+    if expected_factor == 0.0:
+        assert card.contextual_evidence == ()
+    else:
+        assert f"is {outcome.value}" in card.contextual_evidence[0]
+
+
+def test_duplicate_source_target_evidence_keeps_only_the_strongest_verdict() -> None:
+    database = _relationship_database()
+    profile = _relationship_profile(
+        relationships=(_token_sacrifice_relationship(),)
+    )
+    ledger = _relationship_ledger(
+        database=database,
+        profile=profile,
+        pool_grp_ids=(601,),
+    )
+    supported = ledger.relationship_support[0]
+    unsupported = replace(
+        supported,
+        finding_id="relationship:duplicate-unsupported",
+        outcome=RelationshipSupportOutcome.UNSUPPORTED,
+    )
+    context = PickScoringContext(
+        set_profile=profile,
+        role_ledger=replace(
+            ledger,
+            relationship_support=(unsupported, supported),
+        ),
+    )
+
+    card = PickEngine(scoring_context=context).score_pack(
+        offered_grp_ids=(602,),
+        card_database=database,
+        pool_grp_ids=(601,),
+    ).cards[0]
+
+    assert len(card.relationship_contributions) == 1
+    assert card.relationship_contributions[0].support is supported
+    assert card.relationship_contributions[0].effective_contribution > 0.0
+    assert "duplicate-unsupported" not in " ".join(card.contextual_evidence)
 
 
 def test_relationship_synergy_increment_is_multiplicative_in_stage_and_profile_weight() -> None:
@@ -4317,53 +4426,87 @@ def test_relationship_synergy_increment_is_multiplicative_in_stage_and_profile_w
 
 def test_partially_capped_relationship_increment_reports_only_the_remainder() -> None:
     database = _relationship_database()
-    assignments = (*_RELATIONSHIP_ASSIGNMENTS, (603, Role.GO_WIDE_PAYOFF, 1.0))
-    control = _relationship_profile(
-        relationships=(_legacy_outlet_relationship(),),
-        assignments=assignments,
+    assignments = (
+        *_RELATIONSHIP_ASSIGNMENTS,
+        (604, Role.TOKEN_MAKER, 1.0),
+        (609, Role.TOKEN_MAKER, 1.0),
     )
     supported = _relationship_profile(
-        relationships=(_token_go_wide_relationship(),),
+        relationships=(
+            _token_sacrifice_relationship(source_card_id=601),
+            _token_sacrifice_relationship(source_card_id=604),
+            _token_sacrifice_relationship(source_card_id=609),
+        ),
         assignments=assignments,
     )
 
-    control_card = _score_relationship_target(
-        database=database,
-        profile=control,
-        offered_grp_ids=(605,),
-        pool_grp_ids=(601, 603),
-        stage_index=EXPECTED_TOTAL_PICKS,
-    )
     supported_card = _score_relationship_target(
         database=database,
         profile=supported,
-        offered_grp_ids=(605,),
-        pool_grp_ids=(601, 603),
+        pool_grp_ids=(601, 604, 609),
         stage_index=EXPECTED_TOTAL_PICKS,
     )
 
-    # Two enablers against one payoff leave the generic package term below the
-    # cap, while the raw relationship term still overflows the remaining room.
-    generic_synergy = control_card.contextual_breakdown.synergy
-    raw_relationship_term = MAX_SYNERGY_TERM * 0.5
-    assert generic_synergy == pytest.approx(MAX_SYNERGY_TERM * 2 / 3)
-    assert generic_synergy + raw_relationship_term > MAX_SYNERGY_TERM
     assert supported_card.contextual_breakdown.synergy == MAX_SYNERGY_TERM
-    remaining_increment = MAX_SYNERGY_TERM - generic_synergy
-    capped_increment = supported_card.contextual_breakdown.synergy - generic_synergy
-    assert capped_increment == pytest.approx(remaining_increment)
-    assert supported_card.raw_score - control_card.raw_score == pytest.approx(
-        remaining_increment
-    )
     assert abs(supported_card.contextual_breakdown.aggregate) <= MAX_CONTEXTUAL_ADJUSTMENT
-    assert supported_card.contextual_evidence == (_TOKEN_GO_WIDE_EVIDENCE,)
+    assert tuple(
+        item.raw_contribution for item in supported_card.relationship_contributions
+    ) == (0.75, 0.75, 0.75)
+    assert tuple(
+        item.effective_contribution
+        for item in supported_card.relationship_contributions
+    ) == (0.75, 0.75, 0.0)
+    assert "+0.00 bounded DO points" in supported_card.contextual_evidence[0]
     synergy_reason = next(
         reason
         for reason in supported_card.rationale.reasons
         if reason.kind == "synergy"
     )
-    assert synergy_reason.preserved_evidence == (_TOKEN_GO_WIDE_EVIDENCE,)
+    assert synergy_reason.preserved_evidence == supported_card.contextual_evidence
     assert synergy_reason.contribution == MAX_SYNERGY_TERM
+
+
+def test_relationship_evidence_reports_the_effective_replacement_increment() -> None:
+    database = _relationship_database()
+    profile = _relationship_profile(
+        relationships=(_token_sacrifice_relationship(),),
+        assignments=(
+            *_RELATIONSHIP_ASSIGNMENTS,
+            (602, Role.GO_WIDE_PAYOFF, 1.0),
+        ),
+    )
+    ledger = _relationship_ledger(
+        database=database,
+        profile=profile,
+        pool_grp_ids=(601,),
+    )
+    assert ledger.stage is not None
+    ledger = replace(
+        ledger,
+        enabler_counts=(("go_wide", 1.0),),
+        payoff_counts=(("go_wide", 2.0),),
+        stage=replace(
+            ledger.stage,
+            pack_number=2,
+            pick_number=13,
+            global_pick_index=EXPECTED_TOTAL_PICKS,
+            estimated_remaining_picks=0,
+        ),
+    )
+    context = PickScoringContext(set_profile=profile, role_ledger=ledger)
+
+    card = PickEngine(scoring_context=context).score_pack(
+        offered_grp_ids=(602,),
+        card_database=database,
+        pool_grp_ids=(601,),
+    ).cards[0]
+
+    contribution = card.relationship_contributions[0]
+    assert contribution.raw_contribution == pytest.approx(0.75)
+    assert contribution.effective_contribution == pytest.approx(0.25)
+    assert card.contextual_breakdown.synergy == pytest.approx(0.75)
+    assert "+0.25 bounded DO points" in card.contextual_evidence[0]
+    assert contribution.to_json()["effective_contribution"] == pytest.approx(0.25)
 
 
 def test_saturated_generic_synergy_keeps_generic_evidence_for_a_zero_increment() -> None:
@@ -4396,6 +4539,10 @@ def test_saturated_generic_synergy_keeps_generic_evidence_for_a_zero_increment()
     assert supported_card.contextual_breakdown.synergy == MAX_SYNERGY_TERM
     assert supported_card.raw_score == control_card.raw_score
     assert supported_card.contextual_evidence == (generic_evidence,)
+    assert len(supported_card.relationship_contributions) == 1
+    contribution = supported_card.relationship_contributions[0]
+    assert contribution.raw_contribution > 0.0
+    assert contribution.effective_contribution == 0.0
     synergy_reason = next(
         reason
         for reason in supported_card.rationale.reasons
@@ -4407,7 +4554,7 @@ def test_saturated_generic_synergy_keeps_generic_evidence_for_a_zero_increment()
     assert "Confirmed relationship support" not in detailed
 
 
-def test_relationship_support_selects_one_maximum_and_never_stacks_copies() -> None:
+def test_relationship_support_aggregates_distinct_sources_without_stacking_copies() -> None:
     database = _relationship_database()
     profile = _relationship_profile(
         relationships=(
@@ -4422,8 +4569,13 @@ def test_relationship_support_selects_one_maximum_and_never_stacks_copies() -> N
         pool_grp_ids=(601, 604),
     )
 
-    assert card.contextual_breakdown.synergy == pytest.approx(MAX_SYNERGY_TERM * 0.5 * 0.15)
-    assert card.contextual_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
+    assert card.contextual_breakdown.synergy == pytest.approx(
+        MAX_SYNERGY_TERM * 0.75 * 0.15
+    )
+    assert len(card.relationship_contributions) == 2
+    assert tuple(
+        item.support.source_card_id for item in card.relationship_contributions
+    ) == (601, 604)
     go_wide_profile = _relationship_profile(
         relationships=(_token_go_wide_relationship(),)
     )
@@ -4440,7 +4592,13 @@ def test_relationship_support_selects_one_maximum_and_never_stacks_copies() -> N
         pool_grp_ids=(601, 601),
     )
     assert doubled.raw_score == single.raw_score
-    assert doubled.contextual_evidence == (_TOKEN_GO_WIDE_EVIDENCE,)
+    assert len(doubled.relationship_contributions) == 1
+    assert doubled.relationship_contributions[0].raw_contribution == (
+        single.relationship_contributions[0].raw_contribution
+    )
+    assert doubled.relationship_contributions[0].effective_contribution == (
+        single.relationship_contributions[0].effective_contribution
+    )
     ledger = _relationship_ledger(
         database=database,
         profile=go_wide_profile,
@@ -5031,13 +5189,15 @@ _RELATIONSHIP_OUTLET_PREREQUISITE = (
 )
 _TOKEN_SACRIFICE_EVIDENCE = (
     "relationship relationship:token-sacrifice-outlet:601:602 "
-    "(token-sacrifice-outlet) for Warhorn Outlet [602]: drafted Omen Scrapwright "
+    "(token-sacrifice-outlet) is supported and adds +0.11 bounded DO points "
+    "for Warhorn Outlet [602]: drafted Omen Scrapwright "
     f"[601] satisfies {_RELATIONSHIP_TOKEN_PREREQUISITE}; "
     f"{_RELATIONSHIP_OUTLET_PREREQUISITE}"
 )
 _TOKEN_GO_WIDE_EVIDENCE = (
     "relationship relationship:token-go-wide-payoff:601:605 "
-    "(token-go-wide-payoff) for Omen Rally Banner [605]: drafted Omen Scrapwright "
+    "(token-go-wide-payoff) is supported and adds +0.11 bounded DO points "
+    "for Omen Rally Banner [605]: drafted Omen Scrapwright "
     f"[601] satisfies {_RELATIONSHIP_TOKEN_PREREQUISITE}; "
     "target:condition/control/permanent;types=all_of:creature;controller=you"
 )
@@ -5109,6 +5269,11 @@ def _relationship_database() -> CardDatabase:
                 grp_id=608,
                 name="Double Outlet",
                 oracle_text=_RELATIONSHIP_DOUBLE_OUTLET_PARAGRAPH,
+            ),
+            609: _relationship_card(
+                grp_id=609,
+                name="Omen Third Scrapwright",
+                oracle_text=_RELATIONSHIP_TOKEN_PARAGRAPH,
             ),
         }
     )
@@ -5239,6 +5404,7 @@ def _relationship_participant(
     card_id: int,
     role: Role,
     prerequisites: tuple[RelationshipPrerequisite, ...],
+    qualifications: tuple[RelationshipQualification, ...] = (),
 ) -> RelationshipParticipant:
     """Build one frozen participant bound to its own card hash and clauses."""
     card = _relationship_database().lookup(grp_id=card_id)
@@ -5252,6 +5418,7 @@ def _relationship_participant(
         role=role,
         capability_prerequisites=(),
         prerequisites=prerequisites,
+        qualifications=qualifications,
     )
 
 
@@ -5296,9 +5463,9 @@ def _relationship(
         claim=claim,
         prerequisites=prerequisites,
         oracle_evidence=tuple(
-            clause.evidence
+            item.evidence
             for participant in (source, target)
-            for clause in participant.prerequisites
+            for item in (*participant.prerequisites, *participant.qualifications)
         ),
         guide_evidence=(),
         review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
@@ -5331,9 +5498,9 @@ def _token_sacrifice_relationship(
     )
 
 
-def _token_go_wide_relationship() -> CardRelationship:
+def _token_go_wide_relationship(*, source_card_id: int = 601) -> CardRelationship:
     """Build one `token-go-wide-payoff` relationship over the fixture set."""
-    source = _token_source_participant(card_id=601)
+    source = _token_source_participant(card_id=source_card_id)
     target = _relationship_participant(
         card_id=605,
         role=Role.GO_WIDE_PAYOFF,

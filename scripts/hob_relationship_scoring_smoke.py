@@ -17,6 +17,7 @@ from draftomen.events import EXPECTED_PICKS_PER_PACK
 from draftomen.pickengine import (
     MAX_CONTEXTUAL_ADJUSTMENT,
     MAX_SYNERGY_TERM,
+    _RELATIONSHIP_OUTCOME_FACTORS,
     _RELATIONSHIP_SUPPORT_FACTORS,
     _TERM_BOUNDS,
 )
@@ -39,7 +40,7 @@ R6_FINDING_ID = (
 )
 R1_MECHANISM = "token-go-wide-payoff"
 R6_MECHANISM = "token-sacrifice-outlet"
-R1_RAW_SCORE_DELTA = 0.190244
+R1_RAW_SCORE_DELTA = 0.0
 R6_RAW_SCORE_DELTA = 0.205793
 ROW_NAMES = ("unsupported", "r1", "r6", "saturation")
 EXPECTED_RECOMMENDED_GRP_IDS = {
@@ -135,13 +136,32 @@ def _project_report(report) -> dict[str, object]:
                     reason.to_json() for reason in recommended.rationale.reasons
                 ],
                 "relationship_support": [
-                    support.to_json() for support in row.role_ledger.relationship_support
+                    _safe_relationship_record(payload=support.to_json())
+                    for support in row.role_ledger.relationship_support
                 ]
                 if row.role_ledger is not None
                 else [],
+                "relationship_contributions": [
+                    _safe_relationship_record(payload=contribution.to_json())
+                    for contribution in row.relationship_contributions
+                ],
             }
         )
     return {"ranking_mode": report.ranking_mode, "rows": rows}
+
+
+def _safe_relationship_record(*, payload: object) -> object:
+    """Remove verbatim Oracle quotes from an offline report record."""
+
+    if isinstance(payload, list):
+        return [_safe_relationship_record(payload=item) for item in payload]
+    if isinstance(payload, dict):
+        return {
+            key: _safe_relationship_record(payload=value)
+            for key, value in payload.items()
+            if key != "quote"
+        }
+    return payload
 
 
 def _project_row_offers(
@@ -212,6 +232,19 @@ def _factor_records() -> list[dict[str, object]]:
             ),
         }
         for mechanism in sorted(_RELATIONSHIP_SUPPORT_FACTORS)
+    ]
+
+
+def _outcome_factor_records() -> list[dict[str, object]]:
+    return [
+        {
+            "outcome": outcome.value,
+            "factor": _RELATIONSHIP_OUTCOME_FACTORS[outcome],
+        }
+        for outcome in sorted(
+            _RELATIONSHIP_OUTCOME_FACTORS,
+            key=lambda item: item.value,
+        )
     ]
 
 
@@ -301,13 +334,14 @@ def _check_row(
             raise ValueError(
                 f"r1 row delta {raw_delta} does not match the calibrated {R1_RAW_SCORE_DELTA}"
             )
-        _check_positive_row(
+        _check_relationship_row(
             name=name,
             enhanced=enhanced,
             finding_id=R1_FINDING_ID,
             mechanism=R1_MECHANISM,
             source_card_id=103382,
             target_card_id=103526,
+            expected_effective_contribution=0.0,
         )
     elif name == "r6":
         if R6_FINDING_ID not in finding_ids:
@@ -316,13 +350,14 @@ def _check_row(
             raise ValueError(
                 f"r6 row delta {raw_delta} does not match the calibrated {R6_RAW_SCORE_DELTA}"
             )
-        _check_positive_row(
+        _check_relationship_row(
             name=name,
             enhanced=enhanced,
             finding_id=R6_FINDING_ID,
             mechanism=R6_MECHANISM,
             source_card_id=103531,
             target_card_id=103458,
+            expected_effective_contribution=R6_RAW_SCORE_DELTA,
         )
     else:
         if enhanced_breakdown["synergy"] != MAX_SYNERGY_TERM:
@@ -346,6 +381,13 @@ def _check_row(
             for reason in enhanced["rationale_reasons"]
         ):
             raise ValueError("saturation row rationale must stay generic at the cap")
+        contributions = enhanced["relationship_contributions"]
+        if (
+            len(contributions) != 1
+            or contributions[0]["finding_id"] != R1_FINDING_ID
+            or contributions[0]["effective_contribution"] != 0.0
+        ):
+            raise ValueError("saturation row must retain zero-effective R1 provenance")
 
     return {
         "controls": {
@@ -357,7 +399,7 @@ def _check_row(
     }
 
 
-def _check_positive_row(
+def _check_relationship_row(
     *,
     name: str,
     enhanced: dict[str, object],
@@ -365,6 +407,7 @@ def _check_positive_row(
     mechanism: str,
     source_card_id: int,
     target_card_id: int,
+    expected_effective_contribution: float,
 ) -> None:
     matching = [
         support
@@ -381,11 +424,28 @@ def _check_positive_row(
         or support["target"]["grp_id"] != target_card_id
     ):
         raise ValueError(f"{name} row support participants do not match the reviewed pair")
-    evidence = " ".join(enhanced["contextual_evidence"])
-    if finding_id not in evidence or mechanism not in evidence:
-        raise ValueError(f"{name} row contextual evidence lacks the reviewed relationship")
-    if f"[{source_card_id}]" not in evidence:
-        raise ValueError(f"{name} row contextual evidence lacks the drafted source card")
+    contributions = [
+        contribution
+        for contribution in enhanced["relationship_contributions"]
+        if contribution["finding_id"] == finding_id
+    ]
+    if len(contributions) != 1:
+        raise ValueError(f"{name} row lacks structured relationship provenance")
+    contribution = contributions[0]
+    if contribution["effective_contribution"] != expected_effective_contribution:
+        raise ValueError(f"{name} row has the wrong effective relationship contribution")
+    if contribution["outcome"] != "supported":
+        raise ValueError(f"{name} row relationship outcome is not supported")
+    if expected_effective_contribution > 0.0:
+        evidence = " ".join(enhanced["contextual_evidence"])
+        if finding_id not in evidence or mechanism not in evidence:
+            raise ValueError(
+                f"{name} row contextual evidence lacks the reviewed relationship"
+            )
+        if f"[{source_card_id}]" not in evidence:
+            raise ValueError(
+                f"{name} row contextual evidence lacks the drafted source card"
+            )
 
 
 def _control_row(row: dict[str, object]) -> dict[str, object]:
@@ -398,6 +458,7 @@ def _control_row(row: dict[str, object]) -> dict[str, object]:
         "contextual_breakdown": row["contextual_breakdown"],
         "contextual_evidence": row["contextual_evidence"],
         "rationale_reasons": row["rationale_reasons"],
+        "relationship_contributions": row["relationship_contributions"],
     }
 
 
@@ -478,7 +539,7 @@ def generate_hob_relationship_scoring_report(*, app_dir: Path) -> dict[str, obje
 
     enhancement = profile.enhancement
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "card_artifact": {
             "path": str(CARD_ARTIFACT_RELATIVE_PATH),
             "sha256": artifact_digest,
@@ -495,6 +556,7 @@ def generate_hob_relationship_scoring_report(*, app_dir: Path) -> dict[str, obje
             "card_count": enhancement.card_data.card_count,
         },
         "relationship_support_factors": _factor_records(),
+        "relationship_outcome_factors": _outcome_factor_records(),
         "relationship_projection_notes": [
             {"finding_id": R1_FINDING_ID, "note": R1_PROJECTION_NOTE},
         ],

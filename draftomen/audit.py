@@ -509,6 +509,9 @@ def _recommendation_payload(*, scored_card: ScoredCard | None) -> AuditRecord | 
         "color_fit": scored_card.color_fit,
         "contextual_breakdown": scored_card.contextual_breakdown.to_json(),
         "contextual_evidence": list(scored_card.contextual_evidence),
+        "relationship_contributions": [
+            item.to_json() for item in scored_card.relationship_contributions
+        ],
         "contextual_pair": scored_card.contextual_pair,
         "contextual_theme": scored_card.contextual_theme,
         "contextual_profile_maturity": scored_card.contextual_profile_maturity,
@@ -585,6 +588,9 @@ def _candidate_payload(*, scored_card: ScoredCard, rank: int) -> AuditRecord:
             "adjusted_rating": scored_card.adjusted_rating,
             "contextual_breakdown": scored_card.contextual_breakdown.to_json(),
             "contextual_evidence": list(scored_card.contextual_evidence),
+            "relationship_contributions": [
+                item.to_json() for item in scored_card.relationship_contributions
+            ],
             "contextual_pair": scored_card.contextual_pair,
             "contextual_theme": scored_card.contextual_theme,
             "contextual_profile_maturity": scored_card.contextual_profile_maturity,

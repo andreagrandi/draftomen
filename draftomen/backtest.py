@@ -14,7 +14,12 @@ from draftomen.events import (
     EXPECTED_PICKS_PER_PACK,
     EXPECTED_TOTAL_PICKS,
 )
-from draftomen.pickengine import PickEngine, PickScoringContext, ScoredCard
+from draftomen.pickengine import (
+    PickEngine,
+    PickScoringContext,
+    RelationshipScoreContribution,
+    ScoredCard,
+)
 from draftomen.pool import DraftPick, DraftState, list_draft_states
 from draftomen.pool_ledger import PoolRoleLedger
 from draftomen.ranking import DEFAULT_RANKING_MODE, rank_scored_cards, ranking_label
@@ -49,6 +54,7 @@ class BacktestPickResult:
     role_ledger: PoolRoleLedger | None = None
     scoring_context: PickScoringContext | None = None
     contextual_evidence: tuple[str, ...] = ()
+    relationship_contributions: tuple[RelationshipScoreContribution, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +305,7 @@ def _score_pick(
             role_ledger=scored_pack.role_ledger,
             scoring_context=scored_pack.scoring_context,
             contextual_evidence=recommended.contextual_evidence,
+            relationship_contributions=recommended.relationship_contributions,
         )
 
     return BacktestPickResult(
@@ -314,6 +321,7 @@ def _score_pick(
         role_ledger=scored_pack.role_ledger,
         scoring_context=scored_pack.scoring_context,
         contextual_evidence=recommended.contextual_evidence,
+        relationship_contributions=recommended.relationship_contributions,
     )
 
 

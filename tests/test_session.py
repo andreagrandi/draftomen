@@ -4050,6 +4050,7 @@ def test_session_backtest_projection_preserves_domain_context_fields() -> None:
     assert projected.role_ledger is context.role_ledger
     assert projected.scoring_context is context
     assert projected.contextual_evidence == source_card.contextual_evidence
+    assert projected.relationship_contributions == ()
 
 
 def test_live_session_account_pick_retains_recommendations_and_colors(

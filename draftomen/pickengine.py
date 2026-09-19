@@ -94,6 +94,14 @@ _RELATIONSHIP_SUPPORT_FACTORS: Mapping[str, float] = {
     "token-go-wide-payoff": 0.5,
     "token-sacrifice-outlet": 0.5,
 }
+# Supported clauses keep the calibrated mechanism value. Conditional clauses
+# receive half credit; closed negative verdicts remain auditable but score zero.
+_RELATIONSHIP_OUTCOME_FACTORS: Mapping[RelationshipSupportOutcome, float] = {
+    RelationshipSupportOutcome.SUPPORTED: 1.0,
+    RelationshipSupportOutcome.CONDITIONAL: 0.5,
+    RelationshipSupportOutcome.INCOMPATIBLE: 0.0,
+    RelationshipSupportOutcome.UNSUPPORTED: 0.0,
+}
 _TERM_BOUNDS: Mapping[str, tuple[float, float]] = {
     "role": (0.0, MAX_ROLE_TERM),
     "urgency": (0.0, MAX_URGENCY_TERM),
@@ -251,6 +259,47 @@ class PickRationale:
         return {
             "reasons": [reason.to_json() for reason in self.reasons],
             "unattributed_contribution": self.unattributed_contribution,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipScoreContribution:
+    """Retain one relationship verdict and its bounded scoring effect.
+    Zero-effective records remain available for audit and replay.
+    """
+
+    support: RelationshipSupport
+    raw_contribution: float
+    effective_contribution: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.support, RelationshipSupport):
+            raise TypeError("Relationship score support must be RelationshipSupport.")
+        for field_name in ("raw_contribution", "effective_contribution"):
+            value = getattr(self, field_name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or not 0.0 <= float(value) <= MAX_SYNERGY_TERM
+            ):
+                raise ValueError(
+                    f"Relationship score {field_name} must be bounded from 0 "
+                    f"to {MAX_SYNERGY_TERM:g}."
+                )
+            object.__setattr__(self, field_name, float(f"{float(value):.6f}"))
+        if self.effective_contribution > self.raw_contribution:
+            raise ValueError(
+                "Relationship effective contribution cannot exceed its raw contribution."
+            )
+
+    def to_json(self) -> dict[str, object]:
+        """Return deterministic relationship and score provenance."""
+
+        return {
+            **self.support.to_json(),
+            "raw_contribution": self.raw_contribution,
+            "effective_contribution": self.effective_contribution,
         }
 
 
@@ -821,6 +870,7 @@ class ScoredCard:
     freely_available_basic: bool
     contextual_breakdown: ContextualScoreBreakdown = ContextualScoreBreakdown()
     contextual_evidence: tuple[str, ...] = ()
+    relationship_contributions: tuple[RelationshipScoreContribution, ...] = ()
     contextual_pair: str | None = None
     contextual_theme: str | None = None
     contextual_profile_maturity: str | None = None
@@ -1156,7 +1206,11 @@ class PickEngine:
             config=self.config,
         )
         if contextual_adjustments_enabled:
-            contextual_breakdown, contextual_evidence = _contextual_score_for_card(
+            (
+                contextual_breakdown,
+                contextual_evidence,
+                relationship_contributions,
+            ) = _contextual_score_for_card(
                 card=card,
                 scoring_context=scoring_context,
                 enhanced_relationships_enabled=enhanced_relationships_enabled,
@@ -1164,6 +1218,7 @@ class PickEngine:
         else:
             contextual_breakdown = ContextualScoreBreakdown()
             contextual_evidence = ()
+            relationship_contributions = ()
         contextual_adjustment = contextual_breakdown.aggregate
         raw_score = _clamp(
             value=(base_score * color_factor) + contextual_adjustment,
@@ -1211,6 +1266,7 @@ class PickEngine:
             freely_available_basic=freely_available_basic,
             contextual_breakdown=contextual_breakdown,
             contextual_evidence=contextual_evidence,
+            relationship_contributions=relationship_contributions,
             contextual_pair=(
                 None
                 if scoring_context is None
@@ -1238,7 +1294,11 @@ def _contextual_score_for_card(
     card: CardInfo,
     scoring_context: PickScoringContext | None,
     enhanced_relationships_enabled: bool = True,
-) -> tuple[ContextualScoreBreakdown, tuple[str, ...]]:
+) -> tuple[
+    ContextualScoreBreakdown,
+    tuple[str, ...],
+    tuple[RelationshipScoreContribution, ...],
+]:
     """Compute bounded contextual terms from one validated pre-pick context."""
 
     if (
@@ -1246,12 +1306,12 @@ def _contextual_score_for_card(
         or card.unknown
         or _is_freely_available_basic_land(card=card)
     ):
-        return ContextualScoreBreakdown(), ()
+        return ContextualScoreBreakdown(), (), ()
 
     profile = scoring_context.set_profile
     ledger = scoring_context.role_ledger
     if ledger.likely_pair is None or ledger.profile_source == "generic":
-        return ContextualScoreBreakdown(), ()
+        return ContextualScoreBreakdown(), (), ()
 
     evidence_weight = _profile_evidence_weight(profile=profile)
     stage_scale = _stage_scale(stage=scoring_context.stage)
@@ -1260,10 +1320,10 @@ def _contextual_score_for_card(
         profile=profile.role_profile,
     )
     if resolution.source != "compiled_profile":
-        return ContextualScoreBreakdown(), ()
+        return ContextualScoreBreakdown(), (), ()
     assignments = resolution.assignments
     if not assignments:
-        return ContextualScoreBreakdown(), ()
+        return ContextualScoreBreakdown(), (), ()
 
     target_map = ledger.target_coverage_map
     role_candidates: list[tuple[float, str, RoleAssignment]] = []
@@ -1335,7 +1395,7 @@ def _contextual_score_for_card(
         stage_scale=stage_scale,
         evidence_weight=evidence_weight,
     )
-    relationship_term, relationship_evidence = (
+    relationship_term, relationship_contributions = (
         (0.0, ())
         if not enhanced_relationships_enabled
         else _relationship_synergy_term(
@@ -1343,16 +1403,24 @@ def _contextual_score_for_card(
             ledger=ledger,
             stage_scale=stage_scale,
             evidence_weight=evidence_weight,
+            generic_synergy_term=generic_synergy_term,
         )
     )
     synergy_term = _bounded_term(
-        value=generic_synergy_term + relationship_term,
+        value=max(generic_synergy_term, relationship_term),
         lower=0.0,
         upper=MAX_SYNERGY_TERM,
     )
-    effective_relationship_increment = synergy_term - generic_synergy_term
+    relationship_evidence = tuple(
+        _relationship_evidence(contribution=contribution)
+        for contribution in relationship_contributions
+        if contribution.raw_contribution > 0.0
+    )
+    effective_relationship_increment = sum(
+        item.effective_contribution for item in relationship_contributions
+    )
     synergy_evidence = (
-        relationship_evidence
+        (" | ".join(relationship_evidence),)
         if effective_relationship_increment > 0.0
         else generic_synergy_evidence
     )
@@ -1390,7 +1458,7 @@ def _contextual_score_for_card(
         evidence.extend(unsupported_evidence)
     if fixing_term > 0.01:
         evidence.extend(fixing_evidence)
-    return breakdown, tuple(evidence)
+    return breakdown, tuple(evidence), relationship_contributions
 
 
 def _profile_evidence_weight(*, profile: SetProfile) -> float:
@@ -1478,41 +1546,82 @@ def _relationship_synergy_term(
     ledger: PoolRoleLedger,
     stage_scale: float,
     evidence_weight: float,
-) -> tuple[float, tuple[str, ...]]:
-    """Compute the typed relationship share of the bounded synergy term.
-    One qualifying relationship is selected by deterministic maximum; supports
-    never stack across findings, copies, or quantities.
+    generic_synergy_term: float,
+) -> tuple[float, tuple[RelationshipScoreContribution, ...]]:
+    """Aggregate distinct relationship findings inside the synergy bound.
+    Specific support replaces overlapping generic package synergy.
     """
 
-    candidates: list[tuple[float, str]] = []
+    candidates_by_pair: dict[
+        tuple[int, int],
+        tuple[RelationshipSupport, float],
+    ] = {}
     for support in ledger.relationship_support:
-        if (
-            support.outcome is not RelationshipSupportOutcome.SUPPORTED
-            or not support.source_in_projected_deck
-        ):
-            continue
         if support.target_card_id != card.grp_id:
             continue
         factor = _RELATIONSHIP_SUPPORT_FACTORS.get(support.mechanism)
         if factor is None:
             continue
+        identity = (support.source_card_id, support.target_card_id)
         value = (
             MAX_SYNERGY_TERM
             * factor
+            * _RELATIONSHIP_OUTCOME_FACTORS[support.outcome]
             * min(support.source_role_confidence, support.target_role_confidence)
             * stage_scale
             * evidence_weight
         )
-        candidates.append((value, _relationship_evidence(support=support)))
+        candidate = (
+            support,
+            _bounded_term(value=value, lower=0.0, upper=MAX_SYNERGY_TERM),
+        )
+        previous = candidates_by_pair.get(identity)
+        if previous is None or candidate[1] > previous[1]:
+            candidates_by_pair[identity] = candidate
+    candidates = tuple(
+        sorted(
+            candidates_by_pair.values(),
+            key=lambda item: (
+                item[0].mechanism,
+                item[0].finding_id,
+                item[0].source_card_id,
+            ),
+        )
+    )
     if not candidates:
         return 0.0, ()
-    value, evidence = max(candidates, key=lambda item: (item[0], item[1]))
-    return value, (evidence,)
+
+    raw_total = 0.0
+    previous_effective = generic_synergy_term
+    contributions: list[RelationshipScoreContribution] = []
+    for support, raw_contribution in candidates:
+        raw_total = _bounded_term(
+            value=raw_total + raw_contribution,
+            lower=0.0,
+            upper=MAX_SYNERGY_TERM,
+        )
+        current_effective = max(generic_synergy_term, raw_total)
+        contributions.append(
+            RelationshipScoreContribution(
+                support=support,
+                raw_contribution=raw_contribution,
+                effective_contribution=_bounded_term(
+                    value=current_effective - previous_effective,
+                    lower=0.0,
+                    upper=MAX_SYNERGY_TERM,
+                ),
+            )
+        )
+        previous_effective = current_effective
+    return raw_total, tuple(contributions)
 
 
-def _relationship_evidence(*, support: RelationshipSupport) -> str:
+def _relationship_evidence(*, contribution: RelationshipScoreContribution) -> str:
+    support = contribution.support
     return (
         f"relationship {support.finding_id} ({support.mechanism}) "
+        f"is {support.outcome.value} and adds "
+        f"{contribution.effective_contribution:+.2f} bounded DO points "
         f"for {support.target_card_name} [{support.target_card_id}]: "
         f"drafted {support.source_card_name} [{support.source_card_id}] "
         f"satisfies {'; '.join(support.prerequisites)}"
