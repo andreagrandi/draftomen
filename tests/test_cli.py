@@ -4164,6 +4164,7 @@ def test_handle_enrich_set_reports_not_published_for_incomplete_repository_publi
 
 REPUBLISH_RUN_ID = "9574d202eef14943"
 REPUBLISH_REVIEWED_AT = "2026-09-01T14:00:00Z"
+REPUBLISH_GENERATED_AT = datetime(2026, 9, 19, 12, 20, 51, tzinfo=UTC)
 REPUBLISH_GUIDE_TEXT = "TST rewards going wide with support creatures."
 REPUBLISH_MISSING_CARD_DATA_ERROR = (
     "The selected enrichment run is missing its frozen card data."
@@ -4327,7 +4328,14 @@ def _write_republish_profiles(*, profiles_dir: Path) -> None:
 def test_republish_enrichment_publishes_a_saved_confirmed_artifact(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return REPUBLISH_GENERATED_AT
+
+    monkeypatch.setattr(cli, "datetime", FrozenDateTime)
     store_dir = tmp_path / "set-enrichment"
     artifact_path = _write_republish_store(store_dir=store_dir)
     profiles_dir = tmp_path / "profiles"
@@ -4381,7 +4389,7 @@ def test_republish_enrichment_publishes_a_saved_confirmed_artifact(
                 "artifact_sha256": artifact_sha256,
                 "event_format": "quickdraft",
                 "profile_gzip_sha256": gzip_sha256,
-                "published_at": "2026-09-01T14:00:00+00:00",
+                "published_at": REPUBLISH_GENERATED_AT.isoformat(),
                 "reviewed_at": REPUBLISH_REVIEWED_AT,
                 "run_id": REPUBLISH_RUN_ID,
                 "set_code": "tst",
@@ -4394,6 +4402,8 @@ def test_republish_enrichment_publishes_a_saved_confirmed_artifact(
     entry = manifest.select(set_code="tst", event_format="quickdraft")
     assert entry is not None
     assert entry.gzip_sha256 == gzip_sha256
+    assert entry.generated_at == REPUBLISH_GENERATED_AT.isoformat()
+    assert manifest.published_at == REPUBLISH_GENERATED_AT.isoformat()
     assert manifest.select(set_code="oth", event_format="quickdraft") is not None
 
     published_profile = json.loads(

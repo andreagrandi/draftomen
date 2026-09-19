@@ -1088,7 +1088,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--generated-at",
         type=_parse_generated_at,
         default=None,
-        help="Override the profile timestamp (default: the artifact's review timestamp).",
+        help="Override the profile timestamp (default: the current UTC time).",
     )
     republish_parser.add_argument(
         "--profile-version",
@@ -2399,11 +2399,7 @@ def handle_republish_enrichment(args: argparse.Namespace) -> int:
             raise EnrichmentInventoryError(
                 "The selected enrichment run is missing its frozen card data."
             )
-        if args.generated_at is None and summary.reviewed_at is None:
-            raise EnrichmentInventoryError(
-                "The selected enrichment artifact has no review timestamp."
-            )
-        generated_at = args.generated_at or datetime.fromisoformat(summary.reviewed_at)
+        generated_at = args.generated_at or datetime.now(UTC)
         output_dir = args.output_dir or (
             Path(store_dir) / f"{summary.set_code}-{args.format.casefold()}"
         )

@@ -1,17 +1,17 @@
-# HOB recovered-profile publication and draft evidence
+# HOB recovered-profile candidate and draft evidence
 
 Issue: #595. Date: 2026-09-19. The recovery and every verification command ran with
 `OPENROUTER_API_KEY` and `OPENROUTER_KEY` removed from the environment. No model provider was
 constructed or contacted.
 
-## Published artifact
+## Candidate artifact
 
 The supported `republish-enrichment` command selected confirmed artifact
 `edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84` from run
-`9574d202eef14943`, used the local HOB Quick Draft ratings cache, and published an `early`, schema-3
-profile. The manifest selects gzip object
-`37a4d44603baa6786a75df99b25a4f07baaf3a76227f892891fe838278cbbc5f`; its uncompressed canonical
-profile digest is `8274309189935d0739a58925b5a6eed0e4020dfaa5f48e13d170128fd21f6d90`.
+`9574d202eef14943`, used the local HOB Quick Draft ratings cache, and generated an `early`, schema-3
+profile with a current generation/publication timestamp. The candidate manifest selects gzip object
+`ba47f76ea308c8278bfdb9176165a220833ab6ca051f509f23a7c9e82966db4c`; its uncompressed canonical
+profile digest is `6b188ae9a248905bd5ad678f79008252ffa1889f52da9eb3b3012649d9419341`.
 The profile retains 708 relationships, 657 of which carry executable qualified projections, and
 passes the runtime compatibility check against `website/public/card-data/hob.json.gz`.
 
@@ -22,20 +22,30 @@ source of truth for the complete 193-Oracle-identity / 198-play-booster-printing
 accepted recruit, amass, landfall, ferocious, adventure, storied, Hone/Equipment, Treasure/Dragon,
 and graveyard-direction decisions.
 
-## Real Draftmancer and QML evidence
+The production manifest observed on 2026-09-19 still selected gzip object `75132bf4...` with profile
+digest `c73802bf...`. That profile reproduced the GUI's `invalid or incompatible` state. The first
+recovery attempt incorrectly retained the 2026-09-14 review timestamp, which was older than both
+the production manifest and its selected HOB profile; normal clients would therefore reject it as
+stale. `republish-enrichment` now defaults new recovered profiles to the current UTC timestamp.
+
+The candidate is only in the local commit. Until it is deployed and fetched by a clean application
+installation, supported publication and production availability remain unverified and #595 stays
+open.
+
+## Cached-profile Draftmancer and QML evidence
 
 `scripts/hob_published_profile_smoke.py` uses the pinned Draftmancer revision, the local Scryfall
-bulk source, an offline application directory containing the exact profile bytes above, and the
+bulk source, a preinstalled offline application directory containing the exact candidate profile
+bytes above, and the
 production test-draft controller. It follows a predeclared rank-one selection policy for all three
 14-pick packs, records every server-originated offer and pool, builds the completed pool, toggles
 AI enhancement off and on against the same live offer, and renders the recovered recommendation
-through `CardPreview.qml` before saving an offscreen screenshot under `/tmp`.
+through `CardPreview.qml` before saving an offscreen screenshot under `/tmp`. This proves scoring,
+the AI off/on behavior, and rendering. It does not prove remote acquisition or deployment.
 
-The checked-in `hob-595-draft-evidence.json` records 42 offers: 16 had one or more relationship
-advice rows and 26 record that no offered recommendation had relationship support from the drafted
-pool. The run observed conditional token go-wide, token sacrifice, and token death relationships.
-At pack 1 pick 4, `Bolg of the North` and `Thorin's Last Stand` received relationship evidence from
-the drafted `Fíli the Pathfinder`; disabling AI enhancement on that same offer removed the
+The checked-in `hob-595-draft-evidence.json` records a full 42-offer candidate run and explicitly
+labels profile acquisition as `preinstalled-offline`. At pack 1 pick 2, `Rhovanion Rampager`
+received relationship evidence; disabling AI enhancement on that same offer removed the
 relationship contributions. Re-enabling it restored the advice, and the QML explanation read back
 exactly matched the Python recommendation text.
 
@@ -50,16 +60,17 @@ mechanic matrix and focused compiler, pool-ledger, scoring, session, and QML tes
 ## Native verification
 
 A fresh unsigned macOS bundle was built from this checkout with Nuitka 4.1.3. The compiled-bundle
-smoke used the same prepared application directory and exact recovered profile bytes. Its Auto
+smoke used a prepared application directory. Its Auto
 journey completed 42 HOB picks and built a 40-card BR deck. Its Manual journey used the real QML
 controls for five picks, including a rank-two selection, and observed the pool grow to five cards.
 The helper verified that the external pinned Draftmancer server answered before and after both
-journeys.
+journeys. Because its profile was preinstalled, this is native runtime evidence rather than a
+served-byte installation test.
 
 ## Reproduction
 
 Start the pinned Draftmancer server as documented in `README.md`, prepare an application directory
-with `website/public/card-data/hob.json.gz` and the decompressed published object, then run:
+with `website/public/card-data/hob.json.gz` and the decompressed candidate object, then run:
 
 ```sh
 QT_QPA_PLATFORM=offscreen env -u OPENROUTER_API_KEY -u OPENROUTER_KEY \
@@ -71,10 +82,13 @@ QT_QPA_PLATFORM=offscreen env -u OPENROUTER_API_KEY -u OPENROUTER_KEY \
   --report docs/audits/hob-595-draft-evidence.json
 ```
 
-The committed evidence JSON has SHA-256
-`6fae8b6d14705e78259dc6ccfb93273b2750c0918feb1092c459a33d378bce48`.
+The candidate evidence JSON has SHA-256
+`25757e520b83ef320329351ae73f6364239ba45f2a69a253407bffd54267b6f0`. A clean installation must
+fetch the deployed manifest and object, record the same profile digest, show AI-enhanced suggestions
+as available, and render relationship advice before #595 can close.
 
 ## Epic audit
 
-#559 remains open. HOB publication and runtime display are now evidenced, while #578 still requires
-the separate LCI regeneration. Closing #595 does not imply that the parent epic is complete.
+#595 and #559 remain open. Candidate runtime display is evidenced, while supported deployment and
+clean-install acquisition remain outstanding for #595 and #578 still requires the separate LCI
+regeneration.

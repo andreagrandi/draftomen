@@ -1,5 +1,5 @@
-"""Verify published HOB relationship advice through Draftmancer and QML.
-The smoke stays offline apart from the caller-managed local Draftmancer server.
+"""Verify cached HOB relationship advice through Draftmancer and QML.
+The smoke does not exercise remote profile acquisition or deployment.
 """
 
 from __future__ import annotations
@@ -34,13 +34,13 @@ EXPECTED_PICKS = 42
 
 
 class HobPublishedProfileSmokeError(RuntimeError):
-    """Report a failed published-profile journey.
+    """Report a failed cached-profile journey.
     The message is suitable for the command-line failure summary.
     """
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the published HOB profile smoke parser.
+    """Build the cached HOB profile smoke parser.
     Every external input stays explicit and local.
     """
 
@@ -298,6 +298,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
     report = {
         "schema_version": 1,
+        "profile_acquisition": "preinstalled-offline",
         "profile_sha256": profile_sha256,
         "selection_policy": "rank-one",
         "offers": offers,
@@ -325,6 +326,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     return {
         "status": "ok",
         "set_code": "hob",
+        "profile_acquisition": "preinstalled-offline",
         "selection_policy": "rank-one",
         "picks": len(steps),
         "packs": sorted({step.before.offer.pack_number + 1 for step in steps}),
@@ -339,13 +341,13 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the published-profile smoke and print one canonical summary."""
+    """Run the cached-profile smoke and print one canonical summary."""
 
     args = build_parser().parse_args(args=argv)
     try:
         result = _run(args)
     except Exception as error:
-        print(f"HOB published profile smoke failed: {error}", file=sys.stderr)
+        print(f"HOB cached profile smoke failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
     return 0

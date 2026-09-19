@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Give recovered enrichment publications a current timestamp so normal clients can replace an
+  older cached profile instead of rejecting the recovered artifact as stale. (#595)
+
 - Republish the recovered HOB Quick Draft enrichment and expose relationship advice in the
   headless real-Draftmancer pick trace. (#595)
 
