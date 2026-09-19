@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Show readable drafted-card relationship advice in focused card intel, including useful
+  interactions whose effective score increment is zero, and explain the independent contextual
+  scoring and AI-enhancement settings in the desktop UI. (#594)
 - Score supported and conditional pool relationships within existing synergy bounds, preserve
   zero-effective relationship provenance in audit and backtest output, and avoid generic synergy
   double counting. (#611)

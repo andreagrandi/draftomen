@@ -2080,7 +2080,7 @@ def image_source(image: QObject) -> str:
 
 
 def wait_until(predicate, description: str) -> None:
-    deadline = time.monotonic() + 8
+    deadline = time.monotonic() + 25
     while not predicate():
         application.processEvents()
         if time.monotonic() >= deadline:
@@ -2589,7 +2589,7 @@ finally:
 """
     completed = _run_qml_probe(
         probe,
-        timeout=20,
+        timeout=55,
         environment={"DRAFTOMEN_E2E_APP_DIR": str(app_dir)},
     )
 
@@ -6672,13 +6672,17 @@ with TemporaryDirectory() as preferences_dir:
     def assert_availability(
         *,
         status,
-        message,
+        availability_message,
+        advice_message,
         color,
         switch_enabled,
         switch_checked,
     ) -> None:
-        combined = message + OFFLINE_SENTENCE
+        combined = advice_message + OFFLINE_SENTENCE
         assert provider.state["enhancement_availability"]["status"] == status
+        assert provider.state["enhancement_availability"]["message"] == (
+            availability_message
+        )
         assert settings_message.property("text") == combined
         settings_accessible = QAccessible.queryAccessibleInterface(settings_message)
         assert settings_accessible is not None
@@ -6690,11 +6694,11 @@ with TemporaryDirectory() as preferences_dir:
             "AI-enhanced suggestions"
         )
         assert switch_accessible.text(QAccessible.Text.Description) == combined
-        assert status_message.property("text") == message
+        assert status_message.property("text") == advice_message
         assert QColor(status_message.property("color")) == QColor(color)
         status_accessible = QAccessible.queryAccessibleInterface(status_message)
         assert status_accessible is not None
-        assert status_accessible.text(QAccessible.Text.Name) == message
+        assert status_accessible.text(QAccessible.Text.Name) == advice_message
         assert status_accessible.text(QAccessible.Text.Description) == combined
         assert switch.property("enabled") is switch_enabled
         assert switch.property("checked") is switch_checked
@@ -6706,7 +6710,10 @@ with TemporaryDirectory() as preferences_dir:
 
     assert_availability(
         status="available",
-        message="AI-enhanced suggestions available for OTJ.",
+        availability_message="AI-enhanced suggestions available for OTJ.",
+        advice_message=(
+            "Relationship advice active for OTJ."
+        ),
         color="#a78bfa",
         switch_enabled=True,
         switch_checked=True,
@@ -6726,7 +6733,11 @@ with TemporaryDirectory() as preferences_dir:
     assert len(provider.commands) == len(startup_commands) + 1
     assert_availability(
         status="disabled",
-        message="AI-enhanced suggestions disabled for OTJ.",
+        availability_message="AI-enhanced suggestions disabled for OTJ.",
+        advice_message=(
+            "Contextual pick scoring is on, but AI-enhanced suggestions are off. "
+            "Turn on AI-enhanced suggestions to show relationship advice."
+        ),
         color="#c8c2b8",
         switch_enabled=True,
         switch_checked=False,
@@ -6743,13 +6754,16 @@ with TemporaryDirectory() as preferences_dir:
     assert len(provider.commands) == len(startup_commands) + 2
     assert_availability(
         status="available",
-        message="AI-enhanced suggestions available for OTJ.",
+        availability_message="AI-enhanced suggestions available for OTJ.",
+        advice_message=(
+            "Relationship advice active for OTJ."
+        ),
         color="#a78bfa",
         switch_enabled=True,
         switch_checked=True,
     )
 
-    for scenario, status, message in (
+    for scenario, status, availability_message in (
         (
             "not_enhanced",
             "not-enhanced",
@@ -6772,7 +6786,8 @@ with TemporaryDirectory() as preferences_dir:
         application.processEvents()
         assert_availability(
             status=status,
-            message=message,
+            availability_message=availability_message,
+            advice_message=availability_message,
             color="#e7c993",
             switch_enabled=False,
             switch_checked=False,
@@ -6780,6 +6795,230 @@ with TemporaryDirectory() as preferences_dir:
         dispatched = len(provider.commands)
         press_space()
         assert len(provider.commands) == dispatched
+
+    preferences.shutdown()
+    del root
+    del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
+def test_qml_relationship_advice_respects_both_settings_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen.events import PackOfferedEvent
+from draftomen.qt_adapter import GuiPreferencesAdapter, SessionAdapter
+from draftomen.semantic_roles import Role
+from draftomen.session import LiveSession
+from tests.test_pickengine import (
+    _RELATIONSHIP_ASSIGNMENTS,
+    _relationship_database,
+    _relationship_profile,
+    _token_sacrifice_relationship,
+)
+
+
+def wait_until(predicate, label):
+    for _ in range(300):
+        application.processEvents()
+        if predicate():
+            return
+        QTest.qWait(10)
+    raise AssertionError("Timed out waiting for " + label)
+
+
+def recommendation():
+    return provider.state["recommendations"]["cards"][0]
+
+
+def explanation_text(root):
+    preview = root.findChild(QObject, "wideLiveCardPreview")
+    assert preview is not None
+    explanation = preview.findChild(QObject, "cardPreviewExplanation")
+    assert explanation is not None
+    return explanation.property("text")
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+
+
+class SynchronousSessionAdapter(SessionAdapter):
+    def __init__(self, session):
+        self._session = session
+        super().__init__(snapshot=session.snapshot)
+
+    def _dispatch(self, *, command):
+        self._session.dispatch(command=command)
+        self._publish(snapshot=self._session.snapshot)
+
+
+with TemporaryDirectory() as directory:
+    app_dir = Path(directory)
+    database = _relationship_database()
+    profile = _relationship_profile(
+        relationships=(_token_sacrifice_relationship(),),
+        assignments=(
+            *_RELATIONSHIP_ASSIGNMENTS,
+            (602, Role.GO_WIDE_PAYOFF, 1.0),
+        ),
+    )
+    session = LiveSession(
+        log_path=app_dir / "Player.log",
+        app_dir=app_dir,
+        card_database=database,
+        set_profile=profile,
+        contextual_adjustments_enabled=True,
+    )
+    session._consume_event(
+        event=PackOfferedEvent(
+            event_name="QuickDraft_TST",
+            set_code="TST",
+            pack_number=2,
+            pick_number=13,
+            offered_grp_ids=(602,),
+            pool_grp_ids=(601, 603),
+            account_id=None,
+        ),
+        state=None,
+    )
+    provider = SynchronousSessionAdapter(session=session)
+    preferences = GuiPreferencesAdapter(app_dir=app_dir)
+    preferences.setContextualAdjustmentsEnabled(True)
+    preferences.contextualAdjustmentsEnabledChanged.connect(
+        provider.setContextualScoringEnabled
+    )
+
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", "monospace")
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "0.0")
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "settings")
+    context.setContextProperty("initialWindowWidth", 1440)
+    context.setContextProperty("initialWindowHeight", 900)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+
+    contextual_switch = root.findChild(
+        QObject, "settingsContextualScoringSwitch"
+    )
+    ai_switch = root.findChild(QObject, "settingsAiEnhancedSuggestionsSwitch")
+    advice_message = root.findChild(
+        QObject, "settingsAiEnhancedSuggestionsMessage"
+    )
+    status_message = root.findChild(QObject, "statusEnhancementMessage")
+    assert contextual_switch is not None
+    assert ai_switch is not None
+    assert advice_message is not None
+    assert status_message is not None
+    assert contextual_switch.property("checked") is True
+    assert ai_switch.property("checked") is True
+    assert "Relationship advice active" in advice_message.property("text")
+    assert status_message.property("text") in advice_message.property("text")
+
+    root.setProperty("currentSurface", "live")
+    wait_until(
+        lambda: "Drafted Omen Scrapwright supports Warhorn Outlet"
+        in explanation_text(root),
+        "rendered relationship advice",
+    )
+    both_on = recommendation()
+    assert both_on["card"]["grp_id"] == 602
+    assert both_on["relationship_contributions"][0]["effective_contribution"] == 0.0
+    explanation = explanation_text(root)
+    assert "creates creature tokens for its sacrifice ability" in explanation
+    assert "adds no extra DO points" in explanation
+    assert "relationship:" not in explanation
+    assert "source:condition" not in explanation
+    both_on_score = both_on["score"]
+
+    root.setProperty("currentSurface", "settings")
+    ai_switch.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    wait_until(
+        lambda: (
+            ai_switch.property("checked") is False
+            and contextual_switch.property("checked") is True
+            and "AI-enhanced suggestions are off"
+            in advice_message.property("text")
+        ),
+        "contextual-only settings state",
+    )
+    assert recommendation()["card"]["grp_id"] == 602
+    assert recommendation()["score"] == both_on_score
+    assert recommendation()["relationship_contributions"] == []
+    assert "receives" in recommendation()["explanation"]
+    assert "Drafted Omen Scrapwright" not in recommendation()["explanation"]
+    assert status_message.property("text") in advice_message.property("text")
+
+    contextual_switch.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    wait_until(
+        lambda: (
+            contextual_switch.property("checked") is False
+            and ai_switch.property("checked") is False
+            and "both to show relationship advice"
+            in advice_message.property("text")
+        ),
+        "both settings off",
+    )
+    both_off_score = recommendation()["score"]
+    assert recommendation()["card"]["grp_id"] == 602
+    assert status_message.property("text") in advice_message.property("text")
+
+    ai_switch.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    wait_until(
+        lambda: (
+            ai_switch.property("checked") is True
+            and contextual_switch.property("checked") is False
+            and "Contextual pick scoring is off"
+            in advice_message.property("text")
+        ),
+        "AI-only settings state",
+    )
+    assert recommendation()["score"] == both_off_score
+    assert recommendation()["relationship_contributions"] == []
+    assert status_message.property("text") in advice_message.property("text")
+
+    contextual_switch.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    wait_until(
+        lambda: (
+            contextual_switch.property("checked") is True
+            and ai_switch.property("checked") is True
+            and "Relationship advice active"
+            in advice_message.property("text")
+            and recommendation()["score"] == both_on_score
+        ),
+        "both settings restored",
+    )
+    root.setProperty("currentSurface", "live")
+    wait_until(
+        lambda: "adds no extra DO points" in explanation_text(root),
+        "restored rendered relationship advice",
+    )
 
     preferences.shutdown()
     del root

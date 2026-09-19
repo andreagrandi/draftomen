@@ -50,6 +50,7 @@ from draftomen.session import (
     RetryError,
     EnhancementAvailabilityState,
     EnhancementAvailabilityStatus,
+    enhancement_advice_message,
 )
 
 MockScenario: TypeAlias = Literal[
@@ -625,11 +626,14 @@ class MockLiveSession:
 
     def __init__(self, *, scenario: MockScenario = "ready") -> None:
         self._scenario = scenario
-        self._snapshot = _snapshot_for_scenario(scenario=scenario)
+        snapshot = _snapshot_for_scenario(scenario=scenario)
         self._contextual_adjustments_enabled = (
-            self._snapshot.contextual_adjustments_enabled
+            snapshot.contextual_adjustments_enabled
         )
         self._ai_enhanced_suggestions_enabled = True
+        self._snapshot = self._with_enhancement_mode(
+            snapshot=self._with_contextual_mode(snapshot=snapshot),
+        )
 
     @property
     def scenario(self) -> MockScenario:
@@ -684,9 +688,22 @@ class MockLiveSession:
                     f"AI-enhanced suggestions disabled for {scenario_state.set_code}."
                 ),
             )
-        if snapshot.enhancement_availability == effective:
+        message = enhancement_advice_message(
+            availability=effective,
+            contextual_adjustments_enabled=(
+                self._contextual_adjustments_enabled
+            ),
+        )
+        if (
+            snapshot.enhancement_availability == effective
+            and snapshot.enhancement_advice_message == message
+        ):
             return snapshot
-        return replace(snapshot, enhancement_availability=effective)
+        return replace(
+            snapshot,
+            enhancement_availability=effective,
+            enhancement_advice_message=message,
+        )
 
     def select_scenario(self, *, scenario: MockScenario) -> LiveSessionSnapshot:
         if scenario not in MOCK_SCENARIOS:
@@ -861,5 +878,4 @@ class MockLiveSession:
             )
         )
         return replace(state, ranking_mode=ranking_mode, cards=cards)
-
 

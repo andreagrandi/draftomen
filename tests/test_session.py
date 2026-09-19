@@ -1667,6 +1667,9 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     enabled = session.snapshot
     enabled_pack = enabled.current_scored_pack
     assert enabled.enhancement_availability.enabled is True
+    assert enabled.enhancement_advice_message == (
+        "Relationship advice active for TST."
+    )
     assert enabled_pack is not None
     assert [
         support.mechanism
@@ -1686,6 +1689,10 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
             set_code="TST",
             message="AI-enhanced suggestions disabled for TST.",
         )
+    )
+    assert disabled.enhancement_advice_message == (
+        "Contextual pick scoring is on, but AI-enhanced suggestions are off. "
+        "Turn on AI-enhanced suggestions to show relationship advice."
     )
     assert enabled.contextual_evidence != ContextualEvidenceState()
     assert disabled.contextual_evidence == enabled.contextual_evidence
@@ -1728,6 +1735,59 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     )
     assert {
         card.card.grp_id: card.raw_score for card in restored_pack.cards
+    } == enabled_scores
+
+    contextual_off = session.dispatch(
+        command=ChangeContextualScoring(enabled=False)
+    )
+    assert contextual_off.contextual_adjustments_enabled is False
+    assert contextual_off.enhancement_availability.enabled is True
+    assert contextual_off.enhancement_advice_message == (
+        "AI-enhanced suggestions are on, but Contextual pick scoring is off. "
+        "Turn on Contextual pick scoring to show relationship advice."
+    )
+    assert contextual_off.current_scored_pack is not None
+    contextual_off_cards = {
+        card.card.grp_id: card
+        for card in contextual_off.current_scored_pack.cards
+    }
+    assert contextual_off_cards[target.grp_id].relationship_contributions == ()
+
+    both_off = session.dispatch(
+        command=ChangeAiEnhancedSuggestions(enabled=False)
+    )
+    assert both_off.contextual_adjustments_enabled is False
+    assert both_off.enhancement_availability.enabled is False
+    assert both_off.enhancement_advice_message == (
+        "AI-enhanced suggestions and Contextual pick scoring are off. Turn on "
+        "both to show relationship advice."
+    )
+
+    contextual_only = session.dispatch(
+        command=ChangeContextualScoring(enabled=True)
+    )
+    assert contextual_only.contextual_adjustments_enabled is True
+    assert contextual_only.enhancement_availability.enabled is False
+    assert contextual_only.enhancement_advice_message == (
+        "Contextual pick scoring is on, but AI-enhanced suggestions are off. "
+        "Turn on AI-enhanced suggestions to show relationship advice."
+    )
+    assert contextual_only.current_scored_pack is not None
+    contextual_only_cards = {
+        card.card.grp_id: card
+        for card in contextual_only.current_scored_pack.cards
+    }
+    assert contextual_only_cards[target.grp_id].relationship_contributions == ()
+
+    both_restored = session.dispatch(
+        command=ChangeAiEnhancedSuggestions(enabled=True)
+    )
+    assert both_restored.contextual_adjustments_enabled is True
+    assert both_restored.enhancement_availability.enabled is True
+    assert both_restored.current_scored_pack is not None
+    assert {
+        card.card.grp_id: card.raw_score
+        for card in both_restored.current_scored_pack.cards
     } == enabled_scores
 
 

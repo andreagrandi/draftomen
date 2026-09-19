@@ -81,12 +81,15 @@ Rectangle {
             objectName: "statusEnhancementMessage"
             Layout.fillWidth: true
             Layout.minimumWidth: 0
-            text: root.sessionState.enhancement_availability.message
+            text: root.sessionState.enhancement_advice_message
             color: {
                 const enhancementStatus = root.sessionState.enhancement_availability.status
-                return enhancementStatus === "available"
+                const adviceActive = root.sessionState.enhancement_availability.enabled
+                    && root.sessionState.contextual_adjustments_enabled
+                return adviceActive
                     ? Theme.primary
-                    : enhancementStatus === "disabled"
+                    : enhancementStatus === "available"
+                        || enhancementStatus === "disabled"
                         ? Theme.textMuted
                         : Theme.warning
             }

@@ -592,6 +592,9 @@ class LiveSessionSnapshot:
     enhancement_availability: EnhancementAvailabilityState = field(
         default_factory=EnhancementAvailabilityState
     )
+    enhancement_advice_message: str = (
+        "AI-enhanced relationship advice is unavailable: no active set profile."
+    )
     recommendations: RecommendationState = field(default_factory=RecommendationState)
     pool: PoolState = field(default_factory=PoolState)
     card_image: CardImageState = field(default_factory=CardImageState)
@@ -760,6 +763,43 @@ def _enhancement_availability_for_context(
         set_code=display_set,
         enabled=True,
         message=f"AI-enhanced suggestions available for {display_set}.",
+    )
+
+
+def enhancement_advice_message(
+    *,
+    availability: EnhancementAvailabilityState,
+    contextual_adjustments_enabled: bool,
+) -> str:
+    """Explain whether both independent gates allow relationship advice.
+    Availability and preferences remain separate immutable session state.
+    """
+
+    if availability.status not in {
+        EnhancementAvailabilityStatus.AVAILABLE,
+        EnhancementAvailabilityStatus.DISABLED,
+    }:
+        return availability.message
+    set_suffix = (
+        ""
+        if availability.set_code is None
+        else f" for {availability.set_code}"
+    )
+    if availability.enabled and contextual_adjustments_enabled:
+        return f"Relationship advice active{set_suffix}."
+    if availability.enabled:
+        return (
+            "AI-enhanced suggestions are on, but Contextual pick scoring is off. "
+            "Turn on Contextual pick scoring to show relationship advice."
+        )
+    if contextual_adjustments_enabled:
+        return (
+            "Contextual pick scoring is on, but AI-enhanced suggestions are off. "
+            "Turn on AI-enhanced suggestions to show relationship advice."
+        )
+    return (
+        "AI-enhanced suggestions and Contextual pick scoring are off. Turn on "
+        "both to show relationship advice."
     )
 
 
@@ -1026,10 +1066,15 @@ class LiveSession:
         else:
             card_data = CardDataState()
         ratings_state = self._initial_ratings_state()
+        enhancement_availability = self._current_enhancement_availability_locked()
         self._snapshot = LiveSessionSnapshot(
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
             contextual_evidence=self._current_contextual_evidence_locked(),
-            enhancement_availability=self._current_enhancement_availability_locked(),
+            enhancement_availability=enhancement_availability,
+            enhancement_advice_message=enhancement_advice_message(
+                availability=enhancement_availability,
+                contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+            ),
             status=_waiting_for_draft_status(setup_guidance=not initial_log_readable),
             accounts=self._known_accounts(),
             card_data=card_data,
@@ -4625,11 +4670,20 @@ class LiveSession:
 
     def _publish(self, snapshot: LiveSessionSnapshot) -> None:
         with self._state_lock:
+            enhancement_availability = (
+                self._current_enhancement_availability_locked()
+            )
             snapshot = replace(
                 snapshot,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
                 contextual_evidence=self._current_contextual_evidence_locked(),
-                enhancement_availability=self._current_enhancement_availability_locked(),
+                enhancement_availability=enhancement_availability,
+                enhancement_advice_message=enhancement_advice_message(
+                    availability=enhancement_availability,
+                    contextual_adjustments_enabled=(
+                        self._contextual_adjustments_enabled
+                    ),
+                ),
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,
                 errors=self._project_ratings_errors_locked(errors=snapshot.errors),

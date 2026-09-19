@@ -4552,6 +4552,16 @@ def test_saturated_generic_synergy_keeps_generic_evidence_for_a_zero_increment()
     detailed = render_pick_rationale_detailed(scored_card=supported_card)
     assert "Works with support already in your deck" in detailed
     assert "Confirmed relationship support" not in detailed
+    assert (
+        "Drafted Omen Scrapwright supports Warhorn Outlet: it creates creature "
+        "tokens for its sacrifice ability."
+    ) in detailed
+    assert (
+        "It adds no extra DO points after existing synergy overlap and the synergy "
+        "limit is applied."
+    ) in detailed
+    assert "relationship:" not in detailed
+    assert "source:condition" not in detailed
 
 
 def test_relationship_support_aggregates_distinct_sources_without_stacking_copies() -> None:
@@ -4738,13 +4748,19 @@ def test_relationship_synergy_evidence_reaches_rationale_and_detailed_renderer()
     assert synergy_reason.contribution == card.contextual_breakdown.synergy
     assert synergy_reason.preserved_evidence == card.contextual_evidence
     detailed = render_pick_rationale_detailed(scored_card=card)
-    assert f"Confirmed relationship support: {_TOKEN_SACRIFICE_EVIDENCE}" in detailed
+    assert (
+        "Drafted Omen Scrapwright supports Warhorn Outlet: it creates creature "
+        "tokens for its sacrifice ability. Its effective score impact is +0.11 "
+        "DO points."
+    ) in detailed
     assert f"({card.contextual_breakdown.synergy:+.2f} DO points)." in detailed
     concise = render_pick_rationale_concise(scored_card=card)
     assert "Synergy contributes" in concise
     assert "Confirmed relationship support" not in concise
     assert _RELATIONSHIP_CLAIM not in detailed
     assert _RELATIONSHIP_SUMMARY not in detailed
+    assert "relationship:" not in detailed
+    assert "source:condition" not in detailed
 
 
 @pytest.mark.parametrize(

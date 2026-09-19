@@ -145,7 +145,7 @@ Item {
                             Label {
                                 objectName: "settingsAiEnhancedSuggestionsMessage"
                                 Layout.fillWidth: true
-                                text: root.sessionState.enhancement_availability.message
+                                text: root.sessionState.enhancement_advice_message
                                     + " Uses enhancement prepared offline in the active set profile; no AI model runs during the live draft."
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.textPixelSize(11)
@@ -160,7 +160,7 @@ Item {
                             enabled: root.sessionState.enhancement_availability.status === "available"
                                 || root.sessionState.enhancement_availability.status === "disabled"
                             Accessible.name: "AI-enhanced suggestions"
-                            Accessible.description: root.sessionState.enhancement_availability.message
+                            Accessible.description: root.sessionState.enhancement_advice_message
                                 + " Uses enhancement prepared offline in the active set profile; no AI model runs during the live draft."
                             onToggled: sessionProvider.setAiEnhancedSuggestionsEnabled(checked)
                         }

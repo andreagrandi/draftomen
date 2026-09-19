@@ -94,6 +94,17 @@ _RELATIONSHIP_SUPPORT_FACTORS: Mapping[str, float] = {
     "token-go-wide-payoff": 0.5,
     "token-sacrifice-outlet": 0.5,
 }
+_RELATIONSHIP_INTERACTION_DESCRIPTIONS: Mapping[str, str] = {
+    "discard-recursion-payoff": "puts cards in the graveyard for its recursion payoff",
+    "fodder-dies-payoff": "provides creatures whose deaths can trigger its payoff",
+    "fodder-sacrifice-outlet": "provides creatures for its sacrifice ability",
+    "loot-recursion-payoff": "discards cards that its recursion ability can reuse",
+    "mill-graveyard-payoff": "mills cards for its graveyard payoff",
+    "recursion-graveyard-payoff": "reuses cards that support its graveyard payoff",
+    "token-death-payoff": "creates tokens whose deaths can trigger its payoff",
+    "token-go-wide-payoff": "creates creature tokens for its go-wide payoff",
+    "token-sacrifice-outlet": "creates creature tokens for its sacrifice ability",
+}
 # Supported clauses keep the calibrated mechanism value. Conditional clauses
 # receive half credit; closed negative verdicts remain auditable but score zero.
 _RELATIONSHIP_OUTCOME_FACTORS: Mapping[RelationshipSupportOutcome, float] = {
@@ -669,7 +680,64 @@ def render_pick_rationale_detailed(
             parts.append(_detailed_reason(reason=reason))
         elif reason.kind in {"splash", "tiebreaker"}:
             parts.append(_concise_reason(reason=reason))
+    parts.extend(
+        render_relationship_advice(contribution=contribution)
+        for contribution in scored_card.relationship_contributions
+        if contribution.raw_contribution > 0.0
+    )
     return " ".join(parts)
+
+
+def render_relationship_advice(
+    *,
+    contribution: RelationshipScoreContribution,
+) -> str:
+    """Render one reviewed relationship result for a drafter.
+    Exact identifiers and clauses remain in structured audit provenance.
+    """
+
+    support = contribution.support
+    interaction = _RELATIONSHIP_INTERACTION_DESCRIPTIONS.get(
+        support.mechanism,
+        "provides support for its drafted-card interaction",
+    )
+    outcome = (
+        "supports"
+        if support.outcome is RelationshipSupportOutcome.SUPPORTED
+        else "can support"
+    )
+    conditions = ""
+    if support.outcome is RelationshipSupportOutcome.CONDITIONAL:
+        qualification_kinds = tuple(
+            dict.fromkeys(
+                qualification.kind.value
+                for qualification in (
+                    *support.source_qualifications,
+                    *support.target_qualifications,
+                )
+            )
+        )
+        condition_label = (
+            "the stated card conditions"
+            if not qualification_kinds
+            else "the stated " + ", ".join(qualification_kinds) + " conditions"
+        )
+        conditions = f" when {condition_label} are met"
+
+    effective = contribution.effective_contribution
+    if effective == 0.0:
+        impact = (
+            "It adds no extra DO points after existing synergy overlap and the "
+            "synergy limit is applied."
+        )
+    elif effective < 0.005:
+        impact = "Its effective score impact is less than +0.01 DO points."
+    else:
+        impact = f"Its effective score impact is +{effective:.2f} DO points."
+    return (
+        f"Drafted {support.source_card_name} {outcome} "
+        f"{support.target_card_name}: it {interaction}{conditions}. {impact}"
+    )
 
 
 def _rationale_for_render(*, scored_card: ScoredCard) -> PickRationale:
@@ -729,14 +797,7 @@ def _detailed_reason(*, reason: PickReason) -> str:
             else "Helps fill a missing role in your deck"
         )
     elif reason.kind == "synergy":
-        evidence = next(
-            (item for item in reason.preserved_evidence if item.startswith("relationship ")),
-            None,
-        )
-        if evidence is not None:
-            stem = f"Confirmed relationship support: {evidence}"
-        else:
-            stem = "Works with support already in your deck"
+        stem = "Works with support already in your deck"
     else:
         stem = {
             "urgency": (
