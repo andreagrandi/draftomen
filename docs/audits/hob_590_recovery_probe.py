@@ -907,7 +907,7 @@ def _gate_enhancement_identity(report: Report, *, profile: object, artifact: obj
         "relationship_ids_match": (
             stored_relationship_ids <= set(published_relationships)
             and all(
-                row.mechanism == "token-source-replacement"
+                row.mechanism in {"hone-equipment-payoff", "token-source-replacement"}
                 and row.prerequisite_projection is not None
                 for row in derived_relationships
             )

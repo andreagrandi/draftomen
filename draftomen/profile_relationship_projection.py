@@ -71,6 +71,8 @@ from draftomen.semantic_relationship_records import (
 from draftomen.semantic_roles import (
     Role,
     friendly_untap_statement,
+    hone_payoff_statement,
+    hone_source_statement,
     token_replacement_statement,
 )
 from draftomen.set_enrichment_candidates import ROLE_COMPATIBILITY_RULES
@@ -86,6 +88,7 @@ __all__ = [
     "RelationshipConversionOutcome",
     "RelationshipProjectionCompilation",
     "compile_confirmed_relationship_projections",
+    "compile_hone_relationships",
     "compile_token_replacement_relationships",
 ]
 
@@ -504,6 +507,146 @@ def compile_token_replacement_relationships(
     return tuple(relationships)
 
 
+def compile_hone_relationships(
+    *,
+    artifact: SemanticEnrichmentArtifact,
+    card_database: CardDatabase,
+) -> tuple[CardRelationship, ...]:
+    """Derive cross-card Hone support from retained source and Equipment facts."""
+    if not isinstance(artifact, SemanticEnrichmentArtifact):
+        raise SemanticEnrichmentError("artifact must be a SemanticEnrichmentArtifact record.")
+    if not isinstance(card_database, CardDatabase):
+        raise SemanticEnrichmentError("card_database must be a CardDatabase record.")
+    facts = _capability_facts(artifact)
+    pins = {pin.card_id: pin for pin in artifact.cards}
+    sources = sorted(
+        (item for item in facts.values() if item.role is Role.HONE_COUNTER_SOURCE),
+        key=lambda item: (item.card_id, item.finding_id),
+    )
+    targets = sorted(
+        (
+            item
+            for item in facts.values()
+            if item.role is Role.HONE_EQUIPMENT_PAYOFF
+            and (card := card_database.cards.get(item.card_id)) is not None
+            and "equipment" in card.type_line.casefold()
+        ),
+        key=lambda item: (item.card_id, item.finding_id),
+    )
+    relationships: list[CardRelationship] = []
+    for source in sources:
+        source_card = card_database.cards.get(source.card_id)
+        if source_card is None or source_card.unknown or source.card_id not in pins:
+            continue
+        for target in targets:
+            if source.card_id == target.card_id:
+                continue
+            target_card = card_database.cards.get(target.card_id)
+            if target_card is None or target_card.unknown or target.card_id not in pins:
+                continue
+            source_participant = _hone_participant(
+                capability=source,
+                card=source_card,
+                source=True,
+            )
+            target_participant = _hone_participant(
+                capability=target,
+                card=target_card,
+                source=False,
+            )
+            if source_participant is None or target_participant is None:
+                continue
+            projection = RelationshipPrerequisiteProjection(
+                source=source_participant,
+                target=target_participant,
+            )
+            evidence = _canonical_evidence(
+                tuple(
+                    qualification.evidence
+                    for participant in (source_participant, target_participant)
+                    for qualification in participant.qualifications
+                )
+            )
+            relationships.append(
+                CardRelationship(
+                    finding_id=(
+                        f"{target.run_id}:relationship:hone-equipment-payoff:"
+                        f"{source.card_id}:{source.finding_id}:"
+                        f"{target.card_id}:{target.finding_id}"
+                    ),
+                    mechanism="hone-equipment-payoff",
+                    participants=(source.card_id, target.card_id),
+                    claim="The Hone source adds counters whose printed Equipment rule grants power.",
+                    prerequisites=(
+                        "The source must put hone counters on Equipment you control.",
+                        "The target must be Equipment with the printed hone-counter effect.",
+                    ),
+                    oracle_evidence=evidence,
+                    guide_evidence=(),
+                    review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+                    run_id=target.run_id,
+                    prerequisite_projection=projection,
+                )
+            )
+    return tuple(relationships)
+
+
+def _hone_participant(
+    *,
+    capability: CardCapability,
+    card: CardInfo,
+    source: bool,
+) -> RelationshipParticipant | None:
+    """Build one Hone participant while retaining its printed timing and effect."""
+    if len(capability.evidence) != 1:
+        return None
+    evidence = capability.evidence[0].quote
+    oracle_text = _participant_oracle_text(capability, card)
+    window = _evidence_window(
+        oracle_text=oracle_text,
+        capability=capability,
+        quote=evidence,
+    )
+    if window is None:
+        return None
+    recognized = hone_source_statement(window) if source else hone_payoff_statement(window)
+    if recognized is None:
+        return None
+    selector, _ = recognized
+    selectors: tuple[tuple[QualificationKind, str], ...]
+    if source:
+        timing = re.search(r"Whenever [^,\n]+ enters or attacks", window)
+        selectors = (
+            (QualificationKind.TIMING, timing.group(0)),
+            (QualificationKind.MODE, selector),
+        ) if timing is not None else ((QualificationKind.MODE, selector),)
+    else:
+        selectors = ((QualificationKind.CONDITION, selector),)
+    qualifications = tuple(
+        qualification
+        for kind, item in selectors
+        if (
+            qualification := _qualification(
+                kind=kind,
+                capability=capability,
+                evidence=window,
+                selector=item,
+            )
+        ) is not None
+    )
+    if len(qualifications) != len(selectors):
+        return None
+    try:
+        return _relationship_participant(
+            capability=capability,
+            card=card,
+            clauses=(),
+            qualifications=qualifications,
+        )
+    except SemanticEnrichmentError:
+        return None
+
+
 def _distinct_token_sources(
     *,
     facts: Mapping[tuple[int, str], CardCapability],
@@ -657,6 +800,18 @@ def _decode_capability(fact: OracleFact) -> CardCapability | None:
             source_zone=None,
             destination_zone=None,
         )
+    if (
+        capability.role is Role.COUNTERS
+        and capability.evidence
+        and all(hone_source_statement(item.quote) is not None for item in capability.evidence)
+    ):
+        return replace(capability, role=Role.HONE_COUNTER_SOURCE)
+    if (
+        capability.role is Role.EQUIPMENT_PAYOFF
+        and capability.evidence
+        and all(hone_payoff_statement(item.quote) is not None for item in capability.evidence)
+    ):
+        return replace(capability, role=Role.HONE_EQUIPMENT_PAYOFF)
     return capability
 
 

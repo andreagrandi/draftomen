@@ -22,8 +22,8 @@ from typing import Any, TypeAlias
 
 from draftomen.carddb import CardFace, CardInfo, UNKNOWN_SOURCE_PROVENANCE
 
-ROLE_SCHEMA_VERSION = 5
-CLASSIFIER_VERSION = "1.4"
+ROLE_SCHEMA_VERSION = 6
+CLASSIFIER_VERSION = "1.5"
 PROFILE_SCHEMA_VERSION = 2
 RESULT_SCHEMA_VERSION = 1
 OVERRIDE_SCHEMA_VERSION = 1
@@ -48,6 +48,18 @@ _GIFT_OPTION_PATTERN = re.compile(
 )
 _GIFT_EFFECT_PATTERN = re.compile(
     r"If the gift was promised, (?P<effect>[^.\n]+)",
+    re.IGNORECASE,
+)
+_HONE_EACH_EQUIPMENT_PATTERN = re.compile(
+    r"put a hone counter on each Equipment you control",
+    re.IGNORECASE,
+)
+_HONE_SELF_PATTERN = re.compile(
+    r"put a hone counter on (?P<name>[A-Z][A-Za-z'’ ,]+?) "
+    r"for each creature target opponent controls",
+)
+_HONE_PAYOFF_PATTERN = re.compile(
+    r"Each hone counter on an Equipment grants \+1/\+0 to equipped creature",
     re.IGNORECASE,
 )
 
@@ -119,6 +131,8 @@ class Role(str, Enum):
     COUNTERS = "counters"
     UNTAP_SUPPORT = "untap_support"
     GIFT = "gift"
+    HONE_COUNTER_SOURCE = "hone_counter_source"
+    HONE_EQUIPMENT_PAYOFF = "hone_equipment_payoff"
     # Lands and mana
     MANA_PRODUCER = "mana_producer"
     FIXING = "fixing"
@@ -199,6 +213,8 @@ _ROLE_DEFINITIONS: dict[Role, str] = {
     Role.COUNTERS: "Places or references counters on a permanent.",
     Role.UNTAP_SUPPORT: "Untaps another permanent you control so it can be used again.",
     Role.GIFT: "Optionally promises an opponent a gift and qualifies another effect of the spell.",
+    Role.HONE_COUNTER_SOURCE: "Places hone counters on equipment you control under its stated timing and quantity.",
+    Role.HONE_EQUIPMENT_PAYOFF: "Turns each hone counter on equipment into power for its equipped creature.",
     # Lands and mana
     Role.MANA_PRODUCER: "Produces mana according to the declared produced-mana metadata in the request.",
     Role.FIXING: "Produces more than one color or resource, or is itself more than one color.",
@@ -503,6 +519,95 @@ class GiftCharacteristics:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class HoneSourceCharacteristics:
+    """Typed target, quantity basis, and timing of one Hone source."""
+
+    target: str
+    controller: str
+    self_only: bool
+    quantity_basis: str
+    timing: str
+
+    def __post_init__(self) -> None:
+        if self.target != "equipment" or self.controller != "you":
+            raise RoleSchemaError("Hone sources must target equipment you control.")
+        if type(self.self_only) is not bool:
+            raise RoleSchemaError("Hone self_only must be a boolean.")
+        if self.quantity_basis not in {"one_each", "opponent_creatures"}:
+            raise RoleSchemaError("Hone source quantity basis is unsupported.")
+        if self.timing not in {"enters", "enters_or_attacks"}:
+            raise RoleSchemaError("Hone source timing is unsupported.")
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "controller": self.controller,
+            "kind": "hone_source",
+            "quantity_basis": self.quantity_basis,
+            "self_only": self.self_only,
+            "target": self.target,
+            "timing": self.timing,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> HoneSourceCharacteristics:
+        _object(value, "hone source parameters")
+        if value.get("kind") != "hone_source":
+            raise RoleSchemaError("Hone source parameters have an invalid kind.")
+        return cls(
+            target=_required_str(value.get("target"), "hone_source.target"),
+            controller=_required_str(value.get("controller"), "hone_source.controller"),
+            self_only=_required_bool(value.get("self_only"), "hone_source.self_only"),
+            quantity_basis=_required_str(
+                value.get("quantity_basis"), "hone_source.quantity_basis"
+            ),
+            timing=_required_str(value.get("timing"), "hone_source.timing"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HonePayoffCharacteristics:
+    """Typed per-counter effect of Hone on equipped creatures."""
+
+    counter: str
+    power_per_counter: int
+    toughness_per_counter: int
+    beneficiary: str
+
+    def __post_init__(self) -> None:
+        if self.counter != "hone" or self.beneficiary != "equipped_creature":
+            raise RoleSchemaError("Hone payoff identity is unsupported.")
+        if self.power_per_counter != 1 or self.toughness_per_counter != 0:
+            raise RoleSchemaError("Hone payoff must preserve its printed +1/+0 effect.")
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "beneficiary": self.beneficiary,
+            "counter": self.counter,
+            "kind": "hone_payoff",
+            "power_per_counter": self.power_per_counter,
+            "toughness_per_counter": self.toughness_per_counter,
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> HonePayoffCharacteristics:
+        _object(value, "hone payoff parameters")
+        if value.get("kind") != "hone_payoff":
+            raise RoleSchemaError("Hone payoff parameters have an invalid kind.")
+        return cls(
+            counter=_required_str(value.get("counter"), "hone_payoff.counter"),
+            power_per_counter=_required_int(
+                value.get("power_per_counter"), "hone_payoff.power_per_counter"
+            ),
+            toughness_per_counter=_required_int(
+                value.get("toughness_per_counter"), "hone_payoff.toughness_per_counter"
+            ),
+            beneficiary=_required_str(
+                value.get("beneficiary"), "hone_payoff.beneficiary"
+            ),
+        )
+
+
 def friendly_untap_statement(text: str) -> tuple[str, UntapCharacteristics] | None:
     """Return exact text and typed restrictions for one friendly untap instruction."""
     if not isinstance(text, str):
@@ -559,6 +664,55 @@ def gift_statement(text: str) -> tuple[str, GiftCharacteristics] | None:
     )
 
 
+def hone_source_statement(text: str) -> tuple[str, HoneSourceCharacteristics] | None:
+    """Return exact text and typed restrictions for one Hone counter source."""
+    if not isinstance(text, str):
+        return None
+    each = _HONE_EACH_EQUIPMENT_PATTERN.search(text)
+    if each is not None and re.search(r"\benters or attacks\b", text, re.IGNORECASE):
+        return (
+            each.group(0),
+            HoneSourceCharacteristics(
+                target="equipment",
+                controller="you",
+                self_only=False,
+                quantity_basis="one_each",
+                timing="enters_or_attacks",
+            ),
+        )
+    self_match = _HONE_SELF_PATTERN.search(text)
+    if self_match is None or re.search(r"\bWhen [^.]+ enters\b", text) is None:
+        return None
+    return (
+        self_match.group(0),
+        HoneSourceCharacteristics(
+            target="equipment",
+            controller="you",
+            self_only=True,
+            quantity_basis="opponent_creatures",
+            timing="enters",
+        ),
+    )
+
+
+def hone_payoff_statement(text: str) -> tuple[str, HonePayoffCharacteristics] | None:
+    """Return exact text and typed effect for one Hone counter payoff."""
+    if not isinstance(text, str):
+        return None
+    match = _HONE_PAYOFF_PATTERN.search(text)
+    if match is None:
+        return None
+    return (
+        match.group(0),
+        HonePayoffCharacteristics(
+            counter="hone",
+            power_per_counter=1,
+            toughness_per_counter=0,
+            beneficiary="equipped_creature",
+        ),
+    )
+
+
 RoleParameters: TypeAlias = (
     RemovalCharacteristics
     | TypalIdentity
@@ -567,6 +721,8 @@ RoleParameters: TypeAlias = (
     | UntapCharacteristics
     | TokenReplacementCharacteristics
     | GiftCharacteristics
+    | HoneSourceCharacteristics
+    | HonePayoffCharacteristics
 )
 
 
@@ -612,6 +768,8 @@ class RoleAssignment:
             Role.UNTAP_SUPPORT: (UntapCharacteristics,),
             Role.TOKEN_REPLACEMENT: (TokenReplacementCharacteristics,),
             Role.GIFT: (GiftCharacteristics,),
+            Role.HONE_COUNTER_SOURCE: (HoneSourceCharacteristics,),
+            Role.HONE_EQUIPMENT_PAYOFF: (HonePayoffCharacteristics,),
         }
         expected = allowed.get(role, ())
         optional_parameter_roles = {Role.CONDITIONAL_REMOVAL}
@@ -655,6 +813,14 @@ class RoleAssignment:
     def gift(self) -> GiftCharacteristics | None:
         return self.parameters if isinstance(self.parameters, GiftCharacteristics) else None
 
+    @property
+    def hone_source(self) -> HoneSourceCharacteristics | None:
+        return self.parameters if isinstance(self.parameters, HoneSourceCharacteristics) else None
+
+    @property
+    def hone_payoff(self) -> HonePayoffCharacteristics | None:
+        return self.parameters if isinstance(self.parameters, HonePayoffCharacteristics) else None
+
     def to_json(self) -> dict[str, object]:
         result: dict[str, object] = {
             "confidence": self.confidence,
@@ -688,6 +854,10 @@ class RoleAssignment:
                 parameters = TokenReplacementCharacteristics.from_json(parameters_value)
             elif kind == "gift":
                 parameters = GiftCharacteristics.from_json(parameters_value)
+            elif kind == "hone_source":
+                parameters = HoneSourceCharacteristics.from_json(parameters_value)
+            elif kind == "hone_payoff":
+                parameters = HonePayoffCharacteristics.from_json(parameters_value)
             else:
                 raise RoleSchemaError(f"Unsupported role parameter kind {kind!r}.")
         return cls(
@@ -1789,6 +1959,24 @@ def _infer_assignments_single(
     if re.search(r"\+1/\+1 counter|counter on|counters? on", lower):
         role(Role.COUNTERS, confidence=0.79, why="creates or references counters")
         role(Role.COUNTERS_THEME, confidence=0.7, why="participates in a counters theme")
+    hone_source = hone_source_statement(text)
+    if hone_source is not None:
+        selector, characteristics = hone_source
+        role(
+            Role.HONE_COUNTER_SOURCE,
+            confidence=0.98,
+            parameters=characteristics,
+            why=selector,
+        )
+    hone_payoff = hone_payoff_statement(text)
+    if hone_payoff is not None and "equipment" in type_line.casefold():
+        selector, characteristics = hone_payoff
+        role(
+            Role.HONE_EQUIPMENT_PAYOFF,
+            confidence=0.98,
+            parameters=characteristics,
+            why=selector,
+        )
 
     # Lands and mana. Produced mana is carried as typed data, not inferred from prose.
     produced = _string_tuple(mapping.get("produced_mana", ()), "produced_mana")

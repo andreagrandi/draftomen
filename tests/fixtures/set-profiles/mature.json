@@ -39,9 +39,9 @@
         ]
       }
     ],
-    "classifier_version": "1.4",
+    "classifier_version": "1.5",
     "profile_schema_version": 2,
-    "role_schema_version": 5,
+    "role_schema_version": 6,
     "schema_version": 2,
     "set_code": "tst"
   },

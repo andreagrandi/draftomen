@@ -1447,17 +1447,35 @@ def _compile_enrichment_roles(
                 continue
             key = index if existing is None else existing.key
             card_name = card.name if existing is None else (existing.card_name or card.name)
+            inferred = next(
+                (
+                    assignment
+                    for assignment in RoleClassifier().classify(card).assignments
+                    if assignment.role is participant.role
+                ),
+                None,
+            )
+            assignment = (
+                RoleAssignment(
+                    role=participant.role,
+                    confidence=enhancement.confidence,
+                    provenance=("confirmed-enrichment",),
+                    evidence=(relationship.finding_id,),
+                )
+                if inferred is None
+                else replace(
+                    inferred,
+                    confidence=enhancement.confidence,
+                    provenance=("confirmed-enrichment",),
+                    evidence=(relationship.finding_id,),
+                )
+            )
             merged = ProfileCard(
                 key=key,
                 card_name=card_name,
                 assignments=(
                     *assignments,
-                    RoleAssignment(
-                        role=participant.role,
-                        confidence=enhancement.confidence,
-                        provenance=("confirmed-enrichment",),
-                        evidence=(relationship.finding_id,),
-                    ),
+                    assignment,
                 ),
             )
             cards[key] = merged

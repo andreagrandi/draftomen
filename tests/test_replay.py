@@ -533,8 +533,8 @@ def _replay_semantic_profile() -> SetProfile:
             "role_profile": {
                 "schema_version": 2,
                 "set_code": "MSH",
-                "classifier_version": "1.4",
-                "role_schema_version": 5,
+                "classifier_version": "1.5",
+                "role_schema_version": 6,
                 "profile_schema_version": 2,
                 "cards": [
                     {

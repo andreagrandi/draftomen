@@ -11,6 +11,8 @@ from draftomen.carddb import CardFace, CardInfo
 from draftomen.semantic_roles import (
     CLASSIFIER_VERSION,
     GiftCharacteristics,
+    HonePayoffCharacteristics,
+    HoneSourceCharacteristics,
     ROLE_DEFINITIONS,
     ROLE_SCHEMA_VERSION,
     CompiledRoleProfile,
@@ -58,15 +60,16 @@ _GENERIC_DEFINITION_WORDS = frozenset(
         "onto", "opponent", "opposing", "optional", "optionally", "or", "orders", "other", "owner's", "package", "payment",
         "pays", "per-creature", "permanent", "permanents", "places", "planeswalker", "play",
         "playing", "power", "produced-mana", "produces", "promises", "provides", "puts", "putting", "qualifies", "qualify",
-        "records", "recursion", "references", "refers", "removal", "replacing", "request",
+        "quantity", "records", "recursion", "references", "refers", "removal", "replacing", "request",
         "required", "requires", "resource", "return", "returns", "rewards", "role", "sacrificed",
         "sacrifices", "satisfies", "scales", "searches", "second", "selection", "separate", "shadow", "source",
         "sharing", "so", "spell", "spells", "stack", "state", "stated", "static", "strips",
         "subtype", "such", "supplies", "supports", "taps", "target", "targeted", "temporarily",
         "text", "than", "that", "the", "them", "then", "this", "threshold", "through", "to",
-        "token", "tokens", "top", "toughness", "treasure", "treasures", "trigger", "triggers",
+        "timing", "token", "tokens", "top", "toughness", "treasure", "treasures", "trigger", "triggers",
         "turn", "turns", "two", "typal", "type", "types", "unblockable", "under", "untapping", "until",
         "untaps", "used", "value", "variable", "when", "whenever", "whether", "whose", "with", "you", "your",
+        "counter", "hone",
     }
 )
 
@@ -312,6 +315,89 @@ def test_gift_preserves_optional_opponent_choice_and_qualified_effect() -> None:
     )
     assert Role.GIFT not in _roles(unrelated_optional)
     assert Role.GIFT not in _roles(incomplete_gift)
+
+
+def test_hone_preserves_source_timing_quantity_and_equipment_payoff() -> None:
+    dwalin = classify_card(
+        {
+            "oracle_id": "hone-source",
+            "name": "Forge Captain",
+            "set": "tst",
+            "layout": "normal",
+            "oracle_text": (
+                "Whenever Forge Captain enters or attacks, put a hone counter on each "
+                "Equipment you control. (Each hone counter on an Equipment grants +1/+0 "
+                "to equipped creature.)"
+            ),
+            "type_line": "Legendary Creature — Dwarf Warrior",
+            "types": ["Creature"],
+            "mana_value": 3,
+        }
+    )
+    sting = classify_card(
+        {
+            "oracle_id": "hone-equipment",
+            "name": "Bright Blade",
+            "set": "tst",
+            "layout": "normal",
+            "oracle_text": (
+                "Flash\nWhen Bright Blade enters, put a hone counter on Bright Blade for each "
+                "creature target opponent controls. Attach Bright Blade to up to one target "
+                "creature you control. (Each hone counter on an Equipment grants +1/+0 to "
+                "equipped creature.)\nEquip {3}"
+            ),
+            "type_line": "Legendary Artifact — Equipment",
+            "types": ["Artifact"],
+            "keywords": ["Equip", "Flash"],
+            "mana_value": 2,
+        }
+    )
+
+    source = next(item for item in dwalin.assignments if item.role is Role.HONE_COUNTER_SOURCE)
+    self_source = next(item for item in sting.assignments if item.role is Role.HONE_COUNTER_SOURCE)
+    payoff = next(item for item in sting.assignments if item.role is Role.HONE_EQUIPMENT_PAYOFF)
+    assert source.hone_source == HoneSourceCharacteristics(
+        target="equipment",
+        controller="you",
+        self_only=False,
+        quantity_basis="one_each",
+        timing="enters_or_attacks",
+    )
+    assert self_source.hone_source == HoneSourceCharacteristics(
+        target="equipment",
+        controller="you",
+        self_only=True,
+        quantity_basis="opponent_creatures",
+        timing="enters",
+    )
+    assert payoff.hone_payoff == HonePayoffCharacteristics(
+        counter="hone",
+        power_per_counter=1,
+        toughness_per_counter=0,
+        beneficiary="equipped_creature",
+    )
+    assert Role.EQUIPMENT in _roles(sting)
+
+    ordinary_counter = classify_card(
+        {
+            "oracle_id": "ordinary-counter",
+            "name": "Ordinary Growth",
+            "oracle_text": "Put a +1/+1 counter on target creature.",
+            "type_line": "Sorcery",
+            "types": ["Sorcery"],
+        }
+    )
+    non_equipment = classify_card(
+        {
+            "oracle_id": "non-equipment-hone",
+            "name": "Reminder Creature",
+            "oracle_text": "Each hone counter on an Equipment grants +1/+0 to equipped creature.",
+            "type_line": "Creature — Human",
+            "types": ["Creature"],
+        }
+    )
+    assert Role.HONE_COUNTER_SOURCE not in _roles(ordinary_counter)
+    assert Role.HONE_EQUIPMENT_PAYOFF not in _roles(non_equipment)
 
 
 def test_multiface_roles_are_union_and_order_is_stable() -> None:

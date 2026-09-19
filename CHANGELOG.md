@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+
+- Recover typed Hone counter sources and Equipment payoffs, including Dwalin-to-Equipment relationships and Sting's qualified self interaction, from saved HOB evidence without provider calls (#607).
 - Recover Bilbo's Gambit's complete Gift instruction with its optional opponent promise, Treasure
   object, and qualified spell-lock branch in offline role profiles. (#608)
 - Derive qualified source-to-replacement relationships from distinct explicit HOB token creators,

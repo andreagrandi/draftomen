@@ -1770,6 +1770,8 @@ def _generation_snapshot(
         "replacement_sources": None,
         "replacement_rows_valid": False,
         "gift_capability_valid": False,
+        "hone_capabilities_valid": False,
+        "hone_relationship_valid": False,
         "profile_error": None,
         "round_trip_error": None,
     }
@@ -1811,6 +1813,45 @@ def _generation_snapshot(
                         for assignment in role_card.assignments
                     )
                 )
+            dwalin = (
+                None
+                if profile.role_profile is None
+                else profile.role_profile.card("arena_id:103534")
+            )
+            sting = (
+                None
+                if profile.role_profile is None
+                else profile.role_profile.card("arena_id:103562")
+            )
+            if dwalin is not None and sting is not None:
+                dwalin_hone = tuple(
+                    item for item in dwalin.assignments if item.role.value == "hone_counter_source"
+                )
+                sting_source = tuple(
+                    item for item in sting.assignments if item.role.value == "hone_counter_source"
+                )
+                sting_payoff = tuple(
+                    item for item in sting.assignments if item.role.value == "hone_equipment_payoff"
+                )
+                snapshot["hone_capabilities_valid"] = (
+                    len(dwalin_hone) == len(sting_source) == len(sting_payoff) == 1
+                    and dwalin_hone[0].parameters is not None
+                    and dwalin_hone[0].parameters.to_json()
+                    == {
+                        "controller": "you",
+                        "kind": "hone_source",
+                        "quantity_basis": "one_each",
+                        "self_only": False,
+                        "target": "equipment",
+                        "timing": "enters_or_attacks",
+                    }
+                    and sting_source[0].parameters is not None
+                    and sting_source[0].parameters.to_json()["quantity_basis"]
+                    == "opponent_creatures"
+                    and sting_payoff[0].parameters is not None
+                    and sting_payoff[0].parameters.to_json()["power_per_counter"] == 1
+                    and any(item.role.value == "equipment" for item in sting.assignments)
+                )
             enhancement = profile.enhancement
             if enhancement is not None:
                 published_ids = {row.finding_id for row in enhancement.relationships}
@@ -1833,6 +1874,28 @@ def _generation_snapshot(
                     and row.prerequisite_projection.target.card_id == 103524
                     and row.prerequisite_projection.target.role.value == "token_replacement"
                     for row in replacement_rows
+                )
+                hone_rows = tuple(
+                    row
+                    for row in enhancement.relationships
+                    if row.mechanism == "hone-equipment-payoff"
+                )
+                snapshot["hone_relationship_valid"] = (
+                    len(hone_rows) == 1
+                    and hone_rows[0].participants == (103534, 103562)
+                    and hone_rows[0].prerequisite_projection is not None
+                    and hone_rows[0].prerequisite_projection.source.role.value
+                    == "hone_counter_source"
+                    and hone_rows[0].prerequisite_projection.target.role.value
+                    == "hone_equipment_payoff"
+                    and {
+                        item.selector
+                        for item in hone_rows[0].prerequisite_projection.source.qualifications
+                    }
+                    == {
+                        "Whenever Dwalin enters or attacks",
+                        "put a hone counter on each Equipment you control",
+                    }
                 )
                 snapshot["condition_map_sha256"] = _map_sha256(enhancement.condition_map)
                 snapshot["condition_map_matches"] = (
@@ -1884,12 +1947,22 @@ def stage_generations(
         )
         return
     direct_sha256 = _map_sha256(condition_map)
-    from draftomen.profile_relationship_projection import compile_token_replacement_relationships
+    from draftomen.profile_relationship_projection import (
+        compile_hone_relationships,
+        compile_token_replacement_relationships,
+    )
 
     reviewed_ids = {row.finding_id for row in compilation.relationships}  # type: ignore[attr-defined]
     reviewed_ids.update(
         row.finding_id
         for row in compile_token_replacement_relationships(
+            artifact=artifact,
+            card_database=card_database,
+        )
+    )
+    reviewed_ids.update(
+        row.finding_id
+        for row in compile_hone_relationships(
             artifact=artifact,
             card_database=card_database,
         )
@@ -2009,6 +2082,18 @@ def stage_generations(
         "generation_gift_capability",
         ok=all(run["gift_capability_valid"] for run in runs),
         detail=_canonical([run["gift_capability_valid"] for run in runs]),
+        cause_class=probe590.COMPILER_GAP,
+    )
+    report.gate(
+        "generation_hone_capabilities",
+        ok=all(run["hone_capabilities_valid"] for run in runs),
+        detail=_canonical([run["hone_capabilities_valid"] for run in runs]),
+        cause_class=probe590.COMPILER_GAP,
+    )
+    report.gate(
+        "generation_hone_relationship",
+        ok=all(run["hone_relationship_valid"] for run in runs),
+        detail=_canonical([run["hone_relationship_valid"] for run in runs]),
         cause_class=probe590.COMPILER_GAP,
     )
 

@@ -417,7 +417,7 @@ def test_public_surface_pins_contract_values_and_rules() -> None:
     }
     assert CandidateBounds().max_evaluated_pairs == MAX_EVALUATED_CANDIDATE_PAIRS
 
-    assert len(ROLE_COMPATIBILITY_RULES) == 10
+    assert len(ROLE_COMPATIBILITY_RULES) == 11
     rules = [
         (rule.mechanism, rule.enabler, rule.payoff) for rule in ROLE_COMPATIBILITY_RULES
     ]
@@ -425,6 +425,7 @@ def test_public_surface_pins_contract_values_and_rules() -> None:
         ("discard-recursion-payoff", Role.DISCARD_ENABLER, Role.RECURSION_PAYOFF),
         ("fodder-dies-payoff", Role.SACRIFICE_FODDER, Role.DEATH_PAYOFF),
         ("fodder-sacrifice-outlet", Role.SACRIFICE_FODDER, Role.SACRIFICE_OUTLET),
+        ("hone-equipment-payoff", Role.HONE_COUNTER_SOURCE, Role.HONE_EQUIPMENT_PAYOFF),
         ("loot-recursion-payoff", Role.LOOT, Role.RECURSION_PAYOFF),
         ("mill-graveyard-payoff", Role.SELF_MILL, Role.GRAVEYARD_PAYOFF),
         ("recursion-graveyard-payoff", Role.RECURSION, Role.GRAVEYARD_PAYOFF),

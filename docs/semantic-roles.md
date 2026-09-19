@@ -53,6 +53,11 @@ Token-replacement relationships point from a distinct, explicit token-creation i
 replacement payoff. The replacement card never supplies a token itself, and Army growth or an
 opponent-controlled creation branch does not become an independent source.
 
+Hone sources retain whether they affect each Equipment or only the source itself, their printed
+entry or attack timing, and their stated quantity basis. Hone Equipment payoffs retain the exact
+per-counter +1/+0 benefit, while ordinary counters and non-Equipment reminder text remain outside
+the typed relationship.
+
 ## Reviewed overrides
 
 Exceptional corrections are data, not card-name conditionals. A reviewed

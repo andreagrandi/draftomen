@@ -120,6 +120,7 @@ ROLE_COMPATIBILITY_RULES: tuple[RoleLink, ...] = (
     RoleLink(mechanism="discard-recursion-payoff", enabler=Role.DISCARD_ENABLER, payoff=Role.RECURSION_PAYOFF),
     RoleLink(mechanism="fodder-dies-payoff", enabler=Role.SACRIFICE_FODDER, payoff=Role.DEATH_PAYOFF),
     RoleLink(mechanism="fodder-sacrifice-outlet", enabler=Role.SACRIFICE_FODDER, payoff=Role.SACRIFICE_OUTLET),
+    RoleLink(mechanism="hone-equipment-payoff", enabler=Role.HONE_COUNTER_SOURCE, payoff=Role.HONE_EQUIPMENT_PAYOFF),
     RoleLink(mechanism="loot-recursion-payoff", enabler=Role.LOOT, payoff=Role.RECURSION_PAYOFF),
     RoleLink(mechanism="mill-graveyard-payoff", enabler=Role.SELF_MILL, payoff=Role.GRAVEYARD_PAYOFF),
     RoleLink(mechanism="recursion-graveyard-payoff", enabler=Role.RECURSION, payoff=Role.GRAVEYARD_PAYOFF),
@@ -926,6 +927,17 @@ def _check_token_source_replacement(
     )
 
 
+def _check_hone_equipment_payoff(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Resolve typed Hone source and Equipment payoff roles entirely locally."""
+    return (
+        _check_action(source, CapabilityAction.OTHER),
+        _check_action(target, CapabilityAction.OTHER),
+    )
+
+
 def _check_fodder_dies_payoff(
     source: CardCapability,
     target: CardCapability,
@@ -974,6 +986,7 @@ _MECHANISM_ROUTES: Mapping[str, _RouteChecker] = {
     "discard-recursion-payoff": _check_discard_recursion,
     "fodder-dies-payoff": _check_fodder_dies_payoff,
     "fodder-sacrifice-outlet": _check_fodder_sacrifice_outlet,
+    "hone-equipment-payoff": _check_hone_equipment_payoff,
     "loot-recursion-payoff": _check_discard_recursion,
     "mill-graveyard-payoff": _check_mill_graveyard_payoff,
     "recursion-graveyard-payoff": _check_recursion_graveyard_payoff,

@@ -19,6 +19,7 @@ from draftomen.profile_condition_projection import compile_condition_map
 from draftomen.profile_relationship_projection import (
     RelationshipConversion,
     compile_confirmed_relationship_projections,
+    compile_hone_relationships,
     compile_token_replacement_relationships,
 )
 from draftomen.semantic_enrichment import (
@@ -145,6 +146,10 @@ def compile_profile_enhancement(
         artifact=artifact,
         card_database=card_database,
     )
+    hone_relationships = compile_hone_relationships(
+        artifact=artifact,
+        card_database=card_database,
+    )
     try:
         condition_map = compile_condition_map(
             artifact=artifact,
@@ -152,7 +157,7 @@ def compile_profile_enhancement(
         )
     except SemanticEnrichmentError as error:
         raise ProfileEnhancementError(COMPILE_ERROR) from error
-    relationships = (*compilation.relationships, *replacement_relationships)
+    relationships = (*compilation.relationships, *replacement_relationships, *hone_relationships)
     if not mechanics and not relationships:
         raise ProfileEnhancementError(NO_FINDINGS_ERROR)
     referenced_runs = {item.run_id for item in (*mechanics, *relationships)}
