@@ -484,6 +484,24 @@ def _durable_response(record: WorkRecord) -> OpenRouterResponse:
     return record.response
 
 
+def _capability_result_semantics(result: CardCapabilityExtractionResult) -> dict[str, object]:
+    """Return one capability result without invocation-specific run identifiers."""
+    payload = result.to_json()
+    for field_name in (
+        "accepted_capabilities",
+        "uncertain_capabilities",
+        "rejected_capabilities",
+    ):
+        entries = payload[field_name]
+        if not isinstance(entries, list):
+            raise SetEnrichmentError("card capability result has invalid stored fields.")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise SetEnrichmentError("card capability result has invalid stored findings.")
+            entry.pop("run_id", None)
+    return payload
+
+
 def _resolve_work(
     *,
     store: SetEnrichmentWorkStore,
@@ -494,9 +512,9 @@ def _resolve_work(
     run_id: str,
 ) -> tuple[_ResultT, OpenRouterResponse, bool]:
     """Resolve one work identity from durable state or one paid completion call.
-    Completed and unvalidated records are reused without a request; a completed card record
-    whose stored result is malformed is re-parsed from the response it retains, which repairs a
-    paid response the older all-or-nothing parser could not read without paying for it again.
+    Completed and unvalidated records are reused without a request. A completed card record is
+    re-parsed from its retained response so a newer parser can recover candidates an older parser
+    silently omitted, without paying for the response again or changing a durable artifact.
     A missing or incomplete record records its durable attempt before the paid call, so a
     failure stays resumable.
     """
@@ -511,24 +529,22 @@ def _resolve_work(
         result = record.result
         if result is None:
             raise SetEnrichmentError("durable set-enrichment work is missing its result.")
-        if (
-            identity.work_kind is WorkKind.CARD_CAPABILITY
-            and isinstance(result, CardCapabilityExtractionResult)
-            and result.outcome is ExtractionOutcome.MALFORMED
-            and record.response is not None
-        ):
-            # A malformed card result is the all-or-nothing artifact of the parser that wrote it,
-            # and a later tolerant parser can read the retained response differently. Re-parsing
-            # here issues no request and changes no durable byte: the outcome is a pure function
-            # of the retained content, the frozen sources, and the card identity, so every resume
-            # recomputes the same result and the store keeps the paid response it already owns.
-            # The recovery stamps the stable durable run identifier rather than the invocation's,
-            # because the recovered records are the ones a resume must reproduce byte for byte.
+        if identity.work_kind is WorkKind.CARD_CAPABILITY and isinstance(
+            result, CardCapabilityExtractionResult
+        ) and record.response is not None:
+            # Re-parsing issues no request and changes no durable byte. The recovery stamps the
+            # stable durable run identifier because recovered records must reproduce byte for byte
+            # across invocations. Keep the stored result when only its run identifiers differ.
             response = record.response
             reparsed = parse(content=response.content, run_id=_recovery_run_id(identity))
             if (
                 isinstance(reparsed, CardCapabilityExtractionResult)
                 and reparsed.outcome is ExtractionOutcome.SUCCESS
+                and (
+                    result.outcome is ExtractionOutcome.MALFORMED
+                    or _capability_result_semantics(reparsed)
+                    != _capability_result_semantics(result)
+                )
             ):
                 return reparsed, response, True
         return cast(_ResultT, result), _durable_response(record), True

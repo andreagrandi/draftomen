@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Reconcile saved HOB capability responses during offline resume. The workflow reparses retained
+  paid response bytes with the current parser, recovers candidates that older successful results
+  silently omitted, preserves stable provenance, and leaves every paid artifact unchanged. (#596)
 - Compile source-bound landfall, ferocious, and storied condition maps offline. The
   condition compiler derives helper and payoff capabilities from pinned Oracle text
   with exact-quote evidence, links draft-potential helper edges with thresholds and
@@ -935,4 +938,3 @@
 - Renamed the project, Python package, CLI, GUI commands, and release artifacts to Draft Omen and `draftomen`.
 
 - Maintain changelog-backed development updates and stable GitHub release notes.
-

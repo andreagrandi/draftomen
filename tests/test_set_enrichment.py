@@ -889,6 +889,26 @@ def _malform_stored_card_result(work_root: Path, *, card_id: int) -> None:
     path.write_bytes((encoded + "\n").encode("utf-8"))
 
 
+def _drop_stored_card_finding(work_root: Path, *, card_id: int, finding_id: str) -> None:
+    """Rewrite one historical result as if its parser silently omitted a valid candidate."""
+    path = work_root / "results" / f"{_card_identity(card_id).content_sha256}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    result = payload["result"]
+    result["uncertain_capabilities"] = [
+        item
+        for item in result["uncertain_capabilities"]
+        if item["finding_id"] != finding_id
+    ]
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    path.write_bytes((encoded + "\n").encode("utf-8"))
+
+
 def _relationship_verdict(pair: dict[str, Any], *, foreign_quote: str | None) -> dict[str, Any]:
     """Build one accepted v2 verdict for a single pair of a batch request.
     The typed prerequisites stay advisory, so no projection is fabricated.
@@ -1323,6 +1343,64 @@ def test_completed_malformed_card_result_reparses_its_paid_response_without_a_re
     ]
     # The recovery costs no durable byte: the store keeps the paid response and the artifact the
     # strict parser wrote, and every resume recomputes the same recovery from them.
+    assert _snapshot(work_root) == before
+
+
+def test_completed_card_result_recovers_a_silently_omitted_candidate_without_a_request(
+    tmp_path: Path,
+) -> None:
+    """Prove a successful historical result cannot hide a candidate in its paid response."""
+    work_root = tmp_path / "work"
+    content = _capability_content(MULTIFACE_CARD_ID)
+    original = _run_with_card_content(
+        work_root,
+        card_id=MULTIFACE_CARD_ID,
+        content=content,
+    )
+    original_card = dict(zip(original.card_ids, original.card_results, strict=True))[
+        MULTIFACE_CARD_ID
+    ]
+    omitted_id = original_card.uncertain_capabilities[-1].finding_id
+    _drop_stored_card_finding(
+        work_root,
+        card_id=MULTIFACE_CARD_ID,
+        finding_id=omitted_id,
+    )
+    before = _snapshot(work_root)
+
+    completion = _FakeCompletion()
+    resumed = _run(work_root=work_root, completion=completion)
+
+    assert completion.calls == []
+    recovered = dict(zip(resumed.card_ids, resumed.card_results, strict=True))[
+        MULTIFACE_CARD_ID
+    ]
+    assert [item.finding_id for item in recovered.uncertain_capabilities] == [
+        item.finding_id for item in original_card.uncertain_capabilities
+    ]
+    assert {item.run_id for item in recovered.uncertain_capabilities} == {
+        _durable_run_id(MULTIFACE_CARD_ID)
+    }
+    assert resumed.progress.accounting.reused_work == WORKED_CALLS
+    assert resumed.progress.accounting.executed_work == 0
+    assert _snapshot(work_root) == before
+
+
+def test_completed_card_result_keeps_stored_records_when_reparse_only_changes_run_ids(
+    tmp_path: Path,
+) -> None:
+    """Prove ordinary resumes preserve the original capability provenance."""
+    work_root = tmp_path / "work"
+    original = _run(work_root=work_root, completion=_FakeCompletion())
+    before = _snapshot(work_root)
+
+    resumed = _run(
+        work_root=work_root,
+        completion=_FakeCompletion(),
+        run_id="later-invocation",
+    )
+
+    assert resumed.card_results == original.card_results
     assert _snapshot(work_root) == before
 
 
