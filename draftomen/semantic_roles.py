@@ -22,11 +22,17 @@ from typing import Any, TypeAlias
 
 from draftomen.carddb import CardFace, CardInfo, UNKNOWN_SOURCE_PROVENANCE
 
-ROLE_SCHEMA_VERSION = 2
-CLASSIFIER_VERSION = "1.1"
+ROLE_SCHEMA_VERSION = 3
+CLASSIFIER_VERSION = "1.2"
 PROFILE_SCHEMA_VERSION = 2
 RESULT_SCHEMA_VERSION = 1
 OVERRIDE_SCHEMA_VERSION = 1
+
+_FRIENDLY_UNTAP_PATTERN = re.compile(
+    r"untap\s+(?P<another>another\s+)?target\s+"
+    r"(?P<target>creature|permanent)\s+you\s+control",
+    re.IGNORECASE,
+)
 
 
 
@@ -93,6 +99,7 @@ class Role(str, Enum):
     EQUIPMENT_PAYOFF = "equipment_payoff"
     MODIFIED = "modified"
     COUNTERS = "counters"
+    UNTAP_SUPPORT = "untap_support"
     # Lands and mana
     MANA_PRODUCER = "mana_producer"
     FIXING = "fixing"
@@ -170,6 +177,7 @@ _ROLE_DEFINITIONS: dict[Role, str] = {
     Role.EQUIPMENT_PAYOFF: "Rewards equipped creatures or the equipment you control.",
     Role.MODIFIED: "References the modified state of a permanent.",
     Role.COUNTERS: "Places or references counters on a permanent.",
+    Role.UNTAP_SUPPORT: "Untaps another permanent you control so it can be used again.",
     # Lands and mana
     Role.MANA_PRODUCER: "Produces mana according to the declared produced-mana metadata in the request.",
     Role.FIXING: "Produces more than one color or resource, or is itself more than one color.",
@@ -346,8 +354,69 @@ class ThresholdParameters:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class UntapCharacteristics:
+    """Typed restrictions on one friendly untap support effect."""
+
+    targets: tuple[str, ...]
+    controller: str
+    excludes_source: bool
+
+    def __post_init__(self) -> None:
+        targets = tuple(sorted(set(_string_tuple(self.targets, "untap.targets"))))
+        if not targets:
+            raise RoleSchemaError("Untap characteristics need at least one target type.")
+        if self.controller not in {"you"}:
+            raise RoleSchemaError("Untap characteristics must target a permanent you control.")
+        if type(self.excludes_source) is not bool:
+            raise RoleSchemaError("Untap excludes_source must be a boolean.")
+        object.__setattr__(self, "targets", targets)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "controller": self.controller,
+            "excludes_source": self.excludes_source,
+            "kind": "untap",
+            "targets": list(self.targets),
+        }
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> UntapCharacteristics:
+        _object(value, "untap parameters")
+        if value.get("kind") != "untap":
+            raise RoleSchemaError("Untap parameters have an invalid kind.")
+        return cls(
+            targets=_json_string_tuple(value.get("targets"), "untap.targets"),
+            controller=_required_str(value.get("controller"), "untap.controller"),
+            excludes_source=_required_bool(
+                value.get("excludes_source"), "untap.excludes_source"
+            ),
+        )
+
+
+def friendly_untap_statement(text: str) -> tuple[str, UntapCharacteristics] | None:
+    """Return exact text and typed restrictions for one friendly untap instruction."""
+    if not isinstance(text, str):
+        return None
+    match = _FRIENDLY_UNTAP_PATTERN.search(text)
+    if match is None:
+        return None
+    return (
+        match.group(0),
+        UntapCharacteristics(
+            targets=(match.group("target").casefold(),),
+            controller="you",
+            excludes_source=match.group("another") is not None,
+        ),
+    )
+
+
 RoleParameters: TypeAlias = (
-    RemovalCharacteristics | TypalIdentity | ProducedResources | ThresholdParameters
+    RemovalCharacteristics
+    | TypalIdentity
+    | ProducedResources
+    | ThresholdParameters
+    | UntapCharacteristics
 )
 
 
@@ -390,6 +459,7 @@ class RoleAssignment:
             Role.POWER_THRESHOLD_PAYOFF: (ThresholdParameters,),
             Role.PERMANENT_TYPE_THRESHOLD: (ThresholdParameters,),
             Role.SPELL_COUNT_THRESHOLD: (ThresholdParameters,),
+            Role.UNTAP_SUPPORT: (UntapCharacteristics,),
         }
         expected = allowed.get(role, ())
         optional_parameter_roles = {Role.CONDITIONAL_REMOVAL}
@@ -416,6 +486,10 @@ class RoleAssignment:
     @property
     def threshold(self) -> ThresholdParameters | None:
         return self.parameters if isinstance(self.parameters, ThresholdParameters) else None
+
+    @property
+    def untap(self) -> UntapCharacteristics | None:
+        return self.parameters if isinstance(self.parameters, UntapCharacteristics) else None
 
     def to_json(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -444,6 +518,8 @@ class RoleAssignment:
                 parameters = ProducedResources.from_json(parameters_value)
             elif kind == "threshold":
                 parameters = ThresholdParameters.from_json(parameters_value)
+            elif kind == "untap":
+                parameters = UntapCharacteristics.from_json(parameters_value)
             else:
                 raise RoleSchemaError(f"Unsupported role parameter kind {kind!r}.")
         return cls(
@@ -1377,6 +1453,15 @@ def _infer_assignments_single(
                 temporary=True,
             ),
             why="temporarily taps a target",
+        )
+    untap = friendly_untap_statement(text)
+    if untap is not None:
+        selector, characteristics = untap
+        role(
+            Role.UNTAP_SUPPORT,
+            confidence=0.9,
+            parameters=characteristics,
+            why=selector,
         )
     if re.search(r"counter target spell", lower):
         role(Role.COUNTERSPELL, confidence=0.86, why="counters a spell")

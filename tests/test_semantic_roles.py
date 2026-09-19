@@ -23,6 +23,7 @@ from draftomen.semantic_roles import (
     RoleSchemaError,
     ThresholdParameters,
     TypalIdentity,
+    UntapCharacteristics,
     classify_card,
     compile_role_profile,
     dump_role_profile,
@@ -37,7 +38,7 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "semantic-roles.json"
 # qualifies for; a failure here means the new word needs that decision.
 _GENERIC_DEFINITION_WORDS = frozenset(
     {
-        "a", "abilities", "ability", "according", "additional", "again", "alone", "among", "an",
+        "a", "abilities", "ability", "according", "additional", "again", "alone", "among", "an", "another",
         "and", "any", "applies", "around", "artifact", "artifacts", "as", "attack", "attacking",
         "basic", "battle", "battlefield", "be", "blocking", "build", "can", "card", "cards",
         "carries", "carrying", "cast", "casting", "causes", "changes", "chosen", "clues", "color",
@@ -63,7 +64,7 @@ _GENERIC_DEFINITION_WORDS = frozenset(
         "text", "than", "that", "the", "them", "then", "this", "threshold", "through", "to",
         "token", "tokens", "top", "toughness", "treasure", "treasures", "trigger", "triggers",
         "turn", "turns", "two", "typal", "type", "types", "unblockable", "untapping", "until",
-        "used", "value", "variable", "when", "whenever", "whether", "whose", "with", "you", "your",
+        "untaps", "used", "value", "variable", "when", "whenever", "whether", "whose", "with", "you", "your",
     }
 )
 
@@ -163,6 +164,53 @@ def test_representative_role_families_and_typed_parameters() -> None:
     assert Role.PERMANENT_TYPE_THRESHOLD in _roles(permanent)
     assert permanent.assignments[-1].threshold is not None
     assert permanent.assignments[-1].threshold.permanent_type == "artifacts"
+
+
+def test_friendly_untap_support_preserves_target_restrictions() -> None:
+    little_bear = classify_card(
+        {
+            "oracle_id": "friendly-untap",
+            "name": "Helpful Bear",
+            "set": "tst",
+            "layout": "normal",
+            "oracle_text": (
+                "When this creature enters, untap another target creature you control. "
+                "If that creature is a Bear, put a +1/+1 counter on it."
+            ),
+            "type_line": "Creature — Bear",
+            "types": ["Creature"],
+            "subtypes": ["Bear"],
+            "mana_value": 3,
+        }
+    )
+    assignment = next(
+        item for item in little_bear.assignments if item.role is Role.UNTAP_SUPPORT
+    )
+    assert Role.DISABLING_REMOVAL not in _roles(little_bear)
+    assert assignment.untap == UntapCharacteristics(
+        targets=("creature",),
+        controller="you",
+        excludes_source=True,
+    )
+    assert assignment.evidence[0] == "untap another target creature you control"
+    assert RoleAssignment.from_json(assignment.to_json()) == assignment
+
+    opposing = classify_card(
+        {
+            "oracle_id": "opposing-untap",
+            "name": "Hostile Reset",
+            "set": "tst",
+            "layout": "normal",
+            "oracle_text": "Untap target creature an opponent controls.",
+            "type_line": "Instant",
+            "types": ["Instant"],
+            "mana_value": 1,
+        }
+    )
+    assert Role.UNTAP_SUPPORT not in _roles(opposing)
+    assert Role.DISABLING_REMOVAL in _roles(
+        classify_card(_fixtures()["role-disable"])
+    )
 
 
 def test_multiface_roles_are_union_and_order_is_stable() -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -66,7 +66,7 @@ from draftomen.semantic_relationship_records import (
     validate_relationship_pins,
     validate_relationship_sources,
 )
-from draftomen.semantic_roles import Role
+from draftomen.semantic_roles import Role, friendly_untap_statement
 from draftomen.set_enrichment_candidates import ROLE_COMPATIBILITY_RULES
 from draftomen.set_enrichment_extraction import (
     _canonical_evidence,
@@ -445,9 +445,16 @@ def _decode_capability(fact: OracleFact) -> CardCapability | None:
         }
     )
     try:
-        return CardCapability.from_json(payload)
+        capability = CardCapability.from_json(payload)
     except SemanticEnrichmentError:
         return None
+    if (
+        capability.role is Role.DISABLING_REMOVAL
+        and capability.evidence
+        and all(friendly_untap_statement(item.quote) is not None for item in capability.evidence)
+    ):
+        return replace(capability, role=Role.UNTAP_SUPPORT)
+    return capability
 
 
 def _claim_object(claim: str) -> Mapping[str, Any] | None:

@@ -28,6 +28,7 @@ from draftomen.profile_relationship_projection import (
     RelationshipConversion,
     RelationshipConversionOutcome,
     RelationshipProjectionCompilation,
+    _decode_capability,
     compile_confirmed_relationship_projections,
 )
 from draftomen.semantic_enrichment import EnrichmentSources, SemanticEnrichmentArtifact
@@ -400,6 +401,65 @@ def _with_subtype(
             )
         facts.append(fact)
     return _with_facts(artifact, tuple(facts))
+
+
+def test_friendly_untap_fact_is_recovered_without_disabling_removal() -> None:
+    """The offline decoder corrects the role while preserving the saved source record."""
+    template = _confirmation().oracle_facts[0]
+    quote = (
+        "When this creature enters, untap another target creature you control. "
+        "If that creature is a Bear, put a +1/+1 counter on it."
+    )
+    claim = {
+        "action": "other",
+        "card_name": "Little Bear",
+        "destination_zone": "battlefield",
+        "face_index": None,
+        "face_name": None,
+        "prerequisites": [
+            {
+                "destination_zone": "battlefield",
+                "evidence": {
+                    "card_id": 103508,
+                    "face_index": None,
+                    "quote": "When this creature enters",
+                },
+                "kind": "trigger",
+                "quantity": None,
+                "source_zone": "battlefield",
+                "timing": "when this creature enters",
+            }
+        ],
+        "qualifier": {
+            "card_types": ["creature"],
+            "mana_value": None,
+            "subtype": None,
+            "token_restriction": "unrestricted",
+        },
+        "quantity": None,
+        "role": "disabling_removal",
+        "source_zone": "battlefield",
+        "timing": "when this creature enters",
+        "zone": "battlefield",
+    }
+    fact = dataclasses.replace(
+        template,
+        finding_id=f"{template.run_id}:103508-untap-another-creature",
+        card_id=103508,
+        kind="disabling_removal",
+        claim=json.dumps(claim, separators=(",", ":"), sort_keys=True),
+        evidence=(OracleEvidence(card_id=103508, face_index=None, quote=quote),),
+    )
+
+    capability = _decode_capability(fact)
+
+    assert capability is not None
+    assert capability.role.value == "untap_support"
+    assert capability.action.value == "other"
+    assert capability.finding_id == "103508-untap-another-creature"
+    assert capability.evidence == fact.evidence
+    assert capability.qualifier.card_types[0].value == "creature"
+    assert capability.prerequisites[0].evidence.quote == "When this creature enters"
 
 
 def test_safe_mill_pair_gains_a_source_bound_projection() -> None:
