@@ -19,7 +19,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 
 from draftomen.profile_client import ProfileNetworkPolicy
 from draftomen.qt_adapter import GuiPreferencesAdapter, SessionAdapter
-from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_gui import DEFAULT_PROFILE_MANIFEST_URL, _fixed_font_family
 from draftomen.session import ChangeAiEnhancedSuggestions, RequestBuild
 from draftomen.test_draft import (
     DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
@@ -37,6 +37,34 @@ class HobPublishedProfileSmokeError(RuntimeError):
     """Report a failed cached-profile journey.
     The message is suitable for the command-line failure summary.
     """
+
+
+def _profile_acquisition(*, app_dir: Path, profile_sha256: str) -> str:
+    """Classify whether the cached profile came through the production manifest."""
+
+    cache_path = app_dir / "set-profiles" / "v1" / "manifest.json"
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        manifest = cache["manifest"]
+        artifacts = manifest["artifacts"]
+    except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError, OSError):
+        return "preinstalled-offline"
+    production_artifact = next(
+        (
+            artifact
+            for artifact in artifacts
+            if artifact.get("set_code") == "hob"
+            and artifact.get("format") == "quickdraft"
+        ),
+        None,
+    )
+    if (
+        cache.get("manifest_url") == DEFAULT_PROFILE_MANIFEST_URL
+        and production_artifact is not None
+        and production_artifact.get("profile_sha256") == profile_sha256
+    ):
+        return "production-refresh-cache"
+    return "preinstalled-offline"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -296,9 +324,13 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         )
     profile_path = args.app_dir / "set-profiles" / "hob-quickdraft.json"
     profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    profile_acquisition = _profile_acquisition(
+        app_dir=args.app_dir,
+        profile_sha256=profile_sha256,
+    )
     report = {
         "schema_version": 1,
-        "profile_acquisition": "preinstalled-offline",
+        "profile_acquisition": profile_acquisition,
         "profile_sha256": profile_sha256,
         "selection_policy": "rank-one",
         "offers": offers,
@@ -326,7 +358,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     return {
         "status": "ok",
         "set_code": "hob",
-        "profile_acquisition": "preinstalled-offline",
+        "profile_acquisition": profile_acquisition,
         "selection_policy": "rank-one",
         "picks": len(steps),
         "packs": sorted({step.before.offer.pack_number + 1 for step in steps}),
@@ -346,7 +378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(args=argv)
     try:
         result = _run(args)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - keep one path-free smoke failure.
         print(f"HOB cached profile smoke failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
