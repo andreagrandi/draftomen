@@ -45,6 +45,10 @@ friendly untap support with typed target restrictions, token-creation replacemen
 their separate-source dependency, land/mana (including typed produced resources), and numeric
 power/permanent and other state thresholds. One card can have any number of assignments.
 
+Token-replacement relationships point from a distinct, explicit token-creation instruction to the
+replacement payoff. The replacement card never supplies a token itself, and Army growth or an
+opponent-controlled creation branch does not become an independent source.
+
 ## Reviewed overrides
 
 Exceptional corrections are data, not card-name conditionals. A reviewed

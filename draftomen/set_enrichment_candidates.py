@@ -129,6 +129,7 @@ ROLE_COMPATIBILITY_RULES: tuple[RoleLink, ...] = (
     RoleLink(mechanism="token-death-payoff", enabler=Role.TOKEN_MAKER, payoff=Role.DEATH_PAYOFF),
     RoleLink(mechanism="token-go-wide-payoff", enabler=Role.TOKEN_MAKER, payoff=Role.GO_WIDE_PAYOFF),
     RoleLink(mechanism="token-sacrifice-outlet", enabler=Role.TOKEN_MAKER, payoff=Role.SACRIFICE_OUTLET),
+    RoleLink(mechanism="token-source-replacement", enabler=Role.TOKEN_MAKER, payoff=Role.TOKEN_REPLACEMENT),
 )
 
 for _link in ROLE_COMPATIBILITY_RULES:
@@ -913,6 +914,18 @@ def _check_token_sacrifice_outlet(
     )
 
 
+def _check_token_source_replacement(
+    source: CardCapability,
+    target: CardCapability,
+) -> tuple[_FieldCheck, ...]:
+    """Require actual creation feeding a replacement action without inventing supply."""
+    return (
+        _check_action(source, CapabilityAction.CREATE),
+        _check_zone(source.destination_zone, CapabilityZone.BATTLEFIELD),
+        _check_action(target, CapabilityAction.REPLACE),
+    )
+
+
 def _check_fodder_dies_payoff(
     source: CardCapability,
     target: CardCapability,
@@ -967,6 +980,7 @@ _MECHANISM_ROUTES: Mapping[str, _RouteChecker] = {
     "token-death-payoff": _check_token_death_payoff,
     "token-go-wide-payoff": _check_token_go_wide_payoff,
     "token-sacrifice-outlet": _check_token_sacrifice_outlet,
+    "token-source-replacement": _check_token_source_replacement,
 }
 
 if not set(_MECHANISM_ROUTES).issubset({link.mechanism for link in ROLE_COMPATIBILITY_RULES}):

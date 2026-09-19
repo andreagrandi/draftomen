@@ -29,6 +29,8 @@ from draftomen.semantic_enrichment import (
 )
 from draftomen.semantic_enrichment_records import (
     CardSourcePin,
+    FindingReview,
+    FindingStatus,
     OracleEvidence,
     OracleFact,
     SemanticEnrichmentError,
@@ -84,6 +86,7 @@ __all__ = [
     "RelationshipConversionOutcome",
     "RelationshipProjectionCompilation",
     "compile_confirmed_relationship_projections",
+    "compile_token_replacement_relationships",
 ]
 
 _LOCAL_RUN_PREFIX = "local-"
@@ -135,6 +138,10 @@ _CREATED_TOKEN_PATTERN = re.compile(r"\bcreate [^.;:]*?creature tokens?\b", re.I
 # Replacement wording only redirects another creator's event ("would create ... instead"), so it
 # declares no production family of its own even though it prints a create verb.
 _REPLACEMENT_CREATION_PATTERN = re.compile(r"\bwould (?:be )?create\b|\binstead\b", re.IGNORECASE)
+_OTHER_PLAYER_CREATION_PATTERN = re.compile(
+    r"\b(?:they|their controller|an opponent)\b[^.]*\bcreate",
+    re.IGNORECASE,
+)
 _ADVENTURE_SEQUENCE_PATTERN = re.compile(
     r"\(Then exile this card\. You may cast the [A-Za-z]+ later from exile\.\)"
 )
@@ -403,6 +410,182 @@ def compile_confirmed_relationship_projections(
     return RelationshipProjectionCompilation(
         relationships=tuple(relationships),
         conversions=tuple(conversions),
+    )
+
+
+def compile_token_replacement_relationships(
+    *,
+    artifact: SemanticEnrichmentArtifact,
+    card_database: CardDatabase,
+) -> tuple[CardRelationship, ...]:
+    """Derive actual token-source support for retained replacement effects."""
+    if not isinstance(artifact, SemanticEnrichmentArtifact):
+        raise SemanticEnrichmentError("artifact must be a SemanticEnrichmentArtifact record.")
+    if not isinstance(card_database, CardDatabase):
+        raise SemanticEnrichmentError("card_database must be a CardDatabase record.")
+    facts = _capability_facts(artifact)
+    pins = {pin.card_id: pin for pin in artifact.cards}
+    targets = tuple(
+        sorted(
+            (
+                item
+                for item in facts.values()
+                if item.role is Role.TOKEN_REPLACEMENT
+                and item.review.status in (FindingStatus.ACCEPTED, FindingStatus.UNCERTAIN)
+            ),
+            key=lambda item: (item.card_id, item.face_index is not None, item.face_index or 0),
+        )
+    )
+    sources = _distinct_token_sources(facts=facts, cards=card_database.cards)
+    relationships: list[CardRelationship] = []
+    for target in targets:
+        target_card = card_database.cards.get(target.card_id)
+        if target_card is None or target_card.unknown or target.card_id not in pins:
+            continue
+        target_participant = _replacement_participant(
+            capability=target,
+            card=target_card,
+        )
+        if target_participant is None:
+            continue
+        for source, family in sources:
+            if source.card_id == target.card_id:
+                continue
+            source_card = card_database.cards.get(source.card_id)
+            if source_card is None or source_card.unknown or source.card_id not in pins:
+                continue
+            source_participant = _compile_participant(
+                capability=source,
+                other=target,
+                card=source_card,
+                family=family,
+            )
+            if source_participant is None:
+                continue
+            projection = RelationshipPrerequisiteProjection(
+                source=source_participant,
+                target=target_participant,
+            )
+            evidence = tuple(
+                sorted(
+                    {
+                        item.evidence
+                        for participant in (source_participant, target_participant)
+                        for item in (*participant.prerequisites, *participant.qualifications)
+                    },
+                    key=lambda item: (
+                        item.card_id,
+                        -1 if item.face_index is None else item.face_index,
+                        item.quote,
+                    ),
+                )
+            )
+            relationships.append(
+                CardRelationship(
+                    finding_id=(
+                        f"{target.run_id}:relationship:token-source-replacement:"
+                        f"{source.card_id}:{source.finding_id}:"
+                        f"{target.card_id}:{target.finding_id}"
+                    ),
+                    mechanism="token-source-replacement",
+                    participants=(source.card_id, target.card_id),
+                    claim="A separate token creation event enables the replacement effect.",
+                    prerequisites=(
+                        "The source must create a token under your control.",
+                        "The replacement modifies that event without supplying a token.",
+                    ),
+                    oracle_evidence=evidence,
+                    guide_evidence=(),
+                    review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
+                    run_id=target.run_id,
+                    prerequisite_projection=projection,
+                )
+            )
+    return tuple(relationships)
+
+
+def _distinct_token_sources(
+    *,
+    facts: Mapping[tuple[int, str], CardCapability],
+    cards: Mapping[int, CardInfo],
+) -> tuple[tuple[CardCapability, _TokenFamily], ...]:
+    """Return canonical actual creators, excluding replacement and Army-growth records."""
+    distinct: dict[
+        tuple[int, int | None, tuple[str, ...]],
+        tuple[CardCapability, _TokenFamily],
+    ] = {}
+    for capability in sorted(
+        facts.values(),
+        key=lambda item: (
+            item.card_id,
+            item.face_index is not None,
+            item.face_index or 0,
+            item.finding_id,
+        ),
+    ):
+        if capability.role is not Role.TOKEN_MAKER or capability.action is not CapabilityAction.CREATE:
+            continue
+        quotes = tuple(item.quote for item in capability.evidence)
+        if any(
+            _AMASS_INSTRUCTION_PATTERN.search(quote) is not None
+            or _NO_ARMY_CONDITION_PATTERN.search(quote) is not None
+            or _OTHER_PLAYER_CREATION_PATTERN.search(quote) is not None
+            for quote in quotes
+        ):
+            continue
+        card = cards.get(capability.card_id)
+        if card is None or card.unknown:
+            continue
+        family = _token_family(
+            capability=capability,
+            oracle_text=_participant_oracle_text(capability, card),
+        )
+        if family is None:
+            continue
+        distinct.setdefault(
+            (capability.card_id, capability.face_index, quotes),
+            (capability, family),
+        )
+    return tuple(distinct.values())
+
+
+def _replacement_participant(
+    *,
+    capability: CardCapability,
+    card: CardInfo,
+) -> RelationshipParticipant | None:
+    """Compile one replacement payoff with its source dependency and effect retained."""
+    if len(capability.evidence) != 1:
+        return None
+    quote = capability.evidence[0].quote
+    oracle_text = _participant_oracle_text(capability, card)
+    window = _evidence_window(
+        oracle_text=oracle_text,
+        capability=capability,
+        quote=quote,
+    )
+    if window is None or token_replacement_statement(window) is None:
+        return None
+    qualifications: list[RelationshipQualification] = []
+    for kind, selector in (
+        (QualificationKind.CONDITION, "If one or more tokens would be created under your control"),
+        (QualificationKind.QUANTITY, "twice that many"),
+        (QualificationKind.MODE, "created instead"),
+    ):
+        qualification = _qualification(
+            kind=kind,
+            capability=capability,
+            evidence=window,
+            selector=selector,
+        )
+        if qualification is None:
+            return None
+        qualifications.append(qualification)
+    return _relationship_participant(
+        capability=capability,
+        card=card,
+        clauses=(),
+        qualifications=tuple(qualifications),
     )
 
 

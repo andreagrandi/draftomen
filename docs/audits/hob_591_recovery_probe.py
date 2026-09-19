@@ -112,6 +112,11 @@ EXPECTED_USEFUL_ROWS = 136
 EXPECTED_QUALIFIED_ROWS = 136
 EXPECTED_CONTRADICTION_ROWS = 4
 EXPECTED_RECORD_DEFECT_ROWS = 3
+EXPECTED_REPLACEMENT_SOURCES = (
+    103375, 103378, 103380, 103381, 103382, 103386, 103390, 103392, 103397,
+    103414, 103418, 103429, 103451, 103482, 103492, 103503, 103504, 103526,
+    103531, 103542, 103546, 103571,
+)
 SUBTYPE_CONTRADICTION_REASON = "token_subtype_contradiction"
 EXPECTED_ADVENTURE_ROWS = 143
 EXPECTED_ADVENTURE_USEFUL_ROWS = 129
@@ -1761,6 +1766,9 @@ def _generation_snapshot(
         "condition_map_matches": False,
         "round_trip_condition_map_matches": False,
         "round_trip_reviewed_rows_match": False,
+        "replacement_rows": None,
+        "replacement_sources": None,
+        "replacement_rows_valid": False,
         "profile_error": None,
         "round_trip_error": None,
     }
@@ -1778,6 +1786,24 @@ def _generation_snapshot(
                 published_ids = {row.finding_id for row in enhancement.relationships}
                 snapshot["reviewed_rows"] = len(published_ids)
                 snapshot["reviewed_rows_match"] = published_ids == reviewed_ids
+                replacement_rows = tuple(
+                    row
+                    for row in enhancement.relationships
+                    if row.mechanism == "token-source-replacement"
+                )
+                snapshot["replacement_rows"] = len(replacement_rows)
+                snapshot["replacement_sources"] = sorted(
+                    row.prerequisite_projection.source.card_id
+                    for row in replacement_rows
+                    if row.prerequisite_projection is not None
+                )
+                snapshot["replacement_rows_valid"] = all(
+                    row.prerequisite_projection is not None
+                    and row.prerequisite_projection.source.role.value == "token_maker"
+                    and row.prerequisite_projection.target.card_id == 103524
+                    and row.prerequisite_projection.target.role.value == "token_replacement"
+                    for row in replacement_rows
+                )
                 snapshot["condition_map_sha256"] = _map_sha256(enhancement.condition_map)
                 snapshot["condition_map_matches"] = (
                     direct_sha256 is not None
@@ -1815,6 +1841,7 @@ def stage_generations(
     records: list[dict[str, object]],
     work_root: Path,
     condition_map: object | None,
+    card_database: object,
 ) -> None:
     """Run the published offline consumer twice and compare both published profiles."""
     if compilation is None:
@@ -1827,7 +1854,16 @@ def stage_generations(
         )
         return
     direct_sha256 = _map_sha256(condition_map)
+    from draftomen.profile_relationship_projection import compile_token_replacement_relationships
+
     reviewed_ids = {row.finding_id for row in compilation.relationships}  # type: ignore[attr-defined]
+    reviewed_ids.update(
+        row.finding_id
+        for row in compile_token_replacement_relationships(
+            artifact=artifact,
+            card_database=card_database,
+        )
+    )
     runs: list[dict[str, object]] = []
     for index in (1, 2):
         work_dir = work_root / f"generation-{index}"
@@ -1918,6 +1954,27 @@ def stage_generations(
         ),
         cause_class=probe590.GENERATION,
     )
+    replacement_rows_valid = all(
+        run["replacement_rows"] == len(EXPECTED_REPLACEMENT_SOURCES)
+        and run["replacement_sources"] == list(EXPECTED_REPLACEMENT_SOURCES)
+        and run["replacement_rows_valid"]
+        for run in runs
+    )
+    report.gate(
+        "generation_token_replacement_relationships",
+        ok=replacement_rows_valid,
+        detail=_canonical(
+            [
+                {
+                    "rows": run["replacement_rows"],
+                    "sources": run["replacement_sources"],
+                    "valid": run["replacement_rows_valid"],
+                }
+                for run in runs
+            ]
+        ),
+        cause_class=probe590.COMPILER_GAP,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1998,6 +2055,7 @@ def main() -> int:
                 records=records,
                 work_root=work_dir,
                 condition_map=condition_map,
+                card_database=context.card_database,
             )
         except BaseException as error:  # noqa: BLE001 - the probe reports, never crashes
             report.gate(

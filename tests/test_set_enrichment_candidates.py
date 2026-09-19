@@ -417,7 +417,7 @@ def test_public_surface_pins_contract_values_and_rules() -> None:
     }
     assert CandidateBounds().max_evaluated_pairs == MAX_EVALUATED_CANDIDATE_PAIRS
 
-    assert len(ROLE_COMPATIBILITY_RULES) == 9
+    assert len(ROLE_COMPATIBILITY_RULES) == 10
     rules = [
         (rule.mechanism, rule.enabler, rule.payoff) for rule in ROLE_COMPATIBILITY_RULES
     ]
@@ -431,6 +431,7 @@ def test_public_surface_pins_contract_values_and_rules() -> None:
         ("token-death-payoff", Role.TOKEN_MAKER, Role.DEATH_PAYOFF),
         ("token-go-wide-payoff", Role.TOKEN_MAKER, Role.GO_WIDE_PAYOFF),
         ("token-sacrifice-outlet", Role.TOKEN_MAKER, Role.SACRIFICE_OUTLET),
+        ("token-source-replacement", Role.TOKEN_MAKER, Role.TOKEN_REPLACEMENT),
     ]
     assert all(isinstance(rule, RoleLink) for rule in ROLE_COMPATIBILITY_RULES)
     mechanisms = [rule.mechanism for rule in ROLE_COMPATIBILITY_RULES]
@@ -1192,6 +1193,15 @@ WIDE_TARGET = RouteParticipant(
     qualifier=_qualifier(card_types=CREATURE_CARD_TYPES),
     quote=WIDE_QUOTE,
 )
+REPLACEMENT_TARGET = RouteParticipant(
+    card_id=PAYOFF_ID,
+    card_name="Token Replacement",
+    role=Role.TOKEN_REPLACEMENT,
+    action=CapabilityAction.REPLACE,
+    zone=CapabilityZone.BATTLEFIELD,
+    qualifier=_qualifier(),
+    quote="If one or more tokens would be created, twice that many are created instead.",
+)
 OUTLET_TARGET = RouteParticipant(
     card_id=OUTLET_ID,
     card_name="Sacrifice Outlet",
@@ -1231,6 +1241,7 @@ ROUTE_PAIRS: Mapping[str, tuple[RouteParticipant, RouteParticipant]] = {
     "token-death-payoff": (TOKEN_SOURCE, DEATH_TARGET),
     "token-go-wide-payoff": (TOKEN_SOURCE, WIDE_TARGET),
     "token-sacrifice-outlet": (TOKEN_SOURCE, OUTLET_TARGET),
+    "token-source-replacement": (TOKEN_SOURCE, REPLACEMENT_TARGET),
 }
 
 TOKEN_MECHANISMS = (

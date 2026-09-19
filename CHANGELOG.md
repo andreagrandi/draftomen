@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Derive qualified source-to-replacement relationships from distinct explicit HOB token creators,
+  excluding Army growth, opponent-controlled creation, and duplicate printed instructions. (#612)
 - Represent token-creation replacement effects as source-dependent modifiers so they cannot be
   counted as independent token supply during offline relationship conversion. (#610)
 - Recover friendly untap effects as typed support instead of disabling removal, including exact

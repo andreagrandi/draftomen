@@ -868,6 +868,13 @@ def stage_generation(
 def _gate_enhancement_identity(report: Report, *, profile: object, artifact: object) -> None:
     """Require the published enhancement to preserve the frozen artifact's identity."""
     enhancement = profile.enhancement
+    published_relationships = {row.finding_id: row for row in enhancement.relationships}
+    stored_relationship_ids = set(artifact.confirmed_relationship_ids)
+    derived_relationships = tuple(
+        row
+        for finding_id, row in published_relationships.items()
+        if finding_id not in stored_relationship_ids
+    )
     artifact_runs = {run.run_id: _canonical(run.to_json()) for run in artifact.runs}
     artifact_cards = {pin.card_id: _canonical(pin.to_json()) for pin in artifact.cards}
     artifact_guides = {pin.guide_id: _canonical(pin.to_json()) for pin in artifact.guides}
@@ -897,8 +904,14 @@ def _gate_enhancement_identity(report: Report, *, profile: object, artifact: obj
             for pin in enhancement.cards
         ),
         "finding_runs_present": finding_run_ids <= {run.run_id for run in enhancement.runs},
-        "relationship_ids_match": {row.finding_id for row in enhancement.relationships}
-        == set(artifact.confirmed_relationship_ids),
+        "relationship_ids_match": (
+            stored_relationship_ids <= set(published_relationships)
+            and all(
+                row.mechanism == "token-source-replacement"
+                and row.prerequisite_projection is not None
+                for row in derived_relationships
+            )
+        ),
     }
     report.data["generation"]["enhancement_identity"] = identity
     report.data["generation"]["enhancement_relationships"] = len(enhancement.relationships)

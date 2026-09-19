@@ -2,10 +2,10 @@
 
 The compiler is the only schema-three writer: it validates one already-decoded
 artifact against the exact generation inputs and maps it onto the profile-side
-enhancement vocabulary without inventing content. Confirmed relationships may
-gain deterministic typed projections compiled from the retained capability
-facts of that same artifact; the recorded digest, review, runs, pins, and every
-stored finding stay exactly as the reviewed artifact supplied them.
+enhancement vocabulary from retained evidence. Confirmed relationships may gain
+deterministic typed projections, and exact token-creation facts may gain local
+source-to-replacement relationships. The recorded digest, review, runs, pins,
+and every stored finding stay exactly as reviewed.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from draftomen.profile_condition_projection import compile_condition_map
 from draftomen.profile_relationship_projection import (
     RelationshipConversion,
     compile_confirmed_relationship_projections,
+    compile_token_replacement_relationships,
 )
 from draftomen.semantic_enrichment import (
     EnrichmentSources,
@@ -98,15 +99,13 @@ def compile_profile_enhancement(
     """Compile one confirmed artifact against the generation inputs.
 
     The source artifact stays authoritative: its digest, review, provenance, and
-    stored findings are copied verbatim. Confirmed relationships are the one
-    compiled surface: eligible relationships gain a deterministic typed
-    projection derived only from the retained capability facts of this artifact
-    and the pinned card database, while every other relationship is returned
-    exactly as reviewed. A derived draft-potential condition map is compiled
-    from the same pinned card faces beside the reviewed findings; it never
-    changes reviewed finding IDs, run references, confidence, or
-    relationship counts. The returned block also carries one conversion per
-    stored relationship, in stored order, naming the gate that decided it.
+    stored findings are copied verbatim. Eligible relationships gain a
+    deterministic typed projection, and reviewed token-creation evidence can
+    derive source-to-replacement rows from the pinned card database. A derived
+    draft-potential condition map is compiled from the same pinned faces. None
+    of these local products changes reviewed finding IDs, run references,
+    confidence, or model content. The returned block also carries one conversion
+    per stored relationship, in stored order, naming the deciding gate.
     """
 
     if not isinstance(artifact, SemanticEnrichmentArtifact):
@@ -142,6 +141,10 @@ def compile_profile_enhancement(
         artifact=artifact,
         card_database=card_database,
     )
+    replacement_relationships = compile_token_replacement_relationships(
+        artifact=artifact,
+        card_database=card_database,
+    )
     try:
         condition_map = compile_condition_map(
             artifact=artifact,
@@ -149,9 +152,10 @@ def compile_profile_enhancement(
         )
     except SemanticEnrichmentError as error:
         raise ProfileEnhancementError(COMPILE_ERROR) from error
-    if not mechanics and not compilation.relationships:
+    relationships = (*compilation.relationships, *replacement_relationships)
+    if not mechanics and not relationships:
         raise ProfileEnhancementError(NO_FINDINGS_ERROR)
-    referenced_runs = {item.run_id for item in (*mechanics, *compilation.relationships)}
+    referenced_runs = {item.run_id for item in (*mechanics, *relationships)}
     runs = tuple(run for run in artifact.runs if run.run_id in referenced_runs)
     published_identities = (
         *(pin.guide_id for pin in artifact.guides),
@@ -184,7 +188,7 @@ def compile_profile_enhancement(
             guides=artifact.guides,
             runs=runs,
             mechanics=mechanics,
-            relationships=compilation.relationships,
+            relationships=relationships,
             review=artifact.review,
             confidence=confidence,
             condition_map=condition_map,

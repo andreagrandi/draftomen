@@ -30,6 +30,7 @@ from draftomen.profile_relationship_projection import (
     RelationshipProjectionCompilation,
     _decode_capability,
     compile_confirmed_relationship_projections,
+    compile_token_replacement_relationships,
 )
 from draftomen.semantic_enrichment import EnrichmentSources, SemanticEnrichmentArtifact
 from draftomen.semantic_enrichment_records import OracleEvidence, OracleFact
@@ -1558,3 +1559,40 @@ def test_bard_replacement_wording_declares_no_creation_family() -> None:
     conversion = _conversion(compilation, _BARD_REPLACEMENT)
     assert conversion.outcome is RelationshipConversionOutcome.UNSUPPORTED
     assert conversion.reason == "token_replacement_requires_separate_source"
+
+
+def test_actual_token_sources_gain_deterministic_replacement_support() -> None:
+    """Actual creators point to Bard while Army growth and Bard supply stay excluded."""
+    artifact = _confirmation()
+    database = CardDatabase(cards={card.grp_id: card for card in _cards()})
+
+    first = compile_token_replacement_relationships(
+        artifact=artifact,
+        card_database=database,
+    )
+    second = compile_token_replacement_relationships(
+        artifact=artifact,
+        card_database=database,
+    )
+
+    assert first
+    assert first == second
+    assert all(item.mechanism == "token-source-replacement" for item in first)
+    assert all(item.prerequisite_projection is not None for item in first)
+    projections = tuple(item.prerequisite_projection for item in first)
+    assert all(item is not None for item in projections)
+    assert all(item.source.role.value == "token_maker" for item in projections if item)
+    assert all(item.target.card_id == 103524 for item in projections if item)
+    assert all(item.target.role.value == "token_replacement" for item in projections if item)
+    assert all(item.source.card_id != 103524 for item in projections if item)
+    assert all(item.source.card_id != 103442 for item in projections if item)
+    assert {
+        qualification.selector
+        for projection in projections
+        if projection is not None
+        for qualification in projection.target.qualifications
+    } == {
+        "If one or more tokens would be created under your control",
+        "twice that many",
+        "created instead",
+    }
