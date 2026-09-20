@@ -1360,7 +1360,7 @@ def test_plain_watch_account_switch_announces_and_separates_state(
     assert first_state.completed is True
     assert second_state.completed is True
 
-def test_plain_watch_announces_active_enhancement_once(tmp_path: Path) -> None:
+def test_plain_watch_announces_disabled_enhancement_once(tmp_path: Path) -> None:
     app_dir = tmp_path / "app"
     dump_set_profile(
         _relationship_enhanced_profile(),
@@ -1390,8 +1390,8 @@ def test_plain_watch_announces_active_enhancement_once(tmp_path: Path) -> None:
     )
     lines = output.splitlines()
     enhancement_line = (
-        "Status: AI enhancement: On for TST — "
-        "profile-backed, prepared offline; no live AI"
+        "Status: AI-enhanced suggestions unavailable in production for TST: "
+        "legacy relationship scoring is disabled."
     )
     assert enhancement_line in lines
     profile_index = next(

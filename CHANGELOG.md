@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Disable legacy AI-enhanced relationship scoring in production recommendations,
+  backtests, live sessions, and the desktop settings control while retaining the
+  schema-3 data and explicit offline calibration path. (#617)
+
 - Separate drafted-card relationship advice from ordinary scoring rationale and remove
   confidence and mana-production filler from focused card explanations. Mark cards that have
   advice, show an explicit per-card no-match result, score either endpoint when its partner is

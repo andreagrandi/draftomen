@@ -6604,10 +6604,11 @@ with TemporaryDirectory() as preferences_dir:
 
 def test_qml_enhancement_availability_control_and_status_offscreen() -> None:
     probe = """
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtCore import QPoint, QPointF, QObject, Qt, QUrl
 from PySide6.QtGui import QAccessible, QColor, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -6616,7 +6617,11 @@ from PySide6.QtTest import QTest
 from draftomen.mock_session import MockLiveSession
 from draftomen.qt_adapter import GuiPreferencesAdapter
 from draftomen.qt_mock import MockSessionAdapter
-from draftomen.session import ChangeAiEnhancedSuggestions
+from draftomen.session import (
+    ChangeAiEnhancedSuggestions,
+    EnhancementAvailabilityState,
+    EnhancementAvailabilityStatus,
+)
 
 
 QQuickStyle.setStyle("Fusion")
@@ -6628,10 +6633,47 @@ OFFLINE_SENTENCE = (
 )
 
 
+POLICY_MESSAGE = (
+    "AI-enhanced suggestions unavailable in production for OTJ: "
+    "legacy relationship scoring is disabled."
+)
+
+
+class PolicyDisabledMockSession(MockLiveSession):
+    def __init__(self) -> None:
+        super().__init__(scenario="ready")
+        self._snapshot = self._policy_disabled_snapshot(snapshot=self._snapshot)
+
+    @staticmethod
+    def _policy_disabled_snapshot(*, snapshot):
+        return replace(
+            snapshot,
+            enhancement_availability=EnhancementAvailabilityState(
+                status=EnhancementAvailabilityStatus.POLICY_DISABLED,
+                set_code="OTJ",
+                message=POLICY_MESSAGE,
+            ),
+            enhancement_advice_message=POLICY_MESSAGE,
+        )
+
+    def dispatch(self, *, command):
+        snapshot = super().dispatch(command=command)
+        if self.scenario == "ready":
+            self._snapshot = self._policy_disabled_snapshot(snapshot=snapshot)
+        return self._snapshot
+
+    def select_scenario(self, *, scenario):
+        snapshot = super().select_scenario(scenario=scenario)
+        if self.scenario == "ready":
+            self._snapshot = self._policy_disabled_snapshot(snapshot=snapshot)
+        return self._snapshot
+
+
 class RecordingProvider(MockSessionAdapter):
     def __init__(self) -> None:
         self.commands = []
-        super().__init__(session=MockLiveSession(scenario="ready"))
+        session = PolicyDisabledMockSession()
+        super().__init__(session=session)
 
     def _dispatch(self, *, command) -> None:
         self.commands.append(command)
@@ -6708,15 +6750,26 @@ with TemporaryDirectory() as preferences_dir:
         QTest.keyClick(root, Qt.Key_Space)
         application.processEvents()
 
+    def click_switch() -> None:
+        center = switch.mapToItem(
+            root.contentItem(),
+            QPointF(switch.width() / 2, switch.height() / 2),
+        )
+        QTest.mouseClick(
+            root,
+            Qt.LeftButton,
+            Qt.NoModifier,
+            QPoint(round(center.x()), round(center.y())),
+        )
+        application.processEvents()
+
     assert_availability(
-        status="available",
-        availability_message="AI-enhanced suggestions available for OTJ.",
-        advice_message=(
-            "Relationship advice enabled for OTJ; waiting for a draft pack."
-        ),
-        color="#a78bfa",
-        switch_enabled=True,
-        switch_checked=True,
+        status="policy-disabled",
+        availability_message=POLICY_MESSAGE,
+        advice_message=POLICY_MESSAGE,
+        color="#e7c993",
+        switch_enabled=False,
+        switch_checked=False,
     )
     startup_commands = list(provider.commands)
     assert not any(
@@ -6725,42 +6778,26 @@ with TemporaryDirectory() as preferences_dir:
     )
 
     press_space()
-    enhancement_commands = [
-        command for command in provider.commands
-        if isinstance(command, ChangeAiEnhancedSuggestions)
-    ]
-    assert [command.enabled for command in enhancement_commands] == [False]
-    assert len(provider.commands) == len(startup_commands) + 1
+    assert len(provider.commands) == len(startup_commands)
     assert_availability(
-        status="disabled",
-        availability_message="AI-enhanced suggestions disabled for OTJ.",
-        advice_message=(
-            "Contextual pick scoring is on, but AI-enhanced suggestions are off. "
-            "Turn on AI-enhanced suggestions to show relationship advice."
-        ),
-        color="#c8c2b8",
-        switch_enabled=True,
+        status="policy-disabled",
+        availability_message=POLICY_MESSAGE,
+        advice_message=POLICY_MESSAGE,
+        color="#e7c993",
+        switch_enabled=False,
         switch_checked=False,
     )
 
     press_space()
-    enhancement_commands = [
-        command for command in provider.commands
-        if isinstance(command, ChangeAiEnhancedSuggestions)
-    ]
-    assert [command.enabled for command in enhancement_commands] == (
-        [False, True]
-    )
-    assert len(provider.commands) == len(startup_commands) + 2
+    click_switch()
+    assert len(provider.commands) == len(startup_commands)
     assert_availability(
-        status="available",
-        availability_message="AI-enhanced suggestions available for OTJ.",
-        advice_message=(
-            "Relationship advice enabled for OTJ; waiting for a draft pack."
-        ),
-        color="#a78bfa",
-        switch_enabled=True,
-        switch_checked=True,
+        status="policy-disabled",
+        availability_message=POLICY_MESSAGE,
+        advice_message=POLICY_MESSAGE,
+        color="#e7c993",
+        switch_enabled=False,
+        switch_checked=False,
     )
 
     for scenario, status, availability_message in (
@@ -6873,6 +6910,10 @@ def relationship_advice_visible(root):
 
 QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
+POLICY_COPY = (
+    "AI-enhanced suggestions unavailable in production for TST: "
+    "legacy relationship scoring is disabled."
+)
 
 
 class SynchronousSessionAdapter(SessionAdapter):
@@ -6952,44 +6993,29 @@ with TemporaryDirectory() as directory:
     assert advice_message is not None
     assert status_message is not None
     assert contextual_switch.property("checked") is True
-    assert ai_switch.property("checked") is True
-    assert "AI relationship advice on 1 of 2 cards" in advice_message.property("text")
+    assert ai_switch.property("checked") is False
+    assert ai_switch.property("enabled") is False
+    assert POLICY_COPY in advice_message.property("text")
     assert status_message.property("text") in advice_message.property("text")
 
     root.setProperty("currentSurface", "live")
     wait_until(
-        lambda: "Drafted Omen Scrapwright supports Warhorn Outlet"
-        in relationship_advice_text(root),
-        "rendered relationship advice",
+        lambda: recommendation()["card"]["grp_id"] == 602,
+        "rendered recommendation",
     )
     both_on = recommendation()
     assert both_on["card"]["grp_id"] == 602
-    assert both_on["relationship_contributions"][0]["effective_contribution"] == 0.0
-    advice = relationship_advice_text(root)
-    assert relationship_advice_visible(root) is True
-    assert "connects creature tokens to a sacrifice ability" in advice
-    assert "adds no extra DO points" in advice
-    assert "relationship:" not in advice
-    assert "source:condition" not in advice
+    assert both_on["relationship_contributions"] == []
+    assert both_on["relationship_advice"] is None
+    assert relationship_advice_visible(root) is False
     assert "Drafted Omen Scrapwright" not in explanation_text(root)
     both_on_score = both_on["score"]
 
     provider.chooseRecommendation(604)
-    wait_until(
-        lambda: (
-            provider.state["recommendations"]["selected_grp_id"] == 604
-            and relationship_advice_text(root)
-            == "No supported relationship with your drafted cards for this card."
-        ),
-        "explicit no-match relationship result",
-    )
-    assert relationship_advice_visible(root) is True
+    assert provider.state["recommendations"]["selected_grp_id"] == 604
+    assert relationship_advice_visible(root) is False
     provider.chooseRecommendation(602)
-    wait_until(
-        lambda: "Drafted Omen Scrapwright supports Warhorn Outlet"
-        in relationship_advice_text(root),
-        "relationship-bearing recommendation restored",
-    )
+    assert relationship_advice_visible(root) is False
 
     root.setProperty("currentSurface", "settings")
     ai_switch.forceActiveFocus()
@@ -6998,8 +7024,7 @@ with TemporaryDirectory() as directory:
         lambda: (
             ai_switch.property("checked") is False
             and contextual_switch.property("checked") is True
-            and "AI-enhanced suggestions are off"
-            in advice_message.property("text")
+            and POLICY_COPY in advice_message.property("text")
         ),
         "contextual-only settings state",
     )
@@ -7018,8 +7043,7 @@ with TemporaryDirectory() as directory:
         lambda: (
             contextual_switch.property("checked") is False
             and ai_switch.property("checked") is False
-            and "both to show relationship advice"
-            in advice_message.property("text")
+            and POLICY_COPY in advice_message.property("text")
         ),
         "both settings off",
     )
@@ -7031,10 +7055,9 @@ with TemporaryDirectory() as directory:
     QTest.keyClick(root, Qt.Key_Space)
     wait_until(
         lambda: (
-            ai_switch.property("checked") is True
+            ai_switch.property("checked") is False
             and contextual_switch.property("checked") is False
-            and "Contextual pick scoring is off"
-            in advice_message.property("text")
+            and POLICY_COPY in advice_message.property("text")
         ),
         "AI-only settings state",
     )
@@ -7049,19 +7072,18 @@ with TemporaryDirectory() as directory:
     wait_until(
         lambda: (
             contextual_switch.property("checked") is True
-            and ai_switch.property("checked") is True
-            and "AI relationship advice on 1 of 2 cards"
-            in advice_message.property("text")
+            and ai_switch.property("checked") is False
+            and POLICY_COPY in advice_message.property("text")
             and recommendation()["score"] == both_on_score
         ),
         "both settings restored",
     )
     root.setProperty("currentSurface", "live")
     wait_until(
-        lambda: "adds no extra DO points" in relationship_advice_text(root),
-        "restored rendered relationship advice",
+        lambda: recommendation()["relationship_advice"] is None,
+        "restored recommendation without relationship advice",
     )
-    assert relationship_advice_visible(root) is True
+    assert relationship_advice_visible(root) is False
 
     preferences.shutdown()
     del root
@@ -7077,6 +7099,7 @@ with TemporaryDirectory() as directory:
 
 def test_qml_settings_switches_expose_contrast_states_and_keyboard_toggle() -> None:
     probe = """
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7089,6 +7112,7 @@ from PySide6.QtTest import QTest
 from draftomen.mock_session import MockLiveSession
 from draftomen.qt_adapter import GuiPreferencesAdapter
 from draftomen.qt_mock import MockSessionAdapter
+from draftomen.session import EnhancementAvailabilityState, EnhancementAvailabilityStatus
 
 
 def relative_luminance(value) -> float:
@@ -7140,7 +7164,37 @@ application_font.setPixelSize(26)
 application.setFont(application_font)
 assert application_font.pixelSize() == 26
 assert QFontInfo(application_font).pixelSize() == 26
-provider = MockSessionAdapter(session=MockLiveSession(scenario="ready"))
+POLICY_MESSAGE = (
+    "AI-enhanced suggestions unavailable in production for OTJ: "
+    "legacy relationship scoring is disabled."
+)
+
+
+class PolicyDisabledMockSession(MockLiveSession):
+    def __init__(self) -> None:
+        super().__init__(scenario="ready")
+        self._snapshot = self._policy_disabled_snapshot(snapshot=self._snapshot)
+
+    @staticmethod
+    def _policy_disabled_snapshot(*, snapshot):
+        return replace(
+            snapshot,
+            enhancement_availability=EnhancementAvailabilityState(
+                status=EnhancementAvailabilityStatus.POLICY_DISABLED,
+                set_code="OTJ",
+                message=POLICY_MESSAGE,
+            ),
+            enhancement_advice_message=POLICY_MESSAGE,
+        )
+
+    def dispatch(self, *, command):
+        snapshot = super().dispatch(command=command)
+        if self.scenario == "ready":
+            self._snapshot = self._policy_disabled_snapshot(snapshot=snapshot)
+        return self._snapshot
+
+
+provider = MockSessionAdapter(session=PolicyDisabledMockSession())
 
 with TemporaryDirectory() as preferences_dir:
     preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
@@ -7279,6 +7333,12 @@ with TemporaryDirectory() as preferences_dir:
     )
     switches = [root.findChild(QObject, name) for name in names]
     assert all(switch is not None for switch in switches)
+    ai_switch = root.findChild(QObject, "settingsAiEnhancedSuggestionsSwitch")
+    assert ai_switch is not None
+    assert ai_switch.property("checked") is False
+    assert ai_switch.property("enabled") is False
+    assert ai_switch.property("visualDisabled") is True
+    assert ai_switch.property("visualState") == "disabled"
     fields = (
         "settingsMockedDraftCheckoutDirField",
         "settingsMockedDraftServerUrlField",
@@ -7288,13 +7348,16 @@ with TemporaryDirectory() as preferences_dir:
     assert all(switch.property("height") >= 42 for switch in switches)
     assert all(switch.property("width") >= 40 for switch in switches)
 
-    checked_switches = [switch for switch in switches if switch.property("checked")]
-    unchecked_switches = [
-        switch for switch in switches if not switch.property("checked")
+    active_switches = [switch for switch in switches if switch is not ai_switch]
+    checked_switches = [
+        switch for switch in active_switches if switch.property("checked")
     ]
-    assert len(checked_switches) == 7
+    unchecked_switches = [
+        switch for switch in active_switches if not switch.property("checked")
+    ]
+    assert len(checked_switches) == 6
     assert len(unchecked_switches) == 3
-    for switch in switches:
+    for switch in active_switches:
         is_checked = switch.property("checked") is True
         assert switch.property("visualChecked") is is_checked
         assert switch.property("visualUnchecked") is (not is_checked)

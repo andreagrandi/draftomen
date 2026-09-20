@@ -458,6 +458,9 @@ def test_backtest_cli_loads_state_profile_once_and_passes_it_to_report(
 
     def record_generate(**kwargs: object):
         observed["set_profile"] = kwargs["set_profile"]
+        observed["enhanced_relationships_enabled"] = kwargs[
+            "enhanced_relationships_enabled"
+        ]
         return real_generate(**kwargs)
 
     monkeypatch.setattr(cli_module, "load_scoring_profile", record_load)
@@ -481,6 +484,7 @@ def test_backtest_cli_loads_state_profile_once_and_passes_it_to_report(
     assert exit_code == 0
     assert profile_calls == [(state.set_code, QUICK_DRAFT_FORMAT, app_dir)]
     assert observed["set_profile"] == profile
+    assert observed["enhanced_relationships_enabled"] is False
     assert "Draft Omen backtest" in captured.out
     assert captured.err == ""
 
@@ -656,10 +660,16 @@ def test_hob_relationship_scoring_controls_are_deterministic_and_profile_isolate
     removed_profile = replace(profile, enhancement=None)
 
     enhanced_first = generate_backtest_report(
-        state=state, card_database=database, set_profile=profile
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        enhanced_relationships_enabled=True,
     )
     enhanced_second = generate_backtest_report(
-        state=state, card_database=database, set_profile=profile
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        enhanced_relationships_enabled=True,
     )
     removed_first = generate_backtest_report(
         state=state, card_database=database, set_profile=removed_profile
@@ -691,7 +701,10 @@ def test_hob_relationship_scoring_controls_are_deterministic_and_profile_isolate
 def test_hob_relationship_scoring_exact_reviewed_deltas_and_evidence() -> None:
     database, profile, state = _hob_relationship_fixtures()
     enhanced = generate_backtest_report(
-        state=state, card_database=database, set_profile=profile
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        enhanced_relationships_enabled=True,
     )
     removed = generate_backtest_report(
         state=state,
@@ -749,7 +762,10 @@ def test_hob_relationship_scoring_exact_reviewed_deltas_and_evidence() -> None:
 def test_hob_relationship_scoring_unsupported_and_saturated_rows() -> None:
     database, profile, state = _hob_relationship_fixtures()
     enhanced = generate_backtest_report(
-        state=state, card_database=database, set_profile=profile
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        enhanced_relationships_enabled=True,
     )
     removed = generate_backtest_report(
         state=state,
@@ -803,13 +819,17 @@ def test_hob_relationship_scoring_unsupported_and_saturated_rows() -> None:
 def test_hob_relationship_scoring_context_disabled_controls() -> None:
     database, profile, state = _hob_relationship_fixtures()
     enhanced = generate_backtest_report(
-        state=state, card_database=database, set_profile=profile
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        enhanced_relationships_enabled=True,
     )
     disabled = generate_backtest_report(
         state=state,
         card_database=database,
         set_profile=profile,
         contextual_adjustments_enabled=False,
+        enhanced_relationships_enabled=True,
     )
 
     for index, row in enumerate(disabled.rows):
@@ -829,7 +849,10 @@ def test_hob_relationship_scoring_context_disabled_controls() -> None:
 def test_hob_relationship_scoring_gate_empties_ledger_support_and_terms() -> None:
     database, profile, state = _hob_relationship_fixtures()
     enhanced = generate_backtest_report(
-        state=state, card_database=database, set_profile=profile
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        enhanced_relationships_enabled=True,
     )
     gated = generate_backtest_report(
         state=state,
@@ -862,17 +885,22 @@ def test_hob_relationship_scoring_gate_empties_ledger_support_and_terms() -> Non
         card_database=database,
         set_profile=profile,
         contextual_adjustments_enabled=False,
+        enhanced_relationships_enabled=True,
     )
     assert context_disabled.rows[1].role_ledger.relationship_support
 
 
 def test_hob_relationship_scoring_gate_overrides_a_supplied_default_engine() -> None:
     database, profile, state = _hob_relationship_fixtures()
-    supplied_engine = PickEngine(set_profile=profile)
+    supplied_engine = PickEngine(
+        set_profile=profile,
+        enhanced_relationships_enabled=True,
+    )
     enhanced = generate_backtest_report(
         state=state,
         card_database=database,
         set_profile=profile,
+        enhanced_relationships_enabled=True,
     )
     gated = generate_backtest_report(
         state=state,
@@ -918,7 +946,12 @@ def test_hob_relationship_scoring_persists_state_bytes() -> None:
         persisted_path = save_draft_state(state=state, app_dir=app_dir)
         persisted_bytes = persisted_path.read_bytes()
 
-        generate_backtest_report(state=state, card_database=database, set_profile=profile)
+        generate_backtest_report(
+            state=state,
+            card_database=database,
+            set_profile=profile,
+            enhanced_relationships_enabled=True,
+        )
         generate_backtest_report(
             state=state,
             card_database=database,
@@ -929,6 +962,7 @@ def test_hob_relationship_scoring_persists_state_bytes() -> None:
             card_database=database,
             set_profile=profile,
             contextual_adjustments_enabled=False,
+            enhanced_relationships_enabled=True,
         )
 
         assert persisted_path.read_bytes() == persisted_bytes

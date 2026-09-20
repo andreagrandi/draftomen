@@ -15,6 +15,7 @@ from draftomen.events import (
     EXPECTED_TOTAL_PICKS,
 )
 from draftomen.pickengine import (
+    LEGACY_RELATIONSHIP_SCORING_ENABLED,
     PickEngine,
     PickScoringContext,
     RelationshipScoreContribution,
@@ -144,7 +145,7 @@ def generate_backtest_report(
     ranking_mode: str = DEFAULT_RANKING_MODE,
     splash_enabled: bool = True,
     contextual_adjustments_enabled: bool = True,
-    enhanced_relationships_enabled: bool = True,
+    enhanced_relationships_enabled: bool = LEGACY_RELATIONSHIP_SCORING_ENABLED,
     set_profile: SetProfile | None = None,
 ) -> BacktestReport:
     """Score each saved pick from the persisted pre-pick state.
