@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Prepare reusable per-set training rows from pinned public draft data with the
+  tested 22 pool-summary values, whole-draft chronological splits, source
+  provenance, Oracle card IDs, and leakage-safe reports. Resolve full card and
+  face names through set metadata so HOB remains the first checked set without
+  hard-coding it in the loader. (#618)
+
 - Disable legacy AI-enhanced relationship scoring in production recommendations,
   backtests, live sessions, and the desktop settings control while retaining the
   schema-3 data and explicit offline calibration path. (#617)

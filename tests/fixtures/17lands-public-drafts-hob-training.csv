@@ -1,0 +1,20 @@
+expansion,event_type,draft_id,draft_time,rank,event_match_wins,event_match_losses,pack_number,pick_number,pick,pick_2,pack_card_Red Recruit,pack_card_Blue Trick,pack_card_Clockwork Relic,pool_Red Recruit,pool_Blue Trick,pool_Clockwork Relic
+HOB,PremierDraft,draft-1,2026-09-01 10:00:00,bronze,1,2,0,0,Red Recruit,,1,1,0,0,0,0
+HOB,PremierDraft,draft-1,2026-09-01 10:00:00,bronze,1,2,0,1,Blue Trick,,0,1,1,1,0,0
+HOB,PremierDraft,draft-2,2026-09-02 10:00:00,silver,2,1,0,0,Blue Trick,,1,1,0,0,0,0
+HOB,PremierDraft,draft-2,2026-09-02 10:00:00,silver,2,1,0,1,Clockwork Relic,,0,1,1,0,1,0
+HOB,PremierDraft,draft-3,2026-09-03 10:00:00,gold,3,0,0,0,Red Recruit,,1,1,0,0,0,0
+HOB,PremierDraft,draft-3,2026-09-03 10:00:00,gold,3,0,0,1,Clockwork Relic,,1,0,1,1,0,0
+HOB,PremierDraft,draft-4,2026-09-04 10:00:00,platinum,4,1,0,0,Blue Trick,,1,1,0,0,0,0
+HOB,PremierDraft,draft-4,2026-09-04 10:00:00,platinum,4,1,0,1,Red Recruit,,1,0,1,0,1,0
+HOB,PremierDraft,draft-5,2026-09-05 10:00:00,diamond,5,2,0,0,Red Recruit,,1,1,0,0,0,0
+HOB,PremierDraft,draft-5,2026-09-05 10:00:00,diamond,5,2,0,1,Blue Trick,,0,1,1,1,0,0
+HOB,PremierDraft,draft-6,2026-09-06 10:00:00,mythic,6,0,0,0,Blue Trick,,1,1,0,0,0,0
+HOB,PremierDraft,draft-6,2026-09-06 10:00:00,mythic,6,0,0,1,Clockwork Relic,,0,1,1,0,1,0
+HOB,PremierDraft,draft-7,2026-09-07 10:00:00,bronze,7,0,0,0,Red Recruit,,1,1,0,0,0,0
+HOB,PremierDraft,draft-7,2026-09-07 10:00:00,bronze,7,0,0,1,Clockwork Relic,,1,0,1,1,0,0
+HOB,PremierDraft,draft-second-pick,2026-09-08 10:00:00,silver,0,3,0,0,Red Recruit,Blue Trick,1,1,0,0,0,0
+HOB,PremierDraft,draft-second-pick,2026-09-08 10:00:00,silver,0,3,0,1,Clockwork Relic,,0,1,1,1,0,0
+HOB,PremierDraft,draft-incomplete,2026-09-09 10:00:00,gold,1,2,0,0,Blue Trick,,1,1,0,0,0,0
+HOB,PremierDraft,draft-bad-pool,2026-09-10 10:00:00,platinum,2,1,0,0,Red Recruit,,1,1,0,0,0,0
+HOB,PremierDraft,draft-bad-pool,2026-09-10 10:00:00,platinum,2,1,0,1,Blue Trick,,0,1,1,0,0,0

@@ -69,6 +69,7 @@ draftomen = [
 files = [
     "draftomen/__init__.py",
     "draftomen/audit.py",
+    "draftomen/augmented_training_data.py",
     "draftomen/backtest.py",
     "draftomen/benchmark.py",
     "draftomen/carddb.py",
