@@ -24,6 +24,7 @@ from draftomen.pickengine import (
     MAX_SYNERGY_TERM,
     MAX_UNSUPPORTED_PAYOFF_TERM,
     MAX_URGENCY_TERM,
+    LEGACY_RELATIONSHIP_SCORING_ENABLED,
     PickEngine,
     PickReason,
     PickRationale,
@@ -4242,6 +4243,35 @@ def test_relationship_support_adds_only_a_bounded_synergy_increment() -> None:
     assert supported_card.contextual_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
 
 
+def test_production_pick_engine_matches_explicit_unenhanced_relationship_gate() -> None:
+    database = _relationship_database()
+    profile = _relationship_profile(
+        relationships=(_token_sacrifice_relationship(),)
+    )
+    score_kwargs = {
+        "offered_grp_ids": (602, 605),
+        "card_database": database,
+        "pool_grp_ids": (601,),
+        "pack_number": 0,
+        "pick_number": 1,
+        "global_pick_index": 2,
+        "estimated_remaining_picks": 40,
+    }
+
+    production = PickEngine(set_profile=profile).score_pack(**score_kwargs)
+    explicit_disabled = PickEngine(
+        set_profile=profile,
+        enhanced_relationships_enabled=False,
+    ).score_pack(**score_kwargs)
+
+    assert LEGACY_RELATIONSHIP_SCORING_ENABLED is False
+    assert production.cards == explicit_disabled.cards
+    assert production.role_ledger is not None
+    assert production.role_ledger.relationship_support == ()
+    assert all(card.relationship_contributions == () for card in production.cards)
+    assert all(card.semantic_relationship_advice == () for card in production.cards)
+
+
 def test_disabled_relationship_gate_clears_supplied_context_support_and_term() -> None:
     database = _relationship_database()
     profile = _relationship_profile(relationships=(_token_sacrifice_relationship(),))
@@ -4335,7 +4365,10 @@ def test_relationship_outcomes_have_deterministic_bounded_treatment(
         role_ledger=replace(ledger, relationship_support=(support,)),
     )
 
-    card = PickEngine(scoring_context=context).score_pack(
+    card = PickEngine(
+        scoring_context=context,
+        enhanced_relationships_enabled=True,
+    ).score_pack(
         offered_grp_ids=(602,),
         card_database=database,
         pool_grp_ids=(601,),
@@ -4384,7 +4417,10 @@ def test_duplicate_source_target_evidence_keeps_only_the_strongest_verdict() -> 
         ),
     )
 
-    card = PickEngine(scoring_context=context).score_pack(
+    card = PickEngine(
+        scoring_context=context,
+        enhanced_relationships_enabled=True,
+    ).score_pack(
         offered_grp_ids=(602,),
         card_database=database,
         pool_grp_ids=(601,),
@@ -4522,7 +4558,10 @@ def test_relationship_evidence_reports_the_effective_replacement_increment() -> 
     )
     context = PickScoringContext(set_profile=profile, role_ledger=ledger)
 
-    card = PickEngine(scoring_context=context).score_pack(
+    card = PickEngine(
+        scoring_context=context,
+        enhanced_relationships_enabled=True,
+    ).score_pack(
         offered_grp_ids=(602,),
         card_database=database,
         pool_grp_ids=(601,),

@@ -49,6 +49,7 @@ from draftomen.events import (
 from draftomen.logfollow import LogFollower, is_log_readable
 from draftomen.pickengine import (
     ContextualScoreBreakdown,
+    LEGACY_RELATIONSHIP_SCORING_ENABLED,
     PickEngine,
     PickRationale,
     PickScoringContext,
@@ -339,6 +340,7 @@ class EnhancementAvailabilityStatus(str, Enum):
     INCOMPATIBLE = "incompatible"
     UNAVAILABLE = "unavailable"
     DISABLED = "disabled"
+    POLICY_DISABLED = "policy-disabled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -753,6 +755,15 @@ def _enhancement_availability_for_context(
             message=(
                 f"AI-enhanced suggestions unavailable for {display_set}: "
                 "profile enhancement is invalid or incompatible."
+            ),
+        )
+    if not LEGACY_RELATIONSHIP_SCORING_ENABLED:
+        return EnhancementAvailabilityState(
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
+            set_code=display_set,
+            message=(
+                "AI-enhanced suggestions unavailable in production for "
+                f"{display_set}: legacy relationship scoring is disabled."
             ),
         )
     if not preference_enabled:
@@ -3139,12 +3150,18 @@ class LiveSession:
             if enabled == self._ai_enhanced_suggestions_enabled:
                 return
 
-            self._ai_enhanced_suggestions_enabled = enabled
-            candidate_snapshot = self._retire_backtest_state_locked(
-                snapshot=self.snapshot,
+            previous_effective_enabled = (
+                self._current_enhancement_availability_locked().enabled
             )
+            self._ai_enhanced_suggestions_enabled = enabled
+            effective_enabled = self._current_enhancement_availability_locked().enabled
+            candidate_snapshot = self.snapshot
+            if effective_enabled != previous_effective_enabled:
+                candidate_snapshot = self._retire_backtest_state_locked(
+                    snapshot=candidate_snapshot,
+                )
             transition_generation = self._transition_generation
-            if self._score_current_pack_locked(
+            if effective_enabled != previous_effective_enabled and self._score_current_pack_locked(
                 snapshot=candidate_snapshot,
                 prepare_image_requests=False,
                 record_audit=False,

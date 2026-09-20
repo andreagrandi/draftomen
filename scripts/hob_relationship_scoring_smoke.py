@@ -200,12 +200,14 @@ def _control_projections(
             card_database=card_database,
             set_profile=control_profile,
             contextual_adjustments_enabled=contextual_enabled,
+            enhanced_relationships_enabled=True,
         )
         second = generate_backtest_report(
             state=state,
             card_database=card_database,
             set_profile=control_profile,
             contextual_adjustments_enabled=contextual_enabled,
+            enhanced_relationships_enabled=True,
         )
         first_projection = _project_report(first)
         if first_projection != _project_report(second):

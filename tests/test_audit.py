@@ -478,7 +478,10 @@ def test_audit_persists_bounded_relationship_score_provenance(
     assert relationship.prerequisites == (SENTINEL_LEGACY_PREREQUISITE,)
     assert enhancement.runs[0].provider == SENTINEL_MODEL_RUN
     database = _relationship_card_database()
-    engine = PickEngine(set_profile=profile)
+    engine = PickEngine(
+        set_profile=profile,
+        enhanced_relationships_enabled=True,
+    )
     scored_pack = engine.score_pack(
         offered_grp_ids=(RELATIONSHIP_TARGET_ID,),
         card_database=database,

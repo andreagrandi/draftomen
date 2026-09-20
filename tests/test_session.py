@@ -1236,17 +1236,20 @@ def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
     _assert_profile_context(scored_pack=scored_pack, profile=profile, event=event)
     assert snapshot.set_profile.phase is DataLoadPhase.READY
     assert snapshot.set_profile.source == "local-mature"
-    assert snapshot.enhancement_availability.enabled is True
-    assert [
-        support.mechanism
-        for support in scored_pack.role_ledger.relationship_support
-    ] == [_token_sacrifice_relationship().mechanism]
-    evidenced_grp_ids = {
-        recommendation.card.grp_id
+    assert snapshot.enhancement_availability.status is (
+        EnhancementAvailabilityStatus.POLICY_DISABLED
+    )
+    assert snapshot.enhancement_availability.enabled is False
+    assert scored_pack.role_ledger.relationship_support == ()
+    assert all(
+        recommendation.relationship_contributions == ()
+        and recommendation.relationship_advice is None
         for recommendation in snapshot.recommendations.cards
-        if recommendation.contextual_evidence
-    }
-    assert evidenced_grp_ids == {602, 605}
+    )
+    assert all(
+        not recommendation.relationship_advice_enabled
+        for recommendation in snapshot.recommendations.cards
+    )
 
 
 def test_live_session_contextual_mode_controls_startup_and_local_rescore(
@@ -1450,14 +1453,17 @@ def test_live_session_classifies_enhancement_availability_statuses(
         log_path=tmp_path / "one.log",
         app_dir=tmp_path / "app",
         card_database=database,
+        ai_enhanced_suggestions_enabled=True,
         set_profile=enhanced,
     )
     assert available.snapshot.enhancement_availability == (
         EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.AVAILABLE,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
             set_code="TST",
-            enabled=True,
-            message="AI-enhanced suggestions available for TST.",
+            message=(
+                "AI-enhanced suggestions unavailable in production for TST: "
+                "legacy relationship scoring is disabled."
+            ),
         )
     )
 
@@ -1531,15 +1537,19 @@ def test_live_session_enhancement_preference_survives_profile_change(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
         card_database=database,
+        ai_enhanced_suggestions_enabled=True,
         set_profile=enhanced,
     )
 
     disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
     assert disabled.enhancement_availability == (
         EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.DISABLED,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
             set_code="TST",
-            message="AI-enhanced suggestions disabled for TST.",
+            message=(
+                "AI-enhanced suggestions unavailable in production for TST: "
+                "legacy relationship scoring is disabled."
+            ),
         )
     )
 
@@ -1560,18 +1570,23 @@ def test_live_session_enhancement_preference_survives_profile_change(
     re_disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
     assert re_disabled.enhancement_availability == (
         EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.DISABLED,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
             set_code="TST",
-            message="AI-enhanced suggestions disabled for TST.",
+            message=(
+                "AI-enhanced suggestions unavailable in production for TST: "
+                "legacy relationship scoring is disabled."
+            ),
         )
     )
     restored = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
     assert restored.enhancement_availability == (
         EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.AVAILABLE,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
             set_code="TST",
-            enabled=True,
-            message="AI-enhanced suggestions available for TST.",
+            message=(
+                "AI-enhanced suggestions unavailable in production for TST: "
+                "legacy relationship scoring is disabled."
+            ),
         )
     )
 
@@ -1635,17 +1650,16 @@ def test_live_session_enable_command_reports_incompatible_enhancement(
     assert enabled.current_scored_pack.role_ledger.relationship_support == ()
 
 
-def test_live_session_enhancement_toggle_rescoring_controls_relationships(
+def test_live_session_enhancement_toggle_cannot_enable_relationship_scoring(
     tmp_path: Path,
 ) -> None:
-    from tests.test_pickengine import _token_sacrifice_relationship
-
     profile = _relationship_session_profile()
     database = _relationship_session_database()
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
         card_database=database,
+        ai_enhanced_suggestions_enabled=True,
         set_profile=profile,
     )
     source = database.cards[601]
@@ -1666,24 +1680,20 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
 
     enabled = session.snapshot
     enabled_pack = enabled.current_scored_pack
-    assert enabled.enhancement_availability.enabled is True
-    assert enabled.enhancement_advice_message == (
-        "AI relationship advice on 1 of 2 cards for TST."
+    assert enabled.enhancement_availability.enabled is False
+    assert enabled.enhancement_availability.status is (
+        EnhancementAvailabilityStatus.POLICY_DISABLED
     )
     enabled_recommendations = {
         card.card.grp_id: card for card in enabled.recommendations.cards
     }
-    assert enabled_recommendations[target.grp_id].relationship_advice is not None
-    assert enabled_recommendations[target.grp_id].relationship_advice_enabled is True
+    assert enabled_recommendations[target.grp_id].relationship_advice is None
+    assert enabled_recommendations[target.grp_id].relationship_advice_enabled is False
     assert enabled_recommendations[package_payoff.grp_id].relationship_advice is None
-    assert enabled_recommendations[package_payoff.grp_id].relationship_advice_enabled is True
+    assert enabled_recommendations[package_payoff.grp_id].relationship_advice_enabled is False
     assert enabled_pack is not None
-    assert [
-        support.mechanism
-        for support in enabled_pack.role_ledger.relationship_support
-    ] == [_token_sacrifice_relationship().mechanism]
+    assert enabled_pack.role_ledger.relationship_support == ()
     enabled_cards = {card.card.grp_id: card for card in enabled_pack.cards}
-    assert enabled_cards[target.grp_id].contextual_evidence
     assert enabled_cards[package_payoff.grp_id].contextual_evidence
     enabled_scores = {
         card.card.grp_id: card.raw_score for card in enabled_pack.cards
@@ -1692,14 +1702,17 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
     assert disabled.enhancement_availability == (
         EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.DISABLED,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
             set_code="TST",
-            message="AI-enhanced suggestions disabled for TST.",
+            message=(
+                "AI-enhanced suggestions unavailable in production for TST: "
+                "legacy relationship scoring is disabled."
+            ),
         )
     )
     assert disabled.enhancement_advice_message == (
-        "Contextual pick scoring is on, but AI-enhanced suggestions are off. "
-        "Turn on AI-enhanced suggestions to show relationship advice."
+        "AI-enhanced suggestions unavailable in production for TST: "
+        "legacy relationship scoring is disabled."
     )
     assert enabled.contextual_evidence != ContextualEvidenceState()
     assert disabled.contextual_evidence == enabled.contextual_evidence
@@ -1721,25 +1734,24 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     disabled_scores = {
         card.card.grp_id: card.raw_score for card in disabled_pack.cards
     }
-    assert disabled_scores[target.grp_id] < enabled_scores[target.grp_id]
+    assert disabled_scores == enabled_scores
 
     restored = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
 
     assert restored.enhancement_availability == (
         EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.AVAILABLE,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
             set_code="TST",
-            enabled=True,
-            message="AI-enhanced suggestions available for TST.",
+            message=(
+                "AI-enhanced suggestions unavailable in production for TST: "
+                "legacy relationship scoring is disabled."
+            ),
         )
     )
     assert restored.contextual_evidence == enabled.contextual_evidence
     restored_pack = restored.current_scored_pack
     assert restored_pack is not None
-    assert [
-        support.mechanism
-        for support in restored_pack.role_ledger.relationship_support
-    ] == [_token_sacrifice_relationship().mechanism]
+    assert restored_pack.role_ledger.relationship_support == ()
     restored_cards = {card.card.grp_id: card for card in restored_pack.cards}
     assert restored_cards[target.grp_id].contextual_evidence == (
         enabled_cards[target.grp_id].contextual_evidence
@@ -1752,10 +1764,10 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
         command=ChangeContextualScoring(enabled=False)
     )
     assert contextual_off.contextual_adjustments_enabled is False
-    assert contextual_off.enhancement_availability.enabled is True
+    assert contextual_off.enhancement_availability.enabled is False
     assert contextual_off.enhancement_advice_message == (
-        "AI-enhanced suggestions are on, but Contextual pick scoring is off. "
-        "Turn on Contextual pick scoring to show relationship advice."
+        "AI-enhanced suggestions unavailable in production for TST: "
+        "legacy relationship scoring is disabled."
     )
     assert contextual_off.current_scored_pack is not None
     contextual_off_cards = {
@@ -1770,8 +1782,8 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     assert both_off.contextual_adjustments_enabled is False
     assert both_off.enhancement_availability.enabled is False
     assert both_off.enhancement_advice_message == (
-        "AI-enhanced suggestions and Contextual pick scoring are off. Turn on "
-        "both to show relationship advice."
+        "AI-enhanced suggestions unavailable in production for TST: "
+        "legacy relationship scoring is disabled."
     )
 
     contextual_only = session.dispatch(
@@ -1780,8 +1792,8 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     assert contextual_only.contextual_adjustments_enabled is True
     assert contextual_only.enhancement_availability.enabled is False
     assert contextual_only.enhancement_advice_message == (
-        "Contextual pick scoring is on, but AI-enhanced suggestions are off. "
-        "Turn on AI-enhanced suggestions to show relationship advice."
+        "AI-enhanced suggestions unavailable in production for TST: "
+        "legacy relationship scoring is disabled."
     )
     assert contextual_only.current_scored_pack is not None
     contextual_only_cards = {
@@ -1794,7 +1806,7 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
         command=ChangeAiEnhancedSuggestions(enabled=True)
     )
     assert both_restored.contextual_adjustments_enabled is True
-    assert both_restored.enhancement_availability.enabled is True
+    assert both_restored.enhancement_availability.enabled is False
     assert both_restored.current_scored_pack is not None
     assert {
         card.card.grp_id: card.raw_score
@@ -1802,7 +1814,7 @@ def test_live_session_enhancement_toggle_rescoring_controls_relationships(
     } == enabled_scores
 
 
-def test_live_session_enhancement_toggle_retires_backtest_error_without_metadata(
+def test_live_session_enhancement_toggle_preserves_backtest_error_without_metadata(
     tmp_path: Path,
 ) -> None:
     published: list[LiveSessionSnapshot] = []
@@ -1837,7 +1849,7 @@ def test_live_session_enhancement_toggle_retires_backtest_error_without_metadata
 
     toggled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
 
-    assert toggled.errors == ()
+    assert toggled.errors == failed.errors
     assert toggled.backtest is None
     assert toggled.enhancement_availability == (
         EnhancementAvailabilityState(
@@ -1852,7 +1864,68 @@ def test_live_session_enhancement_toggle_retires_backtest_error_without_metadata
     assert published[-1] is toggled
 
 
-def test_live_session_profile_refresh_replacement_retires_enhanced_backtest(
+def test_live_session_policy_disabled_toggle_keeps_successful_backtest_scores(
+    tmp_path: Path,
+) -> None:
+    profile = _relationship_session_profile()
+    app_dir = tmp_path / "app"
+    _save_relationship_backtest_draft(app_dir=app_dir)
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_relationship_session_database(),
+        set_profile=profile,
+    )
+
+    initial = session.dispatch(
+        command=RequestBacktest(account_id="account-1", draft_id="draft-1")
+    )
+    assert initial.backtest is not None
+    initial_scores = tuple(
+        (
+            row.recommended.grp_id if row.recommended is not None else None,
+            row.recommended_score,
+            row.relationship_contributions,
+        )
+        for row in initial.backtest.rows
+    )
+    assert all(
+        row.recommended_score is not None
+        and row.relationship_contributions == ()
+        for row in initial.backtest.rows
+    )
+
+    disabled = session.dispatch(
+        command=ChangeAiEnhancedSuggestions(enabled=False)
+    )
+    assert disabled.backtest == initial.backtest
+    assert disabled.enhancement_availability.status is (
+        EnhancementAvailabilityStatus.POLICY_DISABLED
+    )
+    assert tuple(
+        (
+            row.recommended.grp_id if row.recommended is not None else None,
+            row.recommended_score,
+            row.relationship_contributions,
+        )
+        for row in disabled.backtest.rows
+    ) == initial_scores
+
+    enabled = session.dispatch(
+        command=ChangeAiEnhancedSuggestions(enabled=True)
+    )
+    assert enabled.backtest == initial.backtest
+    assert tuple(
+        (
+            row.recommended.grp_id if row.recommended is not None else None,
+            row.recommended_score,
+            row.relationship_contributions,
+        )
+        for row in enabled.backtest.rows
+    ) == initial_scores
+
+
+def test_live_session_profile_refresh_replacement_keeps_disabled_backtest(
     tmp_path: Path,
 ) -> None:
     enhanced = _relationship_session_profile()
@@ -1881,8 +1954,8 @@ def test_live_session_profile_refresh_replacement_retires_enhanced_backtest(
         state=None,
     )
     assert session.snapshot.current_scored_pack is not None
-    assert session.snapshot.current_scored_pack.role_ledger.relationship_support
-    assert session.snapshot.enhancement_availability.enabled is True
+    assert session.snapshot.current_scored_pack.role_ledger.relationship_support == ()
+    assert session.snapshot.enhancement_availability.enabled is False
     compared = session.dispatch(
         command=RequestBacktest(account_id="account-1", draft_id="draft-1")
     )
@@ -1903,7 +1976,7 @@ def test_live_session_profile_refresh_replacement_retires_enhanced_backtest(
 
     assert len(published) == 1
     replacement = published[0]
-    assert replacement.backtest is None
+    assert replacement.backtest == compared.backtest
     assert replacement.progress is None
     assert replacement.enhancement_availability == (
         EnhancementAvailabilityState(
@@ -1963,10 +2036,10 @@ def test_live_session_profile_refresh_same_capability_keeps_backtest(
 
     adopted = session.snapshot
     assert adopted.set_profile.profile_version == bumped.profile_version
-    assert adopted.enhancement_availability.enabled is True
+    assert adopted.enhancement_availability.enabled is False
     assert adopted.backtest == compared.backtest
     assert adopted.current_scored_pack is not None
-    assert adopted.current_scored_pack.role_ledger.relationship_support
+    assert adopted.current_scored_pack.role_ledger.relationship_support == ()
 
 
 def test_live_session_contextual_mode_toggle_without_pack_publishes_only_mode(

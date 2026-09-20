@@ -63,6 +63,7 @@ STANDARD_BASIC_LAND_TYPE_LINES = frozenset(
 MAX_ROLE_TERM = 2.5
 MAX_URGENCY_TERM = 3.0
 MAX_SYNERGY_TERM = 1.5
+LEGACY_RELATIONSHIP_SCORING_ENABLED = False
 MAX_REDUNDANCY_TERM = 2.0
 MAX_UNSUPPORTED_PAYOFF_TERM = 2.0
 MAX_FIXING_TERM = 1.5
@@ -985,7 +986,7 @@ class PickEngine:
         config: PickEngineConfig = PICK_ENGINE,
         splash_enabled: bool = SPLASH.enabled_by_default,
         contextual_adjustments_enabled: bool = True,
-        enhanced_relationships_enabled: bool = True,
+        enhanced_relationships_enabled: bool = LEGACY_RELATIONSHIP_SCORING_ENABLED,
         set_profile: SetProfile | None = None,
         scoring_context: PickScoringContext | None = None,
     ) -> None:
@@ -2061,6 +2062,7 @@ def score_pack(
     pick_index: int | None = None,
     splash_enabled: bool = SPLASH.enabled_by_default,
     contextual_adjustments_enabled: bool = True,
+    enhanced_relationships_enabled: bool = LEGACY_RELATIONSHIP_SCORING_ENABLED,
     set_profile: SetProfile | None = None,
     scoring_context: PickScoringContext | None = None,
     pack_number: int | None = None,
@@ -2076,6 +2078,7 @@ def score_pack(
         config=config,
         splash_enabled=splash_enabled,
         contextual_adjustments_enabled=contextual_adjustments_enabled,
+        enhanced_relationships_enabled=enhanced_relationships_enabled,
         set_profile=set_profile,
         scoring_context=scoring_context,
     ).score_pack(

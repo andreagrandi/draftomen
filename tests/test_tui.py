@@ -211,8 +211,10 @@ async def _assert_tui_renders_and_toggles_enhancement_availability(
 ) -> None:
     _write_enhanced_relationship_profile(tmp_path=tmp_path)
     app = _tui_app(tmp_path=tmp_path, card_database=_relationship_database())
-    on_copy = "AI enhancement: On — profile-backed, prepared offline; no live AI"
-    off_copy = "AI enhancement: Off — profile-backed, prepared offline; no live AI"
+    off_copy = (
+        "AI-enhanced suggestions unavailable in production for TST: "
+        "legacy relationship scoring is disabled."
+    )
 
     async with app.run_test(size=(120, 24)) as pilot:
         app.process_lines(
@@ -222,14 +224,14 @@ async def _assert_tui_renders_and_toggles_enhancement_availability(
         await _await_enhancement_status(
             app=app,
             pilot=pilot,
-            status=EnhancementAvailabilityStatus.AVAILABLE,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
         )
 
-        assert on_copy in _status_text(app=app)
+        assert off_copy in _status_text(app=app)
         footer_key = await _await_enhancement_footer_key(
             app=app,
             pilot=pilot,
-            disabled=False,
+            disabled=True,
         )
         assert footer_key.description == "AI enhance"
 
@@ -237,17 +239,17 @@ async def _assert_tui_renders_and_toggles_enhancement_availability(
         await _await_enhancement_status(
             app=app,
             pilot=pilot,
-            status=EnhancementAvailabilityStatus.DISABLED,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
         )
         disabled_state = app.session.snapshot.enhancement_availability
-        assert disabled_state.status is EnhancementAvailabilityStatus.DISABLED
+        assert disabled_state.status is EnhancementAvailabilityStatus.POLICY_DISABLED
         assert not disabled_state.enabled
         assert off_copy in _status_text(app=app)
         assert (
             await _await_enhancement_footer_key(
                 app=app,
                 pilot=pilot,
-                disabled=False,
+                disabled=True,
             )
         ).description == "AI enhance"
 
@@ -255,11 +257,11 @@ async def _assert_tui_renders_and_toggles_enhancement_availability(
         await _await_enhancement_status(
             app=app,
             pilot=pilot,
-            status=EnhancementAvailabilityStatus.AVAILABLE,
+            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
         )
         restored_state = app.session.snapshot.enhancement_availability
-        assert restored_state.enabled
-        assert on_copy in _status_text(app=app)
+        assert not restored_state.enabled
+        assert off_copy in _status_text(app=app)
 
 @pytest.mark.parametrize(
     ("scenario", "expected_status", "expected_message"),
