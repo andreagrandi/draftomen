@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Train the HOB coarse-context Model C with fixed-seed parameters, bounded
+  additive calibration, and held-out Basic DO comparisons. Write a local model
+  artifact only when both Top-1 agreement and mean reciprocal rank improve.
+  (#619)
+
 - Prepare reusable per-set training rows from pinned public draft data with the
   tested 22 pool-summary values, whole-draft chronological splits, source
   provenance, Oracle card IDs, and leakage-safe reports. Resolve full card and

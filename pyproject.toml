@@ -46,6 +46,8 @@ Issues = "https://github.com/andreagrandi/draftomen/issues"
 [dependency-groups]
 dev = [
     "nox>=2026.4.10",
+    "numpy>=2.3,<3",
+    "polars>=1.34,<2",
     "pytest>=8.4.0",
 ]
 
