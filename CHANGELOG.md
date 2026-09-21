@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Add the per-set augmentation artifact contract, set-keyed manifest, and
+  offline-first runtime client with content-addressed downloads, atomic caching,
+  and framework-free bounded inference. (#620)
+
 - Train the HOB coarse-context Model C with fixed-seed parameters, bounded
   additive calibration, and held-out Basic DO comparisons. Write a local model
   artifact only when both Top-1 agreement and mean reciprocal rank improve.
