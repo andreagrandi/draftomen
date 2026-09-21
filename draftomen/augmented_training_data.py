@@ -118,6 +118,22 @@ class CandidateTrainingRow:
 
 
 @dataclass(frozen=True, slots=True)
+class BasicScoringRow:
+    """Store exact pre-pick inputs needed to reproduce Basic DO scoring.
+    These identities support evaluation and never enter Model C features.
+    """
+
+    draft_index: int
+    partition: TrainingPartition
+    pick_index: int
+    pack_number: int
+    pick_number: int
+    candidate_ids: tuple[str, ...]
+    offered_grp_ids: tuple[int, ...]
+    pool_grp_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AugmentedTrainingReport:
     """Summarize accepted data without retaining row-level source values."""
 
@@ -176,6 +192,7 @@ class PreparedAugmentedTrainingData:
     report: AugmentedTrainingReport
     _assignments: Mapping[str, _DraftAssignment]
     _candidate_ids: Mapping[str, str]
+    _candidate_grp_ids: Mapping[str, int]
     _memberships: Mapping[str, tuple[int, ...]]
 
     @property
@@ -207,6 +224,40 @@ class PreparedAugmentedTrainingData:
                     features=features,
                 )
 
+    def iter_basic_scoring_rows(self) -> Iterator[BasicScoringRow]:
+        """Yield exact pre-pick inputs for the Basic DO evaluation baseline.
+        Card identities stay outside the coarse-context model feature rows.
+        """
+
+        reader = PublicDumpReader(self.source.public_dump_source())
+        for row in reader.iter_rows():
+            assignment = self._assignments.get(
+                _draft_key(value=row.get("draft_id", ""))
+            )
+            if assignment is None:
+                continue
+            candidate_names = _offered_candidates(row=row)
+            pool_grp_ids = tuple(
+                self._candidate_grp_ids[column.removeprefix("pool_")]
+                for column in sorted(row)
+                if column.startswith("pool_")
+                for _ in range(_count(value=row[column]))
+            )
+            yield BasicScoringRow(
+                draft_index=assignment.index,
+                partition=assignment.partition,
+                pick_index=_pick_index(row=row),
+                pack_number=_count(value=row["pack_number"]),
+                pick_number=_count(value=row["pick_number"]),
+                candidate_ids=tuple(
+                    self._candidate_ids[name] for name in candidate_names
+                ),
+                offered_grp_ids=tuple(
+                    self._candidate_grp_ids[name] for name in candidate_names
+                ),
+                pool_grp_ids=pool_grp_ids,
+            )
+
 
 def prepare_augmented_training_data(
     *,
@@ -236,6 +287,9 @@ def prepare_augmented_training_data(
     cards_by_name = _cards_by_name(database=card_database, set_code=normalized_set)
     candidate_ids = {
         name: _candidate_id(card=card) for name, card in cards_by_name.items()
+    }
+    candidate_grp_ids = {
+        name: card.grp_id for name, card in cards_by_name.items()
     }
     memberships = {
         name: _feature_membership(card=card) for name, card in cards_by_name.items()
@@ -287,6 +341,7 @@ def prepare_augmented_training_data(
         report=report,
         _assignments=MappingProxyType(assignments),
         _candidate_ids=MappingProxyType(candidate_ids),
+        _candidate_grp_ids=MappingProxyType(candidate_grp_ids),
         _memberships=MappingProxyType(memberships),
     )
 
@@ -474,6 +529,14 @@ def _feature_membership(*, card: CardInfo) -> tuple[int, ...]:
     values.extend(int(value == bucket) for value in CURVE_BUCKETS)
     values.extend(int(value in card_types) for value in CARD_TYPES)
     return tuple(values)
+
+
+def card_feature_membership(*, card: CardInfo) -> tuple[int, ...]:
+    """Return one card's contribution to the fixed coarse feature schema.
+    Offline trainers use the same membership logic as prepared rows.
+    """
+
+    return _feature_membership(card=card)
 
 
 def _cards_by_name(*, database: CardDatabase, set_code: str) -> dict[str, CardInfo]:

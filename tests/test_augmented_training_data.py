@@ -199,6 +199,25 @@ def test_complete_drafts_stay_in_one_chronological_partition() -> None:
     }
 
 
+def test_basic_scoring_rows_reproduce_exact_pre_pick_inputs() -> None:
+    rows = tuple(_prepared().iter_basic_scoring_rows())
+    second_pick = next(
+        row
+        for row in rows
+        if row.draft_index == 0 and row.pick_index == 1
+    )
+
+    assert len(rows) == 14
+    assert second_pick.pack_number == 0
+    assert second_pick.pick_number == 1
+    assert second_pick.candidate_ids == (
+        "00000000-0000-0000-0000-000000000002",
+        "00000000-0000-0000-0000-000000000003",
+    )
+    assert second_pick.offered_grp_ids == (2, 3)
+    assert second_pick.pool_grp_ids == (1,)
+
+
 def test_model_features_cannot_contain_source_identifiers_or_later_results(
     tmp_path: Path,
 ) -> None:
