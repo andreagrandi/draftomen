@@ -12,3 +12,9 @@
 
 /profiles-dev/objects/*
   Cache-Control: public, max-age=31556952, immutable
+
+/augmented/manifest.json
+  Cache-Control: public, max-age=0, must-revalidate
+
+/augmented/objects/*
+  Cache-Control: public, max-age=31556952, immutable
