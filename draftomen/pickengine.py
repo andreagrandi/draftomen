@@ -11,6 +11,7 @@ from functools import cmp_to_key
 from types import MappingProxyType
 from typing import Mapping
 
+from draftomen.augmented_artifact import AugmentedArtifact, pool_feature_counts
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, PICK_ENGINE, SPLASH, PickEngineConfig
 from draftomen.events import EXPECTED_PICKS_PER_PACK, EXPECTED_TOTAL_PICKS
@@ -923,6 +924,8 @@ class ScoredCard:
     adjusted_rating: float
     raw_score: float
     score: int
+    basic_score: int
+    augmentation_delta: float
     source_label: str
     color_fit: str
     pair_tiebreaker_pair: str | None
@@ -957,6 +960,15 @@ class ScoredCard:
 
         return self.no_data and self.rating.average_last_seen_at is not None
 
+    @property
+    def ordering_score(self) -> float:
+        """Return the DO total used to order cards, including any adjustment."""
+
+        return _augmented_total(
+            basic_score=self.basic_score,
+            augmentation_delta=self.augmentation_delta,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ScoredPack:
@@ -989,6 +1001,7 @@ class PickEngine:
         enhanced_relationships_enabled: bool = LEGACY_RELATIONSHIP_SCORING_ENABLED,
         set_profile: SetProfile | None = None,
         scoring_context: PickScoringContext | None = None,
+        augmented_artifact: AugmentedArtifact | None = None,
     ) -> None:
         scoring_context = _normalize_scoring_context(scoring_context)
         self.ratings_data = ratings_data
@@ -998,6 +1011,7 @@ class PickEngine:
         self.enhanced_relationships_enabled = enhanced_relationships_enabled
         self.set_profile = _normalize_scoring_profile(set_profile)
         self.scoring_context = scoring_context
+        self.augmented_artifact = augmented_artifact
         self.normalization = _normalization_from_data(
             ratings_data=ratings_data,
             config=config,
@@ -1118,6 +1132,11 @@ class PickEngine:
             normalization=normalization,
             profile_lookup=profile_lookup,
         )
+        augmentation_deltas = self._augmentation_deltas_for_pack(
+            card_database=card_database,
+            pool_grp_ids=pool_grp_ids,
+            offered_grp_ids=offered_grp_ids,
+        )
         scored_cards = tuple(
             self._score_card(
                 grp_id=grp_id,
@@ -1129,6 +1148,11 @@ class PickEngine:
                 enhanced_relationships_enabled=self.enhanced_relationships_enabled,
                 best_on_color_score=best_on_color_score,
                 scoring_context=active_context,
+                augmentation_delta=(
+                    0.0
+                    if augmentation_deltas is None
+                    else augmentation_deltas[index]
+                ),
                 profile=active_profile,
                 normalization=normalization,
                 profile_lookup=profile_lookup,
@@ -1207,6 +1231,34 @@ class PickEngine:
 
         return max(scores, default=None)
 
+    def _augmentation_deltas_for_pack(
+        self,
+        *,
+        card_database: CardDatabase,
+        pool_grp_ids: tuple[int, ...],
+        offered_grp_ids: tuple[int, ...],
+    ) -> tuple[float, ...] | None:
+        """Return one bounded artifact delta per offered card, or None when unused.
+        Artifacts are validated when they load, so a present artifact always
+        yields exactly one delta per offered card.
+        """
+
+        artifact = self.augmented_artifact
+        if artifact is None:
+            return None
+        return artifact.candidate_deltas(
+            pool_features=pool_feature_counts(
+                pool_cards=(
+                    card_database.lookup(grp_id=grp_id)
+                    for grp_id in pool_grp_ids
+                )
+            ),
+            candidate_ids=tuple(
+                card_database.lookup(grp_id=grp_id).oracle_id
+                for grp_id in offered_grp_ids
+            ),
+        )
+
     def _score_card(
         self,
         *,
@@ -1217,6 +1269,7 @@ class PickEngine:
         splash_state: SplashState,
         best_on_color_score: float | None,
         scoring_context: PickScoringContext | None,
+        augmentation_delta: float,
         contextual_adjustments_enabled: bool,
         enhanced_relationships_enabled: bool,
         profile: SetProfile | None,
@@ -1291,6 +1344,12 @@ class PickEngine:
             lower=0.0,
             upper=100.0,
         )
+        basic_score = _integer_score(raw_score=raw_score)
+        augmentation_delta = 0.0 if freely_available_basic else augmentation_delta
+        total = _augmented_total(
+            basic_score=basic_score,
+            augmentation_delta=augmentation_delta,
+        )
         if freely_available_basic:
             pair_tiebreaker_pair = None
             pair_tiebreaker_win_rate = None
@@ -1317,7 +1376,9 @@ class PickEngine:
             color_factor=color_factor,
             adjusted_rating=base_rating * color_factor,
             raw_score=raw_score,
-            score=_integer_score(raw_score=raw_score),
+            score=_integer_score(raw_score=total),
+            basic_score=basic_score,
+            augmentation_delta=augmentation_delta,
             source_label=(
                 "Basic"
                 if freely_available_basic
@@ -3180,6 +3241,16 @@ def _integer_score(*, raw_score: float) -> int:
     return int(math.floor(_clamp(value=raw_score, lower=0.0, upper=100.0) + 0.5))
 
 
+def _augmented_total(*, basic_score: int, augmentation_delta: float) -> float:
+    """Return the bounded DO total after one candidate's augmentation delta."""
+
+    return _clamp(
+        value=basic_score + augmentation_delta,
+        lower=0.0,
+        upper=100.0,
+    )
+
+
 def _source_label(*, rating: ResolvedCardRating) -> str:
     if rating.metadata.source == PROFILE_RATING_SOURCE:
         return PROFILE_SOURCE_LABEL
@@ -3234,10 +3305,10 @@ def _source_summary(*, cards: tuple[ScoredCard, ...]) -> str:
 
 def _scored_card_base_sort_key(
     card: ScoredCard,
-) -> tuple[bool, int, float, float, int]:
+) -> tuple[bool, float, float, float, int]:
     return (
         card.freely_available_basic,
-        -card.score,
+        -card.ordering_score,
         -card.raw_score,
         -card.base_rating,
         card.original_index,
@@ -3358,6 +3429,7 @@ def _recommendation_comparison_summary(
         if selected_support > total_positive_support / 2.0:
             break
     assert selected_factors
+
     factors = _join_comparison_factors(selected_factors)
     point_label = "DO point" if score_gap == 1 else "DO points"
     return render(
@@ -3403,13 +3475,15 @@ def _comparison_factor_buckets(*, card: ScoredCard) -> dict[str, float]:
     for reason in card.rationale.reasons:
         if reason.kind in buckets and reason.contribution is not None:
             buckets[reason.kind] += reason.contribution
+    buckets["augmentation"] = card.augmentation_delta
     buckets["accounting_remainder"] = card.rationale.unattributed_contribution
     return buckets
-
 
 def _comparison_factor_label(*, kind: str) -> str:
     if kind == "rating":
         return "rating"
+    if kind == "augmentation":
+        return "the augmentation adjustment"
     if kind == "accounting_remainder":
         return "score limits and small adjustments"
     return _CONCISE_REASON_LABELS[kind].lower()

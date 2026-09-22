@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime
@@ -118,6 +119,10 @@ from draftomen.seventeen import (
     SeventeenLandsFormatData,
 )
 from draftomen.splash import card_is_castable_in_pair, splash_requirement
+from tests.augmented_artifacts import (
+    augmented_artifact,
+    fixed_delta_artifact,
+)
 
 
 def test_pick_engine_scores_and_sorts_with_fallback_sources() -> None:
@@ -144,6 +149,137 @@ def test_pick_engine_scores_and_sorts_with_fallback_sources() -> None:
     assert scored_pack.source_summary == "QuickDraft + Premier fallback + neutral prior"
     assert all(0 <= card.score <= 100 for card in scored_pack.cards)
     assert all(isinstance(card.score, int) for card in scored_pack.cards)
+
+
+def _augmented_oracle_id(*, grp_id: int) -> str:
+    return f"00000000-0000-0000-0000-{grp_id:012d}"
+
+
+def _augmented_card_database() -> CardDatabase:
+    """Return three identical cards that differ only by id and Oracle id."""
+
+    return CardDatabase(
+        cards={
+            grp_id: CardInfo(
+                grp_id=grp_id,
+                name=f"Augmented Card {grp_id}",
+                colors=("W",),
+                mana_value=3.0,
+                rarity="common",
+                types=("Creature",),
+                oracle_id=_augmented_oracle_id(grp_id=grp_id),
+            )
+            for grp_id in (1, 2, 3)
+        }
+    )
+
+
+def _augmented_score_rows(
+    pack: ScoredPack,
+) -> list[tuple[int, int, int, float, float, float]]:
+    """Return one id, score, Basic DO, delta, raw and ordering row per card."""
+
+    return [
+        (
+            card.card.grp_id,
+            card.score,
+            card.basic_score,
+            card.augmentation_delta,
+            card.raw_score,
+            card.ordering_score,
+        )
+        for card in pack.cards
+    ]
+
+
+def test_pick_engine_applies_bounded_augmented_delta_to_each_candidate() -> None:
+    database = _augmented_card_database()
+    baseline = PickEngine().score_pack(
+        offered_grp_ids=(2, 1, 3),
+        card_database=database,
+    )
+    baseline_scores = {card.card.grp_id: card for card in baseline.cards}
+    artifact = fixed_delta_artifact(
+        set_code="tst",
+        candidate_ids=(
+            _augmented_oracle_id(grp_id=1),
+            _augmented_oracle_id(grp_id=2),
+        ),
+        deltas=(6.0, -6.0),
+    )
+
+    augmented = PickEngine(augmented_artifact=artifact).score_pack(
+        offered_grp_ids=(2, 1, 3),
+        card_database=database,
+    )
+
+    # Every identical card ties on the neutral prior, so the offered order holds
+    # until the deltas separate them: +6 lifts card 1 to the front and -6 drops
+    # card 2 behind the unaugmented card 3.
+    assert [card.card.grp_id for card in baseline.cards] == [2, 1, 3]
+    assert [card.card.grp_id for card in augmented.cards] == [1, 3, 2]
+    expected_deltas = {1: 6.0, 2: -6.0, 3: 0.0}
+    for card in augmented.cards:
+        grp_id = card.card.grp_id
+        assert card.basic_score == baseline_scores[grp_id].score
+        assert card.augmentation_delta == pytest.approx(expected_deltas[grp_id])
+        assert card.ordering_score == pytest.approx(
+            card.basic_score + card.augmentation_delta
+        )
+        assert card.score == int(math.floor(card.ordering_score + 0.5))
+        assert abs(card.augmentation_delta) <= 8.0
+
+
+def test_pick_engine_without_augmentation_keeps_basic_do_scores_and_order() -> None:
+    database = _augmented_card_database()
+    plain = PickEngine().score_pack(
+        offered_grp_ids=(2, 1, 3),
+        card_database=database,
+    )
+    repeated = PickEngine().score_pack(
+        offered_grp_ids=(2, 1, 3),
+        card_database=database,
+    )
+
+    assert _augmented_score_rows(plain) == _augmented_score_rows(repeated)
+    assert [card.card.grp_id for card in plain.cards] == [2, 1, 3]
+    assert all(
+        card.augmentation_delta == 0.0 and card.basic_score == card.score
+        for card in plain.cards
+    )
+    assert all(card.ordering_score == float(card.score) for card in plain.cards)
+
+
+def test_pick_engine_augmented_deltas_follow_the_picked_pool() -> None:
+    # The shared fixture default output weights cover two candidates, so this
+    # three-candidate artifact states its two hidden rows explicitly.
+    artifact = augmented_artifact(
+        set_code="tst",
+        candidate_ids=tuple(
+            _augmented_oracle_id(grp_id=grp_id) for grp_id in (1, 2, 3)
+        ),
+        output_weights=[[0.5, -0.5, 0.0], [-0.25, 0.25, 0.0]],
+        bias=[0.0, 0.0, 0.0],
+    )
+    engine = PickEngine(augmented_artifact=artifact)
+
+    empty_pool = engine.score_pack(
+        offered_grp_ids=(1, 2, 3),
+        card_database=_augmented_card_database(),
+        pool_grp_ids=(),
+    )
+    picked_pool = engine.score_pack(
+        offered_grp_ids=(1, 2, 3),
+        card_database=_augmented_card_database(),
+        pool_grp_ids=(1, 1, 2),
+    )
+
+    empty_pool_deltas = tuple(card.augmentation_delta for card in empty_pool.cards)
+    picked_pool_deltas = tuple(card.augmentation_delta for card in picked_pool.cards)
+
+    assert empty_pool_deltas == (0.0, 0.0, 0.0)
+    assert picked_pool_deltas != empty_pool_deltas
+    assert picked_pool_deltas[0] != 0.0
 
 
 def test_every_engine_row_has_an_immutable_ordered_pick_rationale() -> None:
