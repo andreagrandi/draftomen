@@ -7206,6 +7206,293 @@ with TemporaryDirectory() as preferences_dir:
     assert "TypeError" not in completed.stderr
 
 
+def test_qml_card_detail_explains_augmented_do_arithmetic_offscreen() -> None:
+    probe = """
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_mock import MockSessionAdapter
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+
+session = MockLiveSession(scenario="ready")
+provider = MockSessionAdapter(session=session)
+
+
+def publish_recommendations(*, cards, selected_grp_id) -> None:
+    recommendations = replace(
+        session.snapshot.recommendations,
+        cards=cards,
+        selected_grp_id=selected_grp_id,
+    )
+    provider._publish(
+        snapshot=replace(session.snapshot, recommendations=recommendations)
+    )
+    application.processEvents()
+
+
+def wait_until(predicate, label) -> None:
+    for _ in range(200):
+        application.processEvents()
+        if predicate():
+            return
+        QTest.qWait(10)
+    raise AssertionError("Timed out waiting for " + label)
+
+
+def visible_texts(item):
+    values = []
+    text = item.property("text")
+    visible = item.isVisible() if isinstance(item, QQuickItem) else False
+    if visible and isinstance(text, str) and text:
+        values.append(text)
+    children = item.childItems() if isinstance(item, QQuickItem) else []
+    for child in children:
+        values.extend(visible_texts(child))
+    return values
+
+
+def contains_subsequence(haystack, needle) -> bool:
+    position = 0
+    for part in needle:
+        while position < len(haystack) and haystack[position] != part:
+            position += 1
+        if position == len(haystack):
+            return False
+        position += 1
+    return True
+
+
+with TemporaryDirectory() as preferences_dir:
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", "monospace")
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "0.0")
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "live")
+    context.setContextProperty("initialWindowWidth", 1440)
+    context.setContextProperty("initialWindowHeight", 900)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+
+    rows = session.snapshot.recommendations.cards
+    first = replace(rows[0], score=76, basic_score=72, augmentation_delta=4)
+    second = replace(rows[1], score=64, basic_score=70, augmentation_delta=-6)
+    publish_recommendations(
+        cards=(first, second), selected_grp_id=first.card.grp_id
+    )
+
+    preview = root.findChild(QObject, "wideLiveCardPreview")
+    assert preview is not None
+    basic = preview.findChild(QObject, "cardPreviewBasicScore")
+    adjustment = preview.findChild(QObject, "cardPreviewAugmentedAdjustment")
+    total = preview.findChild(QObject, "cardPreviewDoScore")
+    basic_label = preview.findChild(QObject, "cardPreviewBasicScoreLabel")
+    adjustment_label = preview.findChild(
+        QObject, "cardPreviewAugmentedAdjustmentLabel"
+    )
+    scores = preview.findChild(QObject, "cardPreviewScores")
+    assert basic is not None
+    assert adjustment is not None
+    assert total is not None
+    assert basic_label is not None
+    assert adjustment_label is not None
+    assert scores is not None
+
+    wait_until(
+        lambda: basic.property("text") == "72"
+        and adjustment.property("text") == "+4",
+        "the augmented split for the first card",
+    )
+    assert basic.isVisible()
+    assert basic.property("text") == "72"
+    assert adjustment.isVisible()
+    assert adjustment.property("text") == "+4"
+    assert QColor(adjustment.property("color")) == QColor("#a78bfa")
+    assert total.isVisible()
+    assert total.property("text") == "76"
+    assert basic_label.isVisible()
+    assert basic_label.property("text") == "Basic DO"
+    assert adjustment_label.isVisible()
+    assert adjustment_label.property("text") == "Adjustment"
+    assert contains_subsequence(
+        visible_texts(scores),
+        ["Basic DO", "72", "Adjustment", "+4", "DO Score", "76"],
+    )
+
+    publish_recommendations(
+        cards=(first, second), selected_grp_id=second.card.grp_id
+    )
+    wait_until(
+        lambda: basic.property("text") == "70"
+        and adjustment.property("text") == "-6",
+        "the augmented split for the second card",
+    )
+    assert basic.property("text") == "70"
+    assert adjustment.property("text") == "-6"
+    assert QColor(adjustment.property("color")) == QColor("#e7c993")
+    assert total.property("text") == "64"
+
+    preferences.shutdown()
+    del root
+    del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
+def test_qml_card_detail_keeps_basic_do_without_augmentation_offscreen() -> None:
+    probe = """
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_mock import MockSessionAdapter
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+
+session = MockLiveSession(scenario="ready")
+provider = MockSessionAdapter(session=session)
+
+
+def wait_until(predicate, label) -> None:
+    for _ in range(200):
+        application.processEvents()
+        if predicate():
+            return
+        QTest.qWait(10)
+    raise AssertionError("Timed out waiting for " + label)
+
+
+def visible_texts(item):
+    values = []
+    text = item.property("text")
+    visible = item.isVisible() if isinstance(item, QQuickItem) else False
+    if visible and isinstance(text, str) and text:
+        values.append(text)
+    children = item.childItems() if isinstance(item, QQuickItem) else []
+    for child in children:
+        values.extend(visible_texts(child))
+    return values
+
+
+with TemporaryDirectory() as preferences_dir:
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", "monospace")
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "0.0")
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "live")
+    context.setContextProperty("initialWindowWidth", 1440)
+    context.setContextProperty("initialWindowHeight", 900)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+
+    rows = session.snapshot.recommendations.cards
+    assert rows[0].basic_score is None
+    assert rows[0].augmentation_delta is None
+    provider._publish(
+        snapshot=replace(
+            session.snapshot,
+            recommendations=replace(
+                session.snapshot.recommendations,
+                cards=rows,
+                selected_grp_id=rows[0].card.grp_id,
+            ),
+        )
+    )
+    application.processEvents()
+
+    preview = root.findChild(QObject, "wideLiveCardPreview")
+    assert preview is not None
+    basic = preview.findChild(QObject, "cardPreviewBasicScore")
+    adjustment = preview.findChild(QObject, "cardPreviewAugmentedAdjustment")
+    total = preview.findChild(QObject, "cardPreviewDoScore")
+    basic_label = preview.findChild(QObject, "cardPreviewBasicScoreLabel")
+    adjustment_label = preview.findChild(
+        QObject, "cardPreviewAugmentedAdjustmentLabel"
+    )
+    scores = preview.findChild(QObject, "cardPreviewScores")
+    assert basic is not None
+    assert adjustment is not None
+    assert total is not None
+    assert basic_label is not None
+    assert adjustment_label is not None
+    assert scores is not None
+
+    expected_total = str(rows[0].score)
+    wait_until(
+        lambda: total.property("text") == expected_total,
+        "the plain DO total",
+    )
+    assert basic.isVisible() is False
+    assert basic.property("text") == ""
+    assert adjustment.isVisible() is False
+    assert adjustment.property("text") == ""
+    assert basic_label.isVisible() is False
+    assert adjustment_label.isVisible() is False
+    assert total.isVisible()
+    assert total.property("text") == expected_total
+    texts = visible_texts(scores)
+    assert texts[:2] == ["DO Score", expected_total]
+    assert "Basic DO" not in texts
+    assert "Adjustment" not in texts
+
+    preferences.shutdown()
+    del root
+    del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
 def test_qml_relationship_advice_respects_both_settings_offscreen() -> None:
     probe = """
 from pathlib import Path

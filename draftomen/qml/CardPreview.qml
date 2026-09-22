@@ -51,6 +51,22 @@ Rectangle {
         && recommendation.win_rate !== null
         && recommendation.win_rate !== undefined
         ? (Number(recommendation.win_rate) * 100).toFixed(1) + "%" : "—"
+    readonly property bool hasAugmentedSplit: Boolean(
+        recommendation
+            && recommendation.basic_score !== null
+            && recommendation.basic_score !== undefined
+            && recommendation.augmentation_delta !== null
+            && recommendation.augmentation_delta !== undefined
+    )
+    readonly property int augmentedAdjustment:
+        root.hasAugmentedSplit ? root.recommendation.augmentation_delta : 0
+    readonly property string basicScoreText:
+        root.hasAugmentedSplit ? String(root.recommendation.basic_score) : ""
+    readonly property string adjustmentText:
+        root.hasAugmentedSplit
+            ? (root.augmentedAdjustment >= 0 ? "+" : "")
+                + root.augmentedAdjustment
+            : ""
 
     color: Theme.surfaceLow
     border.color: Theme.outline
@@ -66,6 +82,11 @@ Rectangle {
         }
         return root.detailedIntel ? "Focused card intel" : "Card details"
     }
+    Accessible.description: root.hasAugmentedSplit
+        ? "Basic DO Score " + root.recommendation.basic_score
+            + ", augmented adjustment " + root.adjustmentText
+            + ", total DO Score " + root.recommendation.score
+        : ""
 
     readonly property real imageFrameAvailableHeight: Math.max(
         0,
@@ -343,8 +364,42 @@ Rectangle {
                     columnSpacing: 12
                     rowSpacing: 4
 
+                    Label {
+                        objectName: "cardPreviewBasicScoreLabel"
+                        visible: root.hasAugmentedSplit
+                        text: "Basic DO"
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.textPixelSize(11)
+                    }
+                    Label {
+                        objectName: "cardPreviewBasicScore"
+                        visible: root.hasAugmentedSplit
+                        text: root.basicScoreText
+                        color: Theme.text
+                        font.family: fixedFontFamily
+                        font.pixelSize: Theme.textPixelSize(15)
+                    }
+                    Label {
+                        objectName: "cardPreviewAugmentedAdjustmentLabel"
+                        visible: root.hasAugmentedSplit
+                        text: "Adjustment"
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.textPixelSize(11)
+                    }
+                    Label {
+                        objectName: "cardPreviewAugmentedAdjustment"
+                        visible: root.hasAugmentedSplit
+                        text: root.adjustmentText
+                        color: root.augmentedAdjustment > 0
+                            ? Theme.primary
+                            : root.augmentedAdjustment < 0
+                                ? Theme.warning : Theme.text
+                        font.family: fixedFontFamily
+                        font.pixelSize: Theme.textPixelSize(15)
+                    }
                     Label { text: "DO Score"; color: Theme.textMuted; font.pixelSize: Theme.textPixelSize(11) }
                     Label {
+                        objectName: "cardPreviewDoScore"
                         text: root.recommendation ? root.recommendation.score : "—"
                         color: Theme.primary
                         font.family: fixedFontFamily
