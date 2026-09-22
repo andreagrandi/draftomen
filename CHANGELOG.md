@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Apply the validated per-set augmentation delta to live scoring behind one
+  default-off session flag. Live totals clamp the bounded artifact adjustment
+  onto Basic DO and order on the float total, fail closed to Basic DO when no
+  model is usable, and expose per-set availability plus an adapter-owned load
+  request with per-row basic and adjustment scores. (#621)
 
 - Add the per-set augmentation artifact contract, set-keyed manifest, and
   offline-first runtime client with content-addressed downloads, atomic caching,

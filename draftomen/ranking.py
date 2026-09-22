@@ -64,14 +64,14 @@ def rank_scored_cards(
 
 def _win_rate_sort_key(
     card: ScoredCard,
-) -> tuple[bool, bool, float, int, float, int]:
+) -> tuple[bool, bool, float, float, float, int]:
     win_rate = card.rating.gih_win_rate
     if win_rate is None:
         return (
             card.freely_available_basic,
             True,
             0.0,
-            -card.score,
+            -card.ordering_score,
             -card.raw_score,
             card.original_index,
         )
@@ -80,7 +80,7 @@ def _win_rate_sort_key(
         card.freely_available_basic,
         False,
         -win_rate,
-        -card.score,
+        -card.ordering_score,
         -card.raw_score,
         card.original_index,
     )
@@ -88,24 +88,24 @@ def _win_rate_sort_key(
 
 def _score_sort_key(
     card: ScoredCard,
-) -> tuple[bool, int, int, float, float, int]:
+) -> tuple[bool, int, float, float, float, int]:
     return (
         card.freely_available_basic,
         card.score_sort_index,
-        -card.score,
+        -card.ordering_score,
         -card.raw_score,
         -card.base_rating,
         card.original_index,
     )
 
 
-def _alsa_sort_key(card: ScoredCard) -> tuple[bool, float, int, float, int]:
+def _alsa_sort_key(card: ScoredCard) -> tuple[bool, float, float, float, int]:
     alsa = card.rating.average_last_seen_at
     sort_alsa = float("inf") if alsa is None else alsa
     return (
         card.freely_available_basic,
         sort_alsa,
-        -card.score,
+        -card.ordering_score,
         -card.raw_score,
         card.original_index,
     )
@@ -113,13 +113,13 @@ def _alsa_sort_key(card: ScoredCard) -> tuple[bool, float, int, float, int]:
 
 def _mana_value_sort_key(
     card: ScoredCard,
-) -> tuple[bool, float, int, float, int]:
+) -> tuple[bool, float, float, float, int]:
     mana_value = card.card.mana_value
     sort_mana_value = float("inf") if mana_value is None else mana_value
     return (
         card.freely_available_basic,
         sort_mana_value,
-        -card.score,
+        -card.ordering_score,
         -card.raw_score,
         card.original_index,
     )

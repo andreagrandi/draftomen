@@ -15,6 +15,12 @@ from threading import RLock
 from typing import Protocol, TypeAlias
 
 from draftomen.audit import DraftAuditStore
+from draftomen.augmented_artifact import AugmentedArtifact
+from draftomen.augmented_model_client import (
+    AugmentedModelClient,
+    AugmentedModelClientError,
+    AugmentedModelLoad,
+)
 from draftomen.backtest import (
     BacktestReport as DomainBacktestReport,
 )
@@ -230,6 +236,8 @@ class Recommendation:
     rank: int
     card: CardView
     score: int
+    basic_score: int | None = field(default=None, kw_only=True)
+    augmentation_delta: int | None = field(default=None, kw_only=True)
     win_rate: float | None
     average_last_seen_at: float | None
     source_label: str
@@ -360,6 +368,28 @@ class EnhancementAvailabilityState:
             )
 
 
+class AugmentationStatus(str, Enum):
+    """Classify per-set augmentation model availability."""
+
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class AugmentationState:
+    """Describe whether the active set can use a validated augmentation model."""
+
+    status: AugmentationStatus = AugmentationStatus.UNAVAILABLE
+    set_code: str | None = None
+    enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if self.enabled and self.status is not AugmentationStatus.AVAILABLE:
+            raise ValueError(
+                "AugmentationState.enabled requires an available model."
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class ProfileRefreshRequest:
     """Identify one adapter-owned asynchronous profile refresh."""
@@ -368,6 +398,14 @@ class ProfileRefreshRequest:
     set_code: str
     event_format: str
     force: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AugmentedModelRequest:
+    """Identify one adapter-owned augmentation model load for the active set."""
+
+    generation: int
+    set_code: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -600,6 +638,7 @@ class LiveSessionSnapshot:
     enhancement_advice_message: str = (
         "AI-enhanced relationship advice is unavailable: no active set profile."
     )
+    augmentation: AugmentationState = field(default_factory=AugmentationState)
     recommendations: RecommendationState = field(default_factory=RecommendationState)
     pool: PoolState = field(default_factory=PoolState)
     card_image: CardImageState = field(default_factory=CardImageState)
@@ -874,6 +913,13 @@ class ChangeAiEnhancedSuggestions:
     enabled: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ChangeAugmentation:
+    """Request whether validated per-set augmentation is enabled."""
+
+    enabled: bool
+
+
 
 @dataclass(frozen=True, slots=True)
 class ChangeRanking:
@@ -954,6 +1000,7 @@ LiveSessionCommand: TypeAlias = (
     | ChangeSplashPreference
     | ChangeContextualScoring
     | ChangeAiEnhancedSuggestions
+    | ChangeAugmentation
     | RequestRatingsDownload
     | RequestBuild
     | RequestBacktest
@@ -983,8 +1030,10 @@ class LiveSession:
         splash_enabled: bool = SPLASH.enabled_by_default,
         contextual_adjustments_enabled: bool = True,
         ai_enhanced_suggestions_enabled: bool = True,
+        augmentation_enabled: bool = False,
         set_profile: SetProfile | None = None,
         profile_client: ProfileClient | None = None,
+        augmented_model_client: AugmentedModelClient | None = None,
     ) -> None:
         if card_database is not None and set_card_data_loader is not None:
             raise ValueError(
@@ -1017,6 +1066,7 @@ class LiveSession:
         self._splash_enabled = splash_enabled
         self._contextual_adjustments_enabled = contextual_adjustments_enabled
         self._ai_enhanced_suggestions_enabled = ai_enhanced_suggestions_enabled
+        self._augmentation_enabled = augmentation_enabled
         self._card_database = card_database
         self._set_card_data_loader = set_card_data_loader
         self._card_database_set_code: str | None = None
@@ -1027,6 +1077,10 @@ class LiveSession:
         self._configured_set_profile = set_profile
         self._set_profile = set_profile
         self._profile_client = profile_client
+        self._augmented_model_client = augmented_model_client
+        self._augmented_artifacts_by_set: dict[str, AugmentedArtifact | None] = {}
+        self._augmented_model_generation = 0
+        self._augmented_model_request: AugmentedModelRequest | None = None
         self._contextual_evidence_cached_profile: SetProfile | None = None
         self._contextual_evidence_cached_enabled: bool | None = None
         self._contextual_evidence_cached_state: ContextualEvidenceState | None = None
@@ -1102,6 +1156,7 @@ class LiveSession:
                 availability=enhancement_availability,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
             ),
+            augmentation=self._current_augmentation_state_locked(),
             status=_waiting_for_draft_status(setup_guidance=not initial_log_readable),
             accounts=self._known_accounts(),
             card_data=card_data,
@@ -1155,6 +1210,58 @@ class LiveSession:
 
         with self._state_lock:
             return self._profile_refresh_request
+
+    def augmented_model_request(self) -> AugmentedModelRequest | None:
+        """Return the one pending augmentation model load for adapter-owned work.
+
+        The request remains available until its completion is accepted.
+        Reading it never performs local or remote I/O.
+        """
+
+        with self._state_lock:
+            return self._augmented_model_request
+
+    def complete_augmented_model(
+        self,
+        *,
+        request: AugmentedModelRequest,
+        load: AugmentedModelLoad,
+    ) -> None:
+        """Apply one adapter-owned model load if it is still current."""
+
+        with self._state_lock:
+            if not self._augmented_model_request_is_current(request=request):
+                return
+            if not isinstance(load, AugmentedModelLoad):
+                raise TypeError("load must be an AugmentedModelLoad.")
+
+            set_code = request.set_code
+            artifact = load.artifact if load.available else None
+            if (
+                artifact is not None
+                and artifact.set_code.casefold() != set_code.casefold()
+            ):
+                artifact = None
+            self._augmented_model_request = None
+            self._augmented_artifacts_by_set[set_code] = artifact
+            candidate_snapshot = self.snapshot
+            if artifact is not None and self._augmentation_enabled:
+                if self._score_current_pack_locked(
+                    snapshot=candidate_snapshot,
+                    prepare_image_requests=False,
+                    record_audit=False,
+                ):
+                    return
+            self._publish(snapshot=candidate_snapshot)
+
+    def _augmented_model_request_is_current(
+        self, *, request: AugmentedModelRequest
+    ) -> bool:
+        return (
+            request == self._augmented_model_request
+            and request.generation == self._augmented_model_generation
+            and request.set_code == self._active_set_code_value
+        )
 
     def complete_profile_refresh(
         self,
@@ -1720,6 +1827,9 @@ class LiveSession:
             return self.snapshot
         if isinstance(command, ChangeAiEnhancedSuggestions):
             self._change_ai_enhanced_suggestions(enabled=command.enabled)
+            return self.snapshot
+        if isinstance(command, ChangeAugmentation):
+            self._change_augmentation(enabled=command.enabled)
             return self.snapshot
 
         if isinstance(command, ChooseRecommendation):
@@ -2491,6 +2601,7 @@ class LiveSession:
                 self._current_enhancement_availability_locked().enabled
             ),
             set_profile=self._set_profile,
+            augmented_artifact=self._effective_augmented_artifact_locked(),
         )
         global_pick_index = _draft_pick_index(event=event)
         scored_pack = engine.score_pack(
@@ -2590,10 +2701,15 @@ class LiveSession:
         rank: int,
         scored_card: ScoredCard,
     ) -> Recommendation:
+        augmented = self._effective_augmented_artifact_locked() is not None
         return Recommendation(
             rank=rank,
             card=self._card_view(card=scored_card.card),
             score=scored_card.score,
+            basic_score=scored_card.basic_score if augmented else None,
+            augmentation_delta=(
+                scored_card.score - scored_card.basic_score if augmented else None
+            ),
             win_rate=scored_card.rating.gih_win_rate,
             average_last_seen_at=scored_card.rating.average_last_seen_at,
             source_label=scored_card.source_label,
@@ -3145,6 +3261,43 @@ class LiveSession:
                 record_audit=False,
             )
 
+    def _change_augmentation(self, *, enabled: bool) -> None:
+        with self._state_lock:
+            if enabled == self._augmentation_enabled:
+                return
+
+            self._augmentation_enabled = enabled
+            self._backtest_request_generation += 1
+            self._last_backtest_request = None
+            errors = tuple(
+                error
+                for error in self.snapshot.errors
+                if error.operation is not OperationKind.BACKTEST
+            )
+            progress = self.snapshot.progress
+            if (
+                progress is not None
+                and progress.operation is OperationKind.BACKTEST
+            ):
+                progress = None
+            candidate_snapshot = replace(
+                self.snapshot,
+                progress=progress,
+                errors=errors,
+                backtest=None,
+            )
+            if enabled and self._active_augmented_artifact_locked() is None:
+                self._queue_augmented_model_request_locked(force=True)
+            if self._current_pack_event is None:
+                self._publish(snapshot=candidate_snapshot)
+                return
+
+            self._score_current_pack_locked(
+                snapshot=candidate_snapshot,
+                prepare_image_requests=False,
+                record_audit=False,
+            )
+
     def _change_ai_enhanced_suggestions(self, *, enabled: bool) -> None:
         with self._state_lock:
             if enabled == self._ai_enhanced_suggestions_enabled:
@@ -3353,6 +3506,7 @@ class LiveSession:
     def _clear_active_set_code_locked(self) -> None:
         self._transition_generation += 1
         self._retire_profile_refresh_locked()
+        self._retire_augmented_model_request_locked()
         self._profile_refresh_lifecycle_identity = None
         self._active_set_code_value = None
         self._set_profile = None
@@ -3369,6 +3523,27 @@ class LiveSession:
         if self._configured_set_profile is not None:
             return self._configured_set_profile, "injected"
         return self._load_local_profile_for_set(set_code=normalized_set_code)
+
+    def _cached_augmented_artifact_for_set(
+        self, *, set_code: str
+    ) -> tuple[bool, AugmentedArtifact | None]:
+        """Return whether the local cache was read and its validated artifact.
+
+        Reading the cache never performs network work.  Missing, incompatible,
+        corrupt, or unreadable entries yield an absent artifact.
+        """
+
+        client = self._augmented_model_client
+        if client is None or set_code in self._augmented_artifacts_by_set:
+            return False, None
+        try:
+            load = client.load(set_code=set_code, allow_network=False)
+        except AugmentedModelClientError:
+            return True, None
+        artifact = load.artifact if load.available else None
+        if artifact is not None and artifact.set_code.casefold() != set_code.casefold():
+            return True, None
+        return True, artifact
 
 
     @staticmethod
@@ -3482,6 +3657,7 @@ class LiveSession:
         if transitioned:
             self._transition_generation += 1
             self._retire_profile_refresh_locked()
+            self._retire_augmented_model_request_locked()
             self._current_pack_event = None
             self._current_scored_pack = None
         if not set_changed:
@@ -3557,6 +3733,26 @@ class LiveSession:
             force=force,
         )
 
+    def _queue_augmented_model_request_locked(self, *, force: bool = False) -> None:
+        if (
+            self._augmented_model_client is None
+            or self._active_set_code_value is None
+        ):
+            return
+        if self._active_augmented_artifact_locked() is not None and not force:
+            return
+        if self._augmented_model_request is not None and not force:
+            return
+        self._augmented_model_generation += 1
+        self._augmented_model_request = AugmentedModelRequest(
+            generation=self._augmented_model_generation,
+            set_code=self._active_set_code_value,
+        )
+
+    def _retire_augmented_model_request_locked(self) -> None:
+        self._augmented_model_generation += 1
+        self._augmented_model_request = None
+
     def _set_active_set_code(
         self,
         *,
@@ -3585,6 +3781,9 @@ class LiveSession:
             return
 
         prepared_profile = self._prepare_set_profile(set_code=normalized_set_code)
+        cached_augmented_attempted, cached_augmented_artifact = (
+            self._cached_augmented_artifact_for_set(set_code=normalized_set_code)
+        )
         with self._state_lock:
             capability_enabled = (
                 self._current_enhancement_availability_locked().enabled
@@ -3598,6 +3797,11 @@ class LiveSession:
             )
             if transitioned:
                 self._queue_profile_refresh_locked()
+                if cached_augmented_attempted:
+                    self._augmented_artifacts_by_set[normalized_set_code] = (
+                        cached_augmented_artifact
+                    )
+                self._queue_augmented_model_request_locked()
             if profile_state is not None or transitioned:
                 candidate_snapshot = replace(
                     self.snapshot,
@@ -4129,6 +4333,7 @@ class LiveSession:
                 return
             if transitioned:
                 self._queue_profile_refresh_locked()
+                self._queue_augmented_model_request_locked()
             self._publish_accountless_state(
                 event=event,
                 phase=phase,
@@ -4269,6 +4474,7 @@ class LiveSession:
                 return
             if transitioned:
                 self._queue_profile_refresh_locked()
+                self._queue_augmented_model_request_locked()
             errors = self._retire_derived_operations()
             self._retire_recent_pick_images()
             card_image = self._retire_card_image()
@@ -4434,6 +4640,7 @@ class LiveSession:
                 return None
             if transitioned:
                 self._queue_profile_refresh_locked()
+                self._queue_augmented_model_request_locked()
             errors = self._retire_derived_operations()
             previous_draft = self.snapshot.draft
             switches_context = (
@@ -4708,6 +4915,29 @@ class LiveSession:
         )
         return state
 
+    def _active_augmented_artifact_locked(self) -> AugmentedArtifact | None:
+        set_code = self._active_set_code_value
+        if set_code is None:
+            return None
+        return self._augmented_artifacts_by_set.get(set_code)
+
+    def _effective_augmented_artifact_locked(self) -> AugmentedArtifact | None:
+        """Return the artifact scoring must apply, or None for the Basic DO score."""
+
+        if not self._augmentation_enabled:
+            return None
+        return self._active_augmented_artifact_locked()
+
+    def _current_augmentation_state_locked(self) -> AugmentationState:
+        set_code = self._active_set_code_value
+        if self._active_augmented_artifact_locked() is None:
+            return AugmentationState(set_code=set_code)
+        return AugmentationState(
+            status=AugmentationStatus.AVAILABLE,
+            set_code=set_code,
+            enabled=self._augmentation_enabled,
+        )
+
     def _publish(self, snapshot: LiveSessionSnapshot) -> None:
         with self._state_lock:
             enhancement_availability = (
@@ -4725,6 +4955,7 @@ class LiveSession:
                     ),
                     recommendations=snapshot.recommendations,
                 ),
+                augmentation=self._current_augmentation_state_locked(),
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,
                 errors=self._project_ratings_errors_locked(errors=snapshot.errors),

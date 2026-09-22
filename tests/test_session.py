@@ -17,6 +17,13 @@ import pytest
 
 import draftomen.session as session_module
 from draftomen.audit import load_draft_audit_records
+from draftomen.augmented_artifact import AugmentedArtifact
+from draftomen.augmented_model_client import (
+    AugmentedModelClient,
+    AugmentedModelLoad,
+    AugmentedModelOutcome,
+    augmented_cache_path,
+)
 from draftomen.backtest import (
     BacktestPickResult as DomainBacktestPickResult,
 )
@@ -67,6 +74,9 @@ from draftomen.session import (
     AccountIdentity,
     ApplicationPhase,
     ApplicationStatus,
+    AugmentationState,
+    AugmentationStatus,
+    AugmentedModelRequest,
     BacktestPickResult,
     BacktestResult,
     BuildCard,
@@ -81,6 +91,7 @@ from draftomen.session import (
     ChangeRanking,
     ChangeContextualScoring,
     ChangeAiEnhancedSuggestions,
+    ChangeAugmentation,
     EnhancementAvailabilityState,
     EnhancementAvailabilityStatus,
     ChangeSplashPreference,
@@ -122,6 +133,11 @@ from draftomen.set_profile import (
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
 from draftomen.splash import SplashState
+from tests.augmented_artifacts import (
+    canonical_gzip_bytes,
+    fixed_delta_artifact,
+    fixed_delta_artifact_json,
+)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 FIXTURE_LOG_PATH = PROJECT_ROOT / "tests" / "fixtures" / "quick-draft-msh-player.log"
@@ -567,6 +583,7 @@ def test_live_session_commands_capture_explicit_user_intentions() -> None:
         FocusBuildCard(grp_id=456),
         ChangeRanking(ranking_mode="win_rate"),
         ChangeContextualScoring(enabled=False),
+        ChangeAugmentation(enabled=False),
         ChangeSplashPreference(enabled=False),
         RequestRatingsDownload(set_code="TST"),
         RequestBuild(pair_override="WU", allow_splash=False),
@@ -581,6 +598,7 @@ def test_live_session_commands_capture_explicit_user_intentions() -> None:
         FocusBuildCard(grp_id=456),
         ChangeRanking(ranking_mode="win_rate"),
         ChangeContextualScoring(enabled=False),
+        ChangeAugmentation(enabled=False),
         ChangeSplashPreference(enabled=False),
         RequestRatingsDownload(set_code="TST"),
         RequestBuild(pair_override="WU", allow_splash=False),
@@ -4795,6 +4813,362 @@ def test_live_session_locked_pair_scoring_uses_cached_profile_without_provider_a
     assert provider_calls == []
 
 
+def test_live_session_augmented_model_exposes_available_on_and_off_states(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    _write_augmented_cache(
+        app_dir=app_dir,
+        set_code="TST",
+        payload=canonical_gzip_bytes(_augmented_tst_artifact_json()),
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_augmented_card_database(),
+        augmented_model_client=_augmented_client(app_dir=app_dir),
+    )
+
+    session._set_active_set_code(set_code="TST")
+
+    available = AugmentationState(
+        status=AugmentationStatus.AVAILABLE,
+        set_code="TST",
+        enabled=False,
+    )
+    assert session.snapshot.augmentation == available
+    assert (
+        session.dispatch(command=ChangeAugmentation(enabled=True)).augmentation
+        == replace(available, enabled=True)
+    )
+    assert (
+        session.dispatch(command=ChangeAugmentation(enabled=False)).augmentation
+        == available
+    )
+    assert session.augmented_model_request() is None
+
+
+def test_live_session_augmentation_toggle_rescores_and_resorts_current_pack(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    _write_augmented_cache(
+        app_dir=app_dir,
+        set_code="TST",
+        payload=canonical_gzip_bytes(_augmented_tst_artifact_json()),
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_augmented_card_database(),
+        augmented_model_client=_augmented_client(app_dir=app_dir),
+    )
+    session._set_active_set_code(set_code="TST")
+
+    baseline = session.process_lines(lines=(_augmented_pack_line(),))
+
+    assert [
+        (row.card.grp_id, row.basic_score, row.augmentation_delta)
+        for row in baseline.recommendations.cards
+    ] == [(105027, None, None), (104995, None, None)]
+    basic_scores = {
+        row.card.grp_id: row.score for row in baseline.recommendations.cards
+    }
+    assert basic_scores[104995] == basic_scores[105027]
+
+    augmented = session.dispatch(command=ChangeAugmentation(enabled=True))
+
+    assert _augmented_rows(snapshot=augmented) == [
+        (104995, basic_scores[104995] + 6, basic_scores[104995], 6),
+        (105027, basic_scores[105027] - 6, basic_scores[105027], -6),
+    ]
+
+    restored = session.dispatch(command=ChangeAugmentation(enabled=False))
+
+    assert _augmented_rows(snapshot=restored) == _augmented_rows(snapshot=baseline)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b"",
+        b"not-gzip",
+        canonical_gzip_bytes(
+            {
+                **fixed_delta_artifact_json(
+                    set_code="tst",
+                    candidate_ids=(
+                        f"00000000-0000-0000-0000-{104995:012d}",
+                        f"00000000-0000-0000-0000-{105027:012d}",
+                    ),
+                    deltas=(6.0, -6.0),
+                ),
+                "schema_version": 2,
+            }
+        ),
+        None,
+    ),
+    ids=("empty", "not-gzip", "incompatible", "missing"),
+)
+def test_live_session_unusable_augmented_model_keeps_basic_do_without_error(
+    tmp_path: Path,
+    payload: bytes | None,
+) -> None:
+    app_dir = tmp_path / "app"
+    if payload is not None:
+        _write_augmented_cache(app_dir=app_dir, set_code="TST", payload=payload)
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_augmented_card_database(),
+        augmented_model_client=_augmented_client(app_dir=app_dir),
+    )
+    session._set_active_set_code(set_code="TST")
+
+    snapshot = session.process_lines(lines=(_augmented_pack_line(),))
+
+    assert session.snapshot.augmentation == AugmentationState(set_code="TST")
+    assert session.snapshot.errors == ()
+    assert [
+        (row.card.grp_id, row.basic_score, row.augmentation_delta)
+        for row in snapshot.recommendations.cards
+    ] == [(105027, None, None), (104995, None, None)]
+    assert _augmented_rows(snapshot=snapshot) == _basic_do_rows(tmp_path=tmp_path)
+
+
+def test_live_session_unreachable_augmented_model_keeps_basic_do_without_error(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_augmented_card_database(),
+        augmented_model_client=_augmented_client(app_dir=app_dir),
+    )
+    session._set_active_set_code(set_code="TST")
+    request = session.augmented_model_request()
+    assert request is not None
+    assert request.set_code == "TST"
+
+    session.complete_augmented_model(
+        request=request,
+        load=AugmentedModelLoad(
+            outcome=AugmentedModelOutcome.UNREACHABLE,
+            set_code=request.set_code,
+            message="unreachable",
+        ),
+    )
+
+    assert session.snapshot.augmentation == AugmentationState(set_code="TST")
+    assert session.snapshot.errors == ()
+    assert session.augmented_model_request() is None
+
+    snapshot = session.process_lines(lines=(_augmented_pack_line(),))
+
+    assert _augmented_rows(snapshot=snapshot) == _basic_do_rows(tmp_path=tmp_path)
+
+
+def test_live_session_augmented_model_is_used_only_for_its_exact_set(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    _write_augmented_cache(
+        app_dir=app_dir,
+        set_code="TST",
+        payload=canonical_gzip_bytes(_augmented_tst_artifact_json()),
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_augmented_card_database(),
+        augmentation_enabled=True,
+        augmented_model_client=_augmented_client(app_dir=app_dir),
+    )
+    session._set_active_set_code(set_code="TST")
+
+    assert session.snapshot.augmentation == AugmentationState(
+        status=AugmentationStatus.AVAILABLE,
+        set_code="TST",
+        enabled=True,
+    )
+
+    session._set_active_set_code(set_code="MSH")
+
+    assert session.snapshot.augmentation == AugmentationState(set_code="MSH")
+    msh_pack_line = _augmented_pack_line(event_name="QuickDraft_MSH_20260901")
+    msh_snapshot = session.process_lines(lines=(msh_pack_line,))
+    assert _augmented_rows(snapshot=msh_snapshot) == _basic_do_rows(
+        tmp_path=tmp_path,
+        set_code="MSH",
+        event_name="QuickDraft_MSH_20260901",
+    )
+    msh_request = session.augmented_model_request()
+    assert msh_request is not None
+    assert msh_request.set_code == "MSH"
+
+    session.complete_augmented_model(
+        request=msh_request,
+        load=AugmentedModelLoad(
+            outcome=AugmentedModelOutcome.DOWNLOADED,
+            set_code="MSH",
+            artifact=_augmented_tst_artifact(),
+        ),
+    )
+
+    assert session.snapshot.augmentation == AugmentationState(set_code="MSH")
+
+    session._set_active_set_code(set_code="TST")
+
+    assert session.snapshot.augmentation == AugmentationState(
+        status=AugmentationStatus.AVAILABLE,
+        set_code="TST",
+        enabled=True,
+    )
+    assert session.augmented_model_request() is None
+    tst_basic_rows = _basic_do_rows(tmp_path=tmp_path)
+    tst_basic_scores = {grp_id: score for grp_id, score, _, _ in tst_basic_rows}
+    tst_snapshot = session.process_lines(lines=(_augmented_pack_line(),))
+    assert _augmented_rows(snapshot=tst_snapshot) == [
+        (104995, tst_basic_scores[104995] + 6, tst_basic_scores[104995], 6),
+        (105027, tst_basic_scores[105027] - 6, tst_basic_scores[105027], -6),
+    ]
+
+    second_event_snapshot = session.process_lines(
+        lines=(_augmented_pack_line(event_name="QuickDraft_TST_20260905"),)
+    )
+
+    assert _augmented_rows(snapshot=second_event_snapshot) == [
+        (104995, tst_basic_scores[104995] + 6, tst_basic_scores[104995], 6),
+        (105027, tst_basic_scores[105027] - 6, tst_basic_scores[105027], -6),
+    ]
+
+
+def test_live_session_augmentation_defaults_off_for_every_new_set(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    for set_code in ("TST", "MSH"):
+        _write_augmented_cache(
+            app_dir=app_dir,
+            set_code=set_code,
+            payload=canonical_gzip_bytes(
+                fixed_delta_artifact_json(
+                    set_code=set_code.casefold(),
+                    candidate_ids=(
+                        _augmented_oracle_id(grp_id=104995),
+                        _augmented_oracle_id(grp_id=105027),
+                    ),
+                    deltas=(6.0, -6.0),
+                )
+            ),
+        )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_augmented_card_database(),
+        augmented_model_client=_augmented_client(app_dir=app_dir),
+    )
+    session._set_active_set_code(set_code="TST")
+
+    snapshot = session.process_lines(lines=(_augmented_pack_line(),))
+
+    assert session.snapshot.augmentation == AugmentationState(
+        status=AugmentationStatus.AVAILABLE,
+        set_code="TST",
+        enabled=False,
+    )
+    assert all(
+        row.basic_score is None for row in snapshot.recommendations.cards
+    )
+    assert _augmented_rows(snapshot=snapshot) == _basic_do_rows(tmp_path=tmp_path)
+
+    session._set_active_set_code(set_code="MSH")
+
+    assert session.snapshot.augmentation == AugmentationState(
+        status=AugmentationStatus.AVAILABLE,
+        set_code="MSH",
+        enabled=False,
+    )
+    msh_snapshot = session.process_lines(
+        lines=(_augmented_pack_line(event_name="QuickDraft_MSH_20260901"),)
+    )
+    assert all(
+        row.basic_score is None for row in msh_snapshot.recommendations.cards
+    )
+
+
+def test_live_session_queues_one_augmented_model_request_for_the_active_set(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_augmented_card_database(),
+        augmented_model_client=_augmented_client(app_dir=app_dir),
+    )
+    session._set_active_set_code(set_code="TST")
+
+    request = session.augmented_model_request()
+    assert isinstance(request, AugmentedModelRequest)
+    assert request.set_code == "TST"
+    assert request.generation >= 1
+    assert session.snapshot.augmentation == AugmentationState(set_code="TST")
+
+    session.complete_augmented_model(
+        request=request,
+        load=AugmentedModelLoad(
+            outcome=AugmentedModelOutcome.DOWNLOADED,
+            set_code="TST",
+            artifact=_augmented_tst_artifact(),
+        ),
+    )
+
+    assert session.augmented_model_request() is None
+    assert session.snapshot.augmentation == AugmentationState(
+        status=AugmentationStatus.AVAILABLE,
+        set_code="TST",
+        enabled=False,
+    )
+
+    session.process_lines(
+        lines=(_augmented_pack_line(event_name="QuickDraft_TST_20260905"),)
+    )
+
+    assert session.augmented_model_request() is None
+
+    no_model_dir = tmp_path / "app-no-model"
+    no_model_session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=no_model_dir,
+        card_database=_augmented_card_database(),
+        augmented_model_client=_augmented_client(app_dir=no_model_dir),
+    )
+    no_model_session._set_active_set_code(set_code="TST")
+    pending = no_model_session.augmented_model_request()
+    assert pending is not None
+
+    assert no_model_session.dispatch(
+        command=ChangeAugmentation(enabled=True)
+    ).augmentation == AugmentationState(set_code="TST")
+
+    forced = no_model_session.augmented_model_request()
+    assert forced is not None
+    assert forced.set_code == "TST"
+    assert forced.generation > pending.generation
+
+    plain_session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app-none",
+        card_database=_augmented_card_database(),
+    )
+    plain_session._set_active_set_code(set_code="TST")
+
+    assert plain_session.augmented_model_request() is None
+    assert plain_session.snapshot.augmentation == AugmentationState(set_code="TST")
+
+
 def test_live_session_locked_pair_refresh_retains_recommendations(
     tmp_path: Path,
 ) -> None:
@@ -7969,6 +8343,108 @@ def _fixture_set_card_database(
     )
 
 
+
+
+def _augmented_oracle_id(*, grp_id: int) -> str:
+    return f"00000000-0000-0000-0000-{grp_id:012d}"
+
+
+def _augmented_card_database(*, set_code: str = "TST") -> CardDatabase:
+    """Return the set fixture database with Oracle ids an artifact can key on."""
+
+    database = _fixture_set_card_database(set_code=set_code)
+    return replace(
+        database,
+        cards={
+            grp_id: replace(card, oracle_id=_augmented_oracle_id(grp_id=grp_id))
+            for grp_id, card in database.cards.items()
+        },
+    )
+
+
+def _augmented_client(*, app_dir: Path) -> AugmentedModelClient:
+    """Return an augmentation client whose network path stays unused."""
+
+    def guarded_opener(request: object, *, timeout: float) -> None:
+        del request, timeout
+        raise AssertionError("augmentation model loading must remain offline")
+
+    return AugmentedModelClient(app_dir=app_dir, opener=guarded_opener)
+
+
+def _augmented_tst_artifact_json() -> dict[str, object]:
+    return fixed_delta_artifact_json(
+        set_code="tst",
+        candidate_ids=(
+            _augmented_oracle_id(grp_id=104995),
+            _augmented_oracle_id(grp_id=105027),
+        ),
+        deltas=(6.0, -6.0),
+    )
+
+
+def _augmented_tst_artifact() -> AugmentedArtifact:
+    return fixed_delta_artifact(
+        set_code="tst",
+        candidate_ids=(
+            _augmented_oracle_id(grp_id=104995),
+            _augmented_oracle_id(grp_id=105027),
+        ),
+        deltas=(6.0, -6.0),
+    )
+
+
+def _write_augmented_cache(*, app_dir: Path, set_code: str, payload: bytes) -> Path:
+    """Write one raw artifact payload into the client's local cache."""
+
+    path = augmented_cache_path(set_code=set_code, app_dir=app_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
+def _augmented_pack_line(*, event_name: str = CONTEXT_EVENT_NAME) -> str:
+    """Offer the two augmentation fixture cards in reverse basic-score order."""
+
+    return _pack_line(
+        event_name=event_name,
+        pack_number=CONTEXT_PACK_NUMBER,
+        pick_number=CONTEXT_PICK_NUMBER,
+        draft_pack=(105027, 104995),
+        picked_cards=(),
+    )
+
+
+def _augmented_rows(
+    *, snapshot: LiveSessionSnapshot
+) -> list[tuple[int, int, int | None, int | None]]:
+    """Return the observable grpId, score, basic score, and delta per row."""
+
+    return [
+        (row.card.grp_id, row.score, row.basic_score, row.augmentation_delta)
+        for row in snapshot.recommendations.cards
+    ]
+
+
+def _basic_do_rows(
+    *,
+    tmp_path: Path,
+    set_code: str = "TST",
+    event_name: str = CONTEXT_EVENT_NAME,
+) -> list[tuple[int, int, int | None, int | None]]:
+    """Return the pack rows of a session that never loads an augmentation model."""
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / f"app-plain-{set_code.casefold()}",
+        card_database=_augmented_card_database(),
+    )
+    session._set_active_set_code(set_code=set_code)
+    return _augmented_rows(
+        snapshot=session.process_lines(
+            lines=(_augmented_pack_line(event_name=event_name),)
+        )
+    )
 
 
 def _fixture_set_profile() -> SetProfile:

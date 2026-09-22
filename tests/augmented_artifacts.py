@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -127,6 +128,49 @@ def augmented_artifact(set_code: str = "tst", **kwargs: Any):
 
     return AugmentedArtifact.from_bytes(
         canonical_bytes(augmented_artifact_json(set_code=set_code, **kwargs))
+    )
+
+
+def fixed_delta_artifact_json(
+    *,
+    set_code: str,
+    candidate_ids: tuple[str, ...],
+    deltas: tuple[float, ...],
+) -> dict[str, object]:
+    """Return artifact JSON that applies exactly these mean-centered deltas."""
+
+    if len(candidate_ids) != len(deltas):
+        raise ValueError("candidate_ids and deltas must have the same length.")
+    if not math.isclose(sum(deltas), 0.0, abs_tol=1e-9):
+        raise ValueError("deltas must sum to zero to survive mean centering.")
+    return augmented_artifact_json(
+        set_code=set_code,
+        candidate_ids=candidate_ids,
+        input_weights=[[0.0] for _ in FEATURE_NAMES],
+        output_weights=[[0.0] * len(candidate_ids)],
+        bias=list(deltas),
+        multiplier=1.0,
+    )
+
+
+def fixed_delta_artifact(
+    *,
+    set_code: str,
+    candidate_ids: tuple[str, ...],
+    deltas: tuple[float, ...],
+):
+    """Return one validated artifact that applies exactly these deltas."""
+
+    from draftomen.augmented_artifact import AugmentedArtifact
+
+    return AugmentedArtifact.from_bytes(
+        canonical_bytes(
+            fixed_delta_artifact_json(
+                set_code=set_code,
+                candidate_ids=candidate_ids,
+                deltas=deltas,
+            )
+        )
     )
 
 

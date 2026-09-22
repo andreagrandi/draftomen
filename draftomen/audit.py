@@ -599,6 +599,8 @@ def _candidate_payload(*, scored_card: ScoredCard, rank: int) -> AuditRecord:
             ),
             "raw_score": scored_card.raw_score,
             "score": scored_card.score,
+            "basic_score": scored_card.basic_score,
+            "augmentation_delta": scored_card.augmentation_delta,
             "source_label": scored_card.source_label,
             "pair_tiebreaker_pair": scored_card.pair_tiebreaker_pair,
             "pair_tiebreaker_win_rate": scored_card.pair_tiebreaker_win_rate,
