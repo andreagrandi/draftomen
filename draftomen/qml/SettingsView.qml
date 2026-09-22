@@ -141,6 +141,38 @@ Item {
                         Layout.fillWidth: true
                         ColumnLayout {
                             Layout.fillWidth: true
+                            Label {
+                                objectName: "settingsAugmentedIntelligenceLabel"
+                                text: "Augmented Intelligence"
+                                color: Theme.text
+                                font.bold: true
+                            }
+                            Label {
+                                objectName: "settingsAugmentedIntelligenceMessage"
+                                Layout.fillWidth: true
+                                text: root.sessionState.augmentation_message
+                                    + " Uses a validated per-set model to adjust DO Scores; the model runs locally and never during a live draft."
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.textPixelSize(11)
+                                wrapMode: Text.WordWrap
+                                Accessible.name: text
+                                Accessible.description: text
+                            }
+                        }
+                        SettingsSwitch {
+                            objectName: "settingsAugmentedIntelligenceSwitch"
+                            checked: root.sessionState.augmentation.enabled
+                            enabled: root.sessionState.augmentation.status === "available"
+                            Accessible.name: "Augmented Intelligence"
+                            Accessible.description: root.sessionState.augmentation_message
+                                + " Uses a validated per-set model to adjust DO Scores; the model runs locally and never during a live draft."
+                            onToggled: root.displayPreferences.setAugmentedIntelligenceEnabled(checked)
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ColumnLayout {
+                            Layout.fillWidth: true
                             Label { text: "AI-enhanced suggestions"; color: Theme.text; font.bold: true }
                             Label {
                                 objectName: "settingsAiEnhancedSuggestionsMessage"

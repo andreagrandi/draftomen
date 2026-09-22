@@ -6845,6 +6845,367 @@ with TemporaryDirectory() as preferences_dir:
     assert "TypeError" not in completed.stderr
 
 
+def test_qml_augmented_intelligence_settings_control_offscreen() -> None:
+    probe = """
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtGui import QAccessible, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_mock import MockSessionAdapter
+from draftomen.session import (
+    AugmentationState,
+    AugmentationStatus,
+    ChangeAugmentation,
+    augmentation_status_message,
+)
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+
+AUGMENTED_SENTENCE = (
+    " Uses a validated per-set model to adjust DO Scores; "
+    "the model runs locally and never during a live draft."
+)
+
+UNAVAILABLE_STATE = AugmentationState(
+    status=AugmentationStatus.UNAVAILABLE,
+    set_code="OTJ",
+)
+AVAILABLE_OFF_STATE = AugmentationState(
+    status=AugmentationStatus.AVAILABLE,
+    set_code="OTJ",
+)
+
+
+class AugmentationMockSession(MockLiveSession):
+    # Publish one explicit augmentation state through every snapshot.
+    def __init__(self) -> None:
+        super().__init__(scenario="ready")
+        self._augmentation = UNAVAILABLE_STATE
+        self._snapshot = self._augmented_snapshot(snapshot=self._snapshot)
+
+    def _augmented_snapshot(self, *, snapshot):
+        return replace(
+            snapshot,
+            augmentation=self._augmentation,
+            augmentation_message=augmentation_status_message(
+                state=self._augmentation
+            ),
+        )
+
+    def snapshot_with_augmentation(self, *, state):
+        self._augmentation = state
+        return self._augmented_snapshot(snapshot=self._snapshot)
+
+    def dispatch(self, *, command):
+        self._snapshot = self._augmented_snapshot(
+            snapshot=super().dispatch(command=command)
+        )
+        return self._snapshot
+
+
+session = AugmentationMockSession()
+
+
+class RecordingProvider(MockSessionAdapter):
+    def __init__(self) -> None:
+        self.commands = []
+        super().__init__(session=session)
+
+    def _dispatch(self, *, command) -> None:
+        self.commands.append(command)
+        super()._dispatch(command=command)
+
+
+provider = RecordingProvider()
+
+
+def publish_augmentation(*, state) -> None:
+    provider._publish(snapshot=session.snapshot_with_augmentation(state=state))
+    application.processEvents()
+
+
+def wait_for_saved(preferences) -> None:
+    for _ in range(100):
+        application.processEvents()
+        if preferences.persistenceMessage == "Saved":
+            return
+        QTest.qWait(10)
+    raise AssertionError("The augmentation preference never saved.")
+
+
+with TemporaryDirectory() as preferences_dir:
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    recorded_preferences = []
+    preferences.augmentedIntelligenceEnabledChanged.connect(
+        recorded_preferences.append
+    )
+    preferences.augmentedIntelligenceEnabledChanged.connect(
+        provider.setAugmentedIntelligenceEnabled
+    )
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", "monospace")
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "0.0")
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "settings")
+    context.setContextProperty("initialWindowWidth", 900)
+    context.setContextProperty("initialWindowHeight", 760)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+
+    label = root.findChild(QObject, "settingsAugmentedIntelligenceLabel")
+    assert label is not None
+    assert label.property("text") == "Augmented Intelligence"
+    settings_message = root.findChild(
+        QObject, "settingsAugmentedIntelligenceMessage"
+    )
+    assert settings_message is not None
+    switch = root.findChild(QObject, "settingsAugmentedIntelligenceSwitch")
+    assert switch is not None
+
+    def dispatched_augmentations():
+        return [
+            command
+            for command in provider.commands
+            if isinstance(command, ChangeAugmentation)
+        ]
+
+    def assert_settings(*, state, switch_enabled, switch_checked) -> None:
+        message = augmentation_status_message(state=state)
+        assert provider.state["augmentation"]["status"] == state.status.value
+        assert provider.state["augmentation"]["set_code"] == state.set_code
+        assert provider.state["augmentation"]["enabled"] == state.enabled
+        assert provider.state["augmentation_message"] == message
+        assert settings_message.property("text") == message + AUGMENTED_SENTENCE
+        assert switch.property("enabled") is switch_enabled
+        assert switch.property("checked") is switch_checked
+        accessible = QAccessible.queryAccessibleInterface(switch)
+        assert accessible is not None
+        assert accessible.text(QAccessible.Text.Name) == "Augmented Intelligence"
+        assert accessible.text(QAccessible.Text.Description) == (
+            message + AUGMENTED_SENTENCE
+        )
+
+    def press_space() -> None:
+        switch.forceActiveFocus()
+        QTest.keyClick(root, Qt.Key_Space)
+        application.processEvents()
+
+    assert not dispatched_augmentations()
+    assert preferences.augmentedIntelligenceEnabled is False
+    fresh_preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    try:
+        assert fresh_preferences.augmentedIntelligenceEnabled is False
+    finally:
+        fresh_preferences.shutdown()
+    assert_settings(
+        state=UNAVAILABLE_STATE,
+        switch_enabled=False,
+        switch_checked=False,
+    )
+
+    press_space()
+    assert not dispatched_augmentations()
+    assert recorded_preferences == []
+    assert_settings(
+        state=UNAVAILABLE_STATE,
+        switch_enabled=False,
+        switch_checked=False,
+    )
+
+    publish_augmentation(state=AVAILABLE_OFF_STATE)
+    assert not dispatched_augmentations()
+    assert_settings(
+        state=AVAILABLE_OFF_STATE,
+        switch_enabled=True,
+        switch_checked=False,
+    )
+
+    press_space()
+    assert dispatched_augmentations() == [ChangeAugmentation(enabled=True)]
+    assert recorded_preferences == [True]
+    assert preferences.augmentedIntelligenceEnabled is True
+    assert switch.property("checked") is True
+    wait_for_saved(preferences)
+    persisted_preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    try:
+        assert persisted_preferences.augmentedIntelligenceEnabled is True
+    finally:
+        persisted_preferences.shutdown()
+
+    preferences.shutdown()
+    del root
+    del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
+def test_qml_augmented_intelligence_status_availability_offscreen() -> None:
+    probe = """
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QAccessible, QColor, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_mock import MockSessionAdapter
+from draftomen.session import (
+    AugmentationState,
+    AugmentationStatus,
+    augmentation_status_message,
+)
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+
+UNAVAILABLE_STATE = AugmentationState(
+    status=AugmentationStatus.UNAVAILABLE,
+    set_code="OTJ",
+)
+AVAILABLE_OFF_STATE = AugmentationState(
+    status=AugmentationStatus.AVAILABLE,
+    set_code="OTJ",
+)
+AVAILABLE_ON_STATE = AugmentationState(
+    status=AugmentationStatus.AVAILABLE,
+    set_code="OTJ",
+    enabled=True,
+)
+
+
+class AugmentationMockSession(MockLiveSession):
+    # Publish one explicit augmentation state through every snapshot.
+    def __init__(self) -> None:
+        super().__init__(scenario="ready")
+        self._augmentation = UNAVAILABLE_STATE
+        self._snapshot = self._augmented_snapshot(snapshot=self._snapshot)
+
+    def _augmented_snapshot(self, *, snapshot):
+        return replace(
+            snapshot,
+            augmentation=self._augmentation,
+            augmentation_message=augmentation_status_message(
+                state=self._augmentation
+            ),
+        )
+
+    def snapshot_with_augmentation(self, *, state):
+        self._augmentation = state
+        return self._augmented_snapshot(snapshot=self._snapshot)
+
+    def dispatch(self, *, command):
+        self._snapshot = self._augmented_snapshot(
+            snapshot=super().dispatch(command=command)
+        )
+        return self._snapshot
+
+
+session = AugmentationMockSession()
+provider = MockSessionAdapter(session=session)
+
+
+def publish_augmentation(*, state) -> None:
+    provider._publish(snapshot=session.snapshot_with_augmentation(state=state))
+    application.processEvents()
+
+
+with TemporaryDirectory() as preferences_dir:
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", "monospace")
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "0.0")
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "settings")
+    context.setContextProperty("initialWindowWidth", 900)
+    context.setContextProperty("initialWindowHeight", 760)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+
+    status_message = root.findChild(QObject, "statusAugmentationMessage")
+    assert status_message is not None
+
+    def assert_status_message(*, state, text, color) -> None:
+        assert provider.state["augmentation"]["status"] == state.status.value
+        assert provider.state["augmentation"]["enabled"] == state.enabled
+        assert provider.state["augmentation_message"] == text
+        assert status_message.property("text") == text
+        assert QColor(status_message.property("color")) == QColor(color)
+        accessible = QAccessible.queryAccessibleInterface(status_message)
+        assert accessible is not None
+        assert accessible.text(QAccessible.Text.Name) == text
+        assert accessible.text(QAccessible.Text.Description) == text
+
+    assert_status_message(
+        state=UNAVAILABLE_STATE,
+        text="Augmented Intelligence is unavailable for OTJ.",
+        color="#c8c2b8",
+    )
+    unavailable_color = QColor(status_message.property("color"))
+    assert unavailable_color != QColor("#e7c993")
+    assert unavailable_color != QColor("#ffb4ab")
+
+    publish_augmentation(state=AVAILABLE_OFF_STATE)
+    assert_status_message(
+        state=AVAILABLE_OFF_STATE,
+        text="Augmented Intelligence is available for OTJ.",
+        color="#c8c2b8",
+    )
+
+    publish_augmentation(state=AVAILABLE_ON_STATE)
+    assert_status_message(
+        state=AVAILABLE_ON_STATE,
+        text="Augmented Intelligence is on for OTJ.",
+        color="#a78bfa",
+    )
+
+    preferences.shutdown()
+    del root
+    del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
 def test_qml_relationship_advice_respects_both_settings_offscreen() -> None:
     probe = """
 from pathlib import Path

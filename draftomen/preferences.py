@@ -184,6 +184,7 @@ class GuiDisplayPreferences:
     system_text_scaling: bool = True
     show_backtest: bool = False
     contextual_adjustments_enabled: bool = False
+    augmented_intelligence_enabled: bool = False
     mocked_draft_enabled: bool = False
     mocked_draft_checkout_dir: str = ""
     mocked_draft_server_url: str = ""

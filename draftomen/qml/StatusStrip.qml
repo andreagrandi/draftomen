@@ -78,6 +78,27 @@ Rectangle {
         }
 
         Label {
+            objectName: "statusAugmentationMessage"
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            text: root.sessionState.augmentation_message
+            color: root.sessionState.augmentation.enabled
+                ? Theme.primary
+                : Theme.textMuted
+            font.pixelSize: Theme.textPixelSize(11)
+            elide: Text.ElideRight
+            Accessible.name: text
+            Accessible.description: text
+            ToolTip.visible: augmentationMessageHoverHandler.hovered
+            ToolTip.text: text
+            ToolTip.delay: 500
+
+            HoverHandler {
+                id: augmentationMessageHoverHandler
+            }
+        }
+
+        Label {
             objectName: "statusEnhancementMessage"
             Layout.fillWidth: true
             Layout.minimumWidth: 0
