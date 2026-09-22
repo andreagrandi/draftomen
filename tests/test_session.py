@@ -4837,9 +4837,13 @@ def test_live_session_augmented_model_exposes_available_on_and_off_states(
         enabled=False,
     )
     assert session.snapshot.augmentation == available
-    assert (
-        session.dispatch(command=ChangeAugmentation(enabled=True)).augmentation
-        == replace(available, enabled=True)
+    assert session.snapshot.augmentation_message == (
+        "Augmented Intelligence is available for TST."
+    )
+    enabled_snapshot = session.dispatch(command=ChangeAugmentation(enabled=True))
+    assert enabled_snapshot.augmentation == replace(available, enabled=True)
+    assert enabled_snapshot.augmentation_message == (
+        "Augmented Intelligence is on for TST."
     )
     assert (
         session.dispatch(command=ChangeAugmentation(enabled=False)).augmentation
@@ -4928,6 +4932,9 @@ def test_live_session_unusable_augmented_model_keeps_basic_do_without_error(
     snapshot = session.process_lines(lines=(_augmented_pack_line(),))
 
     assert session.snapshot.augmentation == AugmentationState(set_code="TST")
+    assert session.snapshot.augmentation_message == (
+        "Augmented Intelligence is unavailable for TST."
+    )
     assert session.snapshot.errors == ()
     assert [
         (row.card.grp_id, row.basic_score, row.augmentation_delta)

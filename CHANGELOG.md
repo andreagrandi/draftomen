@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Show Augmented Intelligence availability and control in the desktop. Settings
+  gains a persisted Augmented Intelligence switch that stays off and disabled
+  until the active set has a validated model, the live status strip reports
+  unavailable, available, or on, and the adapter owns the per-set model load
+  off the session thread, failing closed to Basic DO. (#632)
 - Apply the validated per-set augmentation delta to live scoring behind one
   default-off session flag. Live totals clamp the bounded artifact adjustment
   onto Basic DO and order on the float total, fail closed to Basic DO when no

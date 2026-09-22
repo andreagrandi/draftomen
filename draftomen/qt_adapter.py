@@ -30,6 +30,11 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QFontInfo, QGuiApplication
 
+from draftomen.augmented_model_client import (
+    AugmentedModelClient,
+    AugmentedModelLoad,
+    AugmentedModelOutcome,
+)
 from draftomen.preferences import (
     GuiDisplayPreferences,
     load_gui_preferences,
@@ -38,9 +43,11 @@ from draftomen.preferences import (
 from draftomen.profile_client import ProfileClient
 from draftomen.ranking import RankingMode
 from draftomen.session import (
+    AugmentedModelRequest,
     CardImageFetchResult,
     CardImageRequest,
     ChangeAiEnhancedSuggestions,
+    ChangeAugmentation,
     ChangeContextualScoring,
     ChangeRanking,
     ChangeSplashPreference,
@@ -379,6 +386,7 @@ class GuiPreferencesAdapter(QObject):
     persistenceChanged = Signal()
     applicationFontPixelSizeChanged = Signal()
     contextualAdjustmentsEnabledChanged = Signal(bool)
+    augmentedIntelligenceEnabledChanged = Signal(bool)
     mockedDraftEnabledChanged = Signal(bool)
     mockedDraftSourcesChanged = Signal()
 
@@ -455,6 +463,10 @@ class GuiPreferencesAdapter(QObject):
     def contextualAdjustmentsEnabled(self) -> bool:
         return self._preferences.contextual_adjustments_enabled
 
+    @Property(bool, notify=augmentedIntelligenceEnabledChanged)
+    def augmentedIntelligenceEnabled(self) -> bool:
+        return self._preferences.augmented_intelligence_enabled
+
     @Property(bool, notify=mockedDraftEnabledChanged)
     def mockedDraftEnabled(self) -> bool:
         return self._preferences.mocked_draft_enabled
@@ -523,6 +535,10 @@ class GuiPreferencesAdapter(QObject):
     @Slot(bool)
     def setContextualAdjustmentsEnabled(self, enabled: bool) -> None:
         self._replace_preferences(contextual_adjustments_enabled=enabled)
+
+    @Slot(bool)
+    def setAugmentedIntelligenceEnabled(self, enabled: bool) -> None:
+        self._replace_preferences(augmented_intelligence_enabled=enabled)
 
     @Slot(bool)
     def setMockedDraftEnabled(self, enabled: bool) -> None:
@@ -595,6 +611,13 @@ class GuiPreferencesAdapter(QObject):
         ):
             self.contextualAdjustmentsEnabledChanged.emit(
                 updated.contextual_adjustments_enabled
+            )
+        if (
+            updated.augmented_intelligence_enabled
+            != previous.augmented_intelligence_enabled
+        ):
+            self.augmentedIntelligenceEnabledChanged.emit(
+                updated.augmented_intelligence_enabled
             )
         if updated.mocked_draft_enabled != previous.mocked_draft_enabled:
             self.mockedDraftEnabledChanged.emit(updated.mocked_draft_enabled)
@@ -689,6 +712,10 @@ class SessionAdapter(QObject):
     @Slot(bool)
     def setAiEnhancedSuggestionsEnabled(self, enabled: bool) -> None:
         self._dispatch(command=ChangeAiEnhancedSuggestions(enabled=enabled))
+
+    @Slot(bool)
+    def setAugmentedIntelligenceEnabled(self, enabled: bool) -> None:
+        self._dispatch(command=ChangeAugmentation(enabled=enabled))
 
     @Slot()
     def requestRatings(self) -> None:
@@ -840,10 +867,41 @@ class _ProfileRefreshWorker(QObject):
             self.resultReady.emit(request, result, "")
 
 
+class _AugmentedModelWorker(QObject):
+    """Load one blocking per-set augmentation model outside the session thread."""
+
+    resultReady = Signal(object, object)
+
+    def __init__(self, *, client: AugmentedModelClient) -> None:
+        super().__init__()
+        self._client = client
+
+    @Slot(object)
+    def load(self, request: object) -> None:
+        if not isinstance(request, AugmentedModelRequest):
+            self.resultReady.emit(request, None)
+            return
+        try:
+            result = self._client.load(
+                set_code=request.set_code,
+                allow_network=True,
+            )
+        except Exception:  # pragma: no cover - network boundary.
+            result = AugmentedModelLoad(
+                outcome=AugmentedModelOutcome.UNREACHABLE,
+                set_code=request.set_code,
+                message=(
+                    f"Augmented model for set {request.set_code!r} is unavailable."
+                ),
+            )
+        self.resultReady.emit(request, result)
+
+
 class _LiveSessionWorker(QObject):
     _imageFetchRequested = Signal(object, object)
     _imageScheduleRequested = Signal()
     _profileRefreshRequested = Signal(object)
+    _augmentedModelRequested = Signal(object)
     snapshotReady = Signal(object)
     testDraftStateReady = Signal(object)
     failed = Signal(str)
@@ -856,6 +914,7 @@ class _LiveSessionWorker(QObject):
         poll_interval_ms: int,
         startup_scan: bool,
         profile_client: ProfileClient | None = None,
+        augmented_model_client: AugmentedModelClient | None = None,
         test_draft_factory: TestDraftFactory | None = None,
     ) -> None:
         super().__init__()
@@ -863,6 +922,7 @@ class _LiveSessionWorker(QObject):
         self._poll_interval_ms = poll_interval_ms
         self._startup_scan = startup_scan
         self._profile_client = profile_client
+        self._augmented_model_client = augmented_model_client
         self._test_draft_factory = test_draft_factory
         self._session: LiveSession | None = None
         self._timer: QTimer | None = None
@@ -880,6 +940,10 @@ class _LiveSessionWorker(QObject):
         self._profile_worker: _ProfileRefreshWorker | None = None
         self._profile_request_in_flight: ProfileRefreshRequest | None = None
         self._profile_source_generation = 0
+        self._augmented_thread: QThread | None = None
+        self._augmented_worker: _AugmentedModelWorker | None = None
+        self._augmented_request_in_flight: AugmentedModelRequest | None = None
+        self._augmented_source_generation = 0
         self._test_draft_runtime: TestDraftRuntime | None = None
         self._test_draft_mode: TestDraftMode | None = None
         self._test_draft_set_code: str | None = None
@@ -935,6 +999,7 @@ class _LiveSessionWorker(QObject):
         self._image_request_kind = None
         self._image_session = None
         self._profile_request_in_flight = None
+        self._augmented_request_in_flight = None
         if self._timer is not None:
             if source == "arena":
                 self._timer.start()
@@ -1011,6 +1076,28 @@ class _LiveSessionWorker(QObject):
         self._profile_worker = profile_worker
         thread.start()
 
+    def _start_augmented_model_worker(self) -> None:
+        """Start the dedicated worker used for blocking augmentation model loads."""
+
+        augmented_model_client = self._augmented_model_client
+        if augmented_model_client is None or self._augmented_thread is not None:
+            return
+        thread = QThread(parent=self)
+        augmented_worker = _AugmentedModelWorker(client=augmented_model_client)
+        augmented_worker.moveToThread(thread)
+        self._augmentedModelRequested.connect(
+            augmented_worker.load,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        augmented_worker.resultReady.connect(
+            self._augmented_model_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        thread.finished.connect(augmented_worker.deleteLater)
+        self._augmented_thread = thread
+        self._augmented_worker = augmented_worker
+        thread.start()
+
 
     def request_stop(self) -> None:
         """Request cooperative stop without queuing behind busy session work."""
@@ -1032,6 +1119,7 @@ class _LiveSessionWorker(QObject):
             self._arena_ai_enabled = True
             self._start_image_worker()
             self._start_profile_worker()
+            self._start_augmented_model_worker()
             self._publish_snapshot(self._session.snapshot)
             if self._stop_requested:
                 self.stop()
@@ -1092,6 +1180,7 @@ class _LiveSessionWorker(QObject):
             self._request_one_card_image()
             if self._profile_client is not None:
                 self._request_profile_refresh()
+            self._request_augmented_model()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             self.failed.emit(str(error))
 
@@ -1110,6 +1199,7 @@ class _LiveSessionWorker(QObject):
             self._request_one_card_image()
             if self._profile_client is not None:
                 self._request_profile_refresh()
+            self._request_augmented_model()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             self.failed.emit(str(error))
             return False
@@ -1175,6 +1265,28 @@ class _LiveSessionWorker(QObject):
         self._profile_request_in_flight = request
         self._profile_source_generation = self._source_generation
         self._profileRefreshRequested.emit(request)
+
+    def _request_augmented_model(self) -> None:
+        """Schedule the one pending augmentation model load off the session thread."""
+
+        session = self._active_session()
+        if (
+            session is None
+            or self._augmented_model_client is None
+            or self._stop_requested
+            or self._augmented_request_in_flight is not None
+            or self._augmented_thread is None
+        ):
+            return
+        get_request = getattr(session, "augmented_model_request", None)
+        if not callable(get_request):
+            return
+        request = get_request()
+        if request is None:
+            return
+        self._augmented_request_in_flight = request
+        self._augmented_source_generation = self._source_generation
+        self._augmentedModelRequested.emit(request)
 
     @Slot(object, object, str)
     def _image_fetch_finished(
@@ -1272,6 +1384,28 @@ class _LiveSessionWorker(QObject):
             self.failed.emit(str(error))
         finally:
             self._request_profile_refresh()
+
+    @Slot(object, object)
+    def _augmented_model_finished(self, request: object, load: object) -> None:
+        """Apply one model load on the live-session thread."""
+
+        if request != self._augmented_request_in_flight:
+            return
+        if self._augmented_source_generation != self._source_generation:
+            return
+        self._augmented_request_in_flight = None
+        session = self._active_session()
+        if session is None or self._stop_requested:
+            return
+
+        try:
+            if not isinstance(load, AugmentedModelLoad):
+                raise TypeError("Augmented model worker returned an invalid load.")
+            session.complete_augmented_model(request=request, load=load)
+        except Exception as error:  # pragma: no cover - defensive UI boundary.
+            self.failed.emit(str(error))
+        finally:
+            self._request_augmented_model()
 
     def _publish_test_draft_state(self) -> None:
         if self._stop_requested:
@@ -1657,6 +1791,13 @@ class _LiveSessionWorker(QObject):
             self._profile_thread = None
             self._profile_worker = None
         self._profile_request_in_flight = None
+        augmented_thread = self._augmented_thread
+        if augmented_thread is not None:
+            augmented_thread.quit()
+            augmented_thread.wait()
+            self._augmented_thread = None
+            self._augmented_worker = None
+        self._augmented_request_in_flight = None
         self._stopped = True
         self.finished.emit()
 
@@ -1680,6 +1821,7 @@ class LiveSessionAdapter(SessionAdapter):
         poll_interval_ms: int,
         startup_scan: bool = True,
         profile_client: ProfileClient | None = None,
+        augmented_model_client: AugmentedModelClient | None = None,
         test_draft_factory: TestDraftFactory | None = None,
         parent: QObject | None = None,
     ) -> None:
@@ -1690,6 +1832,7 @@ class LiveSessionAdapter(SessionAdapter):
         self._poll_interval_ms = poll_interval_ms
         self._startup_scan = startup_scan
         self._profile_client = profile_client
+        self._augmented_model_client = augmented_model_client
         self._test_draft_factory = test_draft_factory
         self.thread: QThread | None = None
         self._worker: _LiveSessionWorker | None = None
@@ -1708,6 +1851,7 @@ class LiveSessionAdapter(SessionAdapter):
             poll_interval_ms=self._poll_interval_ms,
             startup_scan=self._startup_scan,
             profile_client=self._profile_client,
+            augmented_model_client=self._augmented_model_client,
             test_draft_factory=self._test_draft_factory,
         )
         worker.moveToThread(thread)

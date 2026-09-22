@@ -22,6 +22,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
 from draftomen import __version__
+from draftomen.augmented_model_client import AugmentedModelClient
 from draftomen.card_data_client import CardDataClient, cached_card_data_set_codes
 from draftomen.carddb import (
     build_card_database_from_bulk_file,
@@ -267,6 +268,8 @@ def _live_session_factory(
     bulk_file: Path | None,
     poll_interval: float,
     contextual_adjustments_enabled: bool,
+    augmentation_enabled: bool = False,
+    augmented_model_client: AugmentedModelClient | None = None,
     profile_manifest_url: str | None = None,
     profile_network_policy: ProfileNetworkPolicy = ProfileNetworkPolicy.ALLOWED,
     profile_client: ProfileClient | None = None,
@@ -292,6 +295,8 @@ def _live_session_factory(
             "profile_client": profile_client,
             "poll_interval": poll_interval,
             "snapshot_publisher": publish,
+            "augmentation_enabled": augmentation_enabled,
+            "augmented_model_client": augmented_model_client,
             "card_image_service": CardImageService(
                 cache_dir=card_image_cache_dir(app_dir=app_dir),
                 timeout_seconds=2.0,
@@ -536,6 +541,7 @@ def _build_provider(
         manifest_url=resolved_profile_manifest_url,
         network_policy=profile_network_policy,
     )
+    augmented_model_client = AugmentedModelClient(app_dir=args.app_dir)
     # Startup enablement: the launch flag or the persisted Mocked Draft setting. A later
     # settings toggle replaces this choice with the user's live selection.
     test_draft_factory: TestDraftFactory | None = None
@@ -548,11 +554,14 @@ def _build_provider(
             bulk_file=args.bulk_file,
             poll_interval=args.poll_interval,
             contextual_adjustments_enabled=preferences.contextual_adjustments_enabled,
+            augmentation_enabled=preferences.augmented_intelligence_enabled,
+            augmented_model_client=augmented_model_client,
             profile_manifest_url=resolved_profile_manifest_url,
             profile_network_policy=profile_network_policy,
             profile_client=profile_client,
         ),
         profile_client=profile_client,
+        augmented_model_client=augmented_model_client,
         poll_interval_ms=max(1, round(args.poll_interval * 1000)),
         startup_scan=args.startup_scan,
         test_draft_factory=test_draft_factory,
@@ -1129,6 +1138,9 @@ def run_gui(
     preferences.mockedDraftSourcesChanged.connect(apply_mocked_draft_sources)
     preferences.contextualAdjustmentsEnabledChanged.connect(
         provider.setContextualScoringEnabled
+    )
+    preferences.augmentedIntelligenceEnabledChanged.connect(
+        provider.setAugmentedIntelligenceEnabled
     )
     engine = QQmlApplicationEngine()
     qml_directory = _qml_directory()

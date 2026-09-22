@@ -27,7 +27,17 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from draftomen.carddb import CardDatabase, CardDatabaseError, CardInfo
+from draftomen.augmented_model_client import (
+    AugmentedModelClient,
+    AugmentedModelLoad,
+    AugmentedModelOutcome,
+)
+from draftomen.carddb import (
+    CardDatabase,
+    CardDatabaseError,
+    CardInfo,
+    build_card_database_from_bulk_file,
+)
 from draftomen.cardimages import CardImageService
 from draftomen.mock_session import MockLiveSession
 from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
@@ -50,12 +60,15 @@ from draftomen.qt_adapter import (
     SessionAdapter,
 )
 from draftomen.session import (
+    AugmentationState,
+    AugmentationStatus,
     CardDataState,
     CardImageFetchResult,
     CardImageRequest,
     CardImageState,
     CardView,
     ChangeAiEnhancedSuggestions,
+    ChangeAugmentation,
     ChangeContextualScoring,
     ChangeRanking,
     ChangeSplashPreference,
@@ -96,6 +109,7 @@ from draftomen.test_draft import (
     create_test_draft_runtime,
 )
 
+from tests.augmented_artifacts import augmented_artifact
 from tests.test_draftmancer import _FakeSocket, _withheld_ack_action
 from tests.test_test_draft import (
     _HELPER_GRP_IDS,
@@ -115,6 +129,12 @@ if TYPE_CHECKING:
 
 _PROFILE_FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "set-profiles" / "mature.json"
+)
+_AUGMENTED_FIXTURE_LOG_PATH = (
+    Path(__file__).parent / "fixtures" / "quick-draft-msh-player.log"
+)
+_SCRYFALL_BULK_SAMPLE_PATH = (
+    Path(__file__).parent / "fixtures" / "scryfall-default-cards-sample.jsonl"
 )
 _PROFILE_MANIFEST_URL = "https://profiles.example.test/manifest.json"
 
@@ -781,6 +801,25 @@ def test_session_adapter_translates_enhancement_availability_to_plain_qml_values
     }
     assert not isinstance(availability, EnhancementAvailabilityState)
     assert not isinstance(availability["status"], EnhancementAvailabilityStatus)
+
+
+class _RecordingSessionAdapter(SessionAdapter):
+    """Record the commands one QML provider dispatches."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.commands: list[LiveSessionCommand] = []
+
+    def _dispatch(self, *, command: LiveSessionCommand) -> None:
+        self.commands.append(command)
+
+
+def test_session_adapter_dispatches_one_augmentation_toggle() -> None:
+    adapter = _RecordingSessionAdapter()
+
+    adapter.setAugmentedIntelligenceEnabled(True)
+
+    assert adapter.commands == [ChangeAugmentation(enabled=True)]
 
 
 def test_recommendation_model_updates_rows_without_reset_churn() -> None:
@@ -1715,6 +1754,39 @@ def test_gui_preferences_adapter_persists_display_choices_independently(
         adapter.shutdown()
 
 
+def test_gui_preferences_adapter_persists_augmented_intelligence_toggle(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    adapter = GuiPreferencesAdapter(app_dir=tmp_path / "app")
+    augmented_changes: list[bool] = []
+    adapter.augmentedIntelligenceEnabledChanged.connect(augmented_changes.append)
+    reloaded: GuiPreferencesAdapter | None = None
+
+    try:
+        assert adapter.augmentedIntelligenceEnabled is False
+        assert adapter.contextualAdjustmentsEnabled is False
+        adapter.setAugmentedIntelligenceEnabled(False)
+        assert augmented_changes == []
+        adapter.setAugmentedIntelligenceEnabled(True)
+        adapter.setAugmentedIntelligenceEnabled(True)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.persistenceMessage == "Saved",
+            description="the augmented intelligence preference save",
+        )
+        reloaded = GuiPreferencesAdapter(app_dir=tmp_path / "app")
+
+        assert adapter.augmentedIntelligenceEnabled is True
+        assert augmented_changes == [True]
+        assert reloaded.augmentedIntelligenceEnabled is True
+        assert reloaded.contextualAdjustmentsEnabled is False
+    finally:
+        adapter.shutdown()
+        if reloaded is not None:
+            reloaded.shutdown()
+
+
 def test_gui_preferences_adapter_persists_mocked_draft_toggle_once(
     qcore_application: QCoreApplication,
     tmp_path: Path,
@@ -2575,6 +2647,83 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         )
         assert later_recommendation.contextual_evidence == ()
         assert later_recommendation.contextual_breakdown.aggregate == 0
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+class _StubAugmentedModelClient(AugmentedModelClient):
+    """Serve one validated augmentation artifact without cache or network work."""
+
+    def __init__(self, *, app_dir: Path) -> None:
+        super().__init__(app_dir=app_dir)
+        self.requested_set_codes: list[str] = []
+        self.thread_ids: list[int] = []
+
+    def load(self, set_code: str, *, allow_network: bool) -> AugmentedModelLoad:
+        assert allow_network is True
+        self.requested_set_codes.append(set_code)
+        self.thread_ids.append(threading.get_ident())
+        return AugmentedModelLoad(
+            outcome=AugmentedModelOutcome.DOWNLOADED,
+            set_code=set_code,
+            artifact=augmented_artifact(set_code="msh"),
+        )
+
+
+def test_live_adapter_loads_the_available_augmentation_model_off_gui_thread(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    """The adapter owns the per-set model load and publishes its availability."""
+
+    gui_thread_id = threading.get_ident()
+    fixture_lines = _AUGMENTED_FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    client = _StubAugmentedModelClient(app_dir=tmp_path / "app")
+    sessions: list[LiveSession] = []
+
+    def factory(publish: SnapshotPublisher) -> LiveSession:
+        session = LiveSession(
+            log_path=tmp_path / "Player.log",
+            app_dir=tmp_path / "app",
+            card_database=build_card_database_from_bulk_file(
+                path=_SCRYFALL_BULK_SAMPLE_PATH
+            ),
+            augmentation_enabled=False,
+            augmented_model_client=client,
+            poll_interval=0.01,
+            snapshot_publisher=publish,
+        )
+        session.process_lines(lines=fixture_lines[:7])
+        sessions.append(session)
+        return session
+
+    adapter = LiveSessionAdapter(
+        session_factory=factory,
+        poll_interval_ms=5,
+        startup_scan=False,
+        augmented_model_client=client,
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state.get("augmentation", {}).get("status")
+            == "available",
+            description="the adapter-owned augmentation model load",
+        )
+        assert client.requested_set_codes == ["MSH"]
+        assert all(thread_id != gui_thread_id for thread_id in client.thread_ids)
+        assert sessions[0].snapshot.augmentation == AugmentationState(
+            status=AugmentationStatus.AVAILABLE,
+            set_code="MSH",
+            enabled=False,
+        )
+        assert adapter.state["augmentation"] == {
+            "status": "available",
+            "set_code": "MSH",
+            "enabled": False,
+        }
     finally:
         adapter.shutdown()
         adapter.wait_for_shutdown()

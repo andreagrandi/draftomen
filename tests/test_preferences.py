@@ -182,6 +182,7 @@ def test_load_gui_preferences_uses_defaults_when_file_is_missing(tmp_path: Path)
 
     assert preferences == GuiDisplayPreferences()
     assert preferences.contextual_adjustments_enabled is False
+    assert preferences.augmented_intelligence_enabled is False
     assert warning is None
 
 
@@ -279,6 +280,16 @@ def test_gui_preferences_round_trip_contextual_adjustments(
     assert warning is None
 
 
+def test_gui_preferences_round_trip_augmented_intelligence(tmp_path: Path) -> None:
+    expected = GuiDisplayPreferences(augmented_intelligence_enabled=True)
+
+    assert save_gui_preferences(preferences=expected, app_dir=tmp_path / "app") is None
+    actual, warning = load_gui_preferences(app_dir=tmp_path / "app")
+
+    assert actual == expected
+    assert warning is None
+
+
 def test_gui_preferences_round_trip_and_isolate_display_choices(
     tmp_path: Path,
 ) -> None:
@@ -303,6 +314,7 @@ def test_gui_preferences_round_trip_and_isolate_display_choices(
     assert warning is None
     assert json.loads(gui_preferences_path(app_dir=app_dir).read_text()) == {
         "display": {
+            "augmented_intelligence_enabled": False,
             "card_preview": False,
             "compact_density": True,
             "contextual_adjustments_enabled": False,
@@ -329,6 +341,7 @@ def test_gui_preferences_recover_from_invalid_schema_and_fields(
             {
                 "version": 1,
                 "display": {
+                    "augmented_intelligence_enabled": "yes",
                     "compact_density": "yes",
                     "contextual_adjustments_enabled": "yes",
                     "secondary_stats": False,
@@ -343,6 +356,7 @@ def test_gui_preferences_recover_from_invalid_schema_and_fields(
 
     assert preferences == GuiDisplayPreferences(secondary_stats=False)
     assert warning is not None
+    assert "augmented_intelligence_enabled" in warning
     assert "compact_density" in warning
     assert "contextual_adjustments_enabled" in warning
     assert "show_backtest" in warning

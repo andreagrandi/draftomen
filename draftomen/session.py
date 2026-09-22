@@ -639,6 +639,7 @@ class LiveSessionSnapshot:
         "AI-enhanced relationship advice is unavailable: no active set profile."
     )
     augmentation: AugmentationState = field(default_factory=AugmentationState)
+    augmentation_message: str = "Augmented Intelligence is unavailable."
     recommendations: RecommendationState = field(default_factory=RecommendationState)
     pool: PoolState = field(default_factory=PoolState)
     card_image: CardImageState = field(default_factory=CardImageState)
@@ -867,6 +868,17 @@ def enhancement_advice_message(
         "AI-enhanced suggestions and Contextual pick scoring are off. Turn on "
         "both to show relationship advice."
     )
+
+
+def augmentation_status_message(*, state: AugmentationState) -> str:
+    """Explain whether a validated per-set augmentation model is available."""
+
+    set_suffix = "" if state.set_code is None else f" for {state.set_code}"
+    if state.status is not AugmentationStatus.AVAILABLE:
+        return f"Augmented Intelligence is unavailable{set_suffix}."
+    if state.enabled:
+        return f"Augmented Intelligence is on{set_suffix}."
+    return f"Augmented Intelligence is available{set_suffix}."
 
 
 @dataclass(frozen=True, slots=True)
@@ -4943,6 +4955,7 @@ class LiveSession:
             enhancement_availability = (
                 self._current_enhancement_availability_locked()
             )
+            augmentation = self._current_augmentation_state_locked()
             snapshot = replace(
                 snapshot,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
@@ -4955,7 +4968,8 @@ class LiveSession:
                     ),
                     recommendations=snapshot.recommendations,
                 ),
-                augmentation=self._current_augmentation_state_locked(),
+                augmentation=augmentation,
+                augmentation_message=augmentation_status_message(state=augmentation),
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,
                 errors=self._project_ratings_errors_locked(errors=snapshot.errors),
