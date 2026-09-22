@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Explain the augmented DO arithmetic in the desktop card detail. The
+  selected-card detail shows Basic DO, the signed adjustment, and the total
+  DO Score when augmentation is on, and keeps the plain DO presentation
+  otherwise. (#633)
 - Show Augmented Intelligence availability and control in the desktop. Settings
   gains a persisted Augmented Intelligence switch that stays off and disabled
   until the active set has a validated model, the live status strip reports
