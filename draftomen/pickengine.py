@@ -3421,21 +3421,30 @@ def _recommendation_comparison_summary(
     total_positive_support = sum(
         contribution for _, contribution in positive_deltas
     )
-    selected_factors: list[str] = []
+    selected_factor_kinds: list[str] = []
     selected_support = 0.0
     for kind, contribution in positive_deltas:
-        selected_factors.append(_comparison_factor_label(kind=kind))
+        selected_factor_kinds.append(kind)
         selected_support += contribution
         if selected_support > total_positive_support / 2.0:
             break
-    assert selected_factors
+    assert selected_factor_kinds
 
-    factors = _join_comparison_factors(selected_factors)
     point_label = "DO point" if score_gap == 1 else "DO points"
-    return render(
+    comparison = (
         f"DO recommendation: {top.card.name} leads {second.card.name} "
-        f"by {score_gap} {point_label}, mainly from {factors}."
+        f"by {score_gap} {point_label}"
     )
+    if "rating" in selected_factor_kinds:
+        return render(f"{comparison}.")
+
+    factors = _join_comparison_factors(
+        [
+            _comparison_factor_label(kind=kind)
+            for kind in selected_factor_kinds
+        ]
+    )
+    return render(f"{comparison}, mainly from {factors}.")
 
 
 def _append_comparison_hedge(
@@ -3480,8 +3489,6 @@ def _comparison_factor_buckets(*, card: ScoredCard) -> dict[str, float]:
     return buckets
 
 def _comparison_factor_label(*, kind: str) -> str:
-    if kind == "rating":
-        return "rating"
     if kind == "augmentation":
         return "the augmentation adjustment"
     if kind == "accounting_remainder":

@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Remove rating attribution from shared recommendation comparisons while
+  keeping other selected factor explanations intact. (#652)
 - Keep the desktop Augmented Intelligence choice on across restarts and
   Mocked Draft source changes, even when the current set has no model.
   Unavailable or failed models leave Basic DO and manual picks working. (#651)

@@ -1537,7 +1537,7 @@ def test_real_msh_pair_comparison_uses_pair_rates_and_open_hedge() -> None:
         (
             (70.0, 60.0),
             ({}, {}),
-            "DO recommendation: Alpha leads Beta by 10 DO points, mainly from rating.",
+            "DO recommendation: Alpha leads Beta by 10 DO points.",
         ),
         (
             (60.0, 60.0),
@@ -1549,9 +1549,14 @@ def test_real_msh_pair_comparison_uses_pair_rates_and_open_hedge() -> None:
             ({"role": 4.0}, {}),
             "DO recommendation: Alpha leads Beta by 4 DO points, mainly from role fit.",
         ),
+        (
+            (65.0, 60.0),
+            ({"color": 6.0, "role": 1.0}, {}),
+            "DO recommendation: Alpha leads Beta by 12 DO points.",
+        ),
     ],
 )
-def test_comparison_attributes_rating_color_and_context(
+def test_comparison_omits_rating_attribution_and_keeps_context(
     base_scores: tuple[float, float],
     contributions: tuple[dict[str, float], dict[str, float]],
     expected: str,
@@ -1734,8 +1739,8 @@ def test_equal_or_missing_pair_metadata_falls_through_to_score_explanation(
     )
 
     assert _render_comparison(cards, phase="open") == (
-        "DO recommendation: Alpha leads Beta by 2 DO points, mainly from "
-        "rating. early/open close pick; stay flexible."
+        "DO recommendation: Alpha leads Beta by 2 DO points. "
+        "early/open close pick; stay flexible."
     )
 
 
@@ -1759,8 +1764,7 @@ def test_comparison_uses_displayed_whole_point_gap_and_open_hedge() -> None:
         scores=(61, 59),
     )
     assert _render_comparison(cards, phase="building") == (
-        "DO recommendation: Alpha leads Beta by 2 DO points, mainly from "
-        "rating. close pick."
+        "DO recommendation: Alpha leads Beta by 2 DO points. close pick."
     )
 
     open_cards = _comparison_cards(
@@ -1769,8 +1773,8 @@ def test_comparison_uses_displayed_whole_point_gap_and_open_hedge() -> None:
         scores=(70, 60),
     )
     assert _render_comparison(open_cards, phase="open") == (
-        "DO recommendation: Alpha leads Beta by 10 DO points, mainly from "
-        "rating. early/open pick — stay flexible."
+        "DO recommendation: Alpha leads Beta by 10 DO points. "
+        "early/open pick — stay flexible."
     )
 
 
