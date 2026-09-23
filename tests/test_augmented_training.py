@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import math
@@ -9,8 +10,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import numpy as np
+
 import pytest
 
+import draftomen.augmented_training as augmented_training
+from draftomen.augmented_training import (
+    AugmentedTrainingError,
+    BasicScores,
+    ModelCTrainingConfig,
+    _load_array_training_data,
+    build_basic_do_scores,
+    train_and_gate_hob_model_c,
+    train_and_gate_hob_model_c_arrays,
+)
 from draftomen.augmented_training_data import (
     FEATURE_NAMES,
     AugmentedTrainingSource,
@@ -20,15 +33,7 @@ from draftomen.augmented_training_data import (
 )
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.set_profile import SetProfile
-from scripts.hob_model_c_training import (
-    AugmentedTrainingError,
-    BasicScores,
-    ModelCTrainingConfig,
-    _load_array_training_data,
-    build_basic_do_scores,
-    train_and_gate_hob_model_c,
-    train_and_gate_hob_model_c_arrays,
-)
+
 
 _CARD_A = "00000000-0000-0000-0000-000000000001"
 _CARD_B = "00000000-0000-0000-0000-000000000002"
@@ -157,6 +162,76 @@ def _prepared_from_public_dump() -> PreparedAugmentedTrainingData:
         source=source,
         card_database=_fixture_card_database(),
         complete_draft_picks=2,
+    )
+
+
+def _passing_compact_source(*, tmp_path: Path) -> AugmentedTrainingSource:
+    path = tmp_path / "passing-hob.csv"
+    fieldnames = (
+        "expansion",
+        "event_type",
+        "draft_id",
+        "draft_time",
+        "rank",
+        "event_match_wins",
+        "event_match_losses",
+        "pack_number",
+        "pick_number",
+        "pick",
+        "pick_2",
+        "pack_card_Red Recruit",
+        "pack_card_Blue Trick",
+        "pool_Red Recruit",
+        "pool_Blue Trick",
+    )
+    with path.open(mode="w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for draft_index in range(16):
+            red_first = draft_index % 2 == 0
+            first_pick = "Red Recruit" if red_first else "Blue Trick"
+            second_pick = "Blue Trick" if red_first else "Red Recruit"
+            shared = {
+                "expansion": "HOB",
+                "event_type": "PremierDraft",
+                "draft_id": f"passing-{draft_index:02}",
+                "draft_time": f"2026-09-{draft_index + 1:02} 10:00:00",
+                "rank": "gold",
+                "event_match_wins": 3,
+                "event_match_losses": 1,
+                "pack_number": 0,
+                "pick_2": "",
+            }
+            writer.writerow(
+                {
+                    **shared,
+                    "pick_number": 0,
+                    "pick": first_pick,
+                    "pack_card_Red Recruit": int(red_first),
+                    "pack_card_Blue Trick": int(not red_first),
+                    "pool_Red Recruit": 0,
+                    "pool_Blue Trick": 0,
+                }
+            )
+            writer.writerow(
+                {
+                    **shared,
+                    "pick_number": 1,
+                    "pick": second_pick,
+                    "pack_card_Red Recruit": 1,
+                    "pack_card_Blue Trick": 1,
+                    "pool_Red Recruit": int(red_first),
+                    "pool_Blue Trick": int(not red_first),
+                }
+            )
+    return AugmentedTrainingSource(
+        path=path,
+        url="https://example.test/passing-hob.csv",
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        retrieved_at="2026-09-20T12:00:00+00:00",
+        attribution="17Lands public datasets",
+        license="CC BY 4.0",
+        event_type="PremierDraft",
     )
 
 
@@ -331,6 +406,106 @@ def test_compact_full_dump_path_removes_artifact_when_gate_fails(
     assert result.report["evaluation"]["basic_do"] == result.report["evaluation"][
         "basic_plus_augmented"
     ]
+
+
+def test_compact_trainer_promotes_deterministically_with_controlled_basic_scores(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _passing_compact_source(tmp_path=tmp_path)
+    assert source.sha256 == hashlib.sha256(source.path.read_bytes()).hexdigest()
+    database = _fixture_card_database()
+    data = _load_array_training_data(
+        source=source,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+    assert data.rows_seen == 32
+    assert data.drafts_seen == 16
+    assert tuple(len(data.split_drafts[name]) for name in data.split_drafts) == (
+        11,
+        2,
+        3,
+    )
+
+    def controlled_basic_scores(*, data, rows, card_database, set_profile):
+        scores = np.full(
+            (len(rows), len(data.card_names)),
+            -np.inf,
+            dtype=np.float32,
+        )
+        for score_index, row_value in enumerate(rows):
+            row = int(row_value)
+            offered = np.flatnonzero(data.pack_mask[row])
+            if len(offered) == 1:
+                scores[score_index, offered[0]] = 0.0
+                continue
+            pool_colors = np.flatnonzero(data.pool_counts[row])
+            assert len(pool_colors) == 1
+            chosen = int(data.targets[row])
+            assert int(pool_colors[0]) != chosen
+            scores[score_index, pool_colors[0]] = 1.0
+            scores[score_index, chosen] = 0.0
+        return scores
+
+    monkeypatch.setattr(
+        augmented_training,
+        "_build_array_basic_scores",
+        controlled_basic_scores,
+    )
+    profile = SetProfile.generic(set_code="HOB", event_format="PremierDraft")
+    paths = [
+        (
+            tmp_path / f"compact-artifact-{index}.json",
+            tmp_path / f"compact-report-{index}.json",
+        )
+        for index in range(2)
+    ]
+    results = [
+        train_and_gate_hob_model_c_arrays(
+            data=data,
+            source=source,
+            card_database=database,
+            set_profile=profile,
+            artifact_path=artifact_path,
+            report_path=report_path,
+            config=_CONFIG,
+        )
+        for artifact_path, report_path in paths
+    ]
+
+    assert all(result.promoted for result in results)
+    artifact_bytes = paths[0][0].read_bytes()
+    report_bytes = paths[0][1].read_bytes()
+    assert artifact_bytes == paths[1][0].read_bytes()
+    assert report_bytes == paths[1][1].read_bytes()
+
+    artifact = json.loads(artifact_bytes)
+    report = json.loads(report_bytes)
+    basic = artifact["evaluation"]["basic_do"]
+    augmented = artifact["evaluation"]["basic_plus_augmented"]
+    assert basic == {
+        "mean_reciprocal_rank": 0.75,
+        "picks": 6,
+        "top_1": 0.5,
+    }
+    assert augmented["picks"] == basic["picks"]
+    assert augmented["top_1"] > basic["top_1"]
+    assert augmented["mean_reciprocal_rank"] > basic["mean_reciprocal_rank"]
+    assert report["promotion"] == {
+        "passed": True,
+        "rule": "both_metrics_strictly_improve",
+    }
+    assert report["artifact_sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
+    assert artifact["source"] == {
+        "attribution": "17Lands public datasets",
+        "event_type": "PremierDraft",
+        "license": "CC BY 4.0",
+        "retrieved_at": "2026-09-20T12:00:00+00:00",
+        "sha256": source.sha256,
+        "url": "https://example.test/passing-hob.csv",
+    }
+    assert report["source"] == artifact["source"]
 
 
 def test_pilot_rejects_non_hob_training_data(tmp_path: Path) -> None:
