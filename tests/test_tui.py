@@ -1882,16 +1882,41 @@ async def _assert_pack_build_and_next_pack_restore_rationale(
 ) -> None:
     _write_profile_with_card_ratings(
         tmp_path=tmp_path,
-        card_ratings=_graded_profile_ratings(),
+        card_ratings=(
+            _card_rating(
+                card_key="arena_id:104894",
+                gih=0.80,
+                samples=2_000,
+                alsa=1.2,
+            ),
+            _card_rating(
+                card_key="arena_id:105097",
+                gih=0.65,
+                samples=2_000,
+                alsa=2.1,
+            ),
+        ),
     )
     app = _tui_app(tmp_path=tmp_path)
 
     async with app.run_test(size=(140, 30)) as pilot:
-        app.process_lines(lines=_first_pick_lines())
+        app.process_lines(lines=_first_pack_lines())
         await pilot.pause()
         initial_snapshot = app.session.snapshot
         initial_summary = initial_snapshot.recommendations.comparison_summary
         assert initial_summary is not None
+        scored_pack = initial_snapshot.current_scored_pack
+        assert scored_pack is not None
+        top, second = scored_pack.cards[:2]
+        assert top.card.arena_id == 104894
+        assert second.card.arena_id == 105097
+        score_gap = top.score - second.score
+        assert score_gap > 0
+        assert (
+            f"{top.card.name} leads {second.card.name} by "
+            f"{score_gap} DO points."
+        ) in initial_summary
+        assert "mainly from" not in initial_summary
         _, initial_rationale = _assert_focused_pack_rationale(
             app=app,
             snapshot=initial_snapshot,
@@ -1916,6 +1941,11 @@ async def _assert_pack_build_and_next_pack_restore_rationale(
         assert focused_card.display is True
         _assert_focused_pack_rationale(app=app, snapshot=initial_snapshot)
 
+        first_pick_lines = _full_fixture_lines()[7:10]
+        app.process_lines(lines=first_pick_lines[:2])
+        await pilot.pause()
+        assert app.session.snapshot.pool.total_cards == 1
+
         await pilot.press("b")
         await pilot.pause()
         assert app._view_mode == "build"
@@ -1924,7 +1954,7 @@ async def _assert_pack_build_and_next_pack_restore_rationale(
         assert "Focused card details" in _focused_card_text(app=app)
         assert initial_summary not in _focused_card_text(app=app)
 
-        app.process_lines(lines=_full_fixture_lines()[10:13])
+        app.process_lines(lines=first_pick_lines[2:])
         await pilot.pause()
         assert app._view_mode == "pack"
         next_snapshot = app.session.snapshot

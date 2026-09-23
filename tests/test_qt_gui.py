@@ -2328,6 +2328,14 @@ from draftomen.pool import load_draft_state
 from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_gui import _fixed_font_family
 from draftomen.session import LiveSession, LiveSessionCommand, RequestBuild
+from draftomen.set_profile import (
+    CardRating,
+    RateEstimate,
+    dump_set_profile,
+    load_set_profile,
+    set_profile_path,
+)
+from draftomen.seventeen import QUICK_DRAFT_FORMAT
 
 
 def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
@@ -2404,7 +2412,7 @@ def load_image_database():
     return replace(
         database,
         cards={
-            grp_id: replace(card, image_uri=None)
+            grp_id: replace(card, image_uri=None, set_code="MSH")
             for grp_id, card in database.cards.items()
         },
         image_uris_by_name={},
@@ -2413,6 +2421,52 @@ def load_image_database():
 
 project_root = Path.cwd()
 app_dir = Path(os.environ["DRAFTOMEN_E2E_APP_DIR"])
+mature_profile = load_set_profile(
+    project_root / "tests" / "fixtures" / "set-profiles" / "mature.json",
+    expected_set_code="TST",
+    expected_format=QUICK_DRAFT_FORMAT,
+)
+msh_profile = replace(
+    mature_profile,
+    set_code="MSH",
+    role_profile=(
+        replace(mature_profile.role_profile, set_code="MSH")
+        if mature_profile.role_profile is not None
+        else None
+    ),
+    card_ratings=(
+        CardRating(
+            card_key="arena_id:105009",
+            gih_win_rate=RateEstimate(
+                raw_value=0.80,
+                value=0.80,
+                samples=2_000,
+                prior_value=0.50,
+                source="17lands",
+            ),
+            average_last_seen_at=1.2,
+        ),
+        CardRating(
+            card_key="arena_id:105149",
+            gih_win_rate=RateEstimate(
+                raw_value=0.65,
+                value=0.65,
+                samples=2_000,
+                prior_value=0.50,
+                source="17lands",
+            ),
+            average_last_seen_at=2.1,
+        ),
+    ),
+)
+dump_set_profile(
+    msh_profile,
+    set_profile_path(
+        set_code="MSH",
+        event_format=QUICK_DRAFT_FORMAT,
+        app_dir=app_dir,
+    ),
+)
 fixture_log_path = project_root / "tests" / "fixtures" / "quick-draft-msh-player.log"
 fixture_log_lines = fixture_log_path.read_text(encoding="utf-8").splitlines(keepends=True)
 log_path = app_dir / "Player.log"
@@ -2521,10 +2575,21 @@ try:
     first_scored_pack = recording_session.snapshot.current_scored_pack
     assert first_scored_pack is not None
     assert first_scored_pack.cards
+    top, second = first_scored_pack.cards[:2]
+    assert top.card.arena_id == 105009
+    assert second.card.arena_id == 105149
+    score_gap = top.score - second.score
+    assert score_gap > 0
     assert recording_session.snapshot.contextual_adjustments_enabled is True
     assert root.property("currentSurface") == "live"
     first_comparison_summary = first_scored_pack.comparison_summary
     assert isinstance(first_comparison_summary, str)
+    expected_comparison_summary = (
+        f"DO recommendation: {top.card.name} leads {second.card.name} "
+        f"by {score_gap} DO points."
+    )
+    assert first_comparison_summary == expected_comparison_summary
+    assert "mainly from" not in first_comparison_summary
     comparison = root.findChild(QObject, "recommendationComparisonSummary")
     confidence = root.findChild(QObject, "recommendationConfidenceSummary")
     live_view = root.findChild(QObject, "liveDraftView")
@@ -2540,8 +2605,13 @@ try:
         == first_comparison_summary,
         "the published production recommendation comparison",
     )
+    assert provider.state["recommendations"]["comparison_summary"] == (
+        expected_comparison_summary
+    )
+    assert "mainly from" not in provider.state["recommendations"]["comparison_summary"]
     assert comparison.isVisible()
-    assert comparison.property("text") == first_comparison_summary
+    assert comparison.property("text") == expected_comparison_summary
+    assert "mainly from" not in comparison.property("text")
 
     def assert_comparison_layout(*, width: int, height: int) -> None:
         root.resize(width, height)
