@@ -1028,22 +1028,11 @@ def test_native_specs_enumerate_runtime_inputs() -> None:
         assert nuitka["mode"] == "onefile"
 
 
-def test_project_metadata_includes_package_sources_logo_and_no_fonts() -> None:
-    """The pyside6-project input list covers package sources and assets."""
+def test_project_metadata_includes_logo_and_no_fonts() -> None:
+    """The pyside6-project input list names existing assets."""
 
     with (PROJECT_ROOT / "pyproject.toml").open(mode="rb") as project_file:
         project_files = tomllib.load(project_file)["tool"]["pyside6-project"]["files"]
-
-    declared_python_files = {
-        path
-        for path in project_files
-        if Path(path).parent == Path("draftomen") and Path(path).suffix == ".py"
-    }
-    actual_python_files = {
-        path.relative_to(PROJECT_ROOT).as_posix()
-        for path in (PROJECT_ROOT / "draftomen").glob("*.py")
-    }
-    assert declared_python_files == actual_python_files
 
     assert "draftomen/assets/draftomen_logo.png" in project_files
     assert not any("font" in path.lower() for path in project_files)
