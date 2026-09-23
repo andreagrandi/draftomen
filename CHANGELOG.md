@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Load the published HOB augmented model when a desktop Mocked Draft starts.
+  Keep model loading off the session thread, and enable the setting for
+  simulated HOB offers without requiring another action. (#624)
 - Publish the first HOB PremierDraft augmented model after it beats Basic DO
   on held-out Top-1 agreement and mean reciprocal rank. Its manifest records
   the source and points to the compressed model by checksum. (#624)

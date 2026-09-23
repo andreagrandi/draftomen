@@ -385,6 +385,7 @@ def _mocked_draft_factory(
     *,
     args: argparse.Namespace,
     preferences: GuiDisplayPreferences,
+    augmented_model_client: AugmentedModelClient | None = None,
 ) -> TestDraftFactory:
     """Build the developer Mocked Draft factory from resolved sources."""
 
@@ -402,6 +403,7 @@ def _mocked_draft_factory(
         profile_manifest_url=manifest_url,
         profile_network_policy=network_policy,
         simulation_app_dir=None,
+        augmented_model_client=augmented_model_client,
     )
 
 
@@ -418,7 +420,14 @@ def _sync_mocked_draft_capability(
         provider.setTestDraftFactory(None)
         return
     try:
-        factory = _mocked_draft_factory(args=args, preferences=preferences)
+        augmented_model_client = getattr(provider, "_augmented_model_client", None)
+        if not isinstance(augmented_model_client, AugmentedModelClient):
+            augmented_model_client = None
+        factory = _mocked_draft_factory(
+            args=args,
+            preferences=preferences,
+            augmented_model_client=augmented_model_client,
+        )
     except ValueError as error:
         print(f"Mocked Draft could not be enabled: {error}", file=sys.stderr)
         provider.setTestDraftFactory(None)
@@ -442,6 +451,7 @@ class _GuiTestDraftFactory:
         profile_manifest_url: str | None,
         profile_network_policy: ProfileNetworkPolicy,
         simulation_app_dir: Path | None,
+        augmented_model_client: AugmentedModelClient | None = None,
     ) -> None:
         self._draftmancer_dir = draftmancer_dir
         self._scryfall_bulk_file = scryfall_bulk_file
@@ -454,6 +464,11 @@ class _GuiTestDraftFactory:
         self._profile_manifest_url = profile_manifest_url
         self._profile_network_policy = profile_network_policy
         self._simulation_app_dir = simulation_app_dir
+        self._augmented_model_client = (
+            AugmentedModelClient(app_dir=app_dir)
+            if augmented_model_client is None
+            else augmented_model_client
+        )
 
     def supported_set_codes(self) -> tuple[str, ...]:
         """List the sets the checkout and the local cache both provide."""
@@ -514,6 +529,7 @@ class _GuiTestDraftFactory:
             contextual_adjustments_enabled=contextual_adjustments_enabled,
             ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
             simulation_app_dir=self._simulation_app_dir,
+            augmented_model_client=self._augmented_model_client,
             card_image_service=CardImageService(
                 cache_dir=card_image_cache_dir(app_dir=self._app_dir),
                 timeout_seconds=2.0,
@@ -546,7 +562,11 @@ def _build_provider(
     # settings toggle replaces this choice with the user's live selection.
     test_draft_factory: TestDraftFactory | None = None
     if args.draftmancer_dir is not None or preferences.mocked_draft_enabled:
-        test_draft_factory = _mocked_draft_factory(args=args, preferences=preferences)
+        test_draft_factory = _mocked_draft_factory(
+            args=args,
+            preferences=preferences,
+            augmented_model_client=augmented_model_client,
+        )
     return LiveSessionAdapter(
         session_factory=_live_session_factory(
             log_path=args.log_path,

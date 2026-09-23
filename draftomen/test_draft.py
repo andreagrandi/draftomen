@@ -16,6 +16,7 @@ from typing import Literal, Self, TypeAlias
 import uuid
 import zlib
 
+from draftomen.augmented_model_client import AugmentedModelClient
 from draftomen.card_data_client import CardDataClient
 from draftomen.carddb import CardDatabase
 from draftomen.cardimages import CardImageService
@@ -662,6 +663,7 @@ def create_test_draft_runtime(
     simulation_app_dir: Path | None = None,
     socket_client: object | None = None,
     card_image_service: CardImageService | None = None,
+    augmented_model_client: AugmentedModelClient | None = None,
 ) -> TestDraftRuntime:
     """Create one isolated simulated draft runtime from validated sources.
     The returned runtime owns its session, adapter, and temporary directory.
@@ -753,6 +755,7 @@ def create_test_draft_runtime(
                 profile_client=profile_client,
                 snapshot_publisher=snapshot_publisher,
                 card_image_service=card_image_service,
+                augmented_model_client=augmented_model_client,
                 splash_enabled=splash_enabled,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
                 ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,

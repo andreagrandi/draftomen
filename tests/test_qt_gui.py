@@ -9,6 +9,7 @@ import subprocess
 import sys
 from importlib.resources import files
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from typing import Any, Callable
 
 import pytest
@@ -17,7 +18,15 @@ pytest.importorskip("PySide6")
 
 from draftomen import __version__
 from draftomen.audit import load_draft_audit_records
+from draftomen.augmented_model_client import (
+    AUGMENTED_MANIFEST_URL,
+    AUGMENTED_OBJECTS_BASE_URL,
+    AugmentedModelClient,
+)
+from draftomen.card_data_client import card_data_cache_path
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.session import AugmentationStatus, ChangeAugmentation
+from draftomen.set_card_data import SetCardData
 from draftomen.profile_client import ProfileClient, ProfileNetworkPolicy
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.pool import load_draft_state
@@ -46,6 +55,12 @@ from draftomen.test_draft import (
     DEFAULT_TEST_DRAFT_SERVER_URL,
     default_test_draft_bulk_file,
     default_test_draft_checkout_dir,
+)
+from tests.augmented_artifacts import (
+    augmented_manifest_entry_json,
+    augmented_manifest_json,
+    canonical_bytes,
+    fixed_delta_artifact,
 )
 
 
@@ -417,6 +432,11 @@ def test_gui_mocked_draft_resolves_application_data_defaults_and_flag_precedence
         app_dir=app_dir,
     )
     assert defaulted_factory._server.configured_url == DEFAULT_TEST_DRAFT_SERVER_URL
+    assert (
+        defaulted_factory._augmented_model_client
+        is defaulted._augmented_model_client  # type: ignore[attr-defined]
+    )
+    assert defaulted_factory._augmented_model_client.app_dir == app_dir  # type: ignore[attr-defined]
 
     overridden = _build_provider(
         args=_parser().parse_args(
@@ -497,6 +517,10 @@ def test_gui_mocked_draft_capability_follows_source_changes(
     )
     assert len(installed) == 1
     factory = installed[0]
+    assert (
+        factory._augmented_model_client
+        is provider._augmented_model_client  # type: ignore[attr-defined]
+    )
     assert factory._draftmancer_dir == checkout  # type: ignore[attr-defined]
     assert factory._scryfall_bulk_file == bulk  # type: ignore[attr-defined]
     assert (  # type: ignore[attr-defined]
@@ -526,6 +550,10 @@ def test_gui_mocked_draft_capability_follows_source_changes(
     )
     assert len(installed) == 2
     flagged = installed[1]
+    assert (
+        flagged._augmented_model_client
+        is provider._augmented_model_client  # type: ignore[attr-defined]
+    )
     assert flagged._draftmancer_dir == tmp_path / "flagged-checkout"  # type: ignore[attr-defined]
     assert flagged._scryfall_bulk_file == tmp_path / "flagged-cards.jsonl.gz"  # type: ignore[attr-defined]
     assert flagged._server.configured_url == "http://127.0.0.1:3999"  # type: ignore[attr-defined]
@@ -536,6 +564,253 @@ def test_gui_mocked_draft_capability_follows_source_changes(
         preferences=GuiDisplayPreferences(),
     )
     assert installed[-1] is None
+
+
+def test_gui_mocked_draft_hob_offer_loads_validated_augmented_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    oracle_ids = (
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+    )
+    cards = {
+        grp_id: CardInfo(
+            grp_id=grp_id,
+            name=f"Fixture {grp_id}",
+            colors=("W",),
+            mana_value=2.0,
+            rarity="common",
+            types=("Creature",),
+            set_code="hob",
+            arena_id=grp_id,
+            oracle_id=oracle_id,
+        )
+        for grp_id, oracle_id in zip((100, 101), oracle_ids, strict=True)
+    }
+    database = CardDatabase(cards=cards)
+    card_data_path = card_data_cache_path(set_code="hob", app_dir=app_dir)
+    card_data_path.parent.mkdir(parents=True, exist_ok=True)
+    card_data_path.write_bytes(
+        SetCardData.from_card_database(
+            database,
+            set_code="hob",
+            set_name="Fixture Set",
+        ).to_gzip_bytes()
+    )
+
+    checkout = tmp_path / "Draftmancer"
+    constants_path = checkout / "src" / "data" / "constants.json"
+    constants_path.parent.mkdir(parents=True)
+    constants_path.write_text('{"MTGASets": ["HOB"]}', encoding="utf-8")
+    bulk_file = tmp_path / "scryfall-default-cards.jsonl"
+    bulk_file.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "set": "hob",
+                    "id": f"print-{grp_id}",
+                    "oracle_id": oracle_id,
+                    "arena_id": grp_id,
+                }
+            )
+            + "\n"
+            for grp_id, oracle_id in zip((100, 101), oracle_ids, strict=True)
+        ),
+        encoding="utf-8",
+    )
+    provider = _build_provider(
+        args=_parser().parse_args(
+            [
+                "--provider",
+                "live",
+                "--app-dir",
+                str(app_dir),
+                "--draftmancer-dir",
+                str(checkout),
+                "--scryfall-bulk-file",
+                str(bulk_file),
+                "--log-path",
+                str(tmp_path / "Player.log"),
+                "--poll-interval",
+                "0.01",
+                "--offline-profiles",
+                "--no-startup-scan",
+            ]
+        ),
+        preferences=GuiDisplayPreferences(),
+    )
+    factory = provider._test_draft_factory  # type: ignore[attr-defined]
+    augmented_client = provider._augmented_model_client  # type: ignore[attr-defined]
+    assert isinstance(factory, _GuiTestDraftFactory)
+    assert isinstance(augmented_client, AugmentedModelClient)
+    assert factory._augmented_model_client is augmented_client  # type: ignore[attr-defined]
+    assert augmented_client.app_dir == app_dir
+
+    artifact = fixed_delta_artifact(
+        set_code="hob",
+        candidate_ids=oracle_ids,
+        deltas=(6.0, -6.0),
+    )
+    model_bytes = artifact.to_gzip_bytes()
+    model_digest = hashlib.sha256(model_bytes).hexdigest()
+    manifest_bytes = canonical_bytes(
+        augmented_manifest_json(
+            sets={
+                "hob": augmented_manifest_entry_json(
+                    artifact_bytes=len(artifact.to_bytes()),
+                    artifact_sha256=model_digest,
+                )
+            }
+        )
+    )
+    object_url = f"{AUGMENTED_OBJECTS_BASE_URL}{model_digest}.json.gz"
+    payloads = {
+        AUGMENTED_MANIFEST_URL: manifest_bytes,
+        object_url: model_bytes,
+    }
+    requested_urls: list[str] = []
+
+    class FixtureResponse:
+        def __init__(self, *, payload: bytes, url: str) -> None:
+            self._stream = io.BytesIO(payload)
+            self.url = url
+            self.status = 200
+
+        def read(self, size: int = -1) -> bytes:
+            return self._stream.read(size)
+
+        def geturl(self) -> str:
+            return self.url
+
+        def close(self) -> None:
+            self._stream.close()
+
+    def fixture_opener(request: Any, *, timeout: float) -> FixtureResponse:
+        del timeout
+        url = request.full_url
+        requested_urls.append(url)
+        if url not in payloads:
+            raise AssertionError(f"unexpected augmented-model request: {url}")
+        return FixtureResponse(payload=payloads[url], url=url)
+
+    augmented_client.opener = fixture_opener
+
+    class SimulatedDraftSocket:
+        def __init__(self) -> None:
+            self.handlers: dict[str, Callable[..., None]] = {}
+            self.connect_url: str | None = None
+
+        def on(self, *, event: str, handler: Callable[..., None]) -> None:
+            self.handlers[event] = handler
+
+        def connect(self, url: str, **kwargs: object) -> None:
+            del kwargs
+            self.connect_url = url
+            self.handlers["connect"]()
+
+        def emit(
+            self,
+            *,
+            event: str,
+            data: object,
+            callback: Callable[..., None] | None,
+        ) -> None:
+            del data
+            if event == "startDraft":
+                assert self.connect_url is not None
+                query = parse_qs(urlsplit(self.connect_url).query)
+                user_id = query["userID"][0]
+                user_name = query["userName"][0]
+                seats: dict[str, dict[str, object]] = {
+                    user_id: {
+                        "userID": user_id,
+                        "userName": user_name,
+                        "isBot": False,
+                    }
+                }
+                seats.update(
+                    {
+                        f"bot-{index}": {
+                            "userID": f"bot-{index}",
+                            "userName": f"Bot {index}",
+                            "isBot": True,
+                        }
+                        for index in range(7)
+                    }
+                )
+                self.handlers["startDraft"](seats)
+                self.handlers["draftState"](
+                    {
+                        "boosterNumber": 0,
+                        "pickNumber": 0,
+                        "booster": [
+                            {"uniqueID": 1, "id": "print-100"},
+                            {"uniqueID": 2, "id": "print-101"},
+                        ],
+                    }
+                )
+            if callback is not None:
+                callback({"code": 0})
+
+        def disconnect(self) -> None:
+            pass
+
+    socket = SimulatedDraftSocket()
+    monkeypatch.setattr(
+        "draftomen.draftmancer.socketio.Client",
+        lambda **kwargs: socket,
+    )
+    runtime = factory.create_runtime(
+        server_url=DEFAULT_TEST_DRAFT_SERVER_URL,
+        set_code="HOB",
+        publisher=lambda snapshot: None,
+        splash_enabled=True,
+        contextual_adjustments_enabled=True,
+        ai_enhanced_suggestions_enabled=True,
+    )
+    try:
+        inspection = runtime.controller.start()
+        basic_rows = tuple(
+            (row.card.grp_id, row.score)
+            for row in inspection.snapshot.recommendations.cards
+        )
+        assert {grp_id for grp_id, _score in basic_rows} == {100, 101}
+
+        request = runtime.session.augmented_model_request()
+        assert request is not None
+        assert request.set_code.casefold() == "hob"
+        loaded = augmented_client.load("hob", allow_network=True)
+        assert loaded.available is True
+        assert requested_urls == [AUGMENTED_MANIFEST_URL, object_url]
+        assert augmented_client.cache_path("hob").is_file()
+        runtime.session.complete_augmented_model(request=request, load=loaded)
+        assert (
+            runtime.session.snapshot.augmentation.status
+            is AugmentationStatus.AVAILABLE
+        )
+
+        enabled = runtime.session.dispatch(
+            command=ChangeAugmentation(enabled=True)
+        )
+        enabled_by_id = {
+            row.card.grp_id: row for row in enabled.recommendations.cards
+        }
+        assert enabled_by_id[100].basic_score == dict(basic_rows)[100]
+        assert enabled_by_id[100].augmentation_delta == 6
+        assert enabled_by_id[101].basic_score == dict(basic_rows)[101]
+        assert enabled_by_id[101].augmentation_delta == -6
+
+        restored = runtime.session.dispatch(
+            command=ChangeAugmentation(enabled=False)
+        )
+        assert tuple(
+            (row.card.grp_id, row.score)
+            for row in restored.recommendations.cards
+        ) == basic_rows
+    finally:
+        runtime.close()
 
 
 def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
