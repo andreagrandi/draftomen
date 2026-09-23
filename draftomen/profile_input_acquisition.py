@@ -790,6 +790,40 @@ def acquire_card_metadata_bundle(
     )
 
 
+def acquire_public_draft_source(
+    *,
+    environment: PlannedEnvironment,
+    cache: ProfileInputCache,
+    adapter: SeventeenLandsPublicDraftAdapter | None = None,
+    offline: bool = False,
+    clock: Clock | None = None,
+) -> PublicDumpSource:
+    """Acquire one verified public-draft source from the shared input cache."""
+
+    if not isinstance(environment, PlannedEnvironment):
+        raise ProfileInputAcquisitionError("environment must be a PlannedEnvironment.")
+    if not isinstance(cache, ProfileInputCache):
+        raise ProfileInputAcquisitionError("cache must be a ProfileInputCache.")
+    acquisition = _acquire_public_drafts(
+        environment=environment,
+        cache=cache,
+        adapter=(
+            adapter if adapter is not None else SeventeenLandsPublicDraftAdapter()
+        ),
+        offline=offline,
+        clock=clock,
+    )
+    if acquisition.manifest is None:
+        raise ProfileInputAcquisitionError(
+            "Public-draft source is missing, corrupt, or unavailable."
+        )
+    _validate_public_draft_manifest(
+        manifest=acquisition.manifest,
+        report=acquisition.report,
+    )
+    return acquisition.manifest.sources[0]
+
+
 def acquire_profile_build_bundle(
     *,
     environment: PlannedEnvironment,
@@ -1781,5 +1815,6 @@ __all__ = [
     "SeventeenLandsPublicDraftAdapter",
     "SeventeenLandsRatingsAdapter",
     "acquire_card_metadata_bundle",
+    "acquire_public_draft_source",
     "acquire_profile_build_bundle",
 ]

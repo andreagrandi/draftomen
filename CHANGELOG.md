@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Select a listed public 17Lands Draft Data dump for one set, preferring
+  PremierDraft before TradDraft and QuickDraft. Reuse validated cached bytes
+  and keep the source URL, checksum, retrieval time, and license for later
+  augmented training. (#636)
 - Explain the augmented DO arithmetic in the desktop card detail. The
   selected-card detail shows Basic DO, the signed adjustment, and the total
   DO Score when augmentation is on, and keeps the plain DO presentation

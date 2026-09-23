@@ -72,6 +72,7 @@ files = [
     "draftomen/__init__.py",
     "draftomen/audit.py",
     "draftomen/augmented_training_data.py",
+    "draftomen/augmented_public_data.py",
     "draftomen/augmented_artifact.py",
     "draftomen/augmented_manifest.py",
     "draftomen/augmented_model_client.py",
