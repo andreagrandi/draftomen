@@ -1489,6 +1489,7 @@ class _LiveSessionWorker(QObject):
                 self._test_draft_phase = "drafting"
                 self._publish_test_draft_state()
                 self._publish_snapshot(runtime.session.snapshot)
+                self._request_augmented_model()
                 self._request_one_card_image()
             else:
                 self._switch_source(source="test-draft")

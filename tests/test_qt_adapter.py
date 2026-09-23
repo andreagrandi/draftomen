@@ -2667,7 +2667,7 @@ class _StubAugmentedModelClient(AugmentedModelClient):
         return AugmentedModelLoad(
             outcome=AugmentedModelOutcome.DOWNLOADED,
             set_code=set_code,
-            artifact=augmented_artifact(set_code="msh"),
+            artifact=augmented_artifact(set_code=set_code.casefold()),
         )
 
 
@@ -3823,7 +3823,7 @@ class _CountingTestDraftRuntime:
 
 
 class _RealTestDraftRuntimeFactory:
-    """Create real simulated runtimes over one seeded fake transport."""
+    """Create one real simulated runtime over one seeded fake transport."""
 
     def __init__(
         self,
@@ -3831,10 +3831,12 @@ class _RealTestDraftRuntimeFactory:
         sources: _HelperSources,
         socket: _FakeSocket,
         timeout_seconds: float = 5.0,
+        augmented_model_client: AugmentedModelClient | None = None,
     ) -> None:
         self._sources = sources
         self._socket = socket
         self._timeout_seconds = timeout_seconds
+        self._augmented_model_client = augmented_model_client
         self.started: list[_CountingTestDraftRuntime] = []
         self.publication_thread_ids: list[int] = []
 
@@ -3873,6 +3875,7 @@ class _RealTestDraftRuntimeFactory:
             ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
             simulation_app_dir=simulation_app_dir,
             socket_client=self._socket,
+            augmented_model_client=self._augmented_model_client,
         )
         wrapper = _CountingTestDraftRuntime(runtime=runtime)
         self.started.append(wrapper)
@@ -3894,6 +3897,7 @@ def _start_real_test_draft_adapter(
     application: QCoreApplication,
     tmp_path: Path,
     socket: _FakeSocket,
+    augmented_model_client: AugmentedModelClient | None = None,
 ) -> tuple[
     LiveSessionAdapter,
     _FakeSession,
@@ -3903,7 +3907,11 @@ def _start_real_test_draft_adapter(
     """Start one live adapter whose Test Draft factory builds real runtimes."""
 
     sources = _seed_helper_sources(tmp_path=tmp_path)
-    source = _RealTestDraftRuntimeFactory(sources=sources, socket=socket)
+    source = _RealTestDraftRuntimeFactory(
+        sources=sources,
+        socket=socket,
+        augmented_model_client=augmented_model_client,
+    )
     factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime_factory=source)
     arenas: list[_FakeSession] = []
 
@@ -3916,6 +3924,7 @@ def _start_real_test_draft_adapter(
         session_factory=session_factory,
         # A long interval keeps Arena polls countable: only explicit polls run.
         poll_interval_ms=600_000,
+        augmented_model_client=augmented_model_client,
         test_draft_factory=cast("TestDraftFactory", factory),
     )
     adapter.start()
@@ -4011,6 +4020,69 @@ def test_live_adapter_publishes_manual_test_draft_snapshots_off_gui_thread(
         assert adapter.state["pool"]["total_cards"] == 0
         assert adapter.state["draft"]["draft_id"] == simulated.draft.draft_id
         assert adapter.state["test_draft"]["offer_generation"] == 1
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_loads_augmented_model_for_manual_test_draft_offer(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    gui_thread_id = threading.get_ident()
+    client = _StubAugmentedModelClient(app_dir=tmp_path / "app")
+    adapter, _, _, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=_helper_socket(states=_arena_states()),
+        augmented_model_client=client,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["augmentation"]["status"] == "available",
+            description="the manual HOB offer's augmentation model",
+        )
+
+        assert adapter.state["test_draft"]["active"] is True
+        assert adapter.state["test_draft"]["phase"] == "drafting"
+        assert adapter.state["test_draft"]["offer_generation"] == 1
+        assert adapter.state["draft"]["set_code"] == "HOB"
+        assert adapter.state["augmentation"] == {
+            "status": "available",
+            "set_code": "HOB",
+            "enabled": False,
+        }
+        assert client.requested_set_codes == ["HOB"]
+        assert all(thread_id != gui_thread_id for thread_id in client.thread_ids)
+        assert source.runtime.session.snapshot.augmentation == AugmentationState(
+            status=AugmentationStatus.AVAILABLE,
+            set_code="HOB",
+            enabled=False,
+        )
+
+        adapter.setAugmentedIntelligenceEnabled(True)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["augmentation"]["enabled"] is True,
+            description="the simulated session's augmentation toggle",
+        )
+        assert source.runtime.session.snapshot.augmentation == AugmentationState(
+            status=AugmentationStatus.AVAILABLE,
+            set_code="HOB",
+            enabled=True,
+        )
+
+        first_choice = adapter.state["recommendations"]["cards"][0]["card"]["grp_id"]
+        adapter.pickTestDraft(first_choice, 1)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 2,
+            description="the next manual offer after model availability",
+        )
+        assert adapter.state["augmentation"]["status"] == "available"
+        assert client.requested_set_codes == ["HOB"]
     finally:
         adapter.shutdown()
         adapter.wait_for_shutdown()

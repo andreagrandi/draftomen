@@ -15,6 +15,7 @@ import threading
 import zlib
 
 import pytest
+from draftomen.augmented_model_client import AugmentedModelClient
 from draftomen.audit import DraftAuditStore, load_draft_audit_records
 from draftomen.card_data_client import card_data_cache_path
 from draftomen.cardimages import CardImageService
@@ -42,8 +43,10 @@ from draftomen.set_profile import (
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
 from draftomen.session import (
     ApplicationPhase,
+    AugmentationStatus,
     CardImageFetchResult,
     CardImageRequest,
+    ChangeAugmentation,
     ChooseRecommendation,
     ContextualEvidenceStatus,
     DataLoadPhase,
@@ -71,6 +74,7 @@ from draftomen.test_draft import (
     supported_test_draft_set_codes,
 )
 
+from tests.augmented_artifacts import fixed_delta_artifact
 from tests.test_draftmancer import (
     _CANCELLATION_TEXT,
     _FakeSocket,
@@ -1465,6 +1469,120 @@ def test_create_test_draft_runtime_accepts_a_card_image_service(
         assert result.image_path == image_path
         assert result.image_uri == request.image_uri
         assert fetched_uris == [request.image_uri]
+
+    assert socket.disconnect_count == 1
+
+
+def test_create_test_draft_runtime_loads_and_rescores_hob_augmentation(
+    tmp_path: Path,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+    oracle_ids = {
+        grp_id: f"00000000-0000-0000-0000-{grp_id:012d}"
+        for grp_id in _HELPER_GRP_IDS
+    }
+    database = _database(*_HELPER_GRP_IDS)
+    augmented_database = replace(
+        database,
+        cards={
+            grp_id: replace(card, oracle_id=oracle_ids[grp_id])
+            for grp_id, card in database.cards.items()
+        },
+    )
+    cache_path = card_data_cache_path(
+        set_code=_HELPER_SET_CODE,
+        app_dir=sources.normal_app_dir,
+    )
+    cache_path.write_bytes(
+        SetCardData.from_card_database(
+            augmented_database,
+            set_code=_HELPER_SET_CODE,
+            set_name=_HELPER_SET_NAME,
+        ).to_gzip_bytes()
+    )
+    client = AugmentedModelClient(app_dir=tmp_path / "augmented-model")
+    socket = _helper_socket(states=_print_states())
+
+    with create_test_draft_runtime(
+        draftmancer_dir=sources.draftmancer_dir,
+        scryfall_bulk_file=sources.bulk_path,
+        server_url="http://127.0.0.1:3000",
+        set_code=_HELPER_SET_CODE,
+        timeout_seconds=1.0,
+        source_app_dir=sources.normal_app_dir,
+        profile_manifest_url=None,
+        profile_network_policy=ProfileNetworkPolicy.OFFLINE,
+        simulation_app_dir=sources.simulation_dir,
+        socket_client=socket,
+        augmented_model_client=client,
+    ) as runtime:
+        inspection = runtime.controller.start()
+        basic_rows = tuple(
+            (
+                row.card.grp_id,
+                row.score,
+                row.basic_score,
+                row.augmentation_delta,
+            )
+            for row in inspection.snapshot.recommendations.cards
+        )
+        assert inspection.snapshot.current_pack_event is not None
+        assert inspection.snapshot.current_pack_event.set_code == "HOB"
+
+        request = runtime.session.augmented_model_request()
+        assert request is not None
+        assert request.set_code == "HOB"
+
+        artifact = fixed_delta_artifact(
+            set_code=_HELPER_SET_CODE,
+            candidate_ids=tuple(oracle_ids[grp_id] for grp_id in _HELPER_GRP_IDS),
+            deltas=(-2.0, -2.0, -2.0, 6.0),
+        )
+        model_cache_path = client.cache_path(_HELPER_SET_CODE)
+        model_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        model_cache_path.write_bytes(artifact.to_gzip_bytes())
+        load = client.load(request.set_code, allow_network=False)
+        assert load.available
+        assert load.artifact is not None
+
+        runtime.session.complete_augmented_model(request=request, load=load)
+        available = runtime.session.snapshot
+        assert available.augmentation.status is AugmentationStatus.AVAILABLE
+        assert available.augmentation.set_code == "HOB"
+        assert runtime.session.augmented_model_request() is None
+
+        augmented = runtime.session.dispatch(
+            command=ChangeAugmentation(enabled=True)
+        )
+        augmented_rows = tuple(
+            (
+                row.card.grp_id,
+                row.score,
+                row.basic_score,
+                row.augmentation_delta,
+            )
+            for row in augmented.recommendations.cards
+        )
+        assert augmented.augmentation.status is AugmentationStatus.AVAILABLE
+        assert augmented.augmentation.enabled
+        assert augmented_rows != basic_rows
+        assert augmented_rows[0][0] == _HELPER_GRP_IDS[-1]
+        assert augmented_rows[0][0] != basic_rows[0][0]
+        assert augmented_rows[0][2] is not None
+        assert augmented_rows[0][3] is not None
+
+        restored = runtime.session.dispatch(
+            command=ChangeAugmentation(enabled=False)
+        )
+        assert tuple(
+            (
+                row.card.grp_id,
+                row.score,
+                row.basic_score,
+                row.augmentation_delta,
+            )
+            for row in restored.recommendations.cards
+        ) == basic_rows
 
     assert socket.disconnect_count == 1
 
