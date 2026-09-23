@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Reuse valid published per-set card data without fetching sources or changing
+  its bytes. Generate only a missing requested set and reject invalid existing
+  files or unsupported set codes without replacing artifacts. (#637)
 - Select a listed public 17Lands Draft Data dump for one set, preferring
   PremierDraft before TradDraft and QuickDraft. Reuse validated cached bytes
   and keep the source URL, checksum, retrieval time, and license for later

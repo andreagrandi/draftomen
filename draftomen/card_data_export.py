@@ -330,6 +330,53 @@ def publish_set_data_export(*, candidate: PreparedSetDataExport) -> Path:
     return target
 
 
+def resolve_set_card_data(
+    *,
+    set_code: str,
+    output_dir: PathInput = _CARD_DATA_OUTPUT_DIR,
+    inventory_file: PathInput | None = None,
+    bulk_file: PathInput | None = None,
+    timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
+) -> Path:
+    """Return an existing canonical set artifact or generate and publish it."""
+
+    target = card_data_target_path(output_dir=output_dir, set_code=set_code)
+    try:
+        target.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise SetDataExportError(
+            f"Could not inspect card data target {target}: {error}"
+        ) from error
+    else:
+        try:
+            payload = target.read_bytes()
+        except OSError as error:
+            raise SetDataExportError(
+                f"Could not read card data target {target}: {error}"
+            ) from error
+        try:
+            SetCardData.from_gzip_bytes(
+                payload,
+                expected_set_code=set_code.casefold(),
+            )
+        except SetCardDataError as error:
+            raise SetDataExportError(
+                f"Invalid card data at {target}: {error}"
+            ) from error
+        return target
+
+    plan = prepare_set_data_export(
+        selector=set_code.casefold(),
+        output_dir=output_dir,
+        inventory_file=inventory_file,
+        bulk_file=bulk_file,
+        timeout_seconds=timeout_seconds,
+    )
+    return publish_set_data_export(candidate=plan.pending[0])
+
+
 def _validate_timeout(*, timeout_seconds: int) -> None:
     if (
         isinstance(timeout_seconds, bool)
@@ -589,4 +636,5 @@ __all__ = [
     "card_data_target_path",
     "prepare_set_data_export",
     "publish_set_data_export",
+    "resolve_set_card_data",
 ]
