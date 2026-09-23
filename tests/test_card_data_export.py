@@ -15,6 +15,7 @@ from draftomen.card_data_export import (
     card_data_target_path,
     prepare_set_data_export,
     publish_set_data_export,
+    resolve_set_card_data,
 )
 from draftomen.set_card_data import SetCardData
 from draftomen.seventeen import parse_17lands_expansion_inventory
@@ -66,6 +67,32 @@ def _write_sources(
         encoding="utf-8",
     )
     return inventory_path, bulk_path
+
+
+def _published_hob_payload() -> bytes:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "website"
+        / "public"
+        / "card-data"
+        / "hob.json.gz"
+    ).read_bytes()
+
+
+def _forbid_source_acquisition(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_if_called(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("unexpected card-data source acquisition")
+
+    monkeypatch.setattr(
+        card_data_export,
+        "fetch_17lands_expansion_inventory",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        card_data_export,
+        "iter_scryfall_default_cards",
+        fail_if_called,
+    )
 
 
 def _canonical_gzip(value: dict[str, Any]) -> bytes:
@@ -540,6 +567,127 @@ def test_single_set_selection_always_rebuilds_even_when_target_is_valid(tmp_path
     selected_again = _prepare(tmp_path, ["AAA"], cards, selector="AAA")
     assert selected_again.already_valid == ()
     assert len(selected_again.pending) == 1
+
+
+def test_resolver_reuses_published_artifact_without_source_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "card-data"
+    output_dir.mkdir()
+    target = output_dir / "hob.json.gz"
+    original = _published_hob_payload()
+    target.write_bytes(original)
+    _forbid_source_acquisition(monkeypatch)
+
+    result = resolve_set_card_data(set_code="HOB", output_dir=output_dir)
+
+    assert result == target
+    assert result.read_bytes() == original
+
+
+def test_resolver_publishes_only_the_requested_missing_set(tmp_path: Path) -> None:
+    inventory_file, bulk_file = _write_sources(
+        tmp_path / "sources",
+        ["HOB", "AAA"],
+        [
+            _card(1, "hob", "The Hobbit"),
+            _card(2, "aaa", "Alpha Set"),
+        ],
+    )
+    output_dir = tmp_path / "card-data"
+
+    result = resolve_set_card_data(
+        set_code="HOB",
+        output_dir=output_dir,
+        inventory_file=inventory_file,
+        bulk_file=bulk_file,
+    )
+
+    assert result == output_dir / "hob.json.gz"
+    assert sorted(path.name for path in output_dir.iterdir()) == ["hob.json.gz"]
+    artifact = SetCardData.from_gzip_bytes(
+        result.read_bytes(),
+        expected_set_code="hob",
+        expected_set_name="The Hobbit",
+    )
+    payload = artifact.to_json()
+    assert payload["set_code"] == "hob"
+    assert payload["set_name"] == "The Hobbit"
+
+
+def test_resolver_rejects_invalid_and_wrong_set_existing_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "card-data"
+    output_dir.mkdir()
+    target = output_dir / "hob.json.gz"
+    invalid_payload = b"not a gzip file"
+    target.write_bytes(invalid_payload)
+    wrong_set_plan = _prepare(
+        tmp_path / "aaa-source",
+        ["AAA"],
+        [_card(1, "aaa", "Alpha Set")],
+        selector="AAA",
+    )
+    wrong_set_payload = wrong_set_plan.pending[0].gzip_bytes
+    _forbid_source_acquisition(monkeypatch)
+
+    with pytest.raises(SetDataExportError, match="hob.json.gz"):
+        resolve_set_card_data(set_code="HOB", output_dir=output_dir)
+    assert target.read_bytes() == invalid_payload
+
+    target.write_bytes(wrong_set_payload)
+    with pytest.raises(SetDataExportError, match="hob.json.gz"):
+        resolve_set_card_data(set_code="HOB", output_dir=output_dir)
+    assert target.read_bytes() == wrong_set_payload
+
+
+def test_resolver_rejects_unsupported_missing_set_without_replacing_siblings(
+    tmp_path: Path,
+) -> None:
+    inventory_file, bulk_file = _write_sources(
+        tmp_path / "sources",
+        ["HOB"],
+        [_card(1, "hob", "The Hobbit")],
+    )
+    output_dir = tmp_path / "card-data"
+    output_dir.mkdir()
+    target = output_dir / "hob.json.gz"
+    original = _published_hob_payload()
+    target.write_bytes(original)
+
+    with pytest.raises(SetDataExportError, match="No eligible set matches 'zzz'"):
+        resolve_set_card_data(
+            set_code="ZZZ",
+            output_dir=output_dir,
+            inventory_file=inventory_file,
+            bulk_file=bulk_file,
+        )
+
+    assert target.read_bytes() == original
+    assert sorted(path.name for path in output_dir.iterdir()) == ["hob.json.gz"]
+
+
+def test_resolver_treats_dangling_symlink_as_an_existing_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "card-data"
+    output_dir.mkdir()
+    target = output_dir / "hob.json.gz"
+    try:
+        target.symlink_to(tmp_path / "missing-target.json.gz")
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlink creation is unavailable: {error}")
+    _forbid_source_acquisition(monkeypatch)
+
+    with pytest.raises(SetDataExportError, match="hob.json.gz"):
+        resolve_set_card_data(set_code="HOB", output_dir=output_dir)
+
+    assert target.is_symlink()
+    assert not target.exists()
 
 
 def test_schema_preserves_database_fields_and_proves_mixed_set_membership(
