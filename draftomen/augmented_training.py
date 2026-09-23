@@ -1,52 +1,54 @@
-"""Train and gate the offline HOB coarse-context model.
-The emitted JSON contains all parameters needed for framework-free inference.
-"""
+"""Train and gate one augmented set model from compact draft arrays."""
 
 from __future__ import annotations
 
-import argparse
 import csv
 import gzip
 import hashlib
-import json
 import math
 import multiprocessing
 import os
 import shutil
 import time
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
 
 import numpy as np
 import polars as pl
 
+from draftomen.augmented_artifact import (
+    AUGMENTED_MAXIMUM_DELTA,
+    AUGMENTED_MAXIMUM_MULTIPLIER,
+    AugmentedArtifact,
+    AugmentedArtifactError,
+    AugmentedCalibration,
+    AugmentedMetricSet,
+    AugmentedMetricSummary,
+    AugmentedSource,
+)
 from draftomen.augmented_training_data import (
     FEATURE_NAMES,
+    AugmentedTrainingDataError,
     AugmentedTrainingSource,
-    CandidateTrainingRow,
-    PreparedAugmentedTrainingData,
+    _candidate_id,
+    _cards_by_name,
+    _draft_time,
+    _set_code,
     card_feature_membership,
 )
-from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.carddb import CardDatabase
 from draftomen.pickengine import PickEngine
 from draftomen.set_profile import SetProfile
 
-BasicScoreKey: TypeAlias = tuple[int, int, str]
-BasicScores: TypeAlias = Mapping[BasicScoreKey, float]
-
 
 class AugmentedTrainingError(RuntimeError):
-    """Report inputs that cannot produce a trustworthy HOB model.
-    Training stops before it can write a publishable artifact.
-    """
+    """Report inputs that cannot produce a trustworthy augmented model."""
 
 
 @dataclass(frozen=True, slots=True)
 class ModelCTrainingConfig:
     """Fix Model C training and bounded-delta calibration settings.
-    The defaults define the reproducible HOB pilot run.
+    The defaults define a reproducible per-set training run.
     """
 
     seed: int = 20260920
@@ -70,23 +72,11 @@ class ModelCTrainingConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class HobModelCTrainingResult:
-    """Return the promotion verdict and the report written by one run.
-    A failed verdict never includes a runtime artifact.
-    """
+class AugmentedTrainingResult:
+    """Return a validated artifact only when both held-out metrics improve."""
 
-    promoted: bool
+    artifact: AugmentedArtifact | None
     report: dict[str, object]
-
-
-@dataclass(frozen=True, slots=True)
-class _PickExample:
-    partition: str
-    features: np.ndarray
-    candidate_indices: np.ndarray
-    candidate_ids: tuple[str, ...]
-    chosen_index: int
-    basic_scores: np.ndarray
 
 
 @dataclass(slots=True)
@@ -122,6 +112,22 @@ class _ArrayTrainingData:
     drafts_seen: int
 
 
+@dataclass(frozen=True, slots=True)
+class _BasicArrayScores:
+    """Store runtime totals with raw-score, base-rating, and input-order ties."""
+
+    integer_scores: np.ndarray
+    tie_order: np.ndarray
+
+    def __getitem__(self, rows: slice | np.ndarray) -> _BasicArrayScores:
+        return _BasicArrayScores(
+            integer_scores=self.integer_scores[rows],
+            tie_order=self.tie_order[rows],
+        )
+
+
+
+
 _BASIC_SCORE_WORKER_STATE: tuple[
     _ArrayTrainingData,
     PickEngine,
@@ -129,107 +135,70 @@ _BASIC_SCORE_WORKER_STATE: tuple[
 ] | None = None
 
 
-def load_hob_card_database(*, path: Path) -> CardDatabase:
-    """Load the checked-in HOB website card data for offline scoring.
-    Website rows use arena_id as the Draft Omen grp_id.
-    """
-
-    with gzip.open(path, mode="rt", encoding="utf-8") as handle:
-        value = json.load(handle)
-    cards_value = value.get("cards") if isinstance(value, dict) else None
-    if not isinstance(cards_value, list):
-        raise AugmentedTrainingError("HOB card data has no cards array.")
-    cards: dict[int, CardInfo] = {}
-    for item in cards_value:
-        if not isinstance(item, dict):
-            raise AugmentedTrainingError("HOB card data contains an invalid card.")
-        normalized = dict(item)
-        normalized["grp_id"] = item.get("arena_id")
-        normalized["source_provenance"] = ["website-public-card-data"]
-        card = CardInfo.from_json(data=normalized)
-        cards[card.grp_id] = card
-    return CardDatabase(cards=cards)
-
-
-def load_hob_set_profile(*, path: Path) -> SetProfile:
-    """Load the checked-in HOB profile used by current Basic DO scoring.
-    The profile format must match the public draft event.
-    """
-
-    opener = gzip.open if path.suffix == ".gz" else open
-    with opener(path, mode="rt", encoding="utf-8") as handle:
-        value = json.load(handle)
-    if not isinstance(value, dict):
-        raise AugmentedTrainingError("HOB set profile must be a JSON object.")
-    return SetProfile.from_json(value)
-
-
 def _decompress_training_source(*, source: AugmentedTrainingSource) -> Path:
     path = Path(source.path)
     digest = hashlib.sha256()
-    with path.open(mode="rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    try:
+        with path.open(mode="rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise AugmentedTrainingError("Pinned draft dump could not be read.") from error
     if digest.hexdigest() != source.sha256:
-        raise AugmentedTrainingError("Pinned HOB draft dump checksum does not match.")
+        raise AugmentedTrainingError("Pinned draft dump checksum does not match.")
     if path.suffix != ".gz":
         return path
-    destination = Path("/tmp") / f"draftomen-hob-{source.sha256[:16]}.csv"
+    destination = Path("/tmp") / f"draftomen-augmented-{source.sha256[:16]}.csv"
     partial = destination.with_suffix(".csv.part")
-    print("Decompressing the pinned HOB draft dump", flush=True)
-    with (
-        gzip.open(path, mode="rb") as input_file,
-        partial.open(mode="wb") as output_file,
-    ):
-        shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
-    partial.replace(destination)
+    print("Decompressing the pinned draft dump", flush=True)
+    try:
+        with (
+            gzip.open(path, mode="rb") as input_file,
+            partial.open(mode="wb") as output_file,
+        ):
+            shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+        partial.replace(destination)
+    except OSError as error:
+        raise AugmentedTrainingError(
+            "Pinned draft dump could not be decompressed."
+        ) from error
     return destination
-
-
-def _card_names(*, database: CardDatabase) -> dict[str, CardInfo]:
-    result: dict[str, CardInfo] = {}
-    for card in database.cards.values():
-        names = {card.name, *(face.name for face in card.faces if face.name)}
-        for name in names:
-            previous = result.get(name)
-            if previous is not None and previous.grp_id != card.grp_id:
-                if (
-                    previous.oracle_id != card.oracle_id
-                    or card_feature_membership(card=previous)
-                    != card_feature_membership(card=card)
-                ):
-                    raise AugmentedTrainingError(
-                        f"HOB card name {name!r} maps to conflicting cards."
-                    )
-                result[name] = min(
-                    (previous, card),
-                    key=lambda value: value.grp_id,
-                )
-            else:
-                result[name] = card
-    return result
 
 
 def _load_array_training_data(
     *,
+    set_code: str,
     source: AugmentedTrainingSource,
     card_database: CardDatabase,
     complete_draft_picks: int = 42,
 ) -> _ArrayTrainingData:
+    try:
+        normalized_set = _set_code(value=set_code)
+    except AugmentedTrainingDataError as error:
+        raise AugmentedTrainingError(str(error)) from error
+    if not isinstance(source, AugmentedTrainingSource):
+        raise AugmentedTrainingError("source must be an AugmentedTrainingSource.")
+    if not isinstance(card_database, CardDatabase):
+        raise AugmentedTrainingError("card_database must be a CardDatabase.")
+    if (
+        isinstance(complete_draft_picks, bool)
+        or not isinstance(complete_draft_picks, int)
+        or complete_draft_picks <= 0
+    ):
+        raise AugmentedTrainingError("complete_draft_picks must be positive.")
     path = _decompress_training_source(source=source)
-    with path.open(encoding="utf-8", newline="") as handle:
-        header = next(csv.reader(handle))
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            header = next(csv.reader(handle))
+    except (OSError, StopIteration) as error:
+        raise AugmentedTrainingError("Draft dump has no readable CSV header.") from error
     pack_columns = [value for value in header if value.startswith("pack_card_")]
     pool_columns = [value for value in header if value.startswith("pool_")]
     card_names = tuple(value.removeprefix("pack_card_") for value in pack_columns)
-    if card_names != tuple(value.removeprefix("pool_") for value in pool_columns):
+    if not pack_columns or card_names != tuple(
+        value.removeprefix("pool_") for value in pool_columns
+    ):
         raise AugmentedTrainingError("Pack and pool card columns do not match.")
-    cards_by_name = _card_names(database=card_database)
-    missing = sorted(set(card_names) - set(cards_by_name))
-    if missing:
-        raise AugmentedTrainingError(
-            f"HOB card metadata does not cover the draft dump: {missing}"
-        )
     metadata_columns = [
         "expansion",
         "event_type",
@@ -240,10 +209,42 @@ def _load_array_training_data(
         "pick",
         "pick_2",
     ]
+    missing_columns = sorted(set(metadata_columns) - set(header))
+    if missing_columns:
+        raise AugmentedTrainingError(
+            f"Draft dump is missing required columns: {missing_columns}."
+        )
+    try:
+        cards_by_name = _cards_by_name(
+            database=card_database,
+            set_code=normalized_set,
+        )
+    except AugmentedTrainingDataError as error:
+        raise AugmentedTrainingError(str(error)) from error
+    missing = sorted(set(card_names) - set(cards_by_name))
+    if missing:
+        raise AugmentedTrainingError(
+            f"Card metadata does not cover the draft dump: {missing}"
+        )
+    candidate_ids: list[str] = []
+    for name in card_names:
+        card = cards_by_name[name]
+        if not card.set_code or card.set_code.upper() != normalized_set:
+            raise AugmentedTrainingError(
+                f"Card metadata for {name!r} has no matching set code."
+            )
+        try:
+            candidate_ids.append(_candidate_id(card=card))
+        except AugmentedTrainingDataError as error:
+            raise AugmentedTrainingError(str(error)) from error
+    if len(set(candidate_ids)) != len(candidate_ids):
+        raise AugmentedTrainingError(
+            "Card metadata contains duplicate Oracle candidate IDs."
+        )
     integer_columns = pack_columns + pool_columns + ["pack_number", "pick_number"]
     schema_overrides = {column: pl.UInt8 for column in integer_columns}
     print(
-        f"Reading {len(card_names)} card columns from the HOB draft dump",
+        f"Reading {len(card_names)} card columns from the {normalized_set} draft dump",
         flush=True,
     )
     frame = pl.read_csv(
@@ -253,10 +254,37 @@ def _load_array_training_data(
         low_memory=False,
     )
     rows_seen = len(frame)
-    if frame["expansion"].unique().to_list() != ["HOB"]:
+    try:
+        expansions = {
+            _set_code(value=value)
+            for value in frame["expansion"].unique().to_list()
+        }
+    except AugmentedTrainingDataError as error:
+        raise AugmentedTrainingError(str(error)) from error
+    if expansions != {normalized_set}:
         raise AugmentedTrainingError("Public draft data contains the wrong set.")
-    if frame["event_type"].unique().to_list() != [source.event_type]:
+    events = frame["event_type"].unique().to_list()
+    if not events or any(
+        not isinstance(value, str)
+        or value.strip().casefold() != source.event_type.casefold()
+        for value in events
+    ):
         raise AugmentedTrainingError("Public draft data contains the wrong event type.")
+    normalized_times: dict[str, str] = {}
+    for value in frame["draft_time"].unique().to_list():
+        if not isinstance(value, str):
+            raise AugmentedTrainingError("Draft data contains an invalid timestamp.")
+        try:
+            normalized_times[value] = _draft_time(value=value).isoformat(
+                timespec="microseconds"
+            )
+        except (TypeError, ValueError, OverflowError) as error:
+            raise AugmentedTrainingError(
+                "Draft data contains an invalid timestamp."
+            ) from error
+    frame = frame.with_columns(
+        pl.col("draft_time").replace_strict(normalized_times).alias("draft_time")
+    )
     name_to_index = {name: index for index, name in enumerate(card_names)}
     frame = frame.with_columns(
         (
@@ -363,11 +391,13 @@ def _load_array_training_data(
         f"Kept {len(draft_ids):,} complete drafts and {len(frame):,} picks",
         flush=True,
     )
-    cards = tuple(cards_by_name[name] for name in card_names)
     return _ArrayTrainingData(
         card_names=card_names,
-        candidate_ids=tuple(str(card.oracle_id) for card in cards),
-        grp_ids=np.asarray([card.grp_id for card in cards], dtype=np.int64),
+        candidate_ids=tuple(candidate_ids),
+        grp_ids=np.asarray(
+            [cards_by_name[name].grp_id for name in card_names],
+            dtype=np.int64,
+        ),
         features=features,
         pack_mask=pack_mask,
         targets=frame["target"].to_numpy().astype(np.int32, copy=False),
@@ -382,50 +412,6 @@ def _load_array_training_data(
         drafts_seen=drafts_seen,
     )
 
-
-def build_basic_do_scores(
-    *,
-    prepared: PreparedAugmentedTrainingData,
-    card_database: CardDatabase,
-    set_profile: SetProfile,
-) -> dict[BasicScoreKey, float]:
-    """Score every accepted pick with the current deterministic Basic DO path.
-    Exact card identities are used only for this evaluation baseline.
-    """
-
-    engine = PickEngine(
-        set_profile=set_profile,
-        enhanced_relationships_enabled=False,
-    )
-    scores: dict[BasicScoreKey, float] = {}
-    for row in prepared.iter_basic_scoring_rows():
-        global_pick_index = row.pick_index + 1
-        scored = engine.score_pack(
-            offered_grp_ids=row.offered_grp_ids,
-            card_database=card_database,
-            pool_grp_ids=row.pool_grp_ids,
-            pick_index=global_pick_index,
-            pack_number=row.pack_number,
-            pick_number=row.pick_number,
-            global_pick_index=global_pick_index,
-            estimated_remaining_picks=max(0, 42 - global_pick_index),
-        )
-        score_by_grp_id = {
-            card.card.grp_id: float(card.raw_score) for card in scored.cards
-        }
-        if set(score_by_grp_id) != set(row.offered_grp_ids):
-            raise AugmentedTrainingError(
-                "Basic DO scoring did not return every offered candidate."
-            )
-        for candidate_id, grp_id in zip(
-            row.candidate_ids,
-            row.offered_grp_ids,
-            strict=True,
-        ):
-            scores[(row.draft_index, row.pick_index, candidate_id)] = (
-                score_by_grp_id[grp_id]
-            )
-    return scores
 
 
 def _array_logits(
@@ -453,6 +439,48 @@ def _array_ranks(
     return (
         1 + np.sum(pack_mask & (better | tied_before), axis=1)
     ).astype(np.int16)
+
+
+def _runtime_array_ranks(
+    *,
+    basic_scores: np.ndarray | _BasicArrayScores,
+    pack_mask: np.ndarray,
+    targets: np.ndarray,
+    deltas: np.ndarray | None = None,
+) -> np.ndarray:
+    if isinstance(basic_scores, _BasicArrayScores):
+        integer_scores = basic_scores.integer_scores
+        tie_order = basic_scores.tie_order
+        raw_scores = None
+    else:
+        raw_scores = basic_scores
+        integer_scores = np.floor(np.clip(raw_scores, 0.0, 100.0) + 0.5)
+        tie_order = None
+
+    ordering_scores = (
+        integer_scores
+        if deltas is None
+        else np.clip(integer_scores + deltas, 0.0, 100.0)
+    )
+    rows = np.arange(len(targets))
+    target_scores = ordering_scores[rows, targets]
+    tied = ordering_scores == target_scores[:, None]
+    better = ordering_scores > target_scores[:, None]
+    if tie_order is not None:
+        target_order = tie_order[rows, targets]
+        better |= tied & (tie_order < target_order[:, None])
+    else:
+        assert raw_scores is not None
+        target_raw_scores = raw_scores[rows, targets]
+        candidate_indices = np.arange(ordering_scores.shape[1])[None, :]
+        better |= tied & (
+            (raw_scores > target_raw_scores[:, None])
+            | (
+                (raw_scores == target_raw_scores[:, None])
+                & (candidate_indices < targets[:, None])
+            )
+        )
+    return (1 + np.sum(pack_mask & better, axis=1)).astype(np.int16)
 
 
 def _rank_metrics(*, ranks: np.ndarray) -> dict[str, float | int]:
@@ -587,11 +615,15 @@ def _score_basic_rows(
     rows: np.ndarray,
     engine: PickEngine,
     card_database: CardDatabase,
-) -> np.ndarray:
-    scores = np.full(
+) -> _BasicArrayScores:
+    integer_scores = np.zeros(
         (len(rows), len(data.card_names)),
-        -np.inf,
-        dtype=np.float32,
+        dtype=np.uint8,
+    )
+    tie_order = np.full(
+        (len(rows), len(data.card_names)),
+        np.iinfo(np.uint16).max,
+        dtype=np.uint16,
     )
     for position, row_value in enumerate(rows):
         row = int(row_value)
@@ -613,18 +645,36 @@ def _score_basic_rows(
             global_pick_index=global_pick_index,
             estimated_remaining_picks=max(0, 42 - global_pick_index),
         )
-        score_by_id = {
-            card.card.grp_id: float(card.raw_score) for card in scored.cards
-        }
-        scores[position, offered_indices] = [
-            score_by_id[int(data.grp_ids[index])] for index in offered_indices
+        cards_by_id = {card.card.grp_id: card for card in scored.cards}
+        row_cards = [
+            cards_by_id[int(data.grp_ids[index])] for index in offered_indices
         ]
-    return scores
+        integer_scores[position, offered_indices] = [
+            card.basic_score for card in row_cards
+        ]
+        ordered_positions = sorted(
+            range(len(row_cards)),
+            key=lambda index: (
+                -row_cards[index].raw_score,
+                -row_cards[index].base_rating,
+                row_cards[index].original_index,
+            ),
+        )
+        row_tie_order = np.empty(len(row_cards), dtype=np.uint16)
+        row_tie_order[ordered_positions] = np.arange(
+            len(row_cards), dtype=np.uint16
+        )
+        tie_order[position, offered_indices] = row_tie_order
+    return _BasicArrayScores(
+        integer_scores=integer_scores,
+        tie_order=tie_order,
+    )
+
 
 
 def _score_basic_chunk(
     task: tuple[int, np.ndarray],
-) -> tuple[int, np.ndarray]:
+) -> tuple[int, _BasicArrayScores]:
     if _BASIC_SCORE_WORKER_STATE is None:
         raise RuntimeError("Basic DO score worker state was not initialized.")
     data, engine, database = _BASIC_SCORE_WORKER_STATE
@@ -643,14 +693,20 @@ def _build_array_basic_scores(
     rows: np.ndarray,
     card_database: CardDatabase,
     set_profile: SetProfile,
-) -> np.ndarray:
+) -> _BasicArrayScores:
     global _BASIC_SCORE_WORKER_STATE
 
     engine = PickEngine(
         set_profile=set_profile,
         enhanced_relationships_enabled=False,
     )
-    scores = np.empty((len(rows), len(data.card_names)), dtype=np.float32)
+    score_shape = (len(rows), len(data.card_names))
+    integer_scores = np.zeros(score_shape, dtype=np.uint8)
+    tie_order = np.full(
+        score_shape,
+        np.iinfo(np.uint16).max,
+        dtype=np.uint16,
+    )
     chunk_size = 5000
     tasks = [
         (offset, rows[offset : offset + chunk_size])
@@ -663,13 +719,19 @@ def _build_array_basic_scores(
         or len(tasks) == 1
     ):
         for offset, selected in tasks:
-            scores[offset : offset + len(selected)] = _score_basic_rows(
+            chunk_scores = _score_basic_rows(
                 data=data,
                 rows=selected,
                 engine=engine,
                 card_database=card_database,
             )
-        return scores
+            end = offset + len(selected)
+            integer_scores[offset:end] = chunk_scores.integer_scores
+            tie_order[offset:end] = chunk_scores.tie_order
+        return _BasicArrayScores(
+            integer_scores=integer_scores,
+            tie_order=tie_order,
+        )
     _BASIC_SCORE_WORKER_STATE = (data, engine, card_database)
     completed = 0
     started = time.monotonic()
@@ -679,15 +741,20 @@ def _build_array_basic_scores(
             _score_basic_chunk,
             tasks,
         ):
-            scores[offset : offset + len(chunk_scores)] = chunk_scores
-            completed += len(chunk_scores)
+            end = offset + len(chunk_scores.integer_scores)
+            integer_scores[offset:end] = chunk_scores.integer_scores
+            tie_order[offset:end] = chunk_scores.tie_order
+            completed += end - offset
             print(
                 f"Basic DO evaluated {completed:,}/{len(rows):,} picks in "
                 f"{time.monotonic() - started:.1f} seconds",
                 flush=True,
             )
     _BASIC_SCORE_WORKER_STATE = None
-    return scores
+    return _BasicArrayScores(
+        integer_scores=integer_scores,
+        tie_order=tie_order,
+    )
 
 
 def _centered_array_deltas(
@@ -703,7 +770,7 @@ def _calibrate_arrays(
     model: _Model,
     data: _ArrayTrainingData,
     rows: np.ndarray,
-    basic_scores: np.ndarray,
+    basic_scores: np.ndarray | _BasicArrayScores,
     config: ModelCTrainingConfig,
 ) -> dict[str, object]:
     mask = data.pack_mask[rows]
@@ -715,15 +782,16 @@ def _calibrate_arrays(
     centered = _centered_array_deltas(logits=logits, pack_mask=mask)
     candidates: list[dict[str, float]] = []
     for multiplier in config.calibration_multipliers:
-        scores = basic_scores + np.clip(
+        deltas = np.clip(
             centered * multiplier,
             -config.maximum_delta,
             config.maximum_delta,
         )
-        ranks = _array_ranks(
-            scores=scores,
+        ranks = _runtime_array_ranks(
+            basic_scores=basic_scores,
             pack_mask=mask,
             targets=data.targets[rows],
+            deltas=deltas,
         )
         metrics = _rank_metrics(ranks=ranks)
         candidates.append(
@@ -759,15 +827,16 @@ def _evaluate_arrays(
     model: _Model,
     data: _ArrayTrainingData,
     rows: np.ndarray,
-    basic_scores: np.ndarray,
+    basic_scores: np.ndarray | _BasicArrayScores,
     calibration: dict[str, object],
     config: ModelCTrainingConfig,
 ) -> dict[str, dict[str, float | int]]:
     mask = data.pack_mask[rows]
-    basic_ranks = _array_ranks(
-        scores=basic_scores,
+    targets = data.targets[rows]
+    basic_ranks = _runtime_array_ranks(
+        basic_scores=basic_scores,
         pack_mask=mask,
-        targets=data.targets[rows],
+        targets=targets,
     )
     logits = _array_logits(
         model=model,
@@ -775,15 +844,16 @@ def _evaluate_arrays(
         batch_size=config.batch_size,
     )
     centered = _centered_array_deltas(logits=logits, pack_mask=mask)
-    augmented_scores = basic_scores + np.clip(
+    deltas = np.clip(
         centered * float(calibration["multiplier"]),
         float(calibration["minimum_delta"]),
         float(calibration["maximum_delta"]),
     )
-    augmented_ranks = _array_ranks(
-        scores=augmented_scores,
+    augmented_ranks = _runtime_array_ranks(
+        basic_scores=basic_scores,
         pack_mask=mask,
-        targets=data.targets[rows],
+        targets=targets,
+        deltas=deltas,
     )
     return {
         "basic_do": _rank_metrics(ranks=basic_ranks),
@@ -791,20 +861,99 @@ def _evaluate_arrays(
     }
 
 
-def train_and_gate_hob_model_c_arrays(
+
+
+def _validate_config(*, config: ModelCTrainingConfig) -> None:
+    if not isinstance(config, ModelCTrainingConfig):
+        raise AugmentedTrainingError("config must be a ModelCTrainingConfig.")
+    if (
+        isinstance(config.seed, bool)
+        or not isinstance(config.seed, int)
+        or config.seed < 0
+    ):
+        raise AugmentedTrainingError("The training seed must be a non-negative integer.")
+    counts = (config.hidden_size, config.epochs, config.patience, config.batch_size)
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in counts
+    ):
+        raise AugmentedTrainingError("Training counts must be positive integers.")
+    optimizer_values = (config.learning_rate, config.weight_decay)
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in optimizer_values
+    ) or config.learning_rate <= 0.0 or config.weight_decay < 0.0:
+        raise AugmentedTrainingError("Optimizer settings are invalid.")
+    multipliers = config.calibration_multipliers
+    if (
+        isinstance(config.maximum_delta, bool)
+        or not isinstance(config.maximum_delta, (int, float))
+        or not math.isfinite(config.maximum_delta)
+        or not 0.0 < config.maximum_delta <= AUGMENTED_MAXIMUM_DELTA
+        or not isinstance(multipliers, (tuple, list))
+        or not multipliers
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0.0 <= value <= AUGMENTED_MAXIMUM_MULTIPLIER
+            for value in multipliers
+        )
+    ):
+        raise AugmentedTrainingError(
+            "Calibration settings are invalid or exceed runtime bounds."
+        )
+
+
+def train_and_gate_augmented_set(
     *,
-    data: _ArrayTrainingData,
+    set_code: str,
     source: AugmentedTrainingSource,
     card_database: CardDatabase,
     set_profile: SetProfile,
-    artifact_path: Path,
-    report_path: Path,
+    complete_draft_picks: int = 42,
     config: ModelCTrainingConfig = ModelCTrainingConfig(),
-) -> HobModelCTrainingResult:
-    """Train and gate Model C with compact arrays from the full HOB dump.
-    The artifact is written only when both held-out metrics improve.
-    """
+) -> AugmentedTrainingResult:
+    """Train and return a runtime artifact only after strict held-out promotion."""
 
+    _validate_config(config=config)
+    try:
+        normalized_set = _set_code(value=set_code)
+    except AugmentedTrainingDataError as error:
+        raise AugmentedTrainingError(str(error)) from error
+    if not isinstance(source, AugmentedTrainingSource):
+        raise AugmentedTrainingError("source must be an AugmentedTrainingSource.")
+    if not isinstance(card_database, CardDatabase):
+        raise AugmentedTrainingError("card_database must be a CardDatabase.")
+    if not isinstance(set_profile, SetProfile):
+        raise AugmentedTrainingError("set_profile must be a SetProfile.")
+    if set_profile.set_code != normalized_set.casefold():
+        raise AugmentedTrainingError("Set profile does not match the requested set.")
+    if set_profile.event_format != source.event_type.casefold():
+        raise AugmentedTrainingError(
+            "Set profile format does not match the training source event type."
+        )
+    try:
+        runtime_source = AugmentedSource(
+            attribution=source.attribution,
+            event_type=source.event_type,
+            license=source.license,
+            retrieved_at=source.retrieved_at,
+            sha256=source.sha256,
+            url=source.url,
+        )
+    except AugmentedArtifactError as error:
+        raise AugmentedTrainingError(
+            f"Training source provenance is invalid: {error}"
+        ) from error
+    data = _load_array_training_data(
+        set_code=normalized_set,
+        source=source,
+        card_database=card_database,
+        complete_draft_picks=complete_draft_picks,
+    )
     model, training = _train_array_model(data=data, config=config)
     validation_rows = data.split_rows["validation"]
     test_rows = data.split_rows["test"]
@@ -840,49 +989,86 @@ def train_and_gate_hob_model_c_arrays(
         > evaluation["basic_do"][metric]
         for metric in ("top_1", "mean_reciprocal_rank")
     )
-    source_value = {
-        "event_type": source.event_type,
-        "url": source.url,
-        "retrieved_at": source.retrieved_at,
-        "sha256": source.sha256,
-        "attribution": source.attribution,
-        "license": source.license,
+    training_metadata = {
+        "seed": config.seed,
+        "hidden_size": config.hidden_size,
+        "epochs": config.epochs,
+        "patience": config.patience,
+        "batch_size": config.batch_size,
+        "learning_rate": config.learning_rate,
+        "weight_decay": config.weight_decay,
+        "best_epoch": training["best_epoch"],
+        "best_validation_mrr": training["best_validation_mrr"],
     }
-    artifact: dict[str, object] = {
-        "schema_version": 1,
-        "set_code": "HOB",
-        "model": {
-            "name": "coarse_context_model_c",
-            "architecture": "bias_plus_tanh_low_rank_pool_context",
-            "feature_schema": list(FEATURE_NAMES),
-            "candidate_output_ids": list(data.candidate_ids),
-            "runtime_parameters": {
-                "input_transform": "log1p_counts",
-                "hidden_activation": "tanh",
-                "bias": model.bias.tolist(),
-                "input_weights": model.input_weights.tolist(),
-                "output_weights": model.output_weights.tolist(),
-            },
-        },
-        "calibration": calibration,
-        "source": source_value,
-        "training": {
-            "seed": config.seed,
-            "hidden_size": config.hidden_size,
-            "epochs": config.epochs,
-            "patience": config.patience,
-            "batch_size": config.batch_size,
-            "learning_rate": config.learning_rate,
-            "weight_decay": config.weight_decay,
-            "best_epoch": training["best_epoch"],
-            "best_validation_mrr": training["best_validation_mrr"],
-        },
-        "evaluation": evaluation,
-    }
-    artifact_bytes = _json_bytes(value=artifact)
+    artifact: AugmentedArtifact | None = None
+    artifact_sha256: str | None = None
+    if promoted:
+        basic_evaluation = evaluation["basic_do"]
+        augmented_evaluation = evaluation["basic_plus_augmented"]
+        picks = int(basic_evaluation["picks"])
+        if picks != int(augmented_evaluation["picks"]) or picks <= 0:
+            raise AugmentedTrainingError(
+                "Held-out metric summaries must have equal positive pick counts."
+            )
+        try:
+            artifact_calibration = AugmentedCalibration(
+                method=str(calibration["method"]),
+                multiplier=float(calibration["multiplier"]),
+                minimum_delta=float(calibration["minimum_delta"]),
+                maximum_delta=float(calibration["maximum_delta"]),
+                selection_partition=str(calibration["selection_partition"]),
+                selection_metric=str(calibration["selection_metric"]),
+                candidates=tuple(
+                    {
+                        "multiplier": float(candidate["multiplier"]),
+                        "top_1": float(candidate["top_1"]),
+                        "mean_reciprocal_rank": float(
+                            candidate["mean_reciprocal_rank"]
+                        ),
+                    }
+                    for candidate in calibration["candidates"]
+                ),
+            )
+            artifact = AugmentedArtifact(
+                set_code=normalized_set.casefold(),
+                candidate_ids=data.candidate_ids,
+                input_weights=tuple(
+                    tuple(float(value) for value in row)
+                    for row in model.input_weights
+                ),
+                output_weights=tuple(
+                    tuple(float(value) for value in row)
+                    for row in model.output_weights
+                ),
+                bias=tuple(float(value) for value in model.bias),
+                calibration=artifact_calibration,
+                source=runtime_source,
+                evaluation=AugmentedMetricSummary(
+                    picks=picks,
+                    basic_do=AugmentedMetricSet(
+                        top_1=float(basic_evaluation["top_1"]),
+                        mean_reciprocal_rank=float(
+                            basic_evaluation["mean_reciprocal_rank"]
+                        ),
+                    ),
+                    basic_plus_augmented=AugmentedMetricSet(
+                        top_1=float(augmented_evaluation["top_1"]),
+                        mean_reciprocal_rank=float(
+                            augmented_evaluation["mean_reciprocal_rank"]
+                        ),
+                    ),
+                ),
+                training=training_metadata,
+            )
+        except (AugmentedArtifactError, KeyError, TypeError, ValueError) as error:
+            raise AugmentedTrainingError(
+                f"Trained model failed runtime artifact validation: {error}"
+            ) from error
+        artifact_sha256 = hashlib.sha256(artifact.to_bytes()).hexdigest()
+    source_value = runtime_source.to_json()
     report: dict[str, object] = {
         "schema_version": 1,
-        "set_code": "HOB",
+        "set_code": normalized_set.casefold(),
         "model": "coarse_context_model_c",
         "promotion": {
             "passed": promoted,
@@ -905,543 +1091,6 @@ def train_and_gate_hob_model_c_arrays(
                 for name in ("train", "validation", "test")
             },
         },
-        "artifact_sha256": (
-            hashlib.sha256(artifact_bytes).hexdigest() if promoted else None
-        ),
+        "artifact_sha256": artifact_sha256,
     }
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    if promoted:
-        artifact_path.write_bytes(artifact_bytes)
-    elif artifact_path.exists():
-        artifact_path.unlink()
-    report_path.write_bytes(_json_bytes(value=report))
-    return HobModelCTrainingResult(promoted=promoted, report=report)
-
-
-def train_and_gate_hob_model_c(
-    *,
-    prepared: PreparedAugmentedTrainingData,
-    basic_scores: BasicScores,
-    artifact_path: Path,
-    report_path: Path,
-    config: ModelCTrainingConfig = ModelCTrainingConfig(),
-) -> HobModelCTrainingResult:
-    """Train Model C and write an artifact only after held-out promotion.
-    This row-based entry point supports deterministic fixture coverage.
-    """
-
-    _validate_inputs(prepared=prepared, config=config)
-    if artifact_path.resolve() == report_path.resolve():
-        raise AugmentedTrainingError("Artifact and report paths must be different.")
-    candidate_ids = tuple(sorted({row.candidate_id for row in prepared.iter_rows()}))
-    candidate_indices = {value: index for index, value in enumerate(candidate_ids)}
-    examples = _examples(
-        prepared=prepared,
-        candidate_indices=candidate_indices,
-        basic_scores=basic_scores,
-    )
-    train = tuple(value for value in examples if value.partition == "train")
-    validation = tuple(value for value in examples if value.partition == "validation")
-    test = tuple(value for value in examples if value.partition == "test")
-    if not train or not validation or not test:
-        raise AugmentedTrainingError("Training requires non-empty pick partitions.")
-
-    model, training = _train_model(
-        examples=train,
-        validation=validation,
-        candidate_count=len(candidate_ids),
-        config=config,
-    )
-    calibration = _calibrate(
-        model=model,
-        examples=validation,
-        config=config,
-    )
-    evaluation = {
-        "basic_do": _metrics(examples=test, model=None, calibration=None),
-        "basic_plus_augmented": _metrics(
-            examples=test,
-            model=model,
-            calibration=calibration,
-        ),
-    }
-    promoted = all(
-        evaluation["basic_plus_augmented"][metric]
-        > evaluation["basic_do"][metric]
-        for metric in ("top_1", "mean_reciprocal_rank")
-    )
-    artifact = _artifact(
-        prepared=prepared,
-        candidate_ids=candidate_ids,
-        model=model,
-        config=config,
-        calibration=calibration,
-        evaluation=evaluation,
-        training=training,
-    )
-    artifact_bytes = _json_bytes(value=artifact)
-    report: dict[str, object] = {
-        "schema_version": 1,
-        "set_code": "HOB",
-        "model": "coarse_context_model_c",
-        "promotion": {
-            "passed": promoted,
-            "rule": "both_metrics_strictly_improve",
-        },
-        "evaluation": evaluation,
-        "calibration": calibration,
-        "training": training,
-        "feature_schema": list(FEATURE_NAMES),
-        "source": artifact["source"],
-        "artifact_sha256": (
-            hashlib.sha256(artifact_bytes).hexdigest() if promoted else None
-        ),
-    }
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    if promoted:
-        artifact_path.write_bytes(artifact_bytes)
-    elif artifact_path.exists():
-        artifact_path.unlink()
-    report_path.write_bytes(_json_bytes(value=report))
-    return HobModelCTrainingResult(promoted=promoted, report=report)
-
-
-def _validate_inputs(
-    *, prepared: PreparedAugmentedTrainingData, config: ModelCTrainingConfig
-) -> None:
-    if prepared.set_code != "HOB":
-        raise AugmentedTrainingError("The pilot trainer accepts HOB data only.")
-    if prepared.feature_names != FEATURE_NAMES or len(FEATURE_NAMES) != 22:
-        raise AugmentedTrainingError("Model C requires the fixed 22-feature schema.")
-    if config.seed < 0:
-        raise AugmentedTrainingError("The training seed cannot be negative.")
-    if min(config.hidden_size, config.epochs, config.patience, config.batch_size) <= 0:
-        raise AugmentedTrainingError("Training counts must be positive.")
-    if (
-        not math.isfinite(config.learning_rate)
-        or not math.isfinite(config.weight_decay)
-        or config.learning_rate <= 0.0
-        or config.weight_decay < 0.0
-    ):
-        raise AugmentedTrainingError("Optimizer settings are invalid.")
-    if (
-        not math.isfinite(config.maximum_delta)
-        or config.maximum_delta <= 0.0
-        or not config.calibration_multipliers
-        or any(
-            not math.isfinite(value) or value < 0.0
-            for value in config.calibration_multipliers
-        )
-    ):
-        raise AugmentedTrainingError("Calibration settings are invalid.")
-
-
-def _examples(
-    *,
-    prepared: PreparedAugmentedTrainingData,
-    candidate_indices: dict[str, int],
-    basic_scores: BasicScores,
-) -> tuple[_PickExample, ...]:
-    grouped: dict[tuple[int, int], list[CandidateTrainingRow]] = {}
-    for row in prepared.iter_rows():
-        grouped.setdefault((row.draft_index, row.pick_index), []).append(row)
-    examples: list[_PickExample] = []
-    for key in sorted(grouped):
-        rows = sorted(grouped[key], key=lambda value: value.candidate_id)
-        chosen = [index for index, row in enumerate(rows) if row.chosen]
-        if len(chosen) != 1:
-            raise AugmentedTrainingError("Every pick must have one chosen candidate.")
-        if any(row.features != rows[0].features for row in rows):
-            raise AugmentedTrainingError(
-                "Candidates in one pick have different features."
-            )
-        scores: list[float] = []
-        for row in rows:
-            score_key = (row.draft_index, row.pick_index, row.candidate_id)
-            try:
-                score = float(basic_scores[score_key])
-            except KeyError as error:
-                raise AugmentedTrainingError(
-                    f"Basic DO score is missing for {score_key}."
-                ) from error
-            if not math.isfinite(score):
-                raise AugmentedTrainingError("Basic DO scores must be finite.")
-            scores.append(score)
-        examples.append(
-            _PickExample(
-                partition=rows[0].partition,
-                features=np.asarray(rows[0].features, dtype=np.float64),
-                candidate_indices=np.asarray(
-                    [candidate_indices[row.candidate_id] for row in rows],
-                    dtype=np.int64,
-                ),
-                candidate_ids=tuple(row.candidate_id for row in rows),
-                chosen_index=chosen[0],
-                basic_scores=np.asarray(scores, dtype=np.float64),
-            )
-        )
-    return tuple(examples)
-
-
-def _train_model(
-    *,
-    examples: tuple[_PickExample, ...],
-    validation: tuple[_PickExample, ...],
-    candidate_count: int,
-    config: ModelCTrainingConfig,
-) -> tuple[_Model, dict[str, object]]:
-    rng = np.random.default_rng(config.seed)
-    model = _Model(
-        bias=np.zeros(candidate_count, dtype=np.float64),
-        input_weights=rng.normal(
-            loc=0.0,
-            scale=0.02,
-            size=(len(FEATURE_NAMES), config.hidden_size),
-        ),
-        output_weights=rng.normal(
-            loc=0.0,
-            scale=0.02,
-            size=(config.hidden_size, candidate_count),
-        ),
-    )
-    parameters = (model.bias, model.input_weights, model.output_weights)
-    first = [np.zeros_like(value) for value in parameters]
-    second = [np.zeros_like(value) for value in parameters]
-    best = model.copy()
-    best_mrr = -math.inf
-    best_epoch = 0
-    stale = 0
-    step = 0
-    history: list[dict[str, float | int]] = []
-    for epoch in range(1, config.epochs + 1):
-        order = rng.permutation(len(examples))
-        loss = 0.0
-        for offset in range(0, len(order), config.batch_size):
-            selected = [
-                examples[index]
-                for index in order[offset : offset + config.batch_size]
-            ]
-            gradients = [np.zeros_like(value) for value in parameters]
-            for example in selected:
-                loss += _accumulate_gradients(
-                    model=model,
-                    example=example,
-                    gradients=gradients,
-                )
-            for index in (1, 2):
-                gradients[index] += config.weight_decay * parameters[index]
-            step += 1
-            scale = 1.0 / len(selected)
-            for index, parameter in enumerate(parameters):
-                gradient = gradients[index] * scale
-                first[index] *= 0.9
-                first[index] += 0.1 * gradient
-                second[index] *= 0.999
-                second[index] += 0.001 * gradient * gradient
-                first_hat = first[index] / (1.0 - 0.9**step)
-                second_hat = second[index] / (1.0 - 0.999**step)
-                parameter -= config.learning_rate * first_hat / (
-                    np.sqrt(second_hat) + 1.0e-8
-                )
-        validation_mrr = _model_metrics(examples=validation, model=model)[1]
-        history.append(
-            {
-                "epoch": epoch,
-                "mean_loss": loss / len(examples),
-                "validation_mrr": validation_mrr,
-            }
-        )
-        if validation_mrr > best_mrr:
-            best = model.copy()
-            best_mrr = validation_mrr
-            best_epoch = epoch
-            stale = 0
-        else:
-            stale += 1
-            if stale >= config.patience:
-                break
-    return best, {
-        "seed": config.seed,
-        "best_epoch": best_epoch,
-        "best_validation_mrr": best_mrr,
-        "epochs_run": len(history),
-        "history": history,
-    }
-
-
-def _accumulate_gradients(
-    *, model: _Model, example: _PickExample, gradients: list[np.ndarray]
-) -> float:
-    transformed = np.log1p(example.features)
-    hidden = np.tanh(transformed @ model.input_weights)
-    candidates = example.candidate_indices
-    logits = hidden @ model.output_weights[:, candidates] + model.bias[candidates]
-    logits -= np.max(logits)
-    probabilities = np.exp(logits)
-    probabilities /= np.sum(probabilities)
-    loss = -math.log(float(probabilities[example.chosen_index]) + 1.0e-12)
-    probabilities[example.chosen_index] -= 1.0
-    bias, inputs, outputs = gradients
-    bias[candidates] += probabilities
-    outputs[:, candidates] += np.outer(hidden, probabilities)
-    hidden_gradient = model.output_weights[:, candidates] @ probabilities
-    hidden_gradient *= 1.0 - hidden * hidden
-    inputs += np.outer(transformed, hidden_gradient)
-    return loss
-
-
-def _calibrate(
-    *,
-    model: _Model,
-    examples: tuple[_PickExample, ...],
-    config: ModelCTrainingConfig,
-) -> dict[str, object]:
-    candidates: list[dict[str, float]] = []
-    for multiplier in config.calibration_multipliers:
-        top_1, mean_reciprocal_rank = _metrics_for_multiplier(
-            examples=examples,
-            model=model,
-            multiplier=multiplier,
-            maximum_delta=config.maximum_delta,
-        )
-        candidates.append(
-            {
-                "multiplier": multiplier,
-                "top_1": top_1,
-                "mean_reciprocal_rank": mean_reciprocal_rank,
-            }
-        )
-    selected = max(
-        candidates,
-        key=lambda value: (
-            value["mean_reciprocal_rank"],
-            value["top_1"],
-            -value["multiplier"],
-        ),
-    )
-    return {
-        "method": "offered_mean_centered_logit_clip",
-        "multiplier": selected["multiplier"],
-        "minimum_delta": -config.maximum_delta,
-        "maximum_delta": config.maximum_delta,
-        "selection_partition": "validation",
-        "selection_metric": "mean_reciprocal_rank_then_top_1",
-        "candidates": candidates,
-    }
-
-
-def _metrics(
-    *,
-    examples: tuple[_PickExample, ...],
-    model: _Model | None,
-    calibration: dict[str, object] | None,
-) -> dict[str, float | int]:
-    if model is None:
-        ranks = [
-            _rank(example=example, scores=example.basic_scores)
-            for example in examples
-        ]
-    else:
-        assert calibration is not None
-        ranks = [
-            _rank(
-                example=example,
-                scores=example.basic_scores
-                + _deltas(
-                    model=model,
-                    example=example,
-                    multiplier=float(calibration["multiplier"]),
-                    maximum_delta=float(calibration["maximum_delta"]),
-                ),
-            )
-            for example in examples
-        ]
-    return {
-        "picks": len(ranks),
-        "top_1": sum(rank == 1 for rank in ranks) / len(ranks),
-        "mean_reciprocal_rank": sum(1.0 / rank for rank in ranks) / len(ranks),
-    }
-
-
-def _model_metrics(
-    *, examples: tuple[_PickExample, ...], model: _Model
-) -> tuple[float, float]:
-    ranks = [
-        _rank(example=example, scores=_model_logits(model=model, example=example))
-        for example in examples
-    ]
-    return (
-        sum(rank == 1 for rank in ranks) / len(ranks),
-        sum(1.0 / rank for rank in ranks) / len(ranks),
-    )
-
-
-def _metrics_for_multiplier(
-    *,
-    examples: tuple[_PickExample, ...],
-    model: _Model,
-    multiplier: float,
-    maximum_delta: float,
-) -> tuple[float, float]:
-    ranks = [
-        _rank(
-            example=example,
-            scores=example.basic_scores
-            + _deltas(
-                model=model,
-                example=example,
-                multiplier=multiplier,
-                maximum_delta=maximum_delta,
-            ),
-        )
-        for example in examples
-    ]
-    return (
-        sum(rank == 1 for rank in ranks) / len(ranks),
-        sum(1.0 / rank for rank in ranks) / len(ranks),
-    )
-
-
-def _model_logits(*, model: _Model, example: _PickExample) -> np.ndarray:
-    hidden = np.tanh(np.log1p(example.features) @ model.input_weights)
-    return hidden @ model.output_weights[:, example.candidate_indices] + model.bias[
-        example.candidate_indices
-    ]
-
-
-def _deltas(
-    *, model: _Model, example: _PickExample, multiplier: float, maximum_delta: float
-) -> np.ndarray:
-    logits = _model_logits(model=model, example=example)
-    centered = logits - np.mean(logits)
-    return np.clip(centered * multiplier, -maximum_delta, maximum_delta)
-
-
-def _rank(*, example: _PickExample, scores: np.ndarray) -> int:
-    order = sorted(
-        range(len(scores)),
-        key=lambda index: (-float(scores[index]), example.candidate_ids[index]),
-    )
-    return order.index(example.chosen_index) + 1
-
-
-def _artifact(
-    *,
-    prepared: PreparedAugmentedTrainingData,
-    candidate_ids: tuple[str, ...],
-    model: _Model,
-    config: ModelCTrainingConfig,
-    calibration: dict[str, object],
-    evaluation: dict[str, dict[str, float | int]],
-    training: dict[str, object],
-) -> dict[str, object]:
-    report = prepared.report
-    return {
-        "schema_version": 1,
-        "set_code": "HOB",
-        "model": {
-            "name": "coarse_context_model_c",
-            "architecture": "bias_plus_tanh_low_rank_pool_context",
-            "feature_schema": list(FEATURE_NAMES),
-            "candidate_output_ids": list(candidate_ids),
-            "runtime_parameters": {
-                "input_transform": "log1p_counts",
-                "hidden_activation": "tanh",
-                "bias": model.bias.tolist(),
-                "input_weights": model.input_weights.tolist(),
-                "output_weights": model.output_weights.tolist(),
-            },
-        },
-        "calibration": calibration,
-        "source": {
-            "event_type": report.event_type,
-            "url": report.source_url,
-            "retrieved_at": report.retrieved_at,
-            "sha256": report.sha256,
-            "attribution": report.attribution,
-            "license": report.license,
-        },
-        "training": {
-            "seed": config.seed,
-            "hidden_size": config.hidden_size,
-            "epochs": config.epochs,
-            "patience": config.patience,
-            "batch_size": config.batch_size,
-            "learning_rate": config.learning_rate,
-            "weight_decay": config.weight_decay,
-            "best_epoch": training["best_epoch"],
-            "best_validation_mrr": training["best_validation_mrr"],
-        },
-        "evaluation": evaluation,
-    }
-
-
-def _json_bytes(*, value: object) -> bytes:
-    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-
-
-def _arguments() -> argparse.Namespace:
-    repository = Path(__file__).resolve().parents[1]
-    parser = argparse.ArgumentParser(
-        description="Train and gate the HOB coarse-context Model C pilot.",
-    )
-    parser.add_argument("--draft-data", type=Path, required=True)
-    parser.add_argument("--source-url", required=True)
-    parser.add_argument("--source-sha256", required=True)
-    parser.add_argument("--retrieved-at", required=True)
-    parser.add_argument("--artifact", type=Path, required=True)
-    parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument(
-        "--card-data",
-        type=Path,
-        default=repository / "website/public/card-data/hob.json.gz",
-    )
-    parser.add_argument(
-        "--set-profile",
-        type=Path,
-        default=(
-            repository
-            / "website/public/profiles/objects"
-            / "51603f8922d594fca71bddd6d5fae02e301381180b169b155e402434c466fd23.json.gz"
-        ),
-    )
-    return parser.parse_args()
-
-
-def main() -> int:
-    """Run the complete offline HOB training and promotion workflow.
-    The exit status reports whether the strict promotion gate passed.
-    """
-
-    arguments = _arguments()
-    card_database = load_hob_card_database(path=arguments.card_data)
-    set_profile = load_hob_set_profile(path=arguments.set_profile)
-    source = AugmentedTrainingSource(
-        path=arguments.draft_data,
-        url=arguments.source_url,
-        sha256=arguments.source_sha256,
-        retrieved_at=arguments.retrieved_at,
-        attribution="17Lands public datasets",
-        license="CC BY 4.0",
-        event_type="PremierDraft",
-    )
-    data = _load_array_training_data(
-        source=source,
-        card_database=card_database,
-    )
-    result = train_and_gate_hob_model_c_arrays(
-        data=data,
-        source=source,
-        card_database=card_database,
-        set_profile=set_profile,
-        artifact_path=arguments.artifact,
-        report_path=arguments.report,
-    )
-    print(json.dumps(result.report, indent=2, sort_keys=True))
-    return 0 if result.promoted else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return AugmentedTrainingResult(artifact=artifact, report=report)

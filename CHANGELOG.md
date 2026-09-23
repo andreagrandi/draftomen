@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Train one explicit set from pinned draft data and return a validated runtime
+  artifact only when held-out Top-1 and MRR both beat Basic DO. Keep the HOB
+  pilot command and reject mismatched set, card, profile, and source data. (#644)
 - Package the HOB compact trainer for import without changing its pilot command
   or strict held-out gate. Add a deterministic passing compact regression. (#643)
 - Reuse valid published per-set card data without fetching sources or changing
