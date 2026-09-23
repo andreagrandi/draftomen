@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Publish the first HOB PremierDraft augmented model after it beats Basic DO
+  on held-out Top-1 agreement and mean reciprocal rank. Its manifest records
+  the source and points to the compressed model by checksum. (#624)
 - Publish one validated augmented model with `build-augmented-set SET` only
   when both held-out metrics beat Basic DO. Canonicalize public dump URL format
   casing, read compressed cache objects by gzip signature, keep draft dumps in
