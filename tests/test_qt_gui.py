@@ -7147,17 +7147,18 @@ QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
 
 AUGMENTED_SENTENCE = (
-    " Uses a validated per-set model to adjust DO Scores; "
-    "the model runs locally and never during a live draft."
+    " When available and enabled, a validated per-set model runs locally "
+    "during a live draft to adjust DO Scores."
 )
 
 UNAVAILABLE_STATE = AugmentationState(
     status=AugmentationStatus.UNAVAILABLE,
-    set_code="OTJ",
+    set_code="MSH",
 )
-AVAILABLE_OFF_STATE = AugmentationState(
+AVAILABLE_ON_STATE = AugmentationState(
     status=AugmentationStatus.AVAILABLE,
-    set_code="OTJ",
+    set_code="HOB",
+    enabled=True,
 )
 
 
@@ -7285,30 +7286,8 @@ with TemporaryDirectory() as preferences_dir:
 
     assert not dispatched_augmentations()
     assert preferences.augmentedIntelligenceEnabled is False
-    fresh_preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
-    try:
-        assert fresh_preferences.augmentedIntelligenceEnabled is False
-    finally:
-        fresh_preferences.shutdown()
     assert_settings(
         state=UNAVAILABLE_STATE,
-        switch_enabled=False,
-        switch_checked=False,
-    )
-
-    press_space()
-    assert not dispatched_augmentations()
-    assert recorded_preferences == []
-    assert_settings(
-        state=UNAVAILABLE_STATE,
-        switch_enabled=False,
-        switch_checked=False,
-    )
-
-    publish_augmentation(state=AVAILABLE_OFF_STATE)
-    assert not dispatched_augmentations()
-    assert_settings(
-        state=AVAILABLE_OFF_STATE,
         switch_enabled=True,
         switch_checked=False,
     )
@@ -7317,13 +7296,29 @@ with TemporaryDirectory() as preferences_dir:
     assert dispatched_augmentations() == [ChangeAugmentation(enabled=True)]
     assert recorded_preferences == [True]
     assert preferences.augmentedIntelligenceEnabled is True
-    assert switch.property("checked") is True
+    assert_settings(
+        state=UNAVAILABLE_STATE,
+        switch_enabled=True,
+        switch_checked=True,
+    )
+
     wait_for_saved(preferences)
+    assert preferences.persistenceMessage == "Saved"
     persisted_preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
     try:
         assert persisted_preferences.augmentedIntelligenceEnabled is True
     finally:
         persisted_preferences.shutdown()
+
+    publish_augmentation(state=AVAILABLE_ON_STATE)
+    assert dispatched_augmentations() == [ChangeAugmentation(enabled=True)]
+    assert recorded_preferences == [True]
+    assert preferences.augmentedIntelligenceEnabled is True
+    assert_settings(
+        state=AVAILABLE_ON_STATE,
+        switch_enabled=True,
+        switch_checked=True,
+    )
 
     preferences.shutdown()
     del root

@@ -916,6 +916,7 @@ class _LiveSessionWorker(QObject):
         profile_client: ProfileClient | None = None,
         augmented_model_client: AugmentedModelClient | None = None,
         test_draft_factory: TestDraftFactory | None = None,
+        augmentation_enabled: bool = False,
     ) -> None:
         super().__init__()
         self._session_factory = session_factory
@@ -924,6 +925,7 @@ class _LiveSessionWorker(QObject):
         self._profile_client = profile_client
         self._augmented_model_client = augmented_model_client
         self._test_draft_factory = test_draft_factory
+        self._augmentation_enabled = augmentation_enabled
         self._session: LiveSession | None = None
         self._timer: QTimer | None = None
         self._stop_requested = False
@@ -1165,6 +1167,8 @@ class _LiveSessionWorker(QObject):
             return
         try:
             session.dispatch(command=command)
+            if isinstance(command, ChangeAugmentation):
+                self._augmentation_enabled = command.enabled
             if isinstance(command, ChangeSplashPreference):
                 self._splash_enabled = command.enabled
             elif isinstance(command, ChangeContextualScoring):
@@ -1481,6 +1485,10 @@ class _LiveSessionWorker(QObject):
                 self._runtime_generation += 1
                 return
             self._test_draft_runtime = runtime
+            if self._augmentation_enabled:
+                runtime.session.dispatch(
+                    command=ChangeAugmentation(enabled=True)
+                )
             if mode == "manual":
                 inspection = runtime.controller.start()
                 self._switch_source(source="test-draft")
@@ -1744,6 +1752,9 @@ class _LiveSessionWorker(QObject):
         session = self._session
         if session is None:
             return
+        session.dispatch(
+            command=ChangeAugmentation(enabled=self._augmentation_enabled)
+        )
         snapshot = session.snapshot
         if snapshot.recommendations.splash_enabled != self._splash_enabled:
             session.dispatch(command=ChangeSplashPreference(enabled=self._splash_enabled))
@@ -1824,6 +1835,7 @@ class LiveSessionAdapter(SessionAdapter):
         profile_client: ProfileClient | None = None,
         augmented_model_client: AugmentedModelClient | None = None,
         test_draft_factory: TestDraftFactory | None = None,
+        augmentation_enabled: bool = False,
         parent: QObject | None = None,
     ) -> None:
         if poll_interval_ms <= 0:
@@ -1834,6 +1846,7 @@ class LiveSessionAdapter(SessionAdapter):
         self._startup_scan = startup_scan
         self._profile_client = profile_client
         self._augmented_model_client = augmented_model_client
+        self._augmentation_enabled = augmentation_enabled
         self._test_draft_factory = test_draft_factory
         self.thread: QThread | None = None
         self._worker: _LiveSessionWorker | None = None
@@ -1853,6 +1866,7 @@ class LiveSessionAdapter(SessionAdapter):
             startup_scan=self._startup_scan,
             profile_client=self._profile_client,
             augmented_model_client=self._augmented_model_client,
+            augmentation_enabled=self._augmentation_enabled,
             test_draft_factory=self._test_draft_factory,
         )
         worker.moveToThread(thread)

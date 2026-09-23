@@ -2653,22 +2653,43 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
 
 
 class _StubAugmentedModelClient(AugmentedModelClient):
-    """Serve one validated augmentation artifact without cache or network work."""
+    """Serve one configured augmentation result without cache or network work."""
 
-    def __init__(self, *, app_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        app_dir: Path,
+        outcome: AugmentedModelOutcome | None = None,
+        load_error: Exception | None = None,
+    ) -> None:
         super().__init__(app_dir=app_dir)
         self.requested_set_codes: list[str] = []
         self.thread_ids: list[int] = []
+        self.load_completed = threading.Event()
+        self._outcome = outcome
+        self._load_error = load_error
 
     def load(self, set_code: str, *, allow_network: bool) -> AugmentedModelLoad:
         assert allow_network is True
         self.requested_set_codes.append(set_code)
         self.thread_ids.append(threading.get_ident())
-        return AugmentedModelLoad(
-            outcome=AugmentedModelOutcome.DOWNLOADED,
-            set_code=set_code,
-            artifact=augmented_artifact(set_code=set_code.casefold()),
-        )
+        try:
+            if self._load_error is not None:
+                raise self._load_error
+            outcome = self._outcome or AugmentedModelOutcome.DOWNLOADED
+            artifact = (
+                augmented_artifact(set_code=set_code.casefold())
+                if outcome
+                in (AugmentedModelOutcome.CACHED, AugmentedModelOutcome.DOWNLOADED)
+                else None
+            )
+            return AugmentedModelLoad(
+                outcome=outcome,
+                set_code=set_code,
+                artifact=artifact,
+            )
+        finally:
+            self.load_completed.set()
 
 
 def test_live_adapter_loads_the_available_augmentation_model_off_gui_thread(
@@ -3657,7 +3678,10 @@ def test_live_adapter_clearing_mocked_draft_factory_restores_arena_authority(
         assert adapter.state["errors"] == []
         assert adapter.state["status"]["phase"] != "error"
         assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
-        assert arena.commands == [ChangeContextualScoring(enabled=False)]
+        assert arena.commands == [
+            ChangeAugmentation(enabled=False),
+            ChangeContextualScoring(enabled=False),
+        ]
         assert adapter.state["contextual_adjustments_enabled"] is False
     finally:
         adapter.shutdown()
@@ -3898,6 +3922,7 @@ def _start_real_test_draft_adapter(
     tmp_path: Path,
     socket: _FakeSocket,
     augmented_model_client: AugmentedModelClient | None = None,
+    augmentation_enabled: bool = False,
 ) -> tuple[
     LiveSessionAdapter,
     _FakeSession,
@@ -3926,6 +3951,7 @@ def _start_real_test_draft_adapter(
         poll_interval_ms=600_000,
         augmented_model_client=augmented_model_client,
         test_draft_factory=cast("TestDraftFactory", factory),
+        augmentation_enabled=augmentation_enabled,
     )
     adapter.start()
     _process_until(
@@ -4036,54 +4062,192 @@ def test_live_adapter_loads_augmented_model_for_manual_test_draft_offer(
         tmp_path=tmp_path,
         socket=_helper_socket(states=_arena_states()),
         augmented_model_client=client,
+        augmentation_enabled=True,
     )
     try:
         adapter.startTestDraft("manual", "hob")
         _process_until(
             application=qcore_application,
-            predicate=lambda: adapter.state["augmentation"]["status"] == "available",
-            description="the manual HOB offer's augmentation model",
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
+            and adapter.state["augmentation"]["status"] == "available"
+            and adapter.state["augmentation"]["enabled"] is True,
+            description="the first manual HOB offer with augmentation enabled",
         )
 
         assert adapter.state["test_draft"]["active"] is True
         assert adapter.state["test_draft"]["phase"] == "drafting"
-        assert adapter.state["test_draft"]["offer_generation"] == 1
         assert adapter.state["draft"]["set_code"] == "HOB"
         assert adapter.state["augmentation"] == {
             "status": "available",
             "set_code": "HOB",
-            "enabled": False,
+            "enabled": True,
         }
         assert client.requested_set_codes == ["HOB"]
         assert all(thread_id != gui_thread_id for thread_id in client.thread_ids)
         assert source.runtime.session.snapshot.augmentation == AugmentationState(
             status=AugmentationStatus.AVAILABLE,
             set_code="HOB",
-            enabled=False,
+            enabled=True,
+        )
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_keeps_augmentation_choice_across_test_draft_source_changes(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    client = _StubAugmentedModelClient(app_dir=tmp_path / "app")
+    adapter, arena, _, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path,
+        socket=_helper_socket(states=_arena_states()),
+        augmented_model_client=client,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
+            and adapter.state["augmentation"]["status"] == "available",
+            description="the first HOB offer's augmentation model",
         )
 
         adapter.setAugmentedIntelligenceEnabled(True)
         _process_until(
             application=qcore_application,
-            predicate=lambda: adapter.state["augmentation"]["enabled"] is True,
-            description="the simulated session's augmentation toggle",
+            predicate=lambda: (
+                source.started[0].runtime.session.snapshot.augmentation.enabled
+                and adapter.state["augmentation"]["enabled"] is True
+            ),
+            description="the enabled choice on the active HOB draft",
         )
-        assert source.runtime.session.snapshot.augmentation == AugmentationState(
-            status=AugmentationStatus.AVAILABLE,
-            set_code="HOB",
-            enabled=True,
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
+            and adapter.state["test_draft"]["active"] is False
+            and ChangeAugmentation(enabled=True) in arena.commands,
+            description="the restored Arena augmentation choice",
         )
+        assert [
+            command
+            for command in arena.commands
+            if isinstance(command, ChangeAugmentation)
+        ] == [ChangeAugmentation(enabled=True)]
+
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
+            and adapter.state["augmentation"]["status"] == "available"
+            and adapter.state["augmentation"]["enabled"] is True,
+            description="the next HOB offer inheriting the enabled choice",
+        )
+        assert (
+            source.started[1].runtime.session.snapshot.augmentation
+            == AugmentationState(
+                status=AugmentationStatus.AVAILABLE,
+                set_code="HOB",
+                enabled=True,
+            )
+        )
+        assert client.requested_set_codes == ["HOB", "HOB"]
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "load_error"),
+    [
+        (AugmentedModelOutcome.MISSING, None),
+        (None, RuntimeError("model load failed")),
+    ],
+    ids=("missing", "load-error"),
+)
+def test_live_adapter_keeps_manual_draft_on_basic_do_when_augmented_model_unavailable(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+    outcome: AugmentedModelOutcome | None,
+    load_error: Exception | None,
+) -> None:
+    client = _StubAugmentedModelClient(
+        app_dir=tmp_path / "enabled-app",
+        outcome=outcome,
+        load_error=load_error,
+    )
+    adapter, _, _, source = _start_real_test_draft_adapter(
+        application=qcore_application,
+        tmp_path=tmp_path / "enabled",
+        socket=_helper_socket(states=_arena_states()),
+        augmented_model_client=client,
+        augmentation_enabled=True,
+    )
+    baseline_adapter: LiveSessionAdapter | None = None
+    try:
+        adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
+            and client.load_completed.is_set()
+            and source.runtime.session.augmented_model_request() is None,
+            description="the first offer after its unavailable model load settles",
+        )
+        failed_load_rows = adapter.state["recommendations"]["cards"]
+        assert adapter.state["augmentation"] == {
+            "status": "unavailable",
+            "set_code": "HOB",
+            "enabled": False,
+        }
+        assert adapter.state["test_draft"]["phase"] == "drafting"
+        assert adapter.state["test_draft"]["error"] is None
+        assert adapter.state["status"]["phase"] != "error"
+        assert adapter.state["errors"] == []
+        assert client.requested_set_codes == ["HOB"]
+
+        baseline_client = _StubAugmentedModelClient(
+            app_dir=tmp_path / "basic-do-app",
+            outcome=AugmentedModelOutcome.MISSING,
+        )
+        baseline_adapter, _, _, baseline_source = _start_real_test_draft_adapter(
+            application=qcore_application,
+            tmp_path=tmp_path / "basic-do",
+            socket=_helper_socket(states=_arena_states()),
+            augmented_model_client=baseline_client,
+        )
+        baseline_adapter.startTestDraft("manual", "hob")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: baseline_adapter.state["test_draft"]["offer_generation"]
+            == 1
+            and baseline_client.load_completed.is_set()
+            and baseline_source.runtime.session.augmented_model_request() is None,
+            description="the opt-out HOB offer's Basic DO rows",
+        )
+        assert failed_load_rows == baseline_adapter.state["recommendations"]["cards"]
+        assert baseline_client.requested_set_codes == ["HOB"]
+        baseline_adapter.shutdown()
+        baseline_adapter.wait_for_shutdown()
+        baseline_adapter = None
 
         first_choice = adapter.state["recommendations"]["cards"][0]["card"]["grp_id"]
         adapter.pickTestDraft(first_choice, 1)
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 2,
-            description="the next manual offer after model availability",
+            description="a successful manual pick after the unavailable model load",
         )
-        assert adapter.state["augmentation"]["status"] == "available"
+        assert adapter.state["test_draft"]["error"] is None
+        assert adapter.state["status"]["phase"] != "error"
+        assert adapter.state["errors"] == []
         assert client.requested_set_codes == ["HOB"]
     finally:
+        if baseline_adapter is not None:
+            baseline_adapter.shutdown()
+            baseline_adapter.wait_for_shutdown()
         adapter.shutdown()
         adapter.wait_for_shutdown()
 
@@ -4694,11 +4858,20 @@ def test_live_adapter_replays_contextual_and_ai_preferences_on_leave(
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
-            and arena.commands
+            and len(arena.commands) == 3
+            and [
+                command
+                for command in arena.commands
+                if isinstance(
+                    command,
+                    (ChangeContextualScoring, ChangeAiEnhancedSuggestions),
+                )
+            ]
             == [
                 ChangeContextualScoring(enabled=False),
                 ChangeAiEnhancedSuggestions(enabled=False),
-            ],
+            ]
+            and ChangeAugmentation(enabled=False) in arena.commands,
             description="the replayed Arena preferences",
         )
         assert adapter.state["test_draft"]["active"] is False

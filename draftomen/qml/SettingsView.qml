@@ -151,7 +151,7 @@ Item {
                                 objectName: "settingsAugmentedIntelligenceMessage"
                                 Layout.fillWidth: true
                                 text: root.sessionState.augmentation_message
-                                    + " Uses a validated per-set model to adjust DO Scores; the model runs locally and never during a live draft."
+                                    + " When available and enabled, a validated per-set model runs locally during a live draft to adjust DO Scores."
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.textPixelSize(11)
                                 wrapMode: Text.WordWrap
@@ -161,11 +161,10 @@ Item {
                         }
                         SettingsSwitch {
                             objectName: "settingsAugmentedIntelligenceSwitch"
-                            checked: root.sessionState.augmentation.enabled
-                            enabled: root.sessionState.augmentation.status === "available"
+                            checked: root.displayPreferences.augmentedIntelligenceEnabled
                             Accessible.name: "Augmented Intelligence"
                             Accessible.description: root.sessionState.augmentation_message
-                                + " Uses a validated per-set model to adjust DO Scores; the model runs locally and never during a live draft."
+                                + " When available and enabled, a validated per-set model runs locally during a live draft to adjust DO Scores."
                             onToggled: root.displayPreferences.setAugmentedIntelligenceEnabled(checked)
                         }
                     }
