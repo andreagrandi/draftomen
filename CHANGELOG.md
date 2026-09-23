@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Package the HOB compact trainer for import without changing its pilot command
+  or strict held-out gate. Add a deterministic passing compact regression. (#643)
 - Reuse valid published per-set card data without fetching sources or changing
   its bytes. Generate only a missing requested set and reject invalid existing
   files or unsupported set codes without replacing artifacts. (#637)
