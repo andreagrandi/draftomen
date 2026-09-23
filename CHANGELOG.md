@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Publish one validated augmented model with `build-augmented-set SET` only
+  when both held-out metrics beat Basic DO. Canonicalize public dump URL format
+  casing, read compressed cache objects by gzip signature, keep draft dumps in
+  the private cache, and update the manifest after installing the object.
+  (#639)
 - Train one explicit set from pinned draft data and return a validated runtime
   artifact only when held-out Top-1 and MRR both beat Basic DO. Keep the HOB
   pilot command and reject mismatched set, card, profile, and source data. (#644)
