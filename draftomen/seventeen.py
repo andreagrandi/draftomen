@@ -1194,7 +1194,10 @@ def public_draft_data_url(*, set_code: str, event_format: str) -> str:
 
     return PUBLIC_DRAFT_DATA_URL_TEMPLATE.format(
         set_code=set_code.upper(),
-        event_format=event_format,
+        event_format=_HOSTED_EVENT_FORMATS.get(
+            event_format.casefold(),
+            event_format,
+        ),
     )
 
 

@@ -304,6 +304,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"HTTP timeout in seconds (default: {HTTP_TIMEOUT_SECONDS}).",
     )
     export_parser.set_defaults(handler=handle_export_set_data)
+    augmented_parser = subparsers.add_parser(
+        name="build-augmented-set",
+        help="Build and publish one held-out-validated augmented set model.",
+        description=(
+            "Acquire public Draft Data, compare Basic DO with an augmented model "
+            "on held-out picks, and publish the model only when both metrics improve."
+        ),
+    )
+    augmented_parser.add_argument(
+        "set",
+        metavar="SET",
+        help="Exact set code to acquire, train, and publish.",
+    )
+    augmented_parser.set_defaults(handler=handle_build_augmented_set)
 
 
     replay_parser = subparsers.add_parser(
@@ -1483,6 +1497,54 @@ def handle_export_set_data(args: argparse.Namespace) -> int:
         print(f"export-set-data failed: {error}", file=sys.stderr)
         return 1
 
+
+def handle_build_augmented_set(args: argparse.Namespace) -> int:
+    """Build and publish one validated augmented-set model."""
+
+    try:
+        from draftomen.augmented_publication import build_augmented_set
+
+        result = build_augmented_set(set_code=args.set)
+        print(f"Profile source: {result.profile_source}")
+        evaluation = result.training.report["evaluation"]
+        basic_do = evaluation["basic_do"]
+        basic_plus_augmented = evaluation["basic_plus_augmented"]
+        print(
+            "Basic DO: "
+            f"top_1={basic_do['top_1']} "
+            "mean_reciprocal_rank="
+            f"{basic_do['mean_reciprocal_rank']}"
+        )
+        print(
+            "Basic DO + augmented: "
+            f"top_1={basic_plus_augmented['top_1']} "
+            "mean_reciprocal_rank="
+            f"{basic_plus_augmented['mean_reciprocal_rank']}"
+        )
+
+        if result.training.artifact is None:
+            print(
+                "build-augmented-set failed: held-out promotion gate did not pass; "
+                "no augmented model was published",
+                file=sys.stderr,
+            )
+            return 1
+        if result.object_path is None or result.manifest_path is None:
+            print(
+                "build-augmented-set failed: augmented model publication is incomplete",
+                file=sys.stderr,
+            )
+            return 1
+
+        print(f"Card data: {result.card_data_path}")
+        print(f"Augmented object: {result.object_path}")
+        print(f"Manifest: {result.manifest_path}")
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except Exception as error:  # noqa: BLE001 - keep workflow errors concise.
+        print(f"build-augmented-set failed: {error}", file=sys.stderr)
+        return 1
 
 
 def handle_watch(args: argparse.Namespace) -> int:

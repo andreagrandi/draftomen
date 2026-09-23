@@ -31,9 +31,43 @@ from draftomen.profile_input_cache import (
     ProfileInputCachePolicy,
 )
 from draftomen.public_dump import PublicDumpSource
+from draftomen.refresh_plan import PlannedEnvironment
 from draftomen.seventeen import public_draft_data_url
 
 _NOW = datetime(2026, 8, 31, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("event_format", "expected_format"),
+    [
+        ("PremierDraft", "PremierDraft"),
+        ("TradDraft", "TradDraft"),
+        ("QuickDraft", "QuickDraft"),
+    ],
+)
+def test_public_draft_url_canonicalizes_planned_event_formats(
+    event_format: str, expected_format: str
+) -> None:
+    environment = PlannedEnvironment(
+        set_code="HOB",
+        event_format=event_format,
+        lifecycle=None,
+        reasons=("augmented-training",),
+    )
+    expected_url = (
+        "https://17lands-public.s3.amazonaws.com/analysis_data/draft_data/"
+        f"draft_data_public.HOB.{expected_format}.csv.gz"
+    )
+
+    assert environment.event_format == event_format.casefold()
+    assert public_draft_data_url(
+        set_code=environment.set_code,
+        event_format=environment.event_format,
+    ) == expected_url
+    assert public_draft_data_url(
+        set_code=environment.set_code,
+        event_format=event_format,
+    ) == expected_url
 
 
 def _web_link(url: str) -> dict[str, Any]:

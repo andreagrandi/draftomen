@@ -271,6 +271,62 @@ recommendation protocol, then add source/confidence UI and shadow-mode
 comparison. Model download or distribution policy should be decided only after
 the first artifact's size and license are known.
 
+## Build and review one augmented set
+
+Before training, review the [17Lands Public Data listing](https://www.17lands.com/public_datasets)
+and [usage guidelines](https://www.17lands.com/usage_guidelines). Check the
+exact URLs and dataset-specific licenses for HOB datasets in the listing, since
+the command may fall back to a later format. Do not run it until every dataset it
+could select has terms compatible with model training and distribution.
+
+Run the command from the development environment for one set:
+
+```sh
+uv run draftomen-tui build-augmented-set HOB
+```
+
+The command reads the public Draft Data listing and checks the requested set's
+`PremierDraft`, `TradDraft`, then `QuickDraft` dataset in that preference order.
+It uses the first listed dump it can acquire and validate. It reuses a valid
+canonical card-data artifact for that set. If none exists, it generates only
+that set's artifact under `website/public/card-data/`; an invalid existing
+artifact causes the command to fail. The downloaded dump stays in the per-user
+`.draftomen/profile-input-cache/`, not in `website/public/`.
+
+The held-out evaluation compares Basic DO with Basic DO plus the augmented model.
+The command prints the profile source used for Basic DO and both `top_1` and
+`mean_reciprocal_rank` values for each comparison. It publishes a model only
+when both augmented metrics strictly exceed Basic DO. A matching set-and-format
+profile is used when available; otherwise the command reports and uses the
+generic scoring profile.
+
+On a passing gate, the command writes the compressed model to
+`website/public/augmented/objects/<compressed-sha256>.json.gz` and updates
+`website/public/augmented/manifest.json`. The filename digest is calculated
+from the compressed object bytes. A failed gate exits with status 1 and does not
+publish a model object or manifest entry; a newly generated card-data artifact
+may remain. Validation, acquisition, training, or publishing errors also exit
+with status 1. Ctrl-C exits with status 130.
+
+Before opening a pull request:
+
+1. Compare the selected dataset's source record in the model and manifest with
+   the 17Lands listing. Record the exact source URL, retrieval date, and
+   dataset-specific license. The [17Lands usage guidelines](https://www.17lands.com/usage_guidelines)
+   explain the public-data terms. Do not distribute the model if its license is
+   missing or does not permit it. The site's
+   [Terms of Service](https://www.17lands.com/terms_of_service) also apply to
+   access.
+2. Inspect the generated model and manifest, any newly generated card-data
+   artifact, and both aggregate metric pairs. Confirm the set and format match
+   the reviewed source.
+3. Inspect the `website/public/` changes. This workflow should add only the
+   compressed model object and manifest update, plus canonical card data if the
+   command generated it. Do not add the public dump, training matrices, or
+   row-level predictions.
+4. Open a normal pull request manually after review. This command does not run
+   Git, push changes, or create a pull request.
+
 ## Issue acceptance mapping
 
 | Issue #37 criterion | Design decision |

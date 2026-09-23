@@ -10,6 +10,7 @@ import multiprocessing
 import os
 import shutil
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -138,15 +139,19 @@ _BASIC_SCORE_WORKER_STATE: tuple[
 def _decompress_training_source(*, source: AugmentedTrainingSource) -> Path:
     path = Path(source.path)
     digest = hashlib.sha256()
+    is_gzip = path.suffix == ".gz"
     try:
         with path.open(mode="rb") as handle:
+            prefix = handle.read(2)
+            digest.update(prefix)
+            is_gzip = is_gzip or prefix == b"\x1f\x8b"
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
     except OSError as error:
         raise AugmentedTrainingError("Pinned draft dump could not be read.") from error
     if digest.hexdigest() != source.sha256:
         raise AugmentedTrainingError("Pinned draft dump checksum does not match.")
-    if path.suffix != ".gz":
+    if not is_gzip:
         return path
     destination = Path("/tmp") / f"draftomen-augmented-{source.sha256[:16]}.csv"
     partial = destination.with_suffix(".csv.part")
@@ -158,7 +163,11 @@ def _decompress_training_source(*, source: AugmentedTrainingSource) -> Path:
         ):
             shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
         partial.replace(destination)
-    except OSError as error:
+    except (OSError, EOFError, zlib.error) as error:
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise AugmentedTrainingError(
             "Pinned draft dump could not be decompressed."
         ) from error

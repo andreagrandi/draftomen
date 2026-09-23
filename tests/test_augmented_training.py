@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -300,6 +301,60 @@ def test_compact_loader_matches_hob_row_oracle_and_keeps_whole_drafts() -> None:
         for pick_index in range(2)
     ]
     _assert_ordered_complete_splits(data)
+
+
+def test_compact_loader_reads_gzip_cache_object_with_bin_suffix(
+    tmp_path: Path,
+) -> None:
+    plain_source = _passing_compact_source(tmp_path=tmp_path)
+    payload = gzip.compress(Path(plain_source.path).read_bytes(), mtime=0)
+    digest = hashlib.sha256(payload).hexdigest()
+    cache_object_path = (
+        tmp_path / "profile-input-cache" / "objects" / f"{digest}.bin"
+    )
+    cache_object_path.parent.mkdir(parents=True)
+    cache_object_path.write_bytes(payload)
+    source = replace(plain_source, path=cache_object_path, sha256=digest)
+
+    data = _load_array_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=_fixture_card_database(),
+        complete_draft_picks=2,
+    )
+
+    assert data.rows_seen == 32
+    assert data.drafts_seen == 16
+    assert data.features.shape == (32, len(FEATURE_NAMES))
+
+
+def test_compact_loader_rejects_corrupt_gzip_cache_object_without_partial(
+    tmp_path: Path,
+) -> None:
+    plain_source = _passing_compact_source(tmp_path=tmp_path)
+    payload = bytearray(
+        gzip.compress(Path(plain_source.path).read_bytes(), mtime=0)
+    )
+    payload[-8] ^= 0xFF
+    compressed = bytes(payload)
+    digest = hashlib.sha256(compressed).hexdigest()
+    cache_object_path = (
+        tmp_path / "profile-input-cache" / "objects" / f"{digest}.bin"
+    )
+    cache_object_path.parent.mkdir(parents=True)
+    cache_object_path.write_bytes(compressed)
+    source = replace(plain_source, path=cache_object_path, sha256=digest)
+    partial_path = Path("/tmp") / f"draftomen-augmented-{digest[:16]}.csv.part"
+
+    with pytest.raises(AugmentedTrainingError, match="could not be decompressed"):
+        _load_array_training_data(
+            set_code="HOB",
+            source=source,
+            card_database=_fixture_card_database(),
+            complete_draft_picks=2,
+        )
+
+    assert not partial_path.exists()
 
 
 def test_synthetic_tst_fixture_matches_its_set_cards_and_source(

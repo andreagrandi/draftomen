@@ -167,6 +167,7 @@ def test_tui_parser_uses_tui_command_name(
         ("generate-profile-refresh-batch", "Generate profiles"),
         ("export-set-data", "Export"),
         ("enrich-set", "Freeze"),
+        ("build-augmented-set", "Acquire public Draft Data"),
         ("republish-enrichment", "Recompile"),
         ("list-enrichment", "Report every local enrichment run"),
     ],
@@ -186,6 +187,248 @@ def test_subcommands_are_registered_with_help_text(
     assert error.value.code == 0
     assert command in captured.out
     assert expected_help in captured.out
+
+
+def test_build_augmented_set_parser_requires_exactly_one_set() -> None:
+    parser = build_parser()
+    args = parser.parse_args(args=["build-augmented-set", "HOB"])
+
+    assert args.set == "HOB"
+    assert args.handler is cli.handle_build_augmented_set
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_error"),
+    [
+        (["build-augmented-set"], "required: SET"),
+        (
+            ["build-augmented-set", "HOB", "LCI"],
+            "unrecognized arguments: LCI",
+        ),
+    ],
+)
+def test_build_augmented_set_rejects_missing_or_extra_set(
+    arguments: list[str],
+    expected_error: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(argv=arguments)
+
+    captured = capsys.readouterr()
+    assert error.value.code == 2
+    assert "usage: draftomen-tui" in captured.err
+    assert expected_error in captured.err
+
+
+def test_cli_import_does_not_require_training_development_dependencies() -> None:
+    script = """
+import importlib.abc
+import sys
+
+class BlockTrainingDependencies(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.partition(".")[0] in {"numpy", "polars"}:
+            raise ModuleNotFoundError(f"blocked development dependency: {fullname}")
+
+sys.meta_path.insert(0, BlockTrainingDependencies())
+import draftomen.cli
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=CLI_REPOSITORY_ROOT,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("set_code", "expected_fetch_count", "expected_error"),
+    [
+        ("HÖB", 0, "Set code"),
+        ("ZZZ", 1, "No supported public Draft Data"),
+    ],
+)
+def test_build_augmented_set_rejects_invalid_or_unsupported_sets_before_public_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    set_code: str,
+    expected_fetch_count: int,
+    expected_error: str,
+) -> None:
+    from draftomen import augmented_public_data, augmented_publication
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        augmented_publication,
+        "app_data_dir",
+        lambda: tmp_path / "private-cache",
+    )
+    fetched_timeouts: list[int] = []
+
+    def fetch_listing(*, timeout_seconds: int) -> dict[str, list[object]]:
+        fetched_timeouts.append(timeout_seconds)
+        return {"datasets": []}
+
+    monkeypatch.setattr(
+        augmented_public_data,
+        "fetch_public_draft_listing",
+        fetch_listing,
+    )
+
+    exit_code = main(argv=["build-augmented-set", set_code])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err.startswith("build-augmented-set failed: ")
+    assert expected_error in captured.err
+    assert "website/public" not in captured.out + captured.err
+    assert len(fetched_timeouts) == expected_fetch_count
+    assert not (tmp_path / "website" / "public").exists()
+
+
+def test_build_augmented_set_failed_gate_reports_metrics_without_publication_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from draftomen import augmented_publication
+
+    result = SimpleNamespace(
+        profile_source="generic",
+        training=SimpleNamespace(
+            artifact=None,
+            report={
+                "evaluation": {
+                    "basic_do": {
+                        "top_1": 0.25,
+                        "mean_reciprocal_rank": 0.5,
+                    },
+                    "basic_plus_augmented": {
+                        "top_1": 0.2,
+                        "mean_reciprocal_rank": 0.45,
+                    },
+                }
+            },
+        ),
+        card_data_path=tmp_path / "website/public/card-data/hob.json.gz",
+        object_path=None,
+        manifest_path=None,
+    )
+    monkeypatch.setattr(
+        augmented_publication,
+        "build_augmented_set",
+        lambda **kwargs: result,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(argv=["build-augmented-set", "HOB"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.out == (
+        "Profile source: generic\n"
+        "Basic DO: top_1=0.25 mean_reciprocal_rank=0.5\n"
+        "Basic DO + augmented: top_1=0.2 mean_reciprocal_rank=0.45\n"
+    )
+    assert captured.err == (
+        "build-augmented-set failed: held-out promotion gate did not pass; "
+        "no augmented model was published\n"
+    )
+    assert str(result.card_data_path) not in captured.out + captured.err
+    assert not (tmp_path / "website" / "public").exists()
+
+
+def test_build_augmented_set_interrupt_returns_130_without_publication_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from draftomen import augmented_publication
+
+    def interrupt(*, set_code: str) -> object:
+        del set_code
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(augmented_publication, "build_augmented_set", interrupt)
+
+    exit_code = main(argv=["build-augmented-set", "HOB"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 130
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from draftomen import augmented_publication
+    from tests.augmented_artifacts import augmented_artifact
+    from tests.test_augmented_publication import _install_workflow
+
+    monkeypatch.chdir(tmp_path)
+    public_dir, card_data_dir, augmented_dir, events = _install_workflow(
+        monkeypatch,
+        tmp_path,
+    )
+    actual_build = augmented_publication.build_augmented_set
+    build_calls: list[str] = []
+
+    def build_controlled_set(*, set_code: str):
+        build_calls.append(set_code)
+        return actual_build(
+            set_code=set_code,
+            card_data_dir=card_data_dir,
+            augmented_dir=augmented_dir,
+            cache_dir=tmp_path / "private-cache",
+            timeout_seconds=19,
+        )
+
+    monkeypatch.setattr(
+        augmented_publication,
+        "build_augmented_set",
+        build_controlled_set,
+    )
+
+    exit_code = main(argv=["build-augmented-set", "TST"])
+    captured = capsys.readouterr()
+
+    card_data_path = card_data_dir / "tst.json.gz"
+    digest = hashlib.sha256(augmented_artifact("tst").to_gzip_bytes()).hexdigest()
+    object_path = augmented_dir / "objects" / f"{digest}.json.gz"
+    manifest_path = augmented_dir / "manifest.json"
+    assert exit_code == 0
+    assert captured.out == (
+        "Profile source: generic\n"
+        "Basic DO: top_1=0.25 mean_reciprocal_rank=0.5\n"
+        "Basic DO + augmented: top_1=0.5 mean_reciprocal_rank=0.75\n"
+        f"Card data: {card_data_path}\n"
+        f"Augmented object: {object_path}\n"
+        f"Manifest: {manifest_path}\n"
+    )
+    assert captured.err == ""
+    assert build_calls == ["TST"]
+    assert events == ["acquire", "card-data", "profile", "train"]
+    assert card_data_path.is_file()
+    assert object_path.is_file()
+    assert manifest_path.is_file()
+    assert {
+        path.relative_to(public_dir)
+        for path in public_dir.rglob("*")
+        if path.is_file()
+    } == {
+        Path("card-data/tst.json.gz"),
+        Path(f"augmented/objects/{digest}.json.gz"),
+        Path("augmented/manifest.json"),
+    }
+
 
 def test_export_set_data_parser_defaults_and_options() -> None:
     parser = build_parser()
