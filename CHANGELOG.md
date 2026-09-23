@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Keep the desktop Augmented Intelligence choice on across restarts and
+  Mocked Draft source changes, even when the current set has no model.
+  Unavailable or failed models leave Basic DO and manual picks working. (#651)
 - Load the published HOB augmented model when a desktop Mocked Draft starts.
   Keep model loading off the session thread, and enable the setting for
   simulated HOB offers without requiring another action. (#624)

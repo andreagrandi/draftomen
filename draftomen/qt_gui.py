@@ -584,6 +584,7 @@ def _build_provider(
         augmented_model_client=augmented_model_client,
         poll_interval_ms=max(1, round(args.poll_interval * 1000)),
         startup_scan=args.startup_scan,
+        augmentation_enabled=preferences.augmented_intelligence_enabled,
         test_draft_factory=test_draft_factory,
     )
 
