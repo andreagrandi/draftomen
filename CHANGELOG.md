@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Republish the HOB and DFT profiles as clean schema-4 profiles and remove the
+  unused `enrichment-publications.json` record. Retrain the HOB augmented model
+  against the clean Basic DO baseline. It passes both held-out gates on 274,932
+  picks: top-1 rises from 0.5489 to 0.5922 and mean reciprocal rank from 0.7115
+  to 0.7474. (#664)
 - Remove the `enrich-set` and `list-enrichment` commands, the offline
   semantic-enrichment extraction, review, and projection code, and its
   OpenRouter and guide clients. Profile publication and refresh no longer

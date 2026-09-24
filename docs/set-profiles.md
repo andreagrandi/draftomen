@@ -247,10 +247,10 @@ journey.
 
 ### Historical profile-publication records
 
-`website/public/profiles/enrichment-publications.json` records older
-enrichment-to-profile publications. No command reads or writes it. Profile
-publication and refresh replace any manifest entry with the newly generated
-profile, including entries whose objects carry historical enrichment.
+Profile publication and refresh replace any manifest entry with the newly
+generated profile, including entries whose objects carry historical enrichment.
+Older enriched objects stay under `website/public/profiles/objects/`, but no
+active manifest entry references them.
 
 ### Lifecycle stages
 
