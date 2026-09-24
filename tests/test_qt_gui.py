@@ -7027,247 +7027,6 @@ with TemporaryDirectory() as preferences_dir:
     assert "TypeError" not in completed.stderr
 
 
-def test_qml_enhancement_availability_control_and_status_offscreen() -> None:
-    probe = """
-from dataclasses import replace
-from pathlib import Path
-from tempfile import TemporaryDirectory
-
-from PySide6.QtCore import QPoint, QPointF, QObject, Qt, QUrl
-from PySide6.QtGui import QAccessible, QColor, QGuiApplication
-from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtQuickControls2 import QQuickStyle
-from PySide6.QtTest import QTest
-
-from draftomen.mock_session import MockLiveSession
-from draftomen.qt_adapter import GuiPreferencesAdapter
-from draftomen.qt_mock import MockSessionAdapter
-from draftomen.session import (
-    ChangeAiEnhancedSuggestions,
-    EnhancementAvailabilityState,
-    EnhancementAvailabilityStatus,
-)
-
-
-QQuickStyle.setStyle("Fusion")
-application = QGuiApplication([])
-
-OFFLINE_SENTENCE = (
-    " Uses enhancement prepared offline in the active set profile; "
-    "no AI model runs during the live draft."
-)
-
-
-POLICY_MESSAGE = (
-    "AI-enhanced suggestions unavailable in production for OTJ: "
-    "legacy relationship scoring is disabled."
-)
-
-
-class PolicyDisabledMockSession(MockLiveSession):
-    def __init__(self) -> None:
-        super().__init__(scenario="ready")
-        self._snapshot = self._policy_disabled_snapshot(snapshot=self._snapshot)
-
-    @staticmethod
-    def _policy_disabled_snapshot(*, snapshot):
-        return replace(
-            snapshot,
-            enhancement_availability=EnhancementAvailabilityState(
-                status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-                set_code="OTJ",
-                message=POLICY_MESSAGE,
-            ),
-            enhancement_advice_message=POLICY_MESSAGE,
-        )
-
-    def dispatch(self, *, command):
-        snapshot = super().dispatch(command=command)
-        if self.scenario == "ready":
-            self._snapshot = self._policy_disabled_snapshot(snapshot=snapshot)
-        return self._snapshot
-
-    def select_scenario(self, *, scenario):
-        snapshot = super().select_scenario(scenario=scenario)
-        if self.scenario == "ready":
-            self._snapshot = self._policy_disabled_snapshot(snapshot=snapshot)
-        return self._snapshot
-
-
-class RecordingProvider(MockSessionAdapter):
-    def __init__(self) -> None:
-        self.commands = []
-        session = PolicyDisabledMockSession()
-        super().__init__(session=session)
-
-    def _dispatch(self, *, command) -> None:
-        self.commands.append(command)
-        super()._dispatch(command=command)
-
-
-provider = RecordingProvider()
-
-with TemporaryDirectory() as preferences_dir:
-    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
-    engine = QQmlApplicationEngine()
-    qml_directory = Path.cwd() / "draftomen" / "qml"
-    engine.addImportPath(str(qml_directory))
-    context = engine.rootContext()
-    context.setContextProperty("fixedFontFamily", "monospace")
-    context.setContextProperty("sessionProvider", provider)
-    context.setContextProperty("applicationTitle", "Draft Omen")
-    context.setContextProperty("applicationVersion", "0.0")
-    context.setContextProperty("guiPreferences", preferences)
-    context.setContextProperty("initialSurface", "settings")
-    context.setContextProperty("initialWindowWidth", 900)
-    context.setContextProperty("initialWindowHeight", 760)
-    engine.setInitialProperties({"provider": provider})
-    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
-    assert engine.rootObjects()
-    root = engine.rootObjects()[0]
-    application.processEvents()
-
-    switch = root.findChild(QObject, "settingsAiEnhancedSuggestionsSwitch")
-    assert switch is not None
-    settings_message = root.findChild(
-        QObject, "settingsAiEnhancedSuggestionsMessage"
-    )
-    assert settings_message is not None
-    status_message = root.findChild(QObject, "statusEnhancementMessage")
-    assert status_message is not None
-
-    def assert_availability(
-        *,
-        status,
-        availability_message,
-        advice_message,
-        color,
-        switch_enabled,
-        switch_checked,
-    ) -> None:
-        combined = advice_message + OFFLINE_SENTENCE
-        assert provider.state["enhancement_availability"]["status"] == status
-        assert provider.state["enhancement_availability"]["message"] == (
-            availability_message
-        )
-        assert settings_message.property("text") == combined
-        settings_accessible = QAccessible.queryAccessibleInterface(settings_message)
-        assert settings_accessible is not None
-        assert settings_accessible.text(QAccessible.Text.Name) == combined
-        assert settings_accessible.text(QAccessible.Text.Description) == combined
-        switch_accessible = QAccessible.queryAccessibleInterface(switch)
-        assert switch_accessible is not None
-        assert switch_accessible.text(QAccessible.Text.Name) == (
-            "AI-enhanced suggestions"
-        )
-        assert switch_accessible.text(QAccessible.Text.Description) == combined
-        assert status_message.property("text") == advice_message
-        assert QColor(status_message.property("color")) == QColor(color)
-        status_accessible = QAccessible.queryAccessibleInterface(status_message)
-        assert status_accessible is not None
-        assert status_accessible.text(QAccessible.Text.Name) == advice_message
-        assert status_accessible.text(QAccessible.Text.Description) == combined
-        assert switch.property("enabled") is switch_enabled
-        assert switch.property("checked") is switch_checked
-
-    def press_space() -> None:
-        switch.forceActiveFocus()
-        QTest.keyClick(root, Qt.Key_Space)
-        application.processEvents()
-
-    def click_switch() -> None:
-        center = switch.mapToItem(
-            root.contentItem(),
-            QPointF(switch.width() / 2, switch.height() / 2),
-        )
-        QTest.mouseClick(
-            root,
-            Qt.LeftButton,
-            Qt.NoModifier,
-            QPoint(round(center.x()), round(center.y())),
-        )
-        application.processEvents()
-
-    assert_availability(
-        status="policy-disabled",
-        availability_message=POLICY_MESSAGE,
-        advice_message=POLICY_MESSAGE,
-        color="#e7c993",
-        switch_enabled=False,
-        switch_checked=False,
-    )
-    startup_commands = list(provider.commands)
-    assert not any(
-        isinstance(command, ChangeAiEnhancedSuggestions)
-        for command in startup_commands
-    )
-
-    press_space()
-    assert len(provider.commands) == len(startup_commands)
-    assert_availability(
-        status="policy-disabled",
-        availability_message=POLICY_MESSAGE,
-        advice_message=POLICY_MESSAGE,
-        color="#e7c993",
-        switch_enabled=False,
-        switch_checked=False,
-    )
-
-    press_space()
-    click_switch()
-    assert len(provider.commands) == len(startup_commands)
-    assert_availability(
-        status="policy-disabled",
-        availability_message=POLICY_MESSAGE,
-        advice_message=POLICY_MESSAGE,
-        color="#e7c993",
-        switch_enabled=False,
-        switch_checked=False,
-    )
-
-    for scenario, status, availability_message in (
-        (
-            "not_enhanced",
-            "not-enhanced",
-            "AI-enhanced suggestions unavailable for OTJ: "
-            "profile is not AI-enhanced.",
-        ),
-        (
-            "enhancement_incompatible",
-            "incompatible",
-            "AI-enhanced suggestions unavailable for OTJ: "
-            "profile enhancement is invalid or incompatible.",
-        ),
-        (
-            "empty",
-            "unavailable",
-            "AI-enhanced suggestions unavailable: no active set profile.",
-        ),
-    ):
-        provider.selectScenario(scenario)
-        application.processEvents()
-        assert_availability(
-            status=status,
-            availability_message=availability_message,
-            advice_message=availability_message,
-            color="#e7c993",
-            switch_enabled=False,
-            switch_checked=False,
-        )
-        dispatched = len(provider.commands)
-        press_space()
-        assert len(provider.commands) == dispatched
-
-    preferences.shutdown()
-    del root
-    del engine
-"""
-    completed = _run_qml_probe(probe)
-
-    assert completed.returncode == 0, completed.stderr
-    assert "Binding loop detected" not in completed.stderr
-    assert "Unable to assign" not in completed.stderr
-    assert "TypeError" not in completed.stderr
 
 
 def test_qml_augmented_intelligence_settings_control_offscreen() -> None:
@@ -7913,27 +7672,64 @@ with TemporaryDirectory() as preferences_dir:
     assert "TypeError" not in completed.stderr
 
 
-def test_qml_relationship_advice_respects_both_settings_offscreen() -> None:
+def test_qml_legacy_relationship_presentation_absent_offscreen() -> None:
     probe = """
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import QObject, Qt, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QAccessible, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
-from draftomen.events import PackOfferedEvent
-from draftomen.qt_adapter import GuiPreferencesAdapter, SessionAdapter
-from draftomen.semantic_roles import Role
-from draftomen.session import LiveSession
-from tests.test_pickengine import (
-    _RELATIONSHIP_ASSIGNMENTS,
-    _relationship_database,
-    _relationship_profile,
-    _token_sacrifice_relationship,
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_mock import MockSessionAdapter
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+SENTINEL = "Retired advice sentinel"
+
+session = MockLiveSession(scenario="ready")
+snapshot = session.snapshot
+recommendations = snapshot.recommendations
+selected_grp_id = recommendations.selected_grp_id
+selected_recommendation = next(
+    recommendation
+    for recommendation in recommendations.cards
+    if recommendation.card.grp_id == selected_grp_id
 )
+selected_recommendation = replace(
+    selected_recommendation,
+    relationship_advice=SENTINEL,
+    relationship_advice_enabled=True,
+)
+session._snapshot = replace(
+    snapshot,
+    recommendations=replace(
+        recommendations,
+        cards=tuple(
+            selected_recommendation
+            if recommendation.card.grp_id == selected_grp_id
+            else recommendation
+            for recommendation in recommendations.cards
+        ),
+    ),
+    enhancement_advice_message=SENTINEL,
+)
+provider = MockSessionAdapter(session=session)
+injected_recommendation = next(
+    recommendation
+    for recommendation in provider.state["recommendations"]["cards"]
+    if recommendation["card"]["grp_id"] == selected_grp_id
+)
+assert injected_recommendation["relationship_advice"] == SENTINEL
+assert injected_recommendation["relationship_advice_enabled"] is True
+assert provider.state["enhancement_advice_message"] == SENTINEL
 
 
 def wait_until(predicate, label):
@@ -7945,91 +7741,44 @@ def wait_until(predicate, label):
     raise AssertionError("Timed out waiting for " + label)
 
 
-def recommendation():
-    return provider.state["recommendations"]["cards"][0]
+def visible_texts(item):
+    values = []
+    text = item.property("text")
+    if (
+        isinstance(item, QQuickItem)
+        and item.isVisible()
+        and isinstance(text, str)
+        and text
+    ):
+        values.append(text)
+    children = item.childItems() if isinstance(item, QQuickItem) else []
+    for child in children:
+        values.extend(visible_texts(child))
+    return values
 
 
-def explanation_text(root):
-    preview = root.findChild(QObject, "wideLiveCardPreview")
-    assert preview is not None
-    explanation = preview.findChild(QObject, "cardPreviewExplanation")
-    assert explanation is not None
-    return explanation.property("text")
+def find_visual_item(parent, object_name):
+    if parent.objectName() == object_name:
+        return parent
+    for child in parent.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
 
 
-def relationship_advice_text(root):
-    preview = root.findChild(QObject, "wideLiveCardPreview")
-    assert preview is not None
-    advice = preview.findChild(QObject, "cardPreviewRelationshipAdvice")
-    assert advice is not None
-    return advice.property("text")
-
-
-def relationship_advice_visible(root):
-    preview = root.findChild(QObject, "wideLiveCardPreview")
-    assert preview is not None
-    heading = preview.findChild(QObject, "cardPreviewRelationshipHeading")
-    advice = preview.findChild(QObject, "cardPreviewRelationshipAdvice")
-    assert heading is not None
-    assert advice is not None
-    assert heading.property("text") == "AI-ENHANCED RELATIONSHIP ADVICE"
-    return heading.property("visible") and advice.property("visible")
-
-
-QQuickStyle.setStyle("Fusion")
-application = QGuiApplication([])
-POLICY_COPY = (
-    "AI-enhanced suggestions unavailable in production for TST: "
-    "legacy relationship scoring is disabled."
-)
-
-
-class SynchronousSessionAdapter(SessionAdapter):
-    def __init__(self, session):
-        self._session = session
-        super().__init__(snapshot=session.snapshot)
-
-    def _dispatch(self, *, command):
-        self._session.dispatch(command=command)
-        self._publish(snapshot=self._session.snapshot)
-
-
-with TemporaryDirectory() as directory:
-    app_dir = Path(directory)
-    database = _relationship_database()
-    profile = _relationship_profile(
-        relationships=(_token_sacrifice_relationship(),),
-        assignments=(
-            *_RELATIONSHIP_ASSIGNMENTS,
-            (602, Role.GO_WIDE_PAYOFF, 1.0),
-        ),
+def accessible_output(item):
+    accessible = QAccessible.queryAccessibleInterface(item)
+    assert accessible is not None
+    return (
+        accessible.text(QAccessible.Text.Name),
+        accessible.text(QAccessible.Text.Description),
     )
-    session = LiveSession(
-        log_path=app_dir / "Player.log",
-        app_dir=app_dir,
-        card_database=database,
-        set_profile=profile,
-        contextual_adjustments_enabled=True,
-    )
-    session._consume_event(
-        event=PackOfferedEvent(
-            event_name="QuickDraft_TST",
-            set_code="TST",
-            pack_number=2,
-            pick_number=13,
-            offered_grp_ids=(602, 604),
-            pool_grp_ids=(601, 603),
-            account_id=None,
-        ),
-        state=None,
-    )
-    provider = SynchronousSessionAdapter(session=session)
-    preferences = GuiPreferencesAdapter(app_dir=app_dir)
+
+
+with TemporaryDirectory() as preferences_dir:
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
     preferences.setContextualAdjustmentsEnabled(True)
-    preferences.contextualAdjustmentsEnabledChanged.connect(
-        provider.setContextualScoringEnabled
-    )
-
     engine = QQmlApplicationEngine()
     qml_directory = Path.cwd() / "draftomen" / "qml"
     engine.addImportPath(str(qml_directory))
@@ -8040,118 +7789,173 @@ with TemporaryDirectory() as directory:
     context.setContextProperty("applicationVersion", "0.0")
     context.setContextProperty("guiPreferences", preferences)
     context.setContextProperty("initialSurface", "settings")
-    context.setContextProperty("initialWindowWidth", 1440)
-    context.setContextProperty("initialWindowHeight", 900)
+    context.setContextProperty("initialWindowWidth", 900)
+    context.setContextProperty("initialWindowHeight", 760)
     engine.setInitialProperties({"provider": provider})
     engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
     assert engine.rootObjects()
     root = engine.rootObjects()[0]
     application.processEvents()
 
+    for object_name in (
+        "settingsAiEnhancedSuggestionsMessage",
+        "settingsAiEnhancedSuggestionsSwitch",
+        "statusEnhancementMessage",
+    ):
+        assert root.findChild(QObject, object_name) is None
+
     contextual_switch = root.findChild(
         QObject, "settingsContextualScoringSwitch"
     )
-    ai_switch = root.findChild(QObject, "settingsAiEnhancedSuggestionsSwitch")
-    advice_message = root.findChild(
-        QObject, "settingsAiEnhancedSuggestionsMessage"
+    augmented_switch = root.findChild(
+        QObject, "settingsAugmentedIntelligenceSwitch"
     )
-    status_message = root.findChild(QObject, "statusEnhancementMessage")
+    augmented_message = root.findChild(
+        QObject, "settingsAugmentedIntelligenceMessage"
+    )
+    profile_status = root.findChild(QObject, "statusProfileMessage")
+    augmentation_status = root.findChild(QObject, "statusAugmentationMessage")
     assert contextual_switch is not None
-    assert ai_switch is not None
-    assert advice_message is not None
-    assert status_message is not None
+    assert augmented_switch is not None
+    assert augmented_message is not None
+    assert profile_status is not None
+    assert augmentation_status is not None
     assert contextual_switch.property("checked") is True
-    assert ai_switch.property("checked") is False
-    assert ai_switch.property("enabled") is False
-    assert POLICY_COPY in advice_message.property("text")
-    assert status_message.property("text") in advice_message.property("text")
+    assert accessible_output(contextual_switch)[0] == "Contextual pick scoring"
+    assert accessible_output(augmented_switch)[0] == "Augmented Intelligence"
+    assert "Augmented Intelligence" in augmented_message.property("text")
+    assert "When available and enabled" in augmented_message.property("text")
 
+    profile_text = profile_status.property("text")
+    augmentation_text = augmentation_status.property("text")
+    assert "Contextual" in profile_text
+    assert augmentation_text.startswith("Augmented Intelligence")
+    assert accessible_output(profile_status) == (profile_text, profile_text)
+    assert accessible_output(augmentation_status) == (
+        augmentation_text,
+        augmentation_text,
+    )
+
+    settings_texts = visible_texts(root.contentItem())
+    assert settings_texts
+    assert all(SENTINEL not in text for text in settings_texts)
+    assert all("AI-enhanced suggestions" not in text for text in settings_texts)
+    settings_accessibility = (
+        *accessible_output(contextual_switch),
+        *accessible_output(augmented_switch),
+        *accessible_output(augmented_message),
+        *accessible_output(profile_status),
+        *accessible_output(augmentation_status),
+    )
+    assert all(SENTINEL not in text for text in settings_accessibility)
+    assert all("AI-enhanced suggestions" not in text for text in settings_accessibility)
+
+    live_view = root.findChild(QObject, "liveDraftView")
+    assert live_view is not None
     root.setProperty("currentSurface", "live")
+    root.resize(1440, 900)
     wait_until(
-        lambda: recommendation()["card"]["grp_id"] == 602,
-        "rendered recommendation",
+        lambda: live_view.property("wideRecommendations") is True,
+        "wide live recommendations",
     )
-    both_on = recommendation()
-    assert both_on["card"]["grp_id"] == 602
-    assert both_on["relationship_contributions"] == []
-    assert both_on["relationship_advice"] is None
-    assert relationship_advice_visible(root) is False
-    assert "Drafted Omen Scrapwright" not in explanation_text(root)
-    both_on_score = both_on["score"]
+    wait_until(
+        lambda: session.snapshot.card_image.grp_id == selected_grp_id,
+        "selected recommendation publication",
+    )
 
-    provider.chooseRecommendation(604)
-    assert provider.state["recommendations"]["selected_grp_id"] == 604
-    assert relationship_advice_visible(root) is False
-    provider.chooseRecommendation(602)
-    assert relationship_advice_visible(root) is False
+    # Entering Live Draft publishes the selected card once; restore the sentinel
+    # in the shared snapshot afterwards so status and card surfaces see it together.
+    session._snapshot = replace(
+        session.snapshot,
+        enhancement_advice_message=SENTINEL,
+    )
+    provider._publish(snapshot=session.snapshot)
+    application.processEvents()
+    assert provider.state["enhancement_advice_message"] == SENTINEL
+    assert root.findChild(QObject, "statusEnhancementMessage") is None
+    assert all(
+        SENTINEL not in text for text in visible_texts(root.contentItem())
+    )
 
-    root.setProperty("currentSurface", "settings")
-    ai_switch.forceActiveFocus()
-    QTest.keyClick(root, Qt.Key_Space)
-    wait_until(
-        lambda: (
-            ai_switch.property("checked") is False
-            and contextual_switch.property("checked") is True
-            and POLICY_COPY in advice_message.property("text")
-        ),
-        "contextual-only settings state",
-    )
-    assert recommendation()["card"]["grp_id"] == 602
-    assert recommendation()["score"] == both_on_score
-    assert recommendation()["relationship_contributions"] == []
-    assert recommendation()["relationship_advice"] is None
-    assert relationship_advice_visible(root) is False
-    assert "receives" in recommendation()["explanation"]
-    assert "Drafted Omen Scrapwright" not in recommendation()["explanation"]
-    assert status_message.property("text") in advice_message.property("text")
+    def assert_layout(width, *, wide):
+        root.resize(width, 900)
+        wait_until(
+            lambda: live_view.property("wideRecommendations") is wide,
+            "wide recommendations" if wide else "narrow recommendations",
+        )
+        row_name = (
+            ("wide" if wide else "narrow")
+            + "RecommendationRow"
+            + str(selected_recommendation.rank)
+        )
+        wait_until(
+            lambda: (
+                find_visual_item(root.contentItem(), row_name) is not None
+                and find_visual_item(root.contentItem(), row_name).isVisible()
+            ),
+            row_name,
+        )
+        row = find_visual_item(root.contentItem(), row_name)
+        assert row is not None and row.isVisible()
+        row_accessibility = accessible_output(row)
+        assert row_accessibility[0] == (
+            f"Rank {selected_recommendation.rank}, "
+            f"{selected_recommendation.card.name}, "
+            f"DO score {selected_recommendation.score}"
+        )
+        assert row_accessibility[1] == (
+            f"{row.property('stateText')}. "
+            "Press Enter or Space to choose this card."
+        )
+        assert all(SENTINEL not in text for text in row_accessibility)
+        assert all(SENTINEL not in text for text in visible_texts(row))
 
-    contextual_switch.forceActiveFocus()
-    QTest.keyClick(root, Qt.Key_Space)
-    wait_until(
-        lambda: (
-            contextual_switch.property("checked") is False
-            and ai_switch.property("checked") is False
-            and POLICY_COPY in advice_message.property("text")
-        ),
-        "both settings off",
-    )
-    both_off_score = recommendation()["score"]
-    assert recommendation()["card"]["grp_id"] == 602
-    assert status_message.property("text") in advice_message.property("text")
+        preview_name = "wideLiveCardPreview" if wide else "narrowLiveCardPreview"
+        preview = find_visual_item(root.contentItem(), preview_name)
+        assert preview is not None and preview.isVisible()
+        assert preview.property("detailedIntel") is True
+        for object_name in (
+            "cardPreviewRelationshipHeading",
+            "cardPreviewRelationshipAdvice",
+        ):
+            assert preview.findChild(QObject, object_name) is None
 
-    ai_switch.forceActiveFocus()
-    QTest.keyClick(root, Qt.Key_Space)
-    wait_until(
-        lambda: (
-            ai_switch.property("checked") is False
-            and contextual_switch.property("checked") is False
-            and POLICY_COPY in advice_message.property("text")
-        ),
-        "AI-only settings state",
-    )
-    assert recommendation()["score"] == both_off_score
-    assert recommendation()["relationship_contributions"] == []
-    assert recommendation()["relationship_advice"] is None
-    assert relationship_advice_visible(root) is False
-    assert status_message.property("text") in advice_message.property("text")
+        explanation = preview.findChild(QObject, "cardPreviewExplanation")
+        scores = preview.findChild(QObject, "cardPreviewScores")
+        total_score = preview.findChild(QObject, "cardPreviewDoScore")
+        assert explanation is not None and explanation.isVisible()
+        assert scores is not None and scores.isVisible()
+        assert total_score is not None and total_score.isVisible()
+        assert explanation.property("text") == (
+            selected_recommendation.explanation or "Explanation unavailable."
+        )
+        assert total_score.property("text") == str(selected_recommendation.score)
+        preview_accessibility = accessible_output(preview)
+        assert preview_accessibility[0] == (
+            "Focused card intel, " + selected_recommendation.card.name
+        )
+        assert all(SENTINEL not in text for text in preview_accessibility)
+        assert all(SENTINEL not in text for text in visible_texts(preview))
+        assert root.findChild(
+            QObject, "wideRecommendationRelationshipAdviceBadge"
+        ) is None
+        assert root.findChild(
+            QObject, "narrowRecommendationRelationshipAdviceBadge"
+        ) is None
+        assert root.findChild(
+            QObject, "statusEnhancementMessage"
+        ) is None
 
-    contextual_switch.forceActiveFocus()
-    QTest.keyClick(root, Qt.Key_Space)
-    wait_until(
-        lambda: (
-            contextual_switch.property("checked") is True
-            and ai_switch.property("checked") is False
-            and POLICY_COPY in advice_message.property("text")
-            and recommendation()["score"] == both_on_score
-        ),
-        "both settings restored",
-    )
-    root.setProperty("currentSurface", "live")
-    wait_until(
-        lambda: recommendation()["relationship_advice"] is None,
-        "restored recommendation without relationship advice",
-    )
-    assert relationship_advice_visible(root) is False
+        profile_output = accessible_output(profile_status)
+        augmentation_output = accessible_output(augmentation_status)
+        assert all(SENTINEL not in text for text in profile_output)
+        assert all(SENTINEL not in text for text in augmentation_output)
+        assert all(
+            SENTINEL not in text for text in visible_texts(root.contentItem())
+        )
+
+    assert_layout(1440, wide=True)
+    assert_layout(760, wide=False)
 
     preferences.shutdown()
     del root
@@ -8167,7 +7971,6 @@ with TemporaryDirectory() as directory:
 
 def test_qml_settings_switches_expose_contrast_states_and_keyboard_toggle() -> None:
     probe = """
-from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -8180,7 +7983,6 @@ from PySide6.QtTest import QTest
 from draftomen.mock_session import MockLiveSession
 from draftomen.qt_adapter import GuiPreferencesAdapter
 from draftomen.qt_mock import MockSessionAdapter
-from draftomen.session import EnhancementAvailabilityState, EnhancementAvailabilityStatus
 
 
 def relative_luminance(value) -> float:
@@ -8232,37 +8034,7 @@ application_font.setPixelSize(26)
 application.setFont(application_font)
 assert application_font.pixelSize() == 26
 assert QFontInfo(application_font).pixelSize() == 26
-POLICY_MESSAGE = (
-    "AI-enhanced suggestions unavailable in production for OTJ: "
-    "legacy relationship scoring is disabled."
-)
-
-
-class PolicyDisabledMockSession(MockLiveSession):
-    def __init__(self) -> None:
-        super().__init__(scenario="ready")
-        self._snapshot = self._policy_disabled_snapshot(snapshot=self._snapshot)
-
-    @staticmethod
-    def _policy_disabled_snapshot(*, snapshot):
-        return replace(
-            snapshot,
-            enhancement_availability=EnhancementAvailabilityState(
-                status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-                set_code="OTJ",
-                message=POLICY_MESSAGE,
-            ),
-            enhancement_advice_message=POLICY_MESSAGE,
-        )
-
-    def dispatch(self, *, command):
-        snapshot = super().dispatch(command=command)
-        if self.scenario == "ready":
-            self._snapshot = self._policy_disabled_snapshot(snapshot=snapshot)
-        return self._snapshot
-
-
-provider = MockSessionAdapter(session=PolicyDisabledMockSession())
+provider = MockSessionAdapter(session=MockLiveSession(scenario="ready"))
 
 with TemporaryDirectory() as preferences_dir:
     preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
@@ -8392,7 +8164,6 @@ with TemporaryDirectory() as preferences_dir:
         "settingsShowBacktestSwitch",
         "settingsContextualScoringSwitch",
         "settingsCompactDensitySwitch",
-        "settingsAiEnhancedSuggestionsSwitch",
         "settingsSecondaryStatsSwitch",
         "settingsCardPreviewSwitch",
         "settingsDetailedBuildContextSwitch",
@@ -8401,12 +8172,6 @@ with TemporaryDirectory() as preferences_dir:
     )
     switches = [root.findChild(QObject, name) for name in names]
     assert all(switch is not None for switch in switches)
-    ai_switch = root.findChild(QObject, "settingsAiEnhancedSuggestionsSwitch")
-    assert ai_switch is not None
-    assert ai_switch.property("checked") is False
-    assert ai_switch.property("enabled") is False
-    assert ai_switch.property("visualDisabled") is True
-    assert ai_switch.property("visualState") == "disabled"
     fields = (
         "settingsMockedDraftCheckoutDirField",
         "settingsMockedDraftServerUrlField",
@@ -8416,16 +8181,15 @@ with TemporaryDirectory() as preferences_dir:
     assert all(switch.property("height") >= 42 for switch in switches)
     assert all(switch.property("width") >= 40 for switch in switches)
 
-    active_switches = [switch for switch in switches if switch is not ai_switch]
     checked_switches = [
-        switch for switch in active_switches if switch.property("checked")
+        switch for switch in switches if switch.property("checked")
     ]
     unchecked_switches = [
-        switch for switch in active_switches if not switch.property("checked")
+        switch for switch in switches if not switch.property("checked")
     ]
-    assert len(checked_switches) == 6
-    assert len(unchecked_switches) == 3
-    for switch in active_switches:
+    assert checked_switches
+    assert unchecked_switches
+    for switch in switches:
         is_checked = switch.property("checked") is True
         assert switch.property("visualChecked") is is_checked
         assert switch.property("visualUnchecked") is (not is_checked)

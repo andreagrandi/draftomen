@@ -98,36 +98,6 @@ Rectangle {
             }
         }
 
-        Label {
-            objectName: "statusEnhancementMessage"
-            Layout.fillWidth: true
-            Layout.minimumWidth: 0
-            text: root.sessionState.enhancement_advice_message
-            color: {
-                const enhancementStatus = root.sessionState.enhancement_availability.status
-                const adviceActive = root.sessionState.enhancement_availability.enabled
-                    && root.sessionState.contextual_adjustments_enabled
-                return adviceActive
-                    ? Theme.primary
-                    : enhancementStatus === "available"
-                        || enhancementStatus === "disabled"
-                        ? Theme.textMuted
-                        : Theme.warning
-            }
-            font.pixelSize: Theme.textPixelSize(11)
-            elide: Text.ElideRight
-            Accessible.name: text
-            Accessible.description: text
-                + " Uses enhancement prepared offline in the active set profile; no AI model runs during the live draft."
-            ToolTip.visible: enhancementMessageHoverHandler.hovered
-            ToolTip.text: text
-                + " Uses enhancement prepared offline in the active set profile; no AI model runs during the live draft."
-            ToolTip.delay: 500
-
-            HoverHandler {
-                id: enhancementMessageHoverHandler
-            }
-        }
 
         Label {
             text: root.sessionState.ratings ? root.sessionState.ratings.message : "Ratings unavailable"

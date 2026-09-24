@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Remove retired relationship controls and advice from desktop Settings, status,
+  recommendations, and card detail. Keep contextual scoring, Augmented
+  Intelligence, and Mocked Draft. (#674)
 - Stop emitting legacy relationship fields in audit and backtest output while
   preserving reads of existing audit and draft-history records. (#669)
 - Preserve source-supplied ALSA in generated HOB profiles so recommendation
