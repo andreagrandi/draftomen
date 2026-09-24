@@ -27,36 +27,6 @@ from draftomen.pickengine import (
     render_pick_rationale_detailed,
 )
 from draftomen.pool import DraftState
-from draftomen.semantic_capability_records import (
-    CapabilityQuantity,
-    CapabilityZone,
-    PrerequisiteKind,
-    QuantityRelation,
-)
-from draftomen.semantic_enrichment import (
-    EnrichmentSources,
-    SemanticEnrichmentArtifact,
-    card_source_sha256,
-    set_source_sha256,
-)
-from draftomen.semantic_enrichment_records import (
-    ArtifactReview,
-    CardSourcePin,
-    FindingReview,
-    FindingStatus,
-    ModelRun,
-    OracleEvidence,
-    ReasoningConfig,
-)
-from draftomen.semantic_relationship_records import (
-    CardRelationship,
-    RelationshipParticipant,
-    RelationshipPrerequisite,
-    RelationshipPrerequisiteProjection,
-    RelationshipTiming,
-    RelationshipZone,
-)
-from draftomen.semantic_roles import Role
 from draftomen.set_profile import (
     PairProfile,
     ProfileMaturity,
@@ -75,26 +45,10 @@ SET_CODE = "ABC"
 RELATIONSHIP_SET_CODE = "tst"
 RELATIONSHIP_SOURCE_ID = 901
 RELATIONSHIP_TARGET_ID = 902
-RELATIONSHIP_MECHANISM = "token-go-wide-payoff"
-RELATIONSHIP_RUN_ID = "run-audit-relationship"
-RELATIONSHIP_FINDING_ID = (
-    "relationship:token-go-wide-payoff:901:capability-audit-enabler"
-    ":902:capability-audit-payoff"
-)
 RELATIONSHIP_SOURCE_NAME = "Audit Enabler"
 RELATIONSHIP_TARGET_NAME = "Audit Payoff"
 RELATIONSHIP_SOURCE_TEXT = "Create two 1/1 white Soldier creature tokens."
 RELATIONSHIP_TARGET_TEXT = "Creatures you control get +1/+1."
-RELATIONSHIP_SOURCE_PREREQUISITE = (
-    "source:condition/create/token;types=all_of:creature;token=token;subtype=soldier;"
-    "color=exact:W;controller=you;qty=exactly/2;zones=none->battlefield/you"
-)
-RELATIONSHIP_TARGET_PREREQUISITE = (
-    "target:condition/control/permanent;types=all_of:creature;controller=you"
-)
-SENTINEL_CLAIM = "RELATIONSHIP-CLAIM-SENTINEL"
-SENTINEL_LEGACY_PREREQUISITE = "RELATIONSHIP-LEGACY-PREREQUISITE-SENTINEL"
-SENTINEL_MODEL_RUN = "RELATIONSHIP-MODEL-RUN-SENTINEL"
 SENTINEL_ORACLE_QUOTE = "RELATIONSHIP-ORACLE-QUOTE-SENTINEL is not part of the quoted ability."
 
 
@@ -466,11 +420,6 @@ def test_audit_omits_legacy_relationship_projections_and_preserves_contextual_ev
     tmp_path: Path,
 ) -> None:
     profile = _relationship_profile(tmp_path)
-    artifact = _relationship_enrichment_artifact()
-    relationship = artifact.confirmed_relationships[0]
-    assert relationship.claim == SENTINEL_CLAIM
-    assert relationship.prerequisites == (SENTINEL_LEGACY_PREREQUISITE,)
-    assert artifact.runs[0].provider == SENTINEL_MODEL_RUN
     database = _relationship_card_database()
     engine = PickEngine(set_profile=profile)
     scored_pack = engine.score_pack(
@@ -545,11 +494,6 @@ def test_audit_omits_legacy_relationship_projections_and_preserves_contextual_ev
     assert recommendation["contextual_evidence"] == scoring["contextual_evidence"]
     assert recommendation["concise_explanation"] == candidate["concise_explanation"]
     assert recommendation["explanation"] == candidate["explanation"]
-
-    # Raw model claims and prerequisite prose never reach the audit record.
-    serialized = json.dumps(decision)
-    for sentinel in (SENTINEL_CLAIM, SENTINEL_LEGACY_PREREQUISITE, SENTINEL_MODEL_RUN):
-        assert sentinel not in serialized
 
     # Oracle text stays in candidate metadata and out of contextual/rationale evidence.
     assert SENTINEL_ORACLE_QUOTE in candidate["metadata"]["oracle_text"]
@@ -938,138 +882,6 @@ def _relationship_card_database() -> CardDatabase:
     )
 
 
-def _relationship_token_clause() -> RelationshipPrerequisite:
-    """Build the enabler's typed creature-token output clause."""
-    return RelationshipPrerequisite(
-        kind=PrerequisiteKind.CONDITION,
-        subject="output",
-        operation="create",
-        object_kind="token",
-        card_types=("creature",),
-        type_operator="all_of",
-        token_restriction="token",
-        exclusion="none",
-        subtype="soldier",
-        color_operator="exact",
-        colors=("W",),
-        controller="you",
-        owner="not_applicable",
-        quantity=CapabilityQuantity(value=2, relation=QuantityRelation.EXACTLY),
-        source_zone=None,
-        destination_zone=RelationshipZone(
-            zone=CapabilityZone.BATTLEFIELD,
-            player="you",
-        ),
-        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
-        required_card_id=None,
-        evidence=OracleEvidence(
-            card_id=RELATIONSHIP_SOURCE_ID,
-            face_index=None,
-            quote=RELATIONSHIP_SOURCE_TEXT,
-        ),
-        operation_quote="Create",
-        operation_occurrence=0,
-        object_quote="two 1/1 white Soldier creature tokens",
-        object_occurrence=0,
-        capability_prerequisite_indices=(),
-    )
-
-
-def _relationship_wide_payoff_clause() -> RelationshipPrerequisite:
-    """Build the payoff's typed creature-control clause."""
-    return RelationshipPrerequisite(
-        kind=PrerequisiteKind.CONDITION,
-        subject="participant",
-        operation="control",
-        object_kind="permanent",
-        card_types=("creature",),
-        type_operator="all_of",
-        token_restriction="unrestricted",
-        exclusion="none",
-        subtype=None,
-        color_operator="unrestricted",
-        colors=(),
-        controller="you",
-        owner="not_applicable",
-        quantity=None,
-        source_zone=None,
-        destination_zone=None,
-        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
-        required_card_id=None,
-        evidence=OracleEvidence(
-            card_id=RELATIONSHIP_TARGET_ID,
-            face_index=None,
-            quote=RELATIONSHIP_TARGET_TEXT,
-        ),
-        operation_quote="control",
-        operation_occurrence=0,
-        object_quote="Creatures you control",
-        object_occurrence=0,
-        capability_prerequisite_indices=(),
-    )
-
-
-def _relationship_record() -> CardRelationship:
-    """Build the accepted directional relationship of the fixture pair."""
-    source, target = _relationship_participants()
-    return CardRelationship(
-        finding_id=RELATIONSHIP_FINDING_ID,
-        mechanism=RELATIONSHIP_MECHANISM,
-        participants=(RELATIONSHIP_SOURCE_ID, RELATIONSHIP_TARGET_ID),
-        claim=SENTINEL_CLAIM,
-        prerequisites=(SENTINEL_LEGACY_PREREQUISITE,),
-        oracle_evidence=(
-            OracleEvidence(
-                card_id=RELATIONSHIP_SOURCE_ID,
-                face_index=None,
-                quote=RELATIONSHIP_SOURCE_TEXT,
-            ),
-            OracleEvidence(
-                card_id=RELATIONSHIP_TARGET_ID,
-                face_index=None,
-                quote=RELATIONSHIP_TARGET_TEXT,
-            ),
-        ),
-        guide_evidence=(),
-        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
-        run_id=RELATIONSHIP_RUN_ID,
-        prerequisite_projection=RelationshipPrerequisiteProjection(
-            source=source,
-            target=target,
-        ),
-    )
-
-
-def _relationship_participants() -> tuple[RelationshipParticipant, RelationshipParticipant]:
-    """Build both pinned participants of the confirmed relationship."""
-    database = _relationship_card_database()
-    source_card = database.cards[RELATIONSHIP_SOURCE_ID]
-    target_card = database.cards[RELATIONSHIP_TARGET_ID]
-    source = RelationshipParticipant(
-        card_id=RELATIONSHIP_SOURCE_ID,
-        capability_id="capability-audit-enabler",
-        card_name=RELATIONSHIP_SOURCE_NAME,
-        face_index=None,
-        face_name=None,
-        card_source_sha256=card_source_sha256(source_card),
-        role=Role.TOKEN_MAKER,
-        capability_prerequisites=(),
-        prerequisites=(_relationship_token_clause(),),
-    )
-    target = RelationshipParticipant(
-        card_id=RELATIONSHIP_TARGET_ID,
-        capability_id="capability-audit-payoff",
-        card_name=RELATIONSHIP_TARGET_NAME,
-        face_index=None,
-        face_name=None,
-        card_source_sha256=card_source_sha256(target_card),
-        role=Role.GO_WIDE_PAYOFF,
-        capability_prerequisites=(),
-        prerequisites=(_relationship_wide_payoff_clause(),),
-    )
-    return source, target
-
-
 def _relationship_set_profile() -> SetProfile:
     """Build the clean schema-four profile used for relationship scoring."""
     return SetProfile(
@@ -1083,65 +895,6 @@ def _relationship_set_profile() -> SetProfile:
         confidence=1.0,
         pairs=(PairProfile(pair="WU"),),
         schema_version=4,
-    )
-
-
-def _relationship_enrichment_artifact() -> SemanticEnrichmentArtifact:
-    """Build a confirmed relationship in the standalone enrichment workflow."""
-    database = _relationship_card_database()
-    sources = EnrichmentSources(
-        set_code=RELATIONSHIP_SET_CODE,
-        cards=tuple(database.cards.values()),
-        guides=(),
-    )
-    run = ModelRun(
-        run_id=RELATIONSHIP_RUN_ID,
-        provider=SENTINEL_MODEL_RUN,
-        model="audit-model",
-        reasoning=ReasoningConfig(
-            enabled=None,
-            effort=None,
-            max_tokens=None,
-            exclude=None,
-        ),
-        prompt_id="prompt-audit-relationship",
-        prompt_sha256="c" * 64,
-        response_schema_id="schema-audit-relationship",
-        response_schema_sha256="d" * 64,
-        started_at="2026-07-27T08:00:00+00:00",
-        completed_at="2026-07-27T08:05:00+00:00",
-        input_tokens=None,
-        output_tokens=None,
-        reasoning_tokens=None,
-        cost_usd=None,
-    )
-    return SemanticEnrichmentArtifact(
-        set_code=RELATIONSHIP_SET_CODE,
-        set_source_id="audit-relationship-source",
-        set_source_sha256=set_source_sha256(sources),
-        created_at="2026-07-27T09:00:00+00:00",
-        cards=tuple(
-            CardSourcePin(
-                card_id=card.grp_id,
-                oracle_id=card.oracle_id,
-                collector_number=card.collector_number,
-                sha256=card_source_sha256(card),
-            )
-            for card in database.cards.values()
-        ),
-        guides=(),
-        runs=(run,),
-        oracle_facts=(),
-        guide_claims=(),
-        relationships=(_relationship_record(),),
-        rejected_findings=(),
-        review=ArtifactReview(
-            state="confirmed",
-            reviewer_id="reviewer-a",
-            reviewed_at="2026-07-27T09:30:00+00:00",
-        ),
-        confirmed_relationship_ids=(RELATIONSHIP_FINDING_ID,),
-        sources=sources,
     )
 
 

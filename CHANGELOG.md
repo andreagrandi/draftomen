@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Remove the `enrich-set` and `list-enrichment` commands, the offline
+  semantic-enrichment extraction, review, and projection code, and its
+  OpenRouter and guide clients. Profile publication and refresh no longer
+  retain enriched manifest entries or report enrichment conflicts. Card-data
+  export and ratings-based profile generation are unchanged. (#662)
 - Remove typed relationship scoring, pool-ledger support, and advice. Keep
   empirical SetProfile scoring, local card-role classification, generic synergy,
   and existing audit and draft-history readers. (#673)

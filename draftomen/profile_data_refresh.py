@@ -28,10 +28,8 @@ from draftomen.profile_manifest import (
     load_profile_manifest,
 )
 from draftomen.profile_publication import (
-    EnrichmentDowngradeConflict,
     PROFILE_BASE_URL,
     ProfilePublicationError,
-    filter_enriched_profile_downgrades,
     merge_profile_manifest_artifacts,
     publish_profile_manifest,
     publish_profile_object,
@@ -190,7 +188,6 @@ class Result:
     successful_pairs: tuple[Pair, ...] = ()
     failures: tuple[Failure, ...] = ()
     manifest_changed: bool = False
-    enrichment_conflicts: tuple[EnrichmentDowngradeConflict, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, Plan):
@@ -203,10 +200,6 @@ class Result:
             raise ProfileDataRefreshError("profile refresh result failures are invalid")
         object.__setattr__(self, "successful_pairs", successes)
         object.__setattr__(self, "failures", failures)
-        conflicts = tuple(self.enrichment_conflicts)
-        if any(not isinstance(conflict, EnrichmentDowngradeConflict) for conflict in conflicts):
-            raise ProfileDataRefreshError("profile refresh result enrichment conflicts are invalid")
-        object.__setattr__(self, "enrichment_conflicts", conflicts)
 
     @property
     def succeeded(self) -> bool:
@@ -218,9 +211,6 @@ class Result:
         """Return a path-free result summary."""
 
         return {
-            "enrichment_conflicts": [
-                conflict.to_json() for conflict in self.enrichment_conflicts
-            ],
             "failed": [failure.to_json() for failure in self.failures],
             "manifest_changed": self.manifest_changed,
             "planned": self.plan.count,
@@ -408,26 +398,9 @@ def execute_profile_data_refresh(
         object_path = profiles / "objects" / f"{report.gzip_sha256}.json.gz"
         prepared.append((pair, validated.gzip_bytes, artifact, object_path))
 
-    try:
-        accepted, conflicts = filter_enriched_profile_downgrades(
-            manifest=existing_manifest,
-            profiles_dir=profiles,
-            replacements=[
-                (artifact, gzip_bytes) for _pair, gzip_bytes, artifact, _path in prepared
-            ],
-        )
-    except (OSError, ProfilePublicationError):
-        for pair, _gzip_bytes, _artifact, _path in prepared:
-            failures.append(Failure(pair=pair, category="manifest-publish-failed"))
-        accepted = ()
-        conflicts = ()
-
-    accepted_identities = {(artifact.set_code, artifact.event_format) for artifact in accepted}
     published_pairs: list[Pair] = []
     replacements: dict[tuple[str, str], ProfileManifestArtifact] = {}
     for pair, gzip_bytes, artifact, object_path in prepared:
-        if (artifact.set_code, artifact.event_format) not in accepted_identities:
-            continue
         try:
             publish_profile_object(path=object_path, payload=gzip_bytes)
         except (OSError, ProfilePublicationError):
@@ -467,7 +440,6 @@ def execute_profile_data_refresh(
         successful_pairs=tuple(published_pairs),
         failures=tuple(failures),
         manifest_changed=manifest_changed,
-        enrichment_conflicts=conflicts,
     )
 
 
