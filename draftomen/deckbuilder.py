@@ -2254,7 +2254,7 @@ def _optimizer_card_evidence(
     scarcity_lookup: Mapping[str, float],
 ) -> _OptimizerCardEvidence:
     card_keys = _optimizer_card_keys(card=card.card)
-    resolution = resolve_card_roles(card.card, profile=None)
+    resolution = resolve_card_roles(card.card)
     assignments = resolution.assignments
     role_values_counter: Counter[str] = Counter()
     removal_values_counter: Counter[str] = Counter()

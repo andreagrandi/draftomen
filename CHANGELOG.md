@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Remove the unused role-profile compile, load, dump, and rebuild helpers and
+  the `CompiledRoleProfile` type. `resolve_card_roles` and
+  `RoleClassifier.resolve` no longer take a `profile` argument and always use
+  the local classifier with reviewed overrides. (#680)
 - Republish the HOB and DFT profiles as clean schema-4 profiles and remove the
   unused `enrichment-publications.json` record. Retrain the HOB augmented model
   against the clean Basic DO baseline. It passes both held-out gates on 274,932

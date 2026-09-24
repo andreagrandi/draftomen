@@ -15,23 +15,17 @@ from draftomen.semantic_roles import (
     HoneSourceCharacteristics,
     ROLE_DEFINITIONS,
     ROLE_SCHEMA_VERSION,
-    CompiledRoleProfile,
     OverrideSet,
-    ProfileCard,
     ReviewedOverride,
     Role,
     RoleAssignment,
     RoleClassifier,
-    RoleProfileError,
     RoleSchemaError,
     ThresholdParameters,
     TokenReplacementCharacteristics,
     TypalIdentity,
     UntapCharacteristics,
     classify_card,
-    compile_role_profile,
-    dump_role_profile,
-    rebuild_role_profile,
     role_definition,
 )
 
@@ -480,37 +474,16 @@ def test_unknown_and_unsafe_cards_are_conservative_and_actionable() -> None:
     assert "draw a card" not in "ordinary prose"
 
 
-def test_profile_authority_and_wholly_local_fallback() -> None:
-    rows = _fixtures()
-    card = rows["role-draw-payoff"]
-    local = classify_card(card)
-    profile = compile_role_profile(set_code="tst", results=[local])
-    authoritative = RoleClassifier().resolve(card, profile=profile)
-    assert authoritative.source == "compiled_profile"
-    assert authoritative.status == "authoritative_exact_set_profile"
-    assert authoritative.assignments == profile.cards[0].assignments
-    assert "compiled_profile" in authoritative.assignments[0].provenance
-
-    wrong_set = RoleClassifier().resolve({**card, "set": "other"}, profile=profile)
-    assert wrong_set.source == "local_classifier"
-    assert wrong_set.diagnostics == ("profile_wrong_set:used_local_classifier",)
-    incompatible = CompiledRoleProfile(
-        set_code="tst",
-        cards=profile.cards,
-        classifier_version="0.0",
-    )
-    fallback = RoleClassifier().resolve(card, profile=incompatible)
-    assert fallback.source == "local_classifier"
-    assert fallback.diagnostics == ("profile_incompatible_versions:used_local_classifier",)
-    assert fallback.assignments == local.assignments
+def test_resolve_returns_the_local_classification() -> None:
+    card = _fixtures()["role-draw-payoff"]
+    resolved = RoleClassifier().resolve(card)
+    assert resolved.source == "local_classifier"
+    assert resolved.status == "local_classifier_with_overrides"
+    assert resolved.diagnostics == ()
+    assert resolved.assignments == classify_card(card).assignments
 
 
-def test_profile_serialization_rejects_unsupported_or_malformed_data() -> None:
-    result = classify_card(_fixtures()["role-draw-payoff"])
-    profile = compile_role_profile(set_code="tst", results=[result])
-    assert profile.to_bytes() == CompiledRoleProfile.from_json(profile.to_json()).to_bytes()
-    with pytest.raises(RoleProfileError, match="Unsupported profile schema"):
-        CompiledRoleProfile.from_json({**profile.to_json(), "schema_version": 99})
+def test_role_serialization_rejects_unsupported_or_malformed_data() -> None:
     with pytest.raises(RoleSchemaError, match="Unsupported semantic role"):
         RoleAssignment.from_json({"role": "not-a-role"})
     with pytest.raises(RoleSchemaError, match="Threshold value"):
@@ -519,29 +492,13 @@ def test_profile_serialization_rejects_unsupported_or_malformed_data() -> None:
         TypalIdentity(())
 
 
-def test_profile_does_not_merge_incompatible_sources() -> None:
-    rows = _fixtures()
-    local = classify_card(rows["role-draw-payoff"])
-    profile = CompiledRoleProfile(
-        set_code="tst",
-        cards=(ProfileCard(key=local.card_key, assignments=(RoleAssignment(Role.RAMP),)),),
-        role_schema_version=999,
-    )
-    resolved = RoleClassifier().resolve(rows["role-draw-payoff"], profile=profile)
-    assert resolved.source == "local_classifier"
-    assert Role.RAMP not in _roles(resolved.classification)
-    assert Role.DRAW_SECOND_PAYOFF in _roles(resolved.classification)
-
-
-def test_removal_parameters_round_trip_through_assignment_and_profile() -> None:
+def test_removal_parameters_round_trip_through_assignment() -> None:
     row = _fixtures()["role-destroy"]
     result = classify_card(row)
     hard = next(assignment for assignment in result.assignments if assignment.role is Role.HARD_REMOVAL)
     assert hard.to_json()["parameters"]["kind"] == "removal"
     assert hard.to_json()["parameters"]["removal_kind"] == "destroy"
     assert RoleAssignment.from_json(hard.to_json()) == hard
-    profile = compile_role_profile(set_code="tst", results=[result])
-    assert CompiledRoleProfile.from_json(profile.to_json()).to_bytes() == profile.to_bytes()
 
 
 def test_canonical_keywords_drive_known_roles_and_unknown_reports() -> None:
@@ -674,12 +631,9 @@ def test_typed_thresholds_and_textual_power_values() -> None:
     assert Role.POWER_THRESHOLD_ENABLER not in _roles(variable)
 
 
-def test_unknown_profiles_fall_back_and_reviews_can_resolve_mechanics() -> None:
+def test_unknown_mechanics_are_reported_and_reviews_can_resolve_them() -> None:
     rows = _fixtures()
-    unknown = classify_card(rows["role-unknown-mechanic"])
-    profile = compile_role_profile(set_code="tst", results=[unknown])
-    assert profile.cards == ()
-    resolved = RoleClassifier().resolve(rows["role-unknown-mechanic"], profile=profile)
+    resolved = RoleClassifier().resolve(rows["role-unknown-mechanic"])
     assert resolved.source == "local_classifier"
     assert resolved.classification.unknown_reports
     override = OverrideSet(
@@ -787,7 +741,7 @@ def test_legacy_unknown_cardinfo_and_malformed_canonical_shapes_are_unknown() ->
     assert any("faces[1]" in report.reason for report in malformed_face.unknown_reports)
 
 
-def test_shared_identity_profile_resolution_and_atomic_rebuild(tmp_path, monkeypatch) -> None:
+def test_shared_identity_resolution_and_numeric_override_alias() -> None:
     normalized = {
         "arena_id": 903,
         "grp_id": 903,
@@ -817,10 +771,9 @@ def test_shared_identity_profile_resolution_and_atomic_rebuild(tmp_path, monkeyp
     )
 
     assert card.arena_id is None
-    local = classify_card(normalized)
-    profile = compile_role_profile(set_code="tst", results=[local])
-    resolved = RoleClassifier().resolve(card, profile=profile)
-    assert resolved.source == "compiled_profile"
+    assert Role.DRAW in _roles(classify_card(normalized))
+    resolved = RoleClassifier().resolve(card)
+    assert resolved.source == "local_classifier"
     assert Role.DRAW in _roles(resolved.classification)
 
     override = OverrideSet(
@@ -835,39 +788,6 @@ def test_shared_identity_profile_resolution_and_atomic_rebuild(tmp_path, monkeyp
     overridden = classify_card(normalized, overrides=override)
     assert _roles(overridden) >= {Role.DRAW, Role.MANA_SINK}
     assert "reviewed_override:grp_id:903" in overridden.diagnostics
-    normalized_path = tmp_path / "rows.jsonl"
-    normalized_path.write_text(
-        json.dumps(normalized) + "\n" + json.dumps(normalized) + "\n",
-        encoding="utf-8",
-    )
-    rebuilt = rebuild_role_profile(
-        normalized_path=normalized_path,
-        set_code="tst",
-        output_path=tmp_path / "rebuilt.json",
-    )
-    assert len(rebuilt.cards) == 1
-    conflict_path = tmp_path / "conflict.jsonl"
-    conflict = {**normalized, "oracle_text": "Counter target spell."}
-    conflict_path.write_text(
-        json.dumps(normalized) + "\n" + json.dumps(conflict) + "\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(RoleProfileError, match="Conflicting duplicate"):
-        rebuild_role_profile(
-            normalized_path=conflict_path,
-            set_code="tst",
-            output_path=tmp_path / "conflict.json",
-        )
-    destination = tmp_path / "existing.json"
-    destination.write_bytes(b"previous")
-    monkeypatch.setattr(
-        semantic_roles.os,
-        "replace",
-        lambda *_args: (_ for _ in ()).throw(OSError("boom")),
-    )
-    with pytest.raises(OSError, match="boom"):
-        dump_role_profile(profile, destination)
-    assert destination.read_bytes() == b"previous"
 
 
 def test_faces_do_not_leak_conditions_between_assignments() -> None:

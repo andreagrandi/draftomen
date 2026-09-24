@@ -1905,9 +1905,8 @@ to cancel worker threads, network requests, or cache writes already underway.
 SetProfiles supply empirical card ratings and pair evidence. They do not supply
 stored per-card semantic role assignments to scoring. The local role classifier
 derives card roles from loaded card data independently of SetProfile contents;
-`PairProfile.role_targets` remain empirical deck-structure evidence. Standalone
-serialized `RoleProfile` classifier artifacts are not embedded in or consumed
-by SetProfile scoring; see [semantic roles](semantic-roles.md).
+`PairProfile.role_targets` remain empirical deck-structure evidence; see
+[semantic roles](semantic-roles.md).
 
 The independent Augmented Intelligence path loads its own `AugmentedArtifact`
 separately and applies its output after Basic DO. It does not add semantic fields

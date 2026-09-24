@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
-import tempfile
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
@@ -24,7 +22,6 @@ from draftomen.carddb import CardFace, CardInfo, UNKNOWN_SOURCE_PROVENANCE
 
 ROLE_SCHEMA_VERSION = 6
 CLASSIFIER_VERSION = "1.5"
-PROFILE_SCHEMA_VERSION = 2
 RESULT_SCHEMA_VERSION = 1
 OVERRIDE_SCHEMA_VERSION = 1
 
@@ -71,10 +68,6 @@ class SemanticRoleError(ValueError):
 
 class RoleSchemaError(SemanticRoleError):
     """Raised when public role JSON uses an unsupported or malformed schema."""
-
-
-class RoleProfileError(SemanticRoleError):
-    """Raised when a compiled set role profile is malformed or incompatible."""
 
 
 class Role(str, Enum):
@@ -1135,120 +1128,8 @@ class OverrideSet:
 
 
 @dataclass(frozen=True, slots=True)
-class ProfileCard:
-    """One card's compiled assignments inside a set profile."""
-
-    key: str
-    assignments: tuple[RoleAssignment, ...]
-    card_name: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.key, str) or not self.key.strip():
-            raise RoleProfileError("Profile card needs a stable key.")
-        object.__setattr__(self, "key", self.key.strip().lower())
-        assignments = _stable_assignments(self.assignments)
-        if not assignments:
-            raise RoleProfileError("Profile cards must contain at least one safe role assignment.")
-        object.__setattr__(self, "assignments", assignments)
-
-    def to_json(self) -> dict[str, object]:
-        return {
-            "card_name": self.card_name,
-            "key": self.key,
-            "roles": [assignment.to_json() for assignment in self.assignments],
-        }
-
-    @classmethod
-    def from_json(cls, value: Mapping[str, Any]) -> ProfileCard:
-        _object(value, "profile card")
-        roles = value.get("roles")
-        if not isinstance(roles, list):
-            raise RoleProfileError("Profile card roles must be an array.")
-        card_name = value.get("card_name")
-        return cls(
-            key=_required_str(value.get("key"), "profile.card.key"),
-            card_name=None if card_name is None else _required_str(card_name, "profile.card.card_name"),
-            assignments=tuple(
-                RoleAssignment.from_json(item)
-                for item in _mapping_items(roles, "profile.roles")
-            ),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class CompiledRoleProfile:
-    """Versioned, exact-set compiled role assignments."""
-
-    set_code: str
-    cards: tuple[ProfileCard, ...]
-    classifier_version: str = CLASSIFIER_VERSION
-    role_schema_version: int = ROLE_SCHEMA_VERSION
-    profile_schema_version: int = PROFILE_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.set_code, str) or not self.set_code.strip():
-            raise RoleProfileError("Compiled profile needs a set code.")
-        if not isinstance(self.classifier_version, str) or not self.classifier_version.strip():
-            raise RoleProfileError("Compiled profile classifier_version must be a non-empty string.")
-        if isinstance(self.role_schema_version, bool) or not isinstance(self.role_schema_version, int):
-            raise RoleProfileError("Compiled profile role_schema_version must be an integer.")
-        if self.profile_schema_version != PROFILE_SCHEMA_VERSION:
-            raise RoleProfileError("Unsupported compiled profile schema version.")
-        object.__setattr__(self, "classifier_version", self.classifier_version.strip())
-        object.__setattr__(self, "set_code", self.set_code.strip().lower())
-        ordered = tuple(sorted(self.cards, key=lambda item: item.key))
-        if len({item.key for item in ordered}) != len(ordered):
-            raise RoleProfileError("Compiled profile contains duplicate card keys.")
-        object.__setattr__(self, "cards", ordered)
-
-    def card(self, key: str) -> ProfileCard | None:
-        normalized = key.strip().lower()
-        return next((item for item in self.cards if item.key == normalized), None)
-
-    def is_compatible(self) -> bool:
-        return (
-            self.profile_schema_version == PROFILE_SCHEMA_VERSION
-            and self.classifier_version == CLASSIFIER_VERSION
-            and self.role_schema_version == ROLE_SCHEMA_VERSION
-        )
-
-    def to_json(self) -> dict[str, object]:
-        return {
-            "cards": [card.to_json() for card in self.cards],
-            "classifier_version": self.classifier_version,
-            "profile_schema_version": self.profile_schema_version,
-            "role_schema_version": self.role_schema_version,
-            "schema_version": PROFILE_SCHEMA_VERSION,
-            "set_code": self.set_code,
-        }
-
-    def to_bytes(self) -> bytes:
-        return _json_bytes(self.to_json())
-
-    @classmethod
-    def from_json(cls, value: Mapping[str, Any]) -> CompiledRoleProfile:
-        _object(value, "compiled role profile")
-        if value.get("schema_version") != PROFILE_SCHEMA_VERSION:
-            raise RoleProfileError(
-                f"Unsupported profile schema {value.get('schema_version')!r}; expected {PROFILE_SCHEMA_VERSION}."
-            )
-        if value.get("profile_schema_version", PROFILE_SCHEMA_VERSION) != PROFILE_SCHEMA_VERSION:
-            raise RoleProfileError("Unsupported compiled profile profile_schema_version.")
-        cards = value.get("cards")
-        if not isinstance(cards, list):
-            raise RoleProfileError("Compiled profile cards must be an array.")
-        return cls(
-            set_code=_required_str(value.get("set_code"), "profile.set_code"),
-            cards=tuple(ProfileCard.from_json(item) for item in _mapping_items(cards, "profile.cards")),
-            classifier_version=_required_str(value.get("classifier_version"), "profile.classifier_version"),
-            role_schema_version=_required_int(value.get("role_schema_version"), "profile.role_schema_version"),
-            profile_schema_version=_required_int(value.get("schema_version"), "profile.schema_version"),
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class ResolutionResult:
-    """Classification plus explicit profile/fallback status and diagnostics."""
+    """Local classification plus its resolution status and diagnostics."""
 
     classification: ClassificationResult
     source: str
@@ -1256,7 +1137,7 @@ class ResolutionResult:
     diagnostics: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.source not in {"compiled_profile", "local_classifier"}:
+        if self.source != "local_classifier":
             raise RoleSchemaError(f"Unsupported resolution source {self.source!r}.")
         object.__setattr__(self, "diagnostics", tuple(sorted(set(self.diagnostics))))
 
@@ -1274,7 +1155,7 @@ class ResolutionResult:
 
 
 class RoleClassifier:
-    """Deterministic metadata classifier and exact-set profile resolver."""
+    """Deterministic metadata classifier with reviewed overrides."""
 
     classifier_version = CLASSIFIER_VERSION
     role_schema_version = ROLE_SCHEMA_VERSION
@@ -1291,63 +1172,15 @@ class RoleClassifier:
         results = tuple(self.classify(card) for card in cards)
         return tuple(sorted(results, key=lambda result: result.card_key))
 
-    def compile_profile(
-        self,
-        *,
-        set_code: str,
-        results: Iterable[ClassificationResult],
-    ) -> CompiledRoleProfile:
-        return compile_role_profile(set_code=set_code, results=results)
+    def resolve(self, card: CardInfo | CardFace | Mapping[str, Any]) -> ResolutionResult:
+        """Resolve one card with the local classifier and reviewed overrides."""
 
-    def resolve(
-        self,
-        card: CardInfo | CardFace | Mapping[str, Any],
-        *,
-        profile: CompiledRoleProfile | None = None,
-    ) -> ResolutionResult:
-        """Resolve one card using the explicit profile precedence contract."""
-
-        mapping = _card_mapping(card)
-        key = _card_key(mapping)
-        card_set = _optional_code(mapping.get("set_code", mapping.get("set")))
-        diagnostics: list[str] = []
-        if profile is None:
-            diagnostics.append("profile_unavailable:used_local_classifier")
-        elif not profile.is_compatible():
-            diagnostics.append("profile_incompatible_versions:used_local_classifier")
-        elif card_set != profile.set_code:
-            diagnostics.append("profile_wrong_set:used_local_classifier")
-        else:
-            compiled = None
-            for candidate in _card_identity_keys(mapping):
-                compiled = profile.card(candidate)
-                if compiled is not None:
-                    break
-            if compiled is not None:
-                result = ClassificationResult(
-                    card_key=key,
-                    card_name=compiled.card_name or _optional_str(mapping.get("name")),
-                    set_code=card_set,
-                    assignments=compiled.assignments,
-                    provenance=ClassificationProvenance(
-                        source="compiled_profile",
-                        sources=("compiled_profile",),
-                        input_fields=("set", "stable_card_key"),
-                    ),
-                )
-                return ResolutionResult(
-                    classification=result,
-                    source="compiled_profile",
-                    status="authoritative_exact_set_profile",
-                )
-            diagnostics.append("profile_missing_card:used_local_classifier")
-
-        result = self.classify(mapping)
+        # Classifying the mapping rather than the CardInfo skips the
+        # unknown-provenance guard, which scoring has always relied on.
         return ResolutionResult(
-            classification=result,
+            classification=self.classify(_card_mapping(card)),
             source="local_classifier",
-            status="fallback_local_classifier_with_overrides",
-            diagnostics=tuple(diagnostics),
+            status="local_classifier_with_overrides",
         )
 
 
@@ -1375,125 +1208,11 @@ def classify_cards(
 def resolve_card_roles(
     card: CardInfo | CardFace | Mapping[str, Any],
     *,
-    profile: CompiledRoleProfile | None = None,
     overrides: OverrideSet | Mapping[str, Any] | None = None,
 ) -> ResolutionResult:
-    """Resolve one card using the explicit profile precedence contract."""
+    """Resolve one card with the local classifier and reviewed overrides."""
 
-    return RoleClassifier(overrides=_override_set(overrides)).resolve(card, profile=profile)
-
-
-def compile_role_profile(
-    *,
-    set_code: str,
-    results: Iterable[ClassificationResult],
-) -> CompiledRoleProfile:
-    """Compile deterministic local results into an exact-set authoritative profile."""
-
-    normalized_set = _optional_code(set_code)
-    if normalized_set is None:
-        raise RoleProfileError("A compiled role profile needs a non-empty set code.")
-    by_key: dict[str, ClassificationResult] = {}
-    for result in results:
-        if result.set_code != normalized_set:
-            raise RoleProfileError(
-                f"Result {result.card_key!r} belongs to {result.set_code!r}, not profile set {normalized_set!r}."
-            )
-        if result.is_unknown:
-            # A blank or unsafe entry must never become an authoritative profile hit.
-            continue
-        previous = by_key.get(result.card_key.lower())
-        if previous is not None:
-            if previous.assignments != result.assignments:
-                raise RoleProfileError(
-                    f"Conflicting duplicate classification for stable card key {result.card_key!r}."
-                )
-            if (result.card_name or "").casefold() < (previous.card_name or "").casefold():
-                by_key[result.card_key.lower()] = result
-            continue
-        by_key[result.card_key.lower()] = result
-    cards = [
-        ProfileCard(
-            key=result.card_key,
-            card_name=result.card_name,
-            assignments=tuple(
-                replace(
-                    assignment,
-                    provenance=tuple(dict.fromkeys((*assignment.provenance, "compiled_profile"))),
-                )
-                for assignment in result.assignments
-            ),
-        )
-        for result in sorted(by_key.values(), key=lambda item: item.card_key.lower())
-    ]
-    return CompiledRoleProfile(set_code=normalized_set, cards=tuple(cards))
-
-
-def load_role_profile(path: str | Path) -> CompiledRoleProfile:
-    """Load and strictly validate a compiled profile from JSON."""
-
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RoleProfileError(f"Could not load role profile {path}: {error}.") from error
-    if not isinstance(value, Mapping):
-        raise RoleProfileError("Compiled role profile JSON must be an object.")
-    return CompiledRoleProfile.from_json(value)
-
-
-def dump_role_profile(profile: CompiledRoleProfile, path: str | Path) -> Path:
-    """Write a stable profile artifact atomically."""
-
-    output = Path(path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            prefix=f".{output.name}.",
-            dir=output.parent,
-            delete=False,
-        ) as temporary:
-            temporary_name = temporary.name
-            temporary.write(profile.to_bytes())
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.replace(temporary_name, output)
-        temporary_name = None
-    finally:
-        if temporary_name is not None:
-            try:
-                os.unlink(temporary_name)
-            except FileNotFoundError:
-                pass
-    return output
-
-
-def rebuild_role_profile(
-    *,
-    normalized_path: str | Path,
-    set_code: str,
-    output_path: str | Path,
-    classifier: RoleClassifier | None = None,
-) -> CompiledRoleProfile:
-    """Classify normalized JSONL and emit a deterministic profile.
-
-    Corpus acquisition remains separate: callers provide an already-built
-    normalized artifact, making rebuilds offline and reproducible.
-    """
-
-    from draftomen.corpus import load_normalized_rows
-
-    active_classifier = classifier or RoleClassifier()
-    rows = tuple(
-        row
-        for row in load_normalized_rows(normalized_path)
-        if _optional_code(row.get("set_code", row.get("set"))) == _optional_code(set_code)
-    )
-    results = active_classifier.classify_many(rows)
-    profile = active_classifier.compile_profile(set_code=set_code, results=results)
-    dump_role_profile(profile, output_path)
-    return profile
+    return RoleClassifier(overrides=_override_set(overrides)).resolve(card)
 
 
 # Mechanics are intentionally an explicit metadata field.  We do not scan prose
