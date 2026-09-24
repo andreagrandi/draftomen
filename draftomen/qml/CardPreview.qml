@@ -67,6 +67,8 @@ Rectangle {
             ? (root.augmentedAdjustment >= 0 ? "+" : "")
                 + root.augmentedAdjustment
             : ""
+    readonly property string doScoreLabelText:
+        root.hasAugmentedSplit ? "Augmented DO Score" : "DO Score"
 
     color: Theme.surfaceLow
     border.color: Theme.outline
@@ -85,7 +87,7 @@ Rectangle {
     Accessible.description: root.hasAugmentedSplit
         ? "Basic DO Score " + root.recommendation.basic_score
             + ", augmented adjustment " + root.adjustmentText
-            + ", total DO Score " + root.recommendation.score
+            + ", Augmented DO Score " + root.recommendation.score
         : ""
 
     readonly property real imageFrameAvailableHeight: Math.max(
@@ -397,7 +399,12 @@ Rectangle {
                         font.family: fixedFontFamily
                         font.pixelSize: Theme.textPixelSize(15)
                     }
-                    Label { text: "DO Score"; color: Theme.textMuted; font.pixelSize: Theme.textPixelSize(11) }
+                    Label {
+                        objectName: "cardPreviewDoScoreLabel"
+                        text: root.doScoreLabelText
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.textPixelSize(11)
+                    }
                     Label {
                         objectName: "cardPreviewDoScore"
                         text: root.recommendation ? root.recommendation.score : "—"
