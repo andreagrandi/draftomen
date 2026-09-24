@@ -205,8 +205,8 @@ FocusScope {
                         objectName: "recommendationMetadata"
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
-                        text: root.recommendation.card.types.join(" · ")
-                            + " · ALSA " + root.alsaText
+                        text: "ALSA " + root.alsaText
+                            + " · " + root.recommendation.card.types.join(" · ")
                             + " · MV " + root.manaValueText
                             + " · " + (root.recommendation.source_label
                                 || "Source unavailable")

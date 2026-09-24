@@ -5044,17 +5044,37 @@ application.processEvents()
 assert wide_all_filter.property("checked") is True
 assert recommendation_model.rowCount() == len(source_recommendation_ids)
 
-second_row.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Return)
-application.processEvents()
-assert provider.state["recommendations"]["selected_grp_id"] == (
-    provider.state["recommendations"]["cards"][1]["card"]["grp_id"]
+first_recommendation = provider.state["recommendations"]["cards"][0]
+assert first_recommendation["average_last_seen_at"] == 1.3
+assert wide_row.property("alsaText") == "1.30"
+first_metadata = wide_row.findChild(QObject, "recommendationMetadata")
+assert first_metadata is not None
+assert first_metadata.property("text").startswith("ALSA 1.30")
+assert any(
+    "ALSA 1.30" in text for text in visible_texts(wide_row)
 )
-third_row.forceActiveFocus()
-application.processEvents()
-assert wide_row.property("stateText") == "Recommended"
-assert second_row.property("stateText") == "Selected"
-assert third_row.property("stateText") == "Keyboard focused"
+first_grp_id = first_recommendation["card"]["grp_id"]
+provider.chooseRecommendation(first_grp_id)
+wait_until(
+    lambda: provider.state["recommendations"]["selected_grp_id"] == first_grp_id
+    and wide_preview.property("alsaText") == "1.30",
+    "the first recommendation ALSA in the selected preview",
+)
+assert "1.30" in visible_texts(wide_preview)
+
+recommendation_alsa_387 = next(
+    recommendation
+    for recommendation in provider.state["recommendations"]["cards"]
+    if recommendation["average_last_seen_at"] == 3.87
+)
+alsa_387_grp_id = recommendation_alsa_387["card"]["grp_id"]
+provider.chooseRecommendation(alsa_387_grp_id)
+wait_until(
+    lambda: provider.state["recommendations"]["selected_grp_id"] == alsa_387_grp_id
+    and wide_preview.property("alsaText") == "3.87",
+    "the 3.87 recommendation ALSA in the selected preview",
+)
+assert "3.87" in visible_texts(wide_preview)
 
 image_path = Path.cwd() / "draftomen" / "assets" / "draftomen_logo.png"
 image_url = QUrl.fromLocalFile(str(image_path)).toString()
@@ -5081,6 +5101,9 @@ for index, recommendation in enumerate(recommendations_state["cards"]):
         updated_recommendation["average_last_seen_at"] = None
         updated_recommendation["source_label"] = None
     recommendation_cards.append(updated_recommendation)
+selected_grp_id_before_missing_alsa = recommendations_state["selected_grp_id"]
+missing_alsa_grp_id = recommendation_cards[2]["card"]["grp_id"]
+recommendations_state["selected_grp_id"] = missing_alsa_grp_id
 recommendations_state["cards"] = recommendation_cards
 state_with_thumbnails = dict(provider.state)
 state_with_thumbnails["recommendations"] = recommendations_state
@@ -5090,6 +5113,63 @@ wide_row = find_visual_item(root.contentItem(), "wideRecommendationRow1")
 second_row = find_visual_item(root.contentItem(), "wideRecommendationRow2")
 third_row = find_visual_item(root.contentItem(), "wideRecommendationRow3")
 assert wide_row is not None and second_row is not None and third_row is not None
+wait_until(
+    lambda: provider.state["recommendations"]["selected_grp_id"]
+    == missing_alsa_grp_id
+    and wide_preview.property("alsaText") == "—",
+    "the missing recommendation ALSA in the selected preview",
+)
+assert third_row.property("alsaText") == "—"
+third_metadata = third_row.findChild(QObject, "recommendationMetadata")
+assert third_metadata is not None
+assert third_metadata.property("text").startswith("ALSA —")
+assert any("ALSA —" in text for text in visible_texts(third_row))
+assert wide_preview.property("alsaText") == "—"
+assert "—" in visible_texts(wide_preview)
+
+recommendations_with_prior_selection = dict(provider.state["recommendations"])
+recommendations_with_prior_selection["selected_grp_id"] = (
+    selected_grp_id_before_missing_alsa
+)
+restored_selection_state = dict(provider.state)
+restored_selection_state["recommendations"] = recommendations_with_prior_selection
+provider._replace_state(state=restored_selection_state)
+application.processEvents()
+wait_until(
+    lambda: provider.state["recommendations"]["selected_grp_id"]
+    == selected_grp_id_before_missing_alsa
+    and wide_preview.property("alsaText") == "3.87",
+    "the prior recommendation selection and ALSA in the selected preview",
+)
+assert "3.87" in visible_texts(wide_preview)
+wide_row = find_visual_item(root.contentItem(), "wideRecommendationRow1")
+second_row = find_visual_item(root.contentItem(), "wideRecommendationRow2")
+third_row = find_visual_item(root.contentItem(), "wideRecommendationRow3")
+assert wide_row is not None and second_row is not None and third_row is not None
+second_row.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Return)
+application.processEvents()
+assert provider.state["recommendations"]["selected_grp_id"] == (
+    provider.state["recommendations"]["cards"][1]["card"]["grp_id"]
+)
+third_row.forceActiveFocus()
+application.processEvents()
+assert wide_row.property("stateText") == "Recommended"
+assert second_row.property("stateText") == "Selected"
+assert third_row.property("stateText") == "Keyboard focused"
+state_with_thumbnails = dict(provider.state)
+recommendations_with_thumbnails = dict(
+    state_with_thumbnails["recommendations"]
+)
+recommendations_with_thumbnails["cards"] = recommendation_cards
+state_with_thumbnails["recommendations"] = recommendations_with_thumbnails
+provider._replace_state(state=state_with_thumbnails)
+application.processEvents()
+wide_row = find_visual_item(root.contentItem(), "wideRecommendationRow1")
+second_row = find_visual_item(root.contentItem(), "wideRecommendationRow2")
+third_row = find_visual_item(root.contentItem(), "wideRecommendationRow3")
+assert wide_row is not None and second_row is not None and third_row is not None
+
 wide_header_rank = find_visual_item(root.contentItem(), "recommendationHeaderRank")
 wide_header_card = find_visual_item(root.contentItem(), "recommendationHeaderCard")
 wide_rank = find_visual_item(wide_row, "recommendationRank")
