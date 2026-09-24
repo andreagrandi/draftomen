@@ -2013,7 +2013,7 @@ def test_pre_pick_relationship_support_matches_supported_typed_categories(
     assert payload["source"]["in_projected_deck"] is True
     assert payload["source"]["prerequisites"]
     assert payload["target"]["prerequisites"]
-    assert ledger.to_json()["relationship_support"] == [support.to_json()]
+    assert "relationship_support" not in ledger.to_json()
 
 
 def test_retained_optional_action_is_conditional_with_exact_provenance() -> None:
@@ -2368,7 +2368,7 @@ def test_completed_pool_evaluation_stays_relationship_neutral() -> None:
 
     assert completed.mode is COMPLETED_POOL
     assert completed.relationship_support == ()
-    assert completed.to_json()["relationship_support"] == []
+    assert "relationship_support" not in completed.to_json()
     assert len(case.ledger().relationship_support) == 1
 
 
@@ -2411,6 +2411,7 @@ def test_relationship_support_orders_records_and_keeps_raw_model_text_out() -> N
     payload = json.dumps(first.to_json(), sort_keys=True)
 
     assert first.to_json() == repeated.to_json()
+    assert "relationship_support" not in first.to_json()
     assert [
         (item.target_card_id, item.mechanism, item.finding_id, item.source_card_id)
         for item in first.relationship_support
@@ -2420,8 +2421,6 @@ def test_relationship_support_orders_records_and_keeps_raw_model_text_out() -> N
         (TYPAL_ID, "token-go-wide-payoff", "relationship-typal-second", UPKEEP_SOURCE_ID),
         (RECURSION_ID, "discard-recursion-payoff", "relationship-recursion", DISCARD_ID),
     ]
-    assert "zones=hand/you->graveyard/you" in payload
-    assert "zones=graveyard/you->hand/you" in payload
     for sentinel in (
         RELATIONSHIP_CLAIM,
         RELATIONSHIP_PREREQUISITE_SENTINEL,

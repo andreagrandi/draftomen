@@ -3,6 +3,8 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Stop emitting legacy relationship fields in audit and backtest output while
+  preserving reads of existing audit and draft-history records. (#669)
 - Preserve source-supplied ALSA in generated HOB profiles so recommendation
   rows and selected-card details can show it. Keep missing values unavailable.
   (#653)

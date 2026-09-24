@@ -12,6 +12,7 @@ import pytest
 
 import draftomen.cli as cli_module
 from draftomen.backtest import (
+    BacktestReport,
     format_backtest_report,
     generate_backtest_report,
     load_persisted_backtest_state,
@@ -347,6 +348,86 @@ def test_backtest_cli_skips_missing_offered_history_without_mutating_state(
     assert state_path.read_text(encoding="utf-8") == before
 
 
+def test_backtest_cli_skips_omitted_pick_history_without_mutating_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app_dir = tmp_path / "app"
+    bulk_file = _write_bulk_file(directory=tmp_path)
+    state = _draft_state(
+        picks=(
+            DraftPick(
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(3, 4),
+                pool_before_pick=(),
+                chosen_grp_id=3,
+            ),
+            DraftPick(
+                pack_number=0,
+                pick_number=1,
+                chosen_grp_id=None,
+            ),
+        ),
+        pool_grp_ids=(3,),
+    )
+    history = state.to_json()
+    picks = history["picks"]
+    assert isinstance(picks, list)
+    incomplete_pick = picks[1]
+    assert isinstance(incomplete_pick, dict)
+    incomplete_pick.pop("offered_grp_ids")
+    incomplete_pick.pop("pool_before_pick")
+
+    state_path = draft_state_path(
+        account_id=state.account_id,
+        draft_id=state.draft_id,
+        app_dir=app_dir,
+    )
+    state_path.parent.mkdir(parents=True)
+    before = json.dumps(history, separators=(",", ":")).encode("utf-8")
+    state_path.write_bytes(before)
+
+    reports: list[BacktestReport] = []
+    real_generate = cli_module.generate_backtest_report
+
+    def record_generate(**kwargs: object) -> BacktestReport:
+        report = real_generate(**kwargs)
+        reports.append(report)
+        return report
+
+    monkeypatch.setattr(cli_module, "generate_backtest_report", record_generate)
+    exit_code = main(
+        argv=[
+            "backtest",
+            "--account",
+            state.account_id,
+            "--draft-id",
+            state.draft_id,
+            "--bulk-file",
+            str(bulk_file),
+            "--app-dir",
+            str(app_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert len(reports) == 1
+    report = reports[0]
+    assert len(report.compared_rows) == 1
+    assert report.compared_rows[0].pick_number == 0
+    assert report.compared_rows[0].match is not None
+    assert report.compared_rows[0].recommended is not None
+    assert len(report.skipped_rows) == 1
+    assert report.skipped_rows[0].pick_number == 1
+    assert report.skipped_rows[0].skipped_reason == "missing offered-card history"
+    assert "Picks: 1 chosen, 1 compared, 1 skipped" in captured.out
+    assert "skipped: missing offered-card history" in captured.out
+    assert captured.err == ""
+    assert state_path.read_bytes() == before
+
 def test_backtest_cli_skips_end_of_pack_handshake_picks_without_mutating_state(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -646,7 +727,7 @@ def _hob_project_row(row) -> dict[str, object]:
         ],
         "relationship_contributions": [
             contribution.to_json()
-            for contribution in row.relationship_contributions
+            for contribution in recommended.relationship_contributions
         ],
     }
 
@@ -726,8 +807,8 @@ def test_hob_relationship_scoring_exact_reviewed_deltas_and_evidence() -> None:
     assert r1_supports[0].mechanism == _HOB_R1_MECHANISM
     assert r1_supports[0].source_card_id == 103382
     assert r1_supports[0].target_card_id == 103526
-    assert len(enhanced.rows[1].relationship_contributions) == 1
-    r1_contribution = enhanced.rows[1].relationship_contributions[0]
+    assert len(r1_enhanced.relationship_contributions) == 1
+    r1_contribution = r1_enhanced.relationship_contributions[0]
     assert r1_contribution.support.finding_id == _HOB_R1_FINDING_ID
     assert r1_contribution.support.mechanism == _HOB_R1_MECHANISM
     assert r1_contribution.raw_contribution > 0.0
@@ -754,7 +835,7 @@ def test_hob_relationship_scoring_exact_reviewed_deltas_and_evidence() -> None:
     assert _HOB_R6_FINDING_ID in r6_evidence
     assert _HOB_R6_MECHANISM in r6_evidence
     assert "Chief Warg's Company [103531]" in r6_evidence
-    assert enhanced.rows[2].relationship_contributions[0].effective_contribution == (
+    assert r6_enhanced.relationship_contributions[0].effective_contribution == (
         pytest.approx(_HOB_R6_RAW_SCORE_DELTA)
     )
 
@@ -803,8 +884,8 @@ def test_hob_relationship_scoring_unsupported_and_saturated_rows() -> None:
     assert saturation_supports[0].finding_id == _HOB_R1_FINDING_ID
     assert saturation_supports[0].target_card_id == 103526
     assert saturation_supports[0].target_card_id == saturated_enhanced.card.grp_id
-    assert len(enhanced.rows[3].relationship_contributions) == 1
-    assert enhanced.rows[3].relationship_contributions[0].effective_contribution == 0.0
+    assert len(saturated_enhanced.relationship_contributions) == 1
+    assert saturated_enhanced.relationship_contributions[0].effective_contribution == 0.0
     saturated_reasons = saturated_enhanced.rationale.reasons
     assert not any(
         _HOB_R1_FINDING_ID in (reason.evidence or "") for reason in saturated_reasons
@@ -868,8 +949,8 @@ def test_hob_relationship_scoring_gate_empties_ledger_support_and_terms() -> Non
     assert enhanced.rows[1].recommended.contextual_breakdown == (
         gated.rows[1].recommended.contextual_breakdown
     )
-    assert enhanced.rows[1].relationship_contributions
-    assert gated.rows[1].relationship_contributions == ()
+    assert enhanced.rows[1].recommended.relationship_contributions
+    assert gated.rows[1].recommended.relationship_contributions == ()
     for index in (2,):
         enhanced_recommended = enhanced.rows[index].recommended
         gated_recommended = gated.rows[index].recommended
@@ -924,8 +1005,8 @@ def test_hob_relationship_scoring_gate_overrides_a_supplied_default_engine() -> 
     assert enhanced.rows[1].recommended.contextual_breakdown == (
         gated.rows[1].recommended.contextual_breakdown
     )
-    assert enhanced.rows[1].relationship_contributions
-    assert gated.rows[1].relationship_contributions == ()
+    assert enhanced.rows[1].recommended.relationship_contributions
+    assert gated.rows[1].recommended.relationship_contributions == ()
     for index in (2,):
         gated_recommended = gated.rows[index].recommended
         enhanced_recommended = enhanced.rows[index].recommended

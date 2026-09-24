@@ -1903,13 +1903,12 @@ def test_live_session_policy_disabled_toggle_keeps_successful_backtest_scores(
         (
             row.recommended.grp_id if row.recommended is not None else None,
             row.recommended_score,
-            row.relationship_contributions,
+            row.contextual_evidence,
         )
         for row in initial.backtest.rows
     )
     assert all(
-        row.recommended_score is not None
-        and row.relationship_contributions == ()
+        row.recommended is not None and row.recommended_score is not None
         for row in initial.backtest.rows
     )
 
@@ -1924,7 +1923,7 @@ def test_live_session_policy_disabled_toggle_keeps_successful_backtest_scores(
         (
             row.recommended.grp_id if row.recommended is not None else None,
             row.recommended_score,
-            row.relationship_contributions,
+            row.contextual_evidence,
         )
         for row in disabled.backtest.rows
     ) == initial_scores
@@ -1937,7 +1936,7 @@ def test_live_session_policy_disabled_toggle_keeps_successful_backtest_scores(
         (
             row.recommended.grp_id if row.recommended is not None else None,
             row.recommended_score,
-            row.relationship_contributions,
+            row.contextual_evidence,
         )
         for row in enabled.backtest.rows
     ) == initial_scores
@@ -4209,10 +4208,12 @@ def test_session_backtest_projection_preserves_domain_context_fields() -> None:
 
     projected = session_module._backtest_result(report=report).rows[0]
 
+    assert projected.recommended is not None
+    assert projected.recommended.grp_id == source_card.card.grp_id
+    assert projected.recommended_score == source_card.score
     assert projected.role_ledger is context.role_ledger
     assert projected.scoring_context is context
     assert projected.contextual_evidence == source_card.contextual_evidence
-    assert projected.relationship_contributions == ()
 
 
 def test_live_session_account_pick_retains_recommendations_and_colors(

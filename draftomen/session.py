@@ -591,7 +591,6 @@ class BacktestPickResult:
     role_ledger: PoolRoleLedger | None = None
     scoring_context: PickScoringContext | None = None
     contextual_evidence: tuple[str, ...] = ()
-    relationship_contributions: tuple[RelationshipScoreContribution, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -5258,7 +5257,6 @@ def _backtest_result(*, report: DomainBacktestReport) -> BacktestResult:
                 role_ledger=row.role_ledger,
                 scoring_context=row.scoring_context,
                 contextual_evidence=row.contextual_evidence,
-                relationship_contributions=row.relationship_contributions,
             )
             for row in report.rows
         ),

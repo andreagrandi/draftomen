@@ -467,7 +467,7 @@ def test_audit_context_provenance_omits_pool_but_preserves_profile_and_evidence(
         assert recommendation[field] == expected
 
 
-def test_audit_persists_bounded_relationship_score_provenance(
+def test_audit_omits_legacy_relationship_projections_and_preserves_contextual_evidence(
     tmp_path: Path,
 ) -> None:
     profile = _relationship_profile(tmp_path)
@@ -499,6 +499,14 @@ def test_audit_persists_bounded_relationship_score_provenance(
     assert contribution.support.finding_id == RELATIONSHIP_FINDING_ID
     assert contribution.raw_contribution > 0.0
     assert contribution.effective_contribution == 0.0
+
+    # The in-memory support remains available, but is no longer serialized.
+    assert scored_pack.role_ledger is not None
+    support = scored_pack.role_ledger.relationship_support[0]
+    assert support.outcome.value == "supported"
+    assert support.profile_fingerprint == profile.fingerprint
+    assert support.source_prerequisites
+    assert support.target_prerequisites
 
     # The same offered target keeps no relationship support once its drafted
     # source is absent from the pre-pick pool.
@@ -534,28 +542,30 @@ def test_audit_persists_bounded_relationship_score_provenance(
     assert [record["record_type"] for record in records] == ["decision_evaluated"]
     decision = records[0]
     assert decision["pool_before_pick"] == [RELATIONSHIP_SOURCE_ID]
-    assert scored_pack.role_ledger is not None
-    support = scored_pack.role_ledger.relationship_support[0]
-    assert decision["role_ledger"]["relationship_support"] == [support.to_json()]
-    assert support.outcome.value == "supported"
-    assert support.profile_fingerprint == profile.fingerprint
-    assert support.source_prerequisites
-    assert support.target_prerequisites
+    ledger = decision["role_ledger"]
+    assert "relationship_support" not in ledger
+    assert ledger["pool_size"] == scored_pack.role_ledger.pool_size
+    assert ledger["profile_fingerprint"] == profile.fingerprint
+    assert ledger["role_counts"] == [
+        list(item) for item in scored_pack.role_ledger.role_counts
+    ]
 
     candidate = next(
         candidate
         for candidate in decision["candidates"]
         if candidate["grp_id"] == RELATIONSHIP_TARGET_ID
     )
-    assert candidate["scoring"]["contextual_evidence"] == list(
+    scoring = candidate["scoring"]
+    assert "relationship_contributions" not in scoring
+    assert scoring["score"] == scored_target.score
+    assert scoring["raw_score"] == scored_target.raw_score
+    assert scoring["contextual_evidence"] == list(
         scored_target.contextual_evidence
     )
-    assert candidate["scoring"]["relationship_contributions"] == [
-        contribution.to_json()
-    ]
-    assert candidate["scoring"]["contextual_breakdown"]["synergy"] == (
-        scored_target.contextual_breakdown.synergy
+    assert scoring["contextual_breakdown"] == (
+        scored_target.contextual_breakdown.to_json()
     )
+    assert scoring["contextual_breakdown"]["synergy"] > 0.0
     assert candidate["concise_explanation"] == render_pick_rationale_concise(
         scored_card=scored_target
     )
@@ -566,37 +576,30 @@ def test_audit_persists_bounded_relationship_score_provenance(
 
     recommendation = decision["recommendation"]
     assert recommendation["grp_id"] == RELATIONSHIP_TARGET_ID
-    assert recommendation["contextual_evidence"] == (
-        candidate["scoring"]["contextual_evidence"]
-    )
-    assert recommendation["relationship_contributions"] == [
-        contribution.to_json()
-    ]
+    assert recommendation["score"] == scored_target.score
+    assert "relationship_contributions" not in recommendation
+    assert recommendation["contextual_evidence"] == scoring["contextual_evidence"]
     assert recommendation["concise_explanation"] == candidate["concise_explanation"]
     assert recommendation["explanation"] == candidate["explanation"]
 
-    # Raw claim, legacy prerequisite, and model-run prose never reach the record.
+    # Raw model claims and prerequisite prose never reach the audit record.
     serialized = json.dumps(decision)
     for sentinel in (SENTINEL_CLAIM, SENTINEL_LEGACY_PREREQUISITE, SENTINEL_MODEL_RUN):
         assert sentinel not in serialized
 
-    # The offered card's Oracle text stays in candidate metadata and out of
-    # every relationship-derived ledger, evidence, rationale, or explanation field.
+    # Oracle text stays in candidate metadata and out of contextual/rationale evidence.
     assert SENTINEL_ORACLE_QUOTE in candidate["metadata"]["oracle_text"]
-    relationship_fields = (
-        decision["role_ledger"]["relationship_support"],
-        candidate["scoring"]["contextual_evidence"],
-        candidate["scoring"]["relationship_contributions"],
+    evidence_fields = (
+        scoring["contextual_evidence"],
         candidate["rationale"],
         candidate["concise_explanation"],
         candidate["explanation"],
         recommendation["contextual_evidence"],
-        recommendation["relationship_contributions"],
         recommendation["rationale"],
         recommendation["concise_explanation"],
         recommendation["explanation"],
     )
-    for field in relationship_fields:
+    for field in evidence_fields:
         assert SENTINEL_ORACLE_QUOTE not in json.dumps(field)
 
 
@@ -684,9 +687,37 @@ def test_audit_restart_preserves_identity_for_historical_records_without_rationa
         historical["recommendation"].pop(field, None)
         for candidate in historical["candidates"]:
             candidate.pop(field, None)
+
+    legacy_support = [{"finding_id": "legacy-finding", "outcome": "supported"}]
+    legacy_contributions = [
+        {"finding_id": "legacy-finding", "effective_contribution": 0.0}
+    ]
+    assert isinstance(historical["role_ledger"], dict)
+    historical["role_ledger"]["relationship_support"] = legacy_support
+    for candidate in historical["candidates"]:
+        candidate["scoring"]["relationship_contributions"] = legacy_contributions
+    historical["recommendation"]["relationship_contributions"] = legacy_contributions
+    prior_record_id = historical["record_id"]
+    prior_evaluation_id = historical["evaluation_id"]
     path.write_text(
         json.dumps(historical, separators=(",", ":"), sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+
+    loaded_records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert len(loaded_records) == 1
+    assert loaded_records[0]["role_ledger"]["relationship_support"] == legacy_support
+    assert all(
+        candidate["scoring"]["relationship_contributions"] == legacy_contributions
+        for candidate in loaded_records[0]["candidates"]
+    )
+    assert (
+        loaded_records[0]["recommendation"]["relationship_contributions"]
+        == legacy_contributions
     )
 
     restarted_store = DraftAuditStore(app_dir=tmp_path, clock=_later_clock)
@@ -697,14 +728,28 @@ def test_audit_restart_preserves_identity_for_historical_records_without_rationa
         config=engine.config,
         ratings_data=None,
     )
+    restarted_store.record_choice(
+        state=state,
+        event=_pick_event(),
+        ranking_mode="score",
+    )
 
     records = load_draft_audit_records(
         account_id=ACCOUNT_ID,
         draft_id=DRAFT_ID,
         app_dir=tmp_path,
     )
-    assert len(records) == 1
-    assert "rationale" not in records[0]["recommendation"]
+    evaluations = [
+        record for record in records if record["record_type"] == "decision_evaluated"
+    ]
+    choices = [record for record in records if record["record_type"] == "choice_made"]
+    assert len(evaluations) == 1
+    assert evaluations[0]["record_id"] == prior_record_id
+    assert evaluations[0]["evaluation_id"] == prior_evaluation_id
+    assert "rationale" not in evaluations[0]["recommendation"]
+    assert len(choices) == 1
+    assert choices[0]["evaluation_id"] == prior_evaluation_id
+
 
 def test_audit_loader_rejects_a_malformed_json_line(tmp_path: Path) -> None:
     path = draft_audit_path(

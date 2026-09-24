@@ -143,7 +143,7 @@ def _project_report(report) -> dict[str, object]:
                 else [],
                 "relationship_contributions": [
                     _safe_relationship_record(payload=contribution.to_json())
-                    for contribution in row.relationship_contributions
+                    for contribution in recommended.relationship_contributions
                 ],
             }
         )

@@ -624,9 +624,6 @@ class PoolRoleLedger:
                 [name, value] for name, value in self.unsupported_payoff_counts
             ],
             "urgency": self.urgency,
-            "relationship_support": [
-                item.to_json() for item in self.relationship_support
-            ],
             "unique_card_count": self.unique_card_count,
         }
 

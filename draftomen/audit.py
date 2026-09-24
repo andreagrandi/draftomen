@@ -199,6 +199,18 @@ class DraftAuditStore:
             app_version=self._app_version,
             decision_id=decision_id,
         )
+        latest_evaluation = self._latest_evaluations.get((path, decision_id))
+        if latest_evaluation is not None:
+            latest_payload = {
+                key: latest_evaluation[key]
+                for key in evaluation
+                if key in latest_evaluation
+            }
+            if _evaluation_identity_payload(
+                evaluation=latest_payload,
+            ) == _evaluation_identity_payload(evaluation=evaluation):
+                return path
+
         evaluation_id = _record_id(
             prefix="evaluation",
             value=_evaluation_identity_payload(evaluation=evaluation),
@@ -509,9 +521,6 @@ def _recommendation_payload(*, scored_card: ScoredCard | None) -> AuditRecord | 
         "color_fit": scored_card.color_fit,
         "contextual_breakdown": scored_card.contextual_breakdown.to_json(),
         "contextual_evidence": list(scored_card.contextual_evidence),
-        "relationship_contributions": [
-            item.to_json() for item in scored_card.relationship_contributions
-        ],
         "contextual_pair": scored_card.contextual_pair,
         "contextual_theme": scored_card.contextual_theme,
         "contextual_profile_maturity": scored_card.contextual_profile_maturity,
@@ -588,9 +597,6 @@ def _candidate_payload(*, scored_card: ScoredCard, rank: int) -> AuditRecord:
             "adjusted_rating": scored_card.adjusted_rating,
             "contextual_breakdown": scored_card.contextual_breakdown.to_json(),
             "contextual_evidence": list(scored_card.contextual_evidence),
-            "relationship_contributions": [
-                item.to_json() for item in scored_card.relationship_contributions
-            ],
             "contextual_pair": scored_card.contextual_pair,
             "contextual_theme": scored_card.contextual_theme,
             "contextual_profile_maturity": scored_card.contextual_profile_maturity,
@@ -612,25 +618,40 @@ def _candidate_payload(*, scored_card: ScoredCard, rank: int) -> AuditRecord:
 
 
 def _evaluation_identity_payload(*, evaluation: AuditRecord) -> AuditRecord:
-    """Keep evaluation ids stable as rationale fields are added additively."""
+    """Ignore additive rationale and retired projections in evaluation identity."""
 
     identity = dict(evaluation)
     identity.pop("comparison_summary", None)
+
+    role_ledger = identity.get("role_ledger")
+    if isinstance(role_ledger, dict):
+        role_ledger = dict(role_ledger)
+        role_ledger.pop("relationship_support", None)
+        identity["role_ledger"] = role_ledger
+
     recommendation = identity.get("recommendation")
     if isinstance(recommendation, dict):
-        identity["recommendation"] = _without_rationale_fields(
-            payload=recommendation,
-        )
+        recommendation = _without_rationale_fields(payload=recommendation)
+        recommendation.pop("relationship_contributions", None)
+        identity["recommendation"] = recommendation
+
     candidates = identity.get("candidates")
     if isinstance(candidates, list):
-        identity["candidates"] = [
-            (
-                _without_rationale_fields(payload=candidate)
-                if isinstance(candidate, dict)
-                else candidate
-            )
-            for candidate in candidates
-        ]
+        normalized_candidates: list[Any] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                normalized_candidates.append(candidate)
+                continue
+
+            normalized_candidate = _without_rationale_fields(payload=candidate)
+            scoring = normalized_candidate.get("scoring")
+            if isinstance(scoring, dict):
+                scoring = dict(scoring)
+                scoring.pop("relationship_contributions", None)
+                normalized_candidate["scoring"] = scoring
+            normalized_candidates.append(normalized_candidate)
+        identity["candidates"] = normalized_candidates
+
     return identity
 
 
