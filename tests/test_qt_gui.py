@@ -7671,9 +7671,8 @@ with TemporaryDirectory() as preferences_dir:
     assert "TypeError" not in completed.stderr
 
 
-def test_qml_legacy_relationship_presentation_absent_offscreen() -> None:
+def test_qml_trimmed_session_renders_recommendations_and_contextual_status_offscreen() -> None:
     probe = """
-from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7691,44 +7690,16 @@ from draftomen.qt_mock import MockSessionAdapter
 
 QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
-SENTINEL = "Retired advice sentinel"
 
 session = MockLiveSession(scenario="ready")
-snapshot = session.snapshot
-recommendations = snapshot.recommendations
+recommendations = session.snapshot.recommendations
 selected_grp_id = recommendations.selected_grp_id
 selected_recommendation = next(
     recommendation
     for recommendation in recommendations.cards
     if recommendation.card.grp_id == selected_grp_id
 )
-selected_recommendation = replace(
-    selected_recommendation,
-    relationship_advice=SENTINEL,
-    relationship_advice_enabled=True,
-)
-session._snapshot = replace(
-    snapshot,
-    recommendations=replace(
-        recommendations,
-        cards=tuple(
-            selected_recommendation
-            if recommendation.card.grp_id == selected_grp_id
-            else recommendation
-            for recommendation in recommendations.cards
-        ),
-    ),
-    enhancement_advice_message=SENTINEL,
-)
 provider = MockSessionAdapter(session=session)
-injected_recommendation = next(
-    recommendation
-    for recommendation in provider.state["recommendations"]["cards"]
-    if recommendation["card"]["grp_id"] == selected_grp_id
-)
-assert injected_recommendation["relationship_advice"] == SENTINEL
-assert injected_recommendation["relationship_advice_enabled"] is True
-assert provider.state["enhancement_advice_message"] == SENTINEL
 
 
 def wait_until(predicate, label):
@@ -7775,6 +7746,20 @@ def accessible_output(item):
     )
 
 
+def assert_no_retired_presentation(visible, accessible):
+    retired_phrases = (
+        "relationship advice",
+        "AI-enhanced advice",
+        "AI-enhanced suggestions",
+    )
+    for channel, texts in (("visible", visible), ("accessible", accessible)):
+        for text in texts:
+            lowered = text.casefold()
+            assert not any(
+                phrase.casefold() in lowered for phrase in retired_phrases
+            ), f"Retired {channel} text appeared: {text!r}"
+
+
 with TemporaryDirectory() as preferences_dir:
     preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
     preferences.setContextualAdjustmentsEnabled(True)
@@ -7795,13 +7780,6 @@ with TemporaryDirectory() as preferences_dir:
     assert engine.rootObjects()
     root = engine.rootObjects()[0]
     application.processEvents()
-
-    for object_name in (
-        "settingsAiEnhancedSuggestionsMessage",
-        "settingsAiEnhancedSuggestionsSwitch",
-        "statusEnhancementMessage",
-    ):
-        assert root.findChild(QObject, object_name) is None
 
     contextual_switch = root.findChild(
         QObject, "settingsContextualScoringSwitch"
@@ -7837,8 +7815,6 @@ with TemporaryDirectory() as preferences_dir:
 
     settings_texts = visible_texts(root.contentItem())
     assert settings_texts
-    assert all(SENTINEL not in text for text in settings_texts)
-    assert all("AI-enhanced suggestions" not in text for text in settings_texts)
     settings_accessibility = (
         *accessible_output(contextual_switch),
         *accessible_output(augmented_switch),
@@ -7846,8 +7822,7 @@ with TemporaryDirectory() as preferences_dir:
         *accessible_output(profile_status),
         *accessible_output(augmentation_status),
     )
-    assert all(SENTINEL not in text for text in settings_accessibility)
-    assert all("AI-enhanced suggestions" not in text for text in settings_accessibility)
+    assert_no_retired_presentation(settings_texts, settings_accessibility)
 
     live_view = root.findChild(QObject, "liveDraftView")
     assert live_view is not None
@@ -7860,20 +7835,6 @@ with TemporaryDirectory() as preferences_dir:
     wait_until(
         lambda: session.snapshot.card_image.grp_id == selected_grp_id,
         "selected recommendation publication",
-    )
-
-    # Entering Live Draft publishes the selected card once; restore the sentinel
-    # in the shared snapshot afterwards so status and card surfaces see it together.
-    session._snapshot = replace(
-        session.snapshot,
-        enhancement_advice_message=SENTINEL,
-    )
-    provider._publish(snapshot=session.snapshot)
-    application.processEvents()
-    assert provider.state["enhancement_advice_message"] == SENTINEL
-    assert root.findChild(QObject, "statusEnhancementMessage") is None
-    assert all(
-        SENTINEL not in text for text in visible_texts(root.contentItem())
     )
 
     def assert_layout(width, *, wide):
@@ -7906,18 +7867,11 @@ with TemporaryDirectory() as preferences_dir:
             f"{row.property('stateText')}. "
             "Press Enter or Space to choose this card."
         )
-        assert all(SENTINEL not in text for text in row_accessibility)
-        assert all(SENTINEL not in text for text in visible_texts(row))
 
         preview_name = "wideLiveCardPreview" if wide else "narrowLiveCardPreview"
         preview = find_visual_item(root.contentItem(), preview_name)
         assert preview is not None and preview.isVisible()
         assert preview.property("detailedIntel") is True
-        for object_name in (
-            "cardPreviewRelationshipHeading",
-            "cardPreviewRelationshipAdvice",
-        ):
-            assert preview.findChild(QObject, object_name) is None
 
         explanation = preview.findChild(QObject, "cardPreviewExplanation")
         scores = preview.findChild(QObject, "cardPreviewScores")
@@ -7933,24 +7887,18 @@ with TemporaryDirectory() as preferences_dir:
         assert preview_accessibility[0] == (
             "Focused card intel, " + selected_recommendation.card.name
         )
-        assert all(SENTINEL not in text for text in preview_accessibility)
-        assert all(SENTINEL not in text for text in visible_texts(preview))
-        assert root.findChild(
-            QObject, "wideRecommendationRelationshipAdviceBadge"
-        ) is None
-        assert root.findChild(
-            QObject, "narrowRecommendationRelationshipAdviceBadge"
-        ) is None
-        assert root.findChild(
-            QObject, "statusEnhancementMessage"
-        ) is None
 
         profile_output = accessible_output(profile_status)
         augmentation_output = accessible_output(augmentation_status)
-        assert all(SENTINEL not in text for text in profile_output)
-        assert all(SENTINEL not in text for text in augmentation_output)
-        assert all(
-            SENTINEL not in text for text in visible_texts(root.contentItem())
+        visible_live_texts = visible_texts(root.contentItem())
+        accessible_live_texts = (
+            *row_accessibility,
+            *preview_accessibility,
+            *profile_output,
+            *augmentation_output,
+        )
+        assert_no_retired_presentation(
+            visible_live_texts, accessible_live_texts
         )
 
     assert_layout(1440, wide=True)

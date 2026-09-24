@@ -20,9 +20,9 @@ from draftomen.session import (
     CardDataState,
     CardImageState,
     CardView,
+    ChangeAugmentation,
     ChangeRanking,
     ChangeContextualScoring,
-    ChangeAiEnhancedSuggestions,
     ChangeSplashPreference,
     ChooseAccount,
     ChooseRecommendation,
@@ -48,17 +48,12 @@ from draftomen.session import (
     RequestBuild,
     RequestRatingsDownload,
     RetryError,
-    EnhancementAvailabilityState,
-    EnhancementAvailabilityStatus,
-    enhancement_advice_message,
 )
 
 MockScenario: TypeAlias = Literal[
     "loading",
     "ready",
     "empty",
-    "not_enhanced",
-    "enhancement_incompatible",
     "progress",
     "warning",
     "error",
@@ -70,8 +65,6 @@ MOCK_SCENARIOS: tuple[MockScenario, ...] = (
     "loading",
     "ready",
     "empty",
-    "not_enhanced",
-    "enhancement_incompatible",
     "progress",
     "warning",
     "error",
@@ -450,12 +443,6 @@ def _ready_snapshot() -> LiveSessionSnapshot:
         pool=_pool(),
         build=_build(),
         backtest=_backtest(),
-        enhancement_availability=EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.AVAILABLE,
-            set_code="OTJ",
-            enabled=True,
-            message="AI-enhanced suggestions available for OTJ.",
-        ),
     )
 
 
@@ -463,30 +450,6 @@ def _snapshot_for_scenario(*, scenario: MockScenario) -> LiveSessionSnapshot:
     ready = _ready_snapshot()
     if scenario == "ready":
         return ready
-    if scenario == "not_enhanced":
-        return replace(
-            ready,
-            enhancement_availability=EnhancementAvailabilityState(
-                status=EnhancementAvailabilityStatus.NOT_ENHANCED,
-                set_code="OTJ",
-                message=(
-                    "AI-enhanced suggestions unavailable for OTJ: "
-                    "profile is not AI-enhanced."
-                ),
-            ),
-        )
-    if scenario == "enhancement_incompatible":
-        return replace(
-            ready,
-            enhancement_availability=EnhancementAvailabilityState(
-                status=EnhancementAvailabilityStatus.INCOMPATIBLE,
-                set_code="OTJ",
-                message=(
-                    "AI-enhanced suggestions unavailable for OTJ: "
-                    "profile enhancement is invalid or incompatible."
-                ),
-            ),
-        )
     if scenario == "loading":
         return replace(
             ready,
@@ -630,9 +593,8 @@ class MockLiveSession:
         self._contextual_adjustments_enabled = (
             snapshot.contextual_adjustments_enabled
         )
-        self._ai_enhanced_suggestions_enabled = True
-        self._snapshot = self._with_enhancement_mode(
-            snapshot=self._with_contextual_mode(snapshot=snapshot),
+        self._snapshot = self._with_contextual_mode(
+            snapshot=snapshot,
         )
 
     @property
@@ -668,51 +630,12 @@ class MockLiveSession:
             contextual_evidence=evidence,
         )
 
-    def _with_enhancement_mode(
-        self,
-        *,
-        snapshot: LiveSessionSnapshot,
-    ) -> LiveSessionSnapshot:
-        scenario_state = _snapshot_for_scenario(
-            scenario=self._scenario,
-        ).enhancement_availability
-        if scenario_state.status is not EnhancementAvailabilityStatus.AVAILABLE:
-            effective = scenario_state
-        elif self._ai_enhanced_suggestions_enabled:
-            effective = scenario_state
-        else:
-            effective = EnhancementAvailabilityState(
-                status=EnhancementAvailabilityStatus.DISABLED,
-                set_code=scenario_state.set_code,
-                message=(
-                    f"AI-enhanced suggestions disabled for {scenario_state.set_code}."
-                ),
-            )
-        message = enhancement_advice_message(
-            availability=effective,
-            contextual_adjustments_enabled=(
-                self._contextual_adjustments_enabled
-            ),
-        )
-        if (
-            snapshot.enhancement_availability == effective
-            and snapshot.enhancement_advice_message == message
-        ):
-            return snapshot
-        return replace(
-            snapshot,
-            enhancement_availability=effective,
-            enhancement_advice_message=message,
-        )
-
     def select_scenario(self, *, scenario: MockScenario) -> LiveSessionSnapshot:
         if scenario not in MOCK_SCENARIOS:
             raise ValueError(f"Unsupported mock scenario: {scenario}")
         self._scenario = scenario
-        self._snapshot = self._with_enhancement_mode(
-            snapshot=self._with_contextual_mode(
-                snapshot=_snapshot_for_scenario(scenario=scenario),
-            )
+        self._snapshot = self._with_contextual_mode(
+            snapshot=_snapshot_for_scenario(scenario=scenario),
         )
         return self._snapshot
 
@@ -772,8 +695,9 @@ class MockLiveSession:
             )
         elif isinstance(command, ChangeContextualScoring):
             self._contextual_adjustments_enabled = command.enabled
-        elif isinstance(command, ChangeAiEnhancedSuggestions):
-            self._ai_enhanced_suggestions_enabled = command.enabled
+        elif isinstance(command, ChangeAugmentation):
+            # The static mock has no augmented model to enable.
+            pass
         elif isinstance(command, ChooseAccount):
             matching = next(
                 (
@@ -839,9 +763,9 @@ class MockLiveSession:
             if any(error.error_id == command.error_id for error in snapshot.errors):
                 snapshot = _ready_snapshot()
                 self._scenario = "ready"
-        self._snapshot = self._with_enhancement_mode(
-            snapshot=self._with_contextual_mode(snapshot=snapshot),
-        )
+        else:
+            raise ValueError(f"Unsupported mock command: {command!r}")
+        self._snapshot = self._with_contextual_mode(snapshot=snapshot)
         return self._snapshot
 
     @staticmethod

@@ -59,17 +59,17 @@ support from the drafted pool.
 
 ## Cached-profile Draftmancer and QML evidence
 
-`scripts/hob_published_profile_smoke.py` uses the pinned Draftmancer revision, the local Scryfall
-bulk source, a preinstalled offline application directory containing the exact candidate profile
-bytes above, and the
-production test-draft controller. It follows a predeclared rank-one selection policy for all three
-14-pick packs, records every server-originated offer and pool, builds the completed pool, toggles
-AI enhancement off and on against the same live offer, and renders the recovered recommendation
-through the complete `Main.qml` Live Draft surface before saving an offscreen screenshot under
-`/tmp`. The smoke requires a visible `AI-ENHANCED RELATIONSHIP ADVICE` block, exact agreement with
-the recommendation data, and absence of the rejected confidence and mana-production copy. This
-proves scoring, the AI off/on behavior, and rendering. It does not prove remote acquisition or
-deployment.
+The now-retired `scripts/hob_published_profile_smoke.py` used the pinned Draftmancer revision, the
+local Scryfall bulk source, a preinstalled offline application directory containing the exact
+candidate profile bytes above, and the production test-draft controller. It followed a predeclared
+rank-one selection policy for all three 14-pick packs, recorded every server-originated offer and
+pool, built the completed pool, toggled AI enhancement off and on against the same live offer, and
+rendered the recovered recommendation through the complete `Main.qml` Live Draft surface before
+saving an offscreen screenshot under `/tmp`. The smoke required a visible `AI-ENHANCED RELATIONSHIP
+ADVICE` block, exact agreement with the recommendation data, and absence of the rejected confidence
+and mana-production copy. This proved scoring, the AI off/on behavior, and rendering at the time; it
+did not prove remote acquisition or deployment. The script is no longer runnable after retirement
+of the shared-session relationship fields and QML advice block.
 
 Live scoring treats either endpoint as the offered card when the other endpoint is already in the
 pool. A post-fix ordinary draft produced advice in 25 of 42 offers, covering 45 offered rows and
@@ -124,20 +124,7 @@ rendered the explicit no-match state. The positive and no-match screenshot SHA-2
 `8481956dd0f87b70c48962e6a0497bbf3d4a6e7e6cc1f732a8740088babd64f2` and
 `99a2df870a6111a56c0769d8424c3a149ea76c98ab4a57b4c0012df754ab25f6`.
 
-## Reproduction
-
-Start the pinned Draftmancer server as documented in `README.md`, prepare an application directory
-with `website/public/card-data/hob.json.gz` and the decompressed candidate object, then run:
-
-```sh
-QT_QPA_PLATFORM=offscreen env -u OPENROUTER_API_KEY -u OPENROUTER_KEY \
-  uv run --no-sync python scripts/hob_published_profile_smoke.py \
-  --draftmancer-dir ../Draftmancer \
-  --scryfall-bulk-file .draftomen/corpus-cache/sources/scryfall-default-cards.jsonl.gz \
-  --app-dir "$APP_DIR" \
-  --screenshot /tmp/hob-595-published-profile.png \
-  --report docs/audits/hob-595-draft-evidence.json
-```
+## Evidence artifact hashes
 
 The candidate evidence JSON has SHA-256
 `3b11d4a2497d282dfa20c35cdc1bf9a7c7f397cb1049e22a60f85b920c70bf8a`. The clean

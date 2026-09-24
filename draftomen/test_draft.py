@@ -659,7 +659,6 @@ def create_test_draft_runtime(
     snapshot_publisher: SnapshotPublisher | None = None,
     splash_enabled: bool = True,
     contextual_adjustments_enabled: bool = True,
-    ai_enhanced_suggestions_enabled: bool = True,
     simulation_app_dir: Path | None = None,
     socket_client: object | None = None,
     card_image_service: CardImageService | None = None,
@@ -758,7 +757,6 @@ def create_test_draft_runtime(
                 augmented_model_client=augmented_model_client,
                 splash_enabled=splash_enabled,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
-                ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
             )
             stack.callback(session.stop)
             adapter = DraftmancerAdapter(
@@ -806,7 +804,6 @@ def run_test_draft_auto(
     profile_network_policy: ProfileNetworkPolicy,
     splash_enabled: bool = True,
     contextual_adjustments_enabled: bool = True,
-    ai_enhanced_suggestions_enabled: bool = True,
     simulation_app_dir: Path | None = None,
     socket_client: object | None = None,
 ) -> TestDraftRunResult:
@@ -826,7 +823,6 @@ def run_test_draft_auto(
         profile_network_policy=profile_network_policy,
         splash_enabled=splash_enabled,
         contextual_adjustments_enabled=contextual_adjustments_enabled,
-        ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
         simulation_app_dir=simulation_app_dir,
         socket_client=socket_client,
     )

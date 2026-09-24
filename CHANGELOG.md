@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Retire relationship availability, advice, and preference state from shared
+  and mocked sessions, test-draft APIs, and CLI output. Keep Basic DO scoring
+  and contextual evidence. (#672)
 - Remove retired relationship controls and advice from desktop Settings, status,
   recommendations, and card detail. Keep contextual scoring, Augmented
   Intelligence, and Mocked Draft. (#674)

@@ -736,6 +736,57 @@ def _hob_report_projections(report) -> list[dict[str, object]]:
     return [_hob_project_row(row) for row in report.rows]
 
 
+def test_hob_default_gate_matches_enhancement_removed_profile() -> None:
+    database, profile, state = _hob_relationship_fixtures()
+    unenhanced_profile = replace(profile, enhancement=None)
+    enhanced_default = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=profile,
+    )
+    unenhanced_default = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=unenhanced_profile,
+    )
+
+    assert profile.enhancement is not None
+    assert unenhanced_profile.enhancement is None
+    assert len(enhanced_default.rows) == len(_HOB_EXPECTED_RECOMMENDATIONS)
+    assert len(unenhanced_default.rows) == len(_HOB_EXPECTED_RECOMMENDATIONS)
+    for index, (enhanced_row, unenhanced_row) in enumerate(
+        zip(enhanced_default.rows, unenhanced_default.rows, strict=True)
+    ):
+        pick = state.picks[index]
+        assert pick.offered_grp_ids == _HOB_EXPECTED_OFFERS[index]
+        assert pick.pool_before_pick == _HOB_EXPECTED_POOLS[index]
+        enhanced_recommendation = enhanced_row.recommended
+        unenhanced_recommendation = unenhanced_row.recommended
+        assert enhanced_recommendation is not None
+        assert unenhanced_recommendation is not None
+        assert enhanced_recommendation.card.grp_id == (
+            unenhanced_recommendation.card.grp_id
+        )
+        assert enhanced_recommendation.card.grp_id == (
+            _HOB_EXPECTED_RECOMMENDATIONS[index]
+        )
+        assert enhanced_recommendation.raw_score == pytest.approx(
+            unenhanced_recommendation.raw_score,
+            abs=1e-12,
+        )
+        assert enhanced_row.role_ledger.relationship_support == ()
+        assert unenhanced_row.role_ledger.relationship_support == ()
+
+    supported_row = enhanced_default.rows[1]
+    unenhanced_supported_row = unenhanced_default.rows[1]
+    assert supported_row.contextual_evidence
+    assert supported_row.contextual_evidence == (
+        unenhanced_supported_row.contextual_evidence
+    )
+    assert _HOB_R1_FINDING_ID not in "\n".join(supported_row.contextual_evidence)
+    assert _HOB_R1_MECHANISM not in "\n".join(supported_row.contextual_evidence)
+
+
 def test_hob_relationship_scoring_controls_are_deterministic_and_profile_isolated() -> None:
     database, profile, state = _hob_relationship_fixtures()
     removed_profile = replace(profile, enhancement=None)

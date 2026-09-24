@@ -50,7 +50,6 @@ from draftomen.session import (
     ChooseRecommendation,
     ContextualEvidenceStatus,
     DataLoadPhase,
-    EnhancementAvailabilityStatus,
     LiveSession,
     LiveSessionCommand,
     LiveSessionSnapshot,
@@ -412,7 +411,6 @@ def _run_helper(
     sources: _HelperSources,
     socket: _FakeSocket,
     contextual_adjustments_enabled: bool = True,
-    ai_enhanced_suggestions_enabled: bool = True,
 ) -> TestDraftRunResult:
     """Run one headless automatic draft against the seeded isolated sources."""
 
@@ -426,7 +424,6 @@ def _run_helper(
         profile_manifest_url=None,
         profile_network_policy=ProfileNetworkPolicy.OFFLINE,
         contextual_adjustments_enabled=contextual_adjustments_enabled,
-        ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
         simulation_app_dir=sources.simulation_dir,
         socket_client=socket,
     )
@@ -1239,11 +1236,6 @@ def test_helper_run_keeps_normal_arena_state_and_audit_untouched(
         result.completed.contextual_evidence.status
         is ContextualEvidenceStatus.UNAVAILABLE
     )
-    assert (
-        result.completed.enhancement_availability.status
-        is EnhancementAvailabilityStatus.NOT_ENHANCED
-    )
-    assert result.completed.enhancement_availability.enabled is False
     # The headless runner closes through the reusable runtime, so the simulator
     # client transport is torn down exactly once.
     assert socket.disconnect_count == 1
@@ -1257,7 +1249,6 @@ def test_helper_run_publishes_configured_feature_flags(tmp_path: Path) -> None:
         sources=sources,
         socket=socket,
         contextual_adjustments_enabled=False,
-        ai_enhanced_suggestions_enabled=False,
     )
 
     assert result.completed.contextual_adjustments_enabled is False
@@ -1265,13 +1256,6 @@ def test_helper_run_publishes_configured_feature_flags(tmp_path: Path) -> None:
         result.completed.contextual_evidence.status
         is ContextualEvidenceStatus.DISABLED
     )
-    # The bundled profile carries no relationship enhancement, so enhancement
-    # stays unavailable-in-practice regardless of the preference.
-    assert (
-        result.completed.enhancement_availability.status
-        is EnhancementAvailabilityStatus.NOT_ENHANCED
-    )
-    assert result.completed.enhancement_availability.enabled is False
     assert {
         relative.parts[0]
         for relative in _tree_entries(root=sources.simulation_dir)

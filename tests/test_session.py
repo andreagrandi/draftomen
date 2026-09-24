@@ -90,10 +90,7 @@ from draftomen.session import (
     CardView,
     ChangeRanking,
     ChangeContextualScoring,
-    ChangeAiEnhancedSuggestions,
     ChangeAugmentation,
-    EnhancementAvailabilityState,
-    EnhancementAvailabilityStatus,
     ChangeSplashPreference,
     ChooseAccount,
     ChooseRecommendation,
@@ -1254,20 +1251,7 @@ def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
     _assert_profile_context(scored_pack=scored_pack, profile=profile, event=event)
     assert snapshot.set_profile.phase is DataLoadPhase.READY
     assert snapshot.set_profile.source == "local-mature"
-    assert snapshot.enhancement_availability.status is (
-        EnhancementAvailabilityStatus.POLICY_DISABLED
-    )
-    assert snapshot.enhancement_availability.enabled is False
     assert scored_pack.role_ledger.relationship_support == ()
-    assert all(
-        recommendation.relationship_contributions == ()
-        and recommendation.relationship_advice is None
-        for recommendation in snapshot.recommendations.cards
-    )
-    assert all(
-        not recommendation.relationship_advice_enabled
-        for recommendation in snapshot.recommendations.cards
-    )
 
 
 def test_live_session_contextual_mode_controls_startup_and_local_rescore(
@@ -1417,7 +1401,7 @@ def _relationship_session_database() -> CardDatabase:
 
 
 def _save_relationship_backtest_draft(*, app_dir: Path) -> None:
-    """Persist one relationship-fixture draft whose second pick scores support."""
+    """Persist a three-pick draft with relationship and contextual evidence."""
     save_draft_state(
         state=replace(
             _draft_state(
@@ -1442,504 +1426,150 @@ def _save_relationship_backtest_draft(*, app_dir: Path) -> None:
                     pool_before_pick=(601,),
                     chosen_grp_id=602,
                 ),
+                DraftPick(
+                    pack_number=0,
+                    pick_number=2,
+                    offered_grp_ids=(605,),
+                    pool_before_pick=(601, 602),
+                    chosen_grp_id=605,
+                ),
             ),
         ),
         app_dir=app_dir,
     )
 
 
-def test_live_session_default_snapshot_reports_unavailable_enhancement(
+def test_live_session_rejects_unsupported_command(tmp_path: Path) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Live session command is not implemented yet",
+    ):
+        session.dispatch(command=object())  # type: ignore[arg-type]
+
+
+def test_live_session_enhanced_profile_defaults_to_basic_do_with_contextual_evidence(
     tmp_path: Path,
 ) -> None:
-    session = LiveSession(log_path=tmp_path / "Player.log", app_dir=tmp_path / "app")
-
-    assert session.snapshot.enhancement_availability == EnhancementAvailabilityState()
-
-
-def test_live_session_classifies_enhancement_availability_statuses(
-    tmp_path: Path,
-) -> None:
-    enhanced = _relationship_session_profile()
-    unenhanced = replace(_relationship_session_profile(), enhancement=None)
+    profile = _relationship_session_profile()
+    assert profile.enhancement is not None
     database = _relationship_session_database()
-    generic = SetProfile.generic(
+    unenhanced_profile = replace(profile, enhancement=None)
+    enhanced_session = LiveSession(
+        log_path=tmp_path / "enhanced.log",
+        app_dir=tmp_path / "enhanced-app",
+        card_database=database,
+        set_profile=profile,
+    )
+    unenhanced_session = LiveSession(
+        log_path=tmp_path / "unenhanced.log",
+        app_dir=tmp_path / "unenhanced-app",
+        card_database=database,
+        set_profile=unenhanced_profile,
+    )
+    event = PackOfferedEvent(
+        event_name=CONTEXT_EVENT_NAME,
         set_code="TST",
-        event_format=QUICK_DRAFT_FORMAT,
+        pack_number=CONTEXT_PACK_NUMBER,
+        pick_number=CONTEXT_PICK_NUMBER,
+        offered_grp_ids=(602, 605),
+        pool_grp_ids=(601,),
+        account_id=None,
     )
+    enhanced_session._consume_event(event=event, state=None)
+    unenhanced_session._consume_event(event=event, state=None)
 
-    available = LiveSession(
-        log_path=tmp_path / "one.log",
-        app_dir=tmp_path / "app",
-        card_database=database,
-        ai_enhanced_suggestions_enabled=True,
-        set_profile=enhanced,
-    )
-    assert available.snapshot.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable in production for TST: "
-                "legacy relationship scoring is disabled."
-            ),
-        )
-    )
+    enhanced_snapshot = enhanced_session.snapshot
+    unenhanced_snapshot = unenhanced_session.snapshot
+    enhanced_pack = enhanced_snapshot.current_scored_pack
+    unenhanced_pack = unenhanced_snapshot.current_scored_pack
+    assert enhanced_pack is not None
+    assert unenhanced_pack is not None
 
-    not_enhanced = LiveSession(
-        log_path=tmp_path / "two.log",
-        app_dir=tmp_path / "app",
-        card_database=database,
-        set_profile=unenhanced,
+    assert tuple(
+        (row.card.grp_id, row.score)
+        for row in enhanced_snapshot.recommendations.cards
+    ) == tuple(
+        (row.card.grp_id, row.score)
+        for row in unenhanced_snapshot.recommendations.cards
     )
-    assert not_enhanced.snapshot.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable for TST: "
-                "profile is not AI-enhanced."
-            ),
-        )
+    assert tuple(
+        (row.card.grp_id, row.raw_score)
+        for row in sorted(enhanced_pack.cards, key=lambda card: card.card.grp_id)
+    ) == tuple(
+        (row.card.grp_id, row.raw_score)
+        for row in sorted(unenhanced_pack.cards, key=lambda card: card.card.grp_id)
     )
-
-    incompatible = LiveSession(
-        log_path=tmp_path / "three.log",
-        app_dir=tmp_path / "app",
-        card_database=CardDatabase(cards={}),
-        set_profile=enhanced,
+    assert enhanced_pack.role_ledger.relationship_support == ()
+    assert unenhanced_pack.role_ledger.relationship_support == ()
+    package_payoff = next(
+        row for row in enhanced_pack.cards if row.card.grp_id == 605
     )
-    assert incompatible.snapshot.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.INCOMPATIBLE,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable for TST: "
-                "profile enhancement is invalid or incompatible."
-            ),
-        )
-    )
-
-    unavailable = LiveSession(
-        log_path=tmp_path / "four.log",
-        app_dir=tmp_path / "app",
-        card_database=database,
-        set_profile=generic,
-    )
-    assert unavailable.snapshot.enhancement_availability == (
-        EnhancementAvailabilityState(
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable for TST: "
-                "no usable set profile."
-            ),
-        )
-    )
-
-    no_profile = LiveSession(
-        log_path=tmp_path / "five.log",
-        app_dir=tmp_path / "app",
-        card_database=database,
-    )
-    assert no_profile.snapshot.enhancement_availability == (
-        EnhancementAvailabilityState()
-    )
-
-
-def test_live_session_enhancement_preference_survives_profile_change(
-    tmp_path: Path,
-) -> None:
-    enhanced = _relationship_session_profile()
-    unenhanced = replace(_relationship_session_profile(), enhancement=None)
-    database = _relationship_session_database()
-    session = LiveSession(
-        log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        card_database=database,
-        ai_enhanced_suggestions_enabled=True,
-        set_profile=enhanced,
-    )
-
-    disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
-    assert disabled.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable in production for TST: "
-                "legacy relationship scoring is disabled."
-            ),
-        )
-    )
-
-    session._set_profile = unenhanced
-    rejected = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
-    assert rejected.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable for TST: "
-                "profile is not AI-enhanced."
-            ),
-        )
-    )
-
-    session._set_profile = enhanced
-    re_disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
-    assert re_disabled.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable in production for TST: "
-                "legacy relationship scoring is disabled."
-            ),
-        )
-    )
-    restored = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
-    assert restored.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable in production for TST: "
-                "legacy relationship scoring is disabled."
-            ),
-        )
-    )
-
-
-def test_live_session_enable_command_reports_incompatible_enhancement(
-    tmp_path: Path,
-) -> None:
-    profile = _relationship_session_profile()
-    database = _relationship_session_database()
-    stale_database = replace(
-        database,
-        cards={
-            **database.cards,
-            601: replace(
-                database.cards[601],
-                oracle_text="Pinned source text no longer matches this database.",
-            ),
-        },
-    )
-    session = LiveSession(
-        log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        card_database=stale_database,
-        set_profile=profile,
-    )
-    session._consume_event(
-        event=PackOfferedEvent(
-            event_name=CONTEXT_EVENT_NAME,
-            set_code="TST",
-            pack_number=CONTEXT_PACK_NUMBER,
-            pick_number=CONTEXT_PICK_NUMBER,
-            offered_grp_ids=(602,),
-            pool_grp_ids=(601,),
-            account_id=None,
-        ),
-        state=None,
-    )
-    assert session.snapshot.enhancement_availability.status is (
-        EnhancementAvailabilityStatus.INCOMPATIBLE
-    )
-
-    disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
-    assert disabled.enhancement_availability.status is (
-        EnhancementAvailabilityStatus.INCOMPATIBLE
-    )
-
-    enabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
-
-    assert enabled.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.INCOMPATIBLE,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable for TST: "
-                "profile enhancement is invalid or incompatible."
-            ),
-        )
-    )
-    assert enabled.enhancement_availability.enabled is False
-    assert enabled.current_scored_pack is not None
-    assert enabled.current_scored_pack.role_ledger.relationship_support == ()
-
-
-def test_live_session_enhancement_toggle_cannot_enable_relationship_scoring(
-    tmp_path: Path,
-) -> None:
-    profile = _relationship_session_profile()
-    database = _relationship_session_database()
-    session = LiveSession(
-        log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        card_database=database,
-        ai_enhanced_suggestions_enabled=True,
-        set_profile=profile,
-    )
-    source = database.cards[601]
-    target = database.cards[602]
-    package_payoff = database.cards[605]
-    session._consume_event(
-        event=PackOfferedEvent(
-            event_name=CONTEXT_EVENT_NAME,
-            set_code="TST",
-            pack_number=CONTEXT_PACK_NUMBER,
-            pick_number=CONTEXT_PICK_NUMBER,
-            offered_grp_ids=(target.grp_id, package_payoff.grp_id),
-            pool_grp_ids=(source.grp_id,),
-            account_id=None,
-        ),
-        state=None,
-    )
-
-    enabled = session.snapshot
-    enabled_pack = enabled.current_scored_pack
-    assert enabled.enhancement_availability.enabled is False
-    assert enabled.enhancement_availability.status is (
-        EnhancementAvailabilityStatus.POLICY_DISABLED
-    )
-    enabled_recommendations = {
-        card.card.grp_id: card for card in enabled.recommendations.cards
-    }
-    assert enabled_recommendations[target.grp_id].relationship_advice is None
-    assert enabled_recommendations[target.grp_id].relationship_advice_enabled is False
-    assert enabled_recommendations[package_payoff.grp_id].relationship_advice is None
-    assert enabled_recommendations[package_payoff.grp_id].relationship_advice_enabled is False
-    assert enabled_pack is not None
-    assert enabled_pack.role_ledger.relationship_support == ()
-    enabled_cards = {card.card.grp_id: card for card in enabled_pack.cards}
-    assert enabled_cards[package_payoff.grp_id].contextual_evidence
-    enabled_scores = {
-        card.card.grp_id: card.raw_score for card in enabled_pack.cards
-    }
-
-    disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
-    assert disabled.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable in production for TST: "
-                "legacy relationship scoring is disabled."
-            ),
-        )
-    )
-    assert disabled.enhancement_advice_message == (
-        "AI-enhanced suggestions unavailable in production for TST: "
-        "legacy relationship scoring is disabled."
-    )
-    assert enabled.contextual_evidence != ContextualEvidenceState()
-    assert disabled.contextual_evidence == enabled.contextual_evidence
+    assert package_payoff.contextual_evidence
     assert all(
-        recommendation.relationship_advice_enabled is False
-        for recommendation in disabled.recommendations.cards
-    )
-    disabled_pack = disabled.current_scored_pack
-    assert disabled_pack is not None
-    assert disabled_pack.role_ledger.relationship_support == ()
-    disabled_cards = {card.card.grp_id: card for card in disabled_pack.cards}
-    assert disabled_cards[target.grp_id].contextual_evidence == ()
-    assert disabled_cards[package_payoff.grp_id].contextual_evidence == (
-        enabled_cards[package_payoff.grp_id].contextual_evidence
-    )
-    assert disabled_cards[package_payoff.grp_id].raw_score == (
-        enabled_cards[package_payoff.grp_id].raw_score
-    )
-    disabled_scores = {
-        card.card.grp_id: card.raw_score for card in disabled_pack.cards
-    }
-    assert disabled_scores == enabled_scores
-
-    restored = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
-
-    assert restored.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable in production for TST: "
-                "legacy relationship scoring is disabled."
-            ),
+        not hasattr(recommendation, attribute)
+        for snapshot in (enhanced_snapshot, unenhanced_snapshot)
+        for recommendation in snapshot.recommendations.cards
+        for attribute in (
+            "relationship_contributions",
+            "relationship_advice",
+            "relationship_advice_enabled",
         )
     )
-    assert restored.contextual_evidence == enabled.contextual_evidence
-    restored_pack = restored.current_scored_pack
-    assert restored_pack is not None
-    assert restored_pack.role_ledger.relationship_support == ()
-    restored_cards = {card.card.grp_id: card for card in restored_pack.cards}
-    assert restored_cards[target.grp_id].contextual_evidence == (
-        enabled_cards[target.grp_id].contextual_evidence
-    )
-    assert {
-        card.card.grp_id: card.raw_score for card in restored_pack.cards
-    } == enabled_scores
-
-    contextual_off = session.dispatch(
-        command=ChangeContextualScoring(enabled=False)
-    )
-    assert contextual_off.contextual_adjustments_enabled is False
-    assert contextual_off.enhancement_availability.enabled is False
-    assert contextual_off.enhancement_advice_message == (
-        "AI-enhanced suggestions unavailable in production for TST: "
-        "legacy relationship scoring is disabled."
-    )
-    assert contextual_off.current_scored_pack is not None
-    contextual_off_cards = {
-        card.card.grp_id: card
-        for card in contextual_off.current_scored_pack.cards
-    }
-    assert contextual_off_cards[target.grp_id].relationship_contributions == ()
-
-    both_off = session.dispatch(
-        command=ChangeAiEnhancedSuggestions(enabled=False)
-    )
-    assert both_off.contextual_adjustments_enabled is False
-    assert both_off.enhancement_availability.enabled is False
-    assert both_off.enhancement_advice_message == (
-        "AI-enhanced suggestions unavailable in production for TST: "
-        "legacy relationship scoring is disabled."
-    )
-
-    contextual_only = session.dispatch(
-        command=ChangeContextualScoring(enabled=True)
-    )
-    assert contextual_only.contextual_adjustments_enabled is True
-    assert contextual_only.enhancement_availability.enabled is False
-    assert contextual_only.enhancement_advice_message == (
-        "AI-enhanced suggestions unavailable in production for TST: "
-        "legacy relationship scoring is disabled."
-    )
-    assert contextual_only.current_scored_pack is not None
-    contextual_only_cards = {
-        card.card.grp_id: card
-        for card in contextual_only.current_scored_pack.cards
-    }
-    assert contextual_only_cards[target.grp_id].relationship_contributions == ()
-
-    both_restored = session.dispatch(
-        command=ChangeAiEnhancedSuggestions(enabled=True)
-    )
-    assert both_restored.contextual_adjustments_enabled is True
-    assert both_restored.enhancement_availability.enabled is False
-    assert both_restored.current_scored_pack is not None
-    assert {
-        card.card.grp_id: card.raw_score
-        for card in both_restored.current_scored_pack.cards
-    } == enabled_scores
 
 
-def test_live_session_enhancement_toggle_preserves_backtest_error_without_metadata(
-    tmp_path: Path,
-) -> None:
-    published: list[LiveSessionSnapshot] = []
-    session = LiveSession(
-        log_path=tmp_path / "Player.log",
-        app_dir=tmp_path / "app",
-        profile_client=_ProfileClientStub({"TST": None}),
-        snapshot_publisher=published.append,
-    )
-    session._consume_event(
-        event=PackOfferedEvent(
-            event_name=CONTEXT_EVENT_NAME,
-            set_code="TST",
-            pack_number=CONTEXT_PACK_NUMBER,
-            pick_number=CONTEXT_PICK_NUMBER,
-            offered_grp_ids=(104894,),
-            pool_grp_ids=(),
-            account_id=None,
-        ),
-        state=None,
-    )
-    assert session.snapshot.current_pack_event is not None
-    assert session.snapshot.card_data.phase is not DataLoadPhase.READY
-
-    failed = session.dispatch(
-        command=RequestBacktest(account_id="account-1", draft_id="draft-1")
-    )
-
-    assert failed.backtest is None
-    assert failed.errors[-1].operation is OperationKind.BACKTEST
-    assert failed.errors[-1].code == "backtest_failed"
-
-    toggled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
-
-    assert toggled.errors == failed.errors
-    assert toggled.backtest is None
-    assert toggled.enhancement_availability == (
-        EnhancementAvailabilityState(
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable for TST: "
-                "no usable set profile."
-            ),
-        )
-    )
-    assert toggled.enhancement_availability.enabled is False
-    assert published[-1] is toggled
-
-
-def test_live_session_policy_disabled_toggle_keeps_successful_backtest_scores(
+def test_live_session_default_gated_saved_draft_backtest_keeps_contextual_evidence(
     tmp_path: Path,
 ) -> None:
     profile = _relationship_session_profile()
-    app_dir = tmp_path / "app"
-    _save_relationship_backtest_draft(app_dir=app_dir)
-    session = LiveSession(
-        log_path=tmp_path / "Player.log",
-        app_dir=app_dir,
-        card_database=_relationship_session_database(),
-        set_profile=profile,
-    )
+    database = _relationship_session_database()
+    app_dirs = (tmp_path / "enhanced-app", tmp_path / "unenhanced-app")
+    for app_dir in app_dirs:
+        _save_relationship_backtest_draft(app_dir=app_dir)
 
-    initial = session.dispatch(
-        command=RequestBacktest(account_id="account-1", draft_id="draft-1")
-    )
-    assert initial.backtest is not None
-    initial_scores = tuple(
-        (
-            row.recommended.grp_id if row.recommended is not None else None,
-            row.recommended_score,
-            row.contextual_evidence,
+    backtests = []
+    for app_dir, set_profile in (
+        (app_dirs[0], profile),
+        (app_dirs[1], replace(profile, enhancement=None)),
+    ):
+        session = LiveSession(
+            log_path=tmp_path / f"{app_dir.name}.log",
+            app_dir=app_dir,
+            card_database=database,
+            set_profile=set_profile,
         )
-        for row in initial.backtest.rows
+        snapshot = session.dispatch(
+            command=RequestBacktest(account_id="account-1", draft_id="draft-1")
+        )
+        assert snapshot.backtest is not None
+        backtests.append(snapshot.backtest)
+
+    enhanced, unenhanced = backtests
+    assert all(
+        row.recommended is not None and row.recommended_score is not None
+        for row in enhanced.rows
     )
     assert all(
         row.recommended is not None and row.recommended_score is not None
-        for row in initial.backtest.rows
-    )
-
-    disabled = session.dispatch(
-        command=ChangeAiEnhancedSuggestions(enabled=False)
-    )
-    assert disabled.backtest == initial.backtest
-    assert disabled.enhancement_availability.status is (
-        EnhancementAvailabilityStatus.POLICY_DISABLED
+        for row in unenhanced.rows
     )
     assert tuple(
-        (
-            row.recommended.grp_id if row.recommended is not None else None,
-            row.recommended_score,
-            row.contextual_evidence,
-        )
-        for row in disabled.backtest.rows
-    ) == initial_scores
-
-    enabled = session.dispatch(
-        command=ChangeAiEnhancedSuggestions(enabled=True)
+        (row.recommended.grp_id, row.recommended_score)
+        for row in enhanced.rows
+        if row.recommended is not None
+    ) == tuple(
+        (row.recommended.grp_id, row.recommended_score)
+        for row in unenhanced.rows
+        if row.recommended is not None
     )
-    assert enabled.backtest == initial.backtest
-    assert tuple(
-        (
-            row.recommended.grp_id if row.recommended is not None else None,
-            row.recommended_score,
-            row.contextual_evidence,
-        )
-        for row in enabled.backtest.rows
-    ) == initial_scores
+    assert tuple(row.contextual_evidence for row in enhanced.rows) == tuple(
+        row.contextual_evidence for row in unenhanced.rows
+    )
+    assert enhanced.rows[2].contextual_evidence
 
 
 def test_live_session_profile_refresh_replacement_keeps_disabled_backtest(
@@ -1972,12 +1602,11 @@ def test_live_session_profile_refresh_replacement_keeps_disabled_backtest(
     )
     assert session.snapshot.current_scored_pack is not None
     assert session.snapshot.current_scored_pack.role_ledger.relationship_support == ()
-    assert session.snapshot.enhancement_availability.enabled is False
     compared = session.dispatch(
         command=RequestBacktest(account_id="account-1", draft_id="draft-1")
     )
     assert compared.backtest is not None
-    assert compared.backtest.compared_count == 2
+    assert compared.backtest.compared_count == 3
     request = session.profile_refresh_request()
     assert request is not None
     published: list[LiveSessionSnapshot] = []
@@ -1995,16 +1624,6 @@ def test_live_session_profile_refresh_replacement_keeps_disabled_backtest(
     replacement = published[0]
     assert replacement.backtest == compared.backtest
     assert replacement.progress is None
-    assert replacement.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
-            set_code="TST",
-            message=(
-                "AI-enhanced suggestions unavailable for TST: "
-                "profile is not AI-enhanced."
-            ),
-        )
-    )
     assert replacement.set_profile.profile_version == unenhanced.profile_version
     assert replacement.current_scored_pack is not None
     assert replacement.current_scored_pack.role_ledger.relationship_support == ()
@@ -2053,7 +1672,6 @@ def test_live_session_profile_refresh_same_capability_keeps_backtest(
 
     adopted = session.snapshot
     assert adopted.set_profile.profile_version == bumped.profile_version
-    assert adopted.enhancement_availability.enabled is False
     assert adopted.backtest == compared.backtest
     assert adopted.current_scored_pack is not None
     assert adopted.current_scored_pack.role_ledger.relationship_support == ()

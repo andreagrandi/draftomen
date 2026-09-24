@@ -5,9 +5,10 @@ import pytest
 from draftomen.mock_session import CARDS, MOCK_SCENARIOS, MockLiveSession
 from draftomen.session import (
     ApplicationPhase,
+    AugmentationStatus,
+    ChangeAugmentation,
     ChangeRanking,
     ChangeContextualScoring,
-    ChangeAiEnhancedSuggestions,
     ChooseRecommendation,
     ContextualEvidenceStatus,
     DataLoadPhase,
@@ -19,8 +20,6 @@ from draftomen.session import (
     RequestRatingsDownload,
     RetryError,
     SetProfileState,
-    EnhancementAvailabilityState,
-    EnhancementAvailabilityStatus,
 )
 
 
@@ -45,6 +44,24 @@ def test_ready_mock_snapshot_covers_every_desktop_data_surface() -> None:
     assert snapshot.recommendations.selected_grp_id is not None
     assert snapshot.recommendations.cards[0].letter_grade == "A-"
     assert snapshot.recommendations.cards[0].explanation
+    assert snapshot.contextual_adjustments_enabled is True
+    assert snapshot.contextual_evidence.status is ContextualEvidenceStatus.EXACT
+    assert snapshot.contextual_evidence.source_formats == ("quickdraft",)
+    assert all(
+        recommendation.explanation
+        for recommendation in snapshot.recommendations.cards
+    )
+    assert not hasattr(snapshot, "enhancement_availability")
+    assert not hasattr(snapshot, "enhancement_advice_message")
+    assert all(
+        not hasattr(recommendation, field)
+        for recommendation in snapshot.recommendations.cards
+        for field in (
+            "relationship_contributions",
+            "relationship_advice",
+            "relationship_advice_enabled",
+        )
+    )
     assert snapshot.recommendations.confidence_summary is None
     assert snapshot.pool.total_cards == 24
     assert snapshot.pool.current_colors == ("W", "G")
@@ -215,175 +232,18 @@ def test_mock_provider_rejects_unknown_scenario() -> None:
         session.select_scenario(scenario="unknown")  # type: ignore[arg-type]
 
 
-def test_mock_enhancement_scenarios_replace_ready_availability() -> None:
-    session = MockLiveSession()
-    assert session.snapshot.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.AVAILABLE,
-            set_code="OTJ",
-            enabled=True,
-            message="AI-enhanced suggestions available for OTJ.",
-        )
-    )
-
-    not_enhanced = session.select_scenario(scenario="not_enhanced")
-    assert not_enhanced.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
-            set_code="OTJ",
-            message=(
-                "AI-enhanced suggestions unavailable for OTJ: "
-                "profile is not AI-enhanced."
-            ),
-        )
-    )
-
-    incompatible = session.select_scenario(scenario="enhancement_incompatible")
-    assert incompatible.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.INCOMPATIBLE,
-            set_code="OTJ",
-            message=(
-                "AI-enhanced suggestions unavailable for OTJ: "
-                "profile enhancement is invalid or incompatible."
-            ),
-        )
-    )
-
-    unavailable = session.select_scenario(scenario="empty")
-    assert unavailable.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.UNAVAILABLE,
-            enabled=False,
-        )
-    )
-
-
-def test_mock_enhancement_preference_survives_scenario_and_snapshot_replacements() -> None:
-    session = MockLiveSession()
-    disabled_state = EnhancementAvailabilityState(
-        status=EnhancementAvailabilityStatus.DISABLED,
-        set_code="OTJ",
-        message="AI-enhanced suggestions disabled for OTJ.",
-    )
-    disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
-    assert disabled.enhancement_availability == disabled_state
-
-    loading = session.select_scenario(scenario="loading")
-    assert loading.enhancement_availability == disabled_state
-
-    ready = session.select_scenario(scenario="ready")
-    assert ready.enhancement_availability == disabled_state
-
-    progress = session.dispatch(command=RequestRatingsDownload(set_code="OTJ"))
-    assert progress.enhancement_availability == disabled_state
-
-    session.select_scenario(scenario="error")
-    error_id = session.snapshot.errors[0].error_id
-    retried = session.dispatch(command=RetryError(error_id=error_id))
-    assert session.scenario == "ready"
-    assert retried.enhancement_availability == disabled_state
-
-    unavailable = session.select_scenario(scenario="empty")
-    assert (
-        unavailable.enhancement_availability.status
-        is EnhancementAvailabilityStatus.UNAVAILABLE
-    )
-    assert unavailable.enhancement_availability.enabled is False
-    not_enhanced = session.select_scenario(scenario="not_enhanced")
-    assert (
-        not_enhanced.enhancement_availability.status
-        is EnhancementAvailabilityStatus.NOT_ENHANCED
-    )
-    assert not_enhanced.enhancement_availability.enabled is False
-    incompatible = session.select_scenario(scenario="enhancement_incompatible")
-    assert (
-        incompatible.enhancement_availability.status
-        is EnhancementAvailabilityStatus.INCOMPATIBLE
-    )
-    assert incompatible.enhancement_availability.enabled is False
-
-
-def test_mock_enhancement_preference_toggles_only_available_scenarios() -> None:
+def test_mock_provider_keeps_augmentation_unavailable_without_model() -> None:
     session = MockLiveSession()
 
-    disabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=False))
-    assert disabled.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.DISABLED,
-            set_code="OTJ",
-            message="AI-enhanced suggestions disabled for OTJ.",
-        )
-    )
-    restored = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
-    assert restored.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.AVAILABLE,
-            set_code="OTJ",
-            enabled=True,
-            message="AI-enhanced suggestions available for OTJ.",
-        )
-    )
+    snapshot = session.dispatch(command=ChangeAugmentation(enabled=True))
 
-    session.select_scenario(scenario="not_enhanced")
-    rejected = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
-    assert rejected.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
-            set_code="OTJ",
-            message=(
-                "AI-enhanced suggestions unavailable for OTJ: "
-                "profile is not AI-enhanced."
-            ),
-        )
-    )
-    still_rejected = session.dispatch(
-        command=ChangeAiEnhancedSuggestions(enabled=False)
-    )
-    assert still_rejected.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.NOT_ENHANCED,
-            set_code="OTJ",
-            message=(
-                "AI-enhanced suggestions unavailable for OTJ: "
-                "profile is not AI-enhanced."
-            ),
-        )
-    )
+    assert snapshot.augmentation.status is AugmentationStatus.UNAVAILABLE
+    assert snapshot.augmentation.enabled is False
+    assert snapshot.augmentation_message == "Augmented Intelligence is unavailable."
 
-    ready = session.select_scenario(scenario="ready")
-    assert ready.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.DISABLED,
-            set_code="OTJ",
-            message="AI-enhanced suggestions disabled for OTJ.",
-        )
-    )
-    reenabled = session.dispatch(command=ChangeAiEnhancedSuggestions(enabled=True))
-    assert reenabled.enhancement_availability == (
-        EnhancementAvailabilityState(
-            status=EnhancementAvailabilityStatus.AVAILABLE,
-            set_code="OTJ",
-            enabled=True,
-            message="AI-enhanced suggestions available for OTJ.",
-        )
-    )
 
-    not_enhanced = session.select_scenario(scenario="not_enhanced")
-    assert (
-        not_enhanced.enhancement_availability.status
-        is EnhancementAvailabilityStatus.NOT_ENHANCED
-    )
-    assert not_enhanced.enhancement_availability.enabled is False
-    incompatible = session.select_scenario(scenario="enhancement_incompatible")
-    assert (
-        incompatible.enhancement_availability.status
-        is EnhancementAvailabilityStatus.INCOMPATIBLE
-    )
-    assert incompatible.enhancement_availability.enabled is False
-    unavailable = session.select_scenario(scenario="empty")
-    assert (
-        unavailable.enhancement_availability.status
-        is EnhancementAvailabilityStatus.UNAVAILABLE
-    )
-    assert unavailable.enhancement_availability.enabled is False
+def test_mock_provider_rejects_unsupported_command() -> None:
+    session = MockLiveSession()
+
+    with pytest.raises(ValueError, match="Unsupported mock command"):
+        session.dispatch(command=object())  # type: ignore[arg-type]

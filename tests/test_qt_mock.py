@@ -27,7 +27,30 @@ def test_qt_translation_publishes_plain_values_without_domain_payloads() -> None
         if entry.card.mana_value is not None
     ) / sum(entry.quantity for entry in build.spells)
     assert values["status"]["phase"] == "drafting"
-    assert values["recommendations"]["cards"][0]["card"]["name"]
+    recommendation_rows = values["recommendations"]["cards"]
+    assert recommendation_rows[0]["card"]["name"]
+    assert "enhancement_availability" not in values
+    assert "enhancement_advice_message" not in values
+    for recommendation in recommendation_rows:
+        assert "relationship_contributions" not in recommendation
+        assert "relationship_advice" not in recommendation
+        assert "relationship_advice_enabled" not in recommendation
+    recommendation = recommendation_rows[0]
+    assert values["contextual_adjustments_enabled"] is True
+    assert values["contextual_evidence"]["status"] == "exact"
+    assert values["contextual_evidence"]["message"] == (
+        "Contextual · semantic + QuickDraft evidence"
+    )
+    assert "contextual_breakdown" in recommendation
+    assert "contextual_evidence" in recommendation
+    assert "basic_score" in recommendation
+    assert "augmentation_delta" in recommendation
+    assert values["augmentation"] == {
+        "status": "unavailable",
+        "set_code": None,
+        "enabled": False,
+    }
+    assert values["augmentation_message"] == "Augmented Intelligence is unavailable."
     assert values["build"]["average_mana_value"] == pytest.approx(expected_average)
     assert values["set_profile"]["maturity"] == "mature"
     assert values["set_profile"]["refresh_outcome"] == "unchanged"

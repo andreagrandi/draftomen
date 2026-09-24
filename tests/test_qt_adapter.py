@@ -67,7 +67,6 @@ from draftomen.session import (
     CardImageRequest,
     CardImageState,
     CardView,
-    ChangeAiEnhancedSuggestions,
     ChangeAugmentation,
     ChangeContextualScoring,
     ChangeRanking,
@@ -76,8 +75,6 @@ from draftomen.session import (
     ChooseRecommendation,
     DataLoadPhase,
     DismissError,
-    EnhancementAvailabilityState,
-    EnhancementAvailabilityStatus,
     FocusBuildCard,
     LiveSession,
     LiveSessionCommand,
@@ -780,27 +777,6 @@ def test_session_adapter_translates_set_profile_to_plain_qml_values() -> None:
     assert not isinstance(profile_state, SetProfileState)
 
 
-def test_session_adapter_translates_enhancement_availability_to_plain_qml_values() -> None:
-    adapter = SessionAdapter(
-        snapshot=LiveSessionSnapshot(
-            enhancement_availability=EnhancementAvailabilityState(
-                status=EnhancementAvailabilityStatus.AVAILABLE,
-                set_code="OTJ",
-                enabled=True,
-                message="AI-enhanced suggestions available for OTJ.",
-            )
-        )
-    )
-
-    availability = adapter.state["enhancement_availability"]
-    assert availability == {
-        "status": "available",
-        "set_code": "OTJ",
-        "enabled": True,
-        "message": "AI-enhanced suggestions available for OTJ.",
-    }
-    assert not isinstance(availability, EnhancementAvailabilityState)
-    assert not isinstance(availability["status"], EnhancementAvailabilityStatus)
 
 
 class _RecordingSessionAdapter(SessionAdapter):
@@ -4527,10 +4503,6 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
             ],
             description="the Arena preference commands",
         )
-        assert not any(
-            isinstance(command, ChangeAiEnhancedSuggestions)
-            for command in arena.commands
-        )
         assert arena.snapshot.recommendations.splash_enabled is False
         assert arena.snapshot.contextual_adjustments_enabled is False
 
@@ -4546,7 +4518,6 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
             "splash_enabled": False,
             "contextual_adjustments_enabled": False,
         }
-        assert "ai_enhanced_suggestions_enabled" not in factory.create_calls[0]
         assert adapter.state["recommendations"]["splash_enabled"] is False
         assert adapter.state["contextual_adjustments_enabled"] is False
 
@@ -4583,10 +4554,6 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
             for command in arena.commands
             if isinstance(command, ChangeContextualScoring)
         ] == [ChangeContextualScoring(enabled=False)]
-        assert not any(
-            isinstance(command, ChangeAiEnhancedSuggestions)
-            for command in arena.commands
-        )
         assert source.close_calls == 1
     finally:
         adapter.shutdown()
@@ -4839,10 +4806,6 @@ def test_live_adapter_replays_contextual_preference_on_leave(
             ],
             description="the contextual preference inside the simulated draft",
         )
-        assert not any(
-            isinstance(command, ChangeAiEnhancedSuggestions)
-            for command in simulated_session.commands
-        )
         assert arena.commands == []
 
         adapter.leaveTestDraft()
@@ -4858,10 +4821,6 @@ def test_live_adapter_replays_contextual_preference_on_leave(
             == [ChangeContextualScoring(enabled=False)]
             and ChangeAugmentation(enabled=False) in arena.commands,
             description="the replayed Arena preferences",
-        )
-        assert not any(
-            isinstance(command, ChangeAiEnhancedSuggestions)
-            for command in arena.commands
         )
         assert adapter.state["test_draft"]["active"] is False
         assert adapter.state["contextual_adjustments_enabled"] is False

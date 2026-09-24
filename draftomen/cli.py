@@ -1807,10 +1807,6 @@ def _format_test_draft_trace(*, result: TestDraftRunResult) -> str:
             f"pick {step.before.offer.pick_number + 1}: "
             f"{accepted.card.name} (grpId {step.grp_id})"
         )
-        if accepted.relationship_contributions:
-            advice = accepted.relationship_advice
-            if advice:
-                lines.append(f"  AI-enhanced advice: {advice}")
     return "".join(f"{line}\n" for line in lines)
 
 
