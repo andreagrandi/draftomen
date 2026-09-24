@@ -1424,6 +1424,9 @@ def test_reusable_test_draft_runtime_matches_headless_auto_contract(
     assert runtime.session.log_path is None
     assert runtime.simulation_app_dir == sources.simulation_dir
     assert runtime.simulation_app_dir != sources.normal_app_dir
+    assert runtime.profile_client.profile_path(
+        "HOB", "QuickDraft"
+    ).is_relative_to(sources.normal_app_dir)
 
     result = runtime.controller.run_auto()
 

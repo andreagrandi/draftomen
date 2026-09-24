@@ -4935,6 +4935,55 @@ def test_live_session_forced_profile_failure_is_recoverable_and_retry_is_fresh(
     assert recovered.current_scored_pack is initial.current_scored_pack
 
 
+def test_live_session_forced_refresh_without_hosted_profile_names_the_reason(
+    tmp_path: Path,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({}),
+    )
+    initial = session.process_lines(
+        lines=(
+            _profiled_pack_line(
+                pool_before_pick=_fixture_pool_before_pick(
+                    pack_number=CONTEXT_PACK_NUMBER,
+                    pick_number=CONTEXT_PICK_NUMBER,
+                )
+            ),
+        )
+    )
+    session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    request = session.profile_refresh_request()
+    assert request is not None
+
+    session.complete_profile_refresh(
+        request=request,
+        result=ProfileRefreshResult(
+            profile=SetProfile.generic(set_code="TST", event_format="QuickDraft"),
+            outcome=ProfileRefreshOutcome.MISSING,
+        ),
+    )
+
+    missing = session.snapshot
+    assert missing.errors == (
+        SessionError(
+            error_id="ratings:TST",
+            code="ratings_unavailable",
+            message=(
+                "17Lands ratings failed for TST: "
+                "no hosted profile exists for this set."
+            ),
+            recoverable=True,
+            operation=OperationKind.RATINGS,
+        ),
+    )
+    assert missing.ratings == initial.ratings
+    assert missing.recommendations == initial.recommendations
+    assert missing.current_scored_pack is initial.current_scored_pack
+
+
 def test_live_session_automatic_profile_success_clears_stale_forced_error(
     tmp_path: Path,
 ) -> None:

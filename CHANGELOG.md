@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Make "Refresh hosted ratings" work during a Mocked Draft. The refresh now
+  uses the simulated set's profile client and updates only the Mocked Draft
+  session, so the Arena profile is never touched. If no hosted profile exists,
+  the ratings banner says so, and fallback scores stay active. (#687)
 - Remove the "DO recommendation" comparison sentence and the repeated
   "Pack 1, pick 6." status line from the desktop Live Draft header in wide
   and narrow layouts. The pack heading, ranked cards, and controls stay. (#655)
