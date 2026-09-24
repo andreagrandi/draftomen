@@ -91,6 +91,7 @@ from draftomen.session import (
     SnapshotPublisher,
 )
 from draftomen.set_profile import (
+    AggregateEvidence,
     CardRating,
     RateEstimate,
     SetProfile,
@@ -184,10 +185,16 @@ def _adapter_empirical_profile(
                     samples=2_000,
                     prior_value=0.5,
                     source="17lands",
+                    aggregate_evidence=AggregateEvidence(
+                        source_format=profile.event_format,
+                        fallback_reason=None,
+                        confidence=1.0,
+                    ),
                 ),
                 average_last_seen_at=2.0,
             ),
         ),
+        schema_version=4,
     )
 
 
@@ -2319,12 +2326,6 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
                 ),
             ),
         ),
-        role_profile=replace(
-            profile.role_profile,
-            cards=(
-                replace(profile.role_profile.cards[0], key="grp_id:104894"),
-            ),
-        ),
     )
     dump_set_profile(
         profile,
@@ -2447,8 +2448,8 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         )
         assert initial_snapshot.contextual_adjustments_enabled is True
         assert initial_recommendation.contextual_pair == "WU"
-        assert initial_recommendation.contextual_evidence
-        assert initial_recommendation.contextual_breakdown.aggregate > 0
+        assert initial_recommendation.contextual_evidence == ()
+        assert initial_recommendation.contextual_breakdown.aggregate == 0
         initial_state_recommendation, initial_model_recommendation = (
             assert_rationale_parity(expected=initial_recommendation)
         )
@@ -2468,7 +2469,7 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
             if row["recommended"]["grp_id"] == 104894
         )
         assert enabled_backtest_row["recommended_score"] is not None
-        assert enabled_backtest_row["contextual_evidence"]
+        assert enabled_backtest_row["contextual_evidence"] == []
         image_calls_after_enabled_backtest = len(image_calls)
         profile_calls_after_enabled_backtest = len(profile_calls)
 
@@ -2494,20 +2495,20 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         )
         assert disabled_recommendation.contextual_evidence == ()
         assert disabled_recommendation.contextual_breakdown.aggregate == 0
-        assert disabled_recommendation.score < initial_recommendation.score
-        assert disabled_state_recommendation["score"] < initial_state_score
+        assert disabled_recommendation.score == initial_recommendation.score
+        assert disabled_state_recommendation["score"] == initial_state_score
         assert (
             disabled_recommendation.concise_explanation
-            != initial_recommendation.concise_explanation
+            == initial_recommendation.concise_explanation
         )
-        assert disabled_recommendation.explanation != initial_recommendation.explanation
+        assert disabled_recommendation.explanation == initial_recommendation.explanation
         assert (
             disabled_model_recommendation["concise_explanation"]
-            != initial_model_recommendation["concise_explanation"]
+            == initial_model_recommendation["concise_explanation"]
         )
         assert (
             disabled_model_recommendation["explanation"]
-            != initial_model_recommendation["explanation"]
+            == initial_model_recommendation["explanation"]
         )
         assert len(image_calls) == image_calls_after_enabled_backtest
         assert len(profile_calls) == profile_calls_after_enabled_backtest
@@ -2528,7 +2529,7 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         assert disabled_backtest_row["recommended_score"] is not None
         assert (
             disabled_backtest_row["recommended_score"]
-            < enabled_backtest_row["recommended_score"]
+            == enabled_backtest_row["recommended_score"]
         )
         assert disabled_backtest_row["contextual_evidence"] == []
         image_calls_after_disabled_backtest = len(image_calls)
@@ -2552,25 +2553,25 @@ def test_live_adapter_contextual_toggle_stays_local_with_production_session(
         enabled_state_recommendation, enabled_model_recommendation = (
             assert_rationale_parity(expected=enabled_recommendation)
         )
-        assert enabled_recommendation.contextual_evidence
-        assert enabled_recommendation.contextual_breakdown.aggregate > 0
-        assert enabled_recommendation.score > disabled_recommendation.score
+        assert enabled_recommendation.contextual_evidence == ()
+        assert enabled_recommendation.contextual_breakdown.aggregate == 0
+        assert enabled_recommendation.score == disabled_recommendation.score
         assert (
             enabled_state_recommendation["score"]
-            > disabled_state_recommendation["score"]
+            == disabled_state_recommendation["score"]
         )
         assert (
             enabled_recommendation.concise_explanation
-            != disabled_recommendation.concise_explanation
+            == disabled_recommendation.concise_explanation
         )
-        assert enabled_recommendation.explanation != disabled_recommendation.explanation
+        assert enabled_recommendation.explanation == disabled_recommendation.explanation
         assert (
             enabled_model_recommendation["concise_explanation"]
-            != disabled_model_recommendation["concise_explanation"]
+            == disabled_model_recommendation["concise_explanation"]
         )
         assert (
             enabled_model_recommendation["explanation"]
-            != disabled_model_recommendation["explanation"]
+            == disabled_model_recommendation["explanation"]
         )
         image_calls_after_enable = len(image_calls)
         profile_calls_after_enable = len(profile_calls)

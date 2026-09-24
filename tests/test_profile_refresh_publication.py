@@ -11,9 +11,7 @@ from typing import Any
 
 import pytest
 
-from draftomen.carddb import build_card_database_from_bulk_file
 from draftomen.profile_manifest import ProfileManifest
-from draftomen.semantic_roles import Role
 from draftomen.set_profile import SetProfile
 from draftomen.seventeen import SeventeenLandsError
 import scripts.profile_refresh_publication as publication
@@ -107,12 +105,10 @@ def test_prepare_publication_stages_real_producer_delta(
     assert artifact.gzip_sha256 == hashlib.sha256(object_bytes).hexdigest()
     assert artifact.profile_bytes == len(profile_bytes)
     assert artifact.profile_sha256 == hashlib.sha256(profile_bytes).hexdigest()
-    profile = SetProfile.from_json(json.loads(profile_bytes))
-    assert profile.roles_are_compatible
-    _, source_bulk = _source(tmp_path)
-    metadata = build_card_database_from_bulk_file(path=source_bulk)
-    resolution = profile.resolve_roles(metadata.cards[1002])
-    assert any(assignment.role is Role.DRAW for assignment in resolution.assignments)
+    profile_json = json.loads(profile_bytes)
+    profile = SetProfile.from_json(profile_json)
+    assert profile.schema_version == 4
+    assert {"role_profile", "enhancement", "enhancement_status"}.isdisjoint(profile_json)
     assert any(rating.gih_win_rate.samples > 0 for rating in profile.card_ratings)
     pair = profile.pair("WU")
     assert pair is not None

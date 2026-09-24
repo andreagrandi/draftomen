@@ -430,7 +430,7 @@ def _ready_snapshot() -> LiveSessionSnapshot:
         contextual_evidence=ContextualEvidenceState(
             status=ContextualEvidenceStatus.EXACT,
             source_formats=("quickdraft",),
-            message="Contextual · semantic + QuickDraft evidence",
+            message="Contextual · QuickDraft evidence",
         ),
         recommendations=RecommendationState(
             ranking_mode="score",

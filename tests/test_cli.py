@@ -37,21 +37,7 @@ from draftomen.profile_input_cache import ProfileInputCache
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.profile_refresh_execution import load_staged_profile_build_bundle
 from draftomen.refresh_plan import LifecycleMetadata, PlannedEnvironment, RefreshPlan, write_refresh_plan
-from draftomen.semantic_enrichment import (
-    EnrichmentSources,
-    GuideSource,
-    SemanticEnrichmentArtifact,
-    card_source_sha256,
-    set_source_sha256,
-)
-from draftomen.semantic_enrichment_records import (
-    ArtifactReview,
-    CardSourcePin,
-    FindingStatus,
-    GuideEvidence,
-    GuideSourcePin,
-)
-from draftomen.semantic_roles import Role, resolve_card_roles
+from draftomen.semantic_enrichment_records import FindingStatus
 from draftomen.session import (
     BuildResult,
     CardView,
@@ -65,7 +51,7 @@ from draftomen.set_enrichment import (
     EnrichmentPhase,
     EnrichmentProgress,
 )
-from draftomen.set_enrichment_workflow import ANALYSIS_ERROR, NO_PUBLISHABLE_ERROR
+from draftomen.set_enrichment_workflow import ANALYSIS_ERROR
 from draftomen.set_profile import (
     SetProfile,
     dump_set_profile,
@@ -87,14 +73,6 @@ from draftomen.test_draft import (
 from draftomen.tui import DraftomenTuiApp
 from draftomen.watch import PlainLogWatcher
 
-from tests.test_profile_generation import (
-    TYPED_SOURCE_CARD_ID,
-    TYPED_TARGET_CARD_ID,
-    _enrichment_run,
-    _ratings,
-    _typed_database,
-    _typed_relationship,
-)
 
 
 SCRYFALL_BULK_SAMPLE_PATH = (
@@ -165,9 +143,8 @@ def test_tui_parser_uses_tui_command_name(
         ("execute-profile-refresh", "Acquire and stage"),
         ("generate-profile-refresh-batch", "Generate profiles"),
         ("export-set-data", "Export"),
-        ("enrich-set", "Freeze"),
+        ("enrich-set", "standalone"),
         ("build-augmented-set", "Acquire public Draft Data"),
-        ("republish-enrichment", "Recompile"),
         ("list-enrichment", "Report every local enrichment run"),
     ],
 )
@@ -187,6 +164,16 @@ def test_subcommands_are_registered_with_help_text(
     assert command in captured.out
     assert expected_help in captured.out
 
+
+def test_republish_enrichment_command_is_not_registered(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(args=["republish-enrichment"])
+
+    captured = capsys.readouterr()
+    assert error.value.code == 2
+    assert "invalid choice: 'republish-enrichment'" in captured.err
 
 def test_build_augmented_set_parser_requires_exactly_one_set() -> None:
     parser = build_parser()
@@ -2538,7 +2525,6 @@ def _run_generate_profile_cli(
     card_database_path: Path = PROFILE_GENERATION_FIXTURE_DIR / "card-database.json",
     ratings_path: Path | None = None,
     source_manifest_path: Path | None = None,
-    enrichment_path: Path | None = None,
     generated_at: str = PROFILE_GENERATION_AT,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -2564,8 +2550,6 @@ def _run_generate_profile_cli(
         command.extend(["--ratings-file", str(ratings_path)])
     if source_manifest_path is not None:
         command.extend(["--source-manifest", str(source_manifest_path)])
-    if enrichment_path is not None:
-        command.extend(["--enrichment", str(enrichment_path)])
     return subprocess.run(
         command,
         cwd=CLI_REPOSITORY_ROOT,
@@ -2746,141 +2730,35 @@ def test_generate_profile_cli_failure_preserves_last_valid_publication(
     assert manifest_path.read_bytes() == manifest_bytes
 
 
-def test_generate_profile_cli_uses_a_saved_enrichment_artifact_without_network_access(
-    tmp_path: Path,
+def test_generate_profile_cli_rejects_enrichment_option(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    database = _typed_database()
-    guide = GuideSource(
-        guide_id="tst-draftsim-guide",
-        url="https://draftsim.com/tst-limited-set-review/",
-        text="TST rewards going wide with support creatures.",
-        retrieved_at="2026-09-01T12:00:00Z",
-    )
-    sources = EnrichmentSources(
-        set_code="TST",
-        cards=tuple(database.cards.values()),
-        guides=(guide,),
-    )
-    relationship = replace(
-        _typed_relationship(),
-        guide_evidence=(
-            GuideEvidence(guide_id=guide.guide_id, quote="rewards going wide"),
-        ),
-    )
-    artifact = SemanticEnrichmentArtifact(
-        set_code="TST",
-        set_source_id="tst-card-data-v1",
-        set_source_sha256=set_source_sha256(sources),
-        created_at="2026-09-01T12:02:00Z",
-        cards=tuple(
-            CardSourcePin(
-                card_id=card.grp_id,
-                oracle_id=card.oracle_id,
-                collector_number=card.collector_number,
-                sha256=card_source_sha256(card),
-            )
-            for card in sources.cards
-        ),
-        guides=(
-            GuideSourcePin(
-                guide_id=guide.guide_id,
-                url=guide.url,
-                sha256=guide.text_sha256,
-                retrieved_at=guide.retrieved_at,
-            ),
-        ),
-        runs=(_enrichment_run(),),
-        oracle_facts=(),
-        guide_claims=(),
-        relationships=(relationship,),
-        rejected_findings=(),
-        review=ArtifactReview(
-            state="confirmed",
-            reviewer_id="local-review",
-            reviewed_at="2026-09-01T14:00:00Z",
-        ),
-        confirmed_relationship_ids=(relationship.finding_id,),
-        sources=sources,
-    )
-
-    artifact_bytes = artifact.to_bytes()
-    artifact_path = (
-        tmp_path
-        / "run"
-        / "artifacts"
-        / f"{hashlib.sha256(artifact_bytes).hexdigest()}.json"
-    )
-    artifact_path.parent.mkdir(parents=True)
-    artifact_path.write_bytes(artifact_bytes)
-    guide_path = tmp_path / "run" / "sources" / "guide.json"
-    guide_path.parent.mkdir(parents=True)
-    guide_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "requested_url": "https://draftsim.com/tst-limited-set-review",
-                "guide_id": guide.guide_id,
-                "url": guide.url,
-                "text": guide.text,
-                "sha256": guide.text_sha256,
-                "retrieved_at": guide.retrieved_at,
-            }
-        ),
-        encoding="utf-8",
-    )
-    card_database_path = tmp_path / "cards.json"
-    card_database_path.write_text(json.dumps(database.to_json()), encoding="utf-8")
-
-    netblock = tmp_path / "netblock"
-    netblock.mkdir()
-    (netblock / "sitecustomize.py").write_text(
-        "import socket\n"
-        "\n"
-        "\n"
-        "def _fail(*args, **kwargs):\n"
-        '    raise RuntimeError("network access is forbidden in this test")\n'
-        "\n"
-        "\n"
-        "socket.socket.connect = _fail\n"
-        "socket.socket.connect_ex = _fail\n"
-        "socket.create_connection = _fail\n",
-        encoding="utf-8",
-    )
-
-    completed = _run_generate_profile_cli(
-        stage="early",
-        output_dir=tmp_path / "published",
-        card_database_path=card_database_path,
-        ratings_path=PROFILE_GENERATION_FIXTURE_DIR / "ratings.json",
-        enrichment_path=artifact_path,
-        env={**os.environ, "PYTHONPATH": str(netblock)},
-    )
-    _artifact_path, _manifest_path, published_bytes, _manifest_bytes = (
-        _assert_profile_cli_success(
-            completed=completed,
-            expected_input_count=3,
-            expected_stage="early",
+    with pytest.raises(SystemExit) as error:
+        main(
+            argv=[
+                "generate-profile",
+                "--set-code",
+                "TST",
+                "--format",
+                "quickdraft",
+                "--stage",
+                "early",
+                "--generated-at",
+                PROFILE_GENERATION_AT,
+                "--card-database-file",
+                "cards.json",
+                "--output-dir",
+                "profiles",
+                "--enrichment",
+                "enrichment.json",
+            ]
         )
-    )
 
-    profile = SetProfile.from_json(json.loads(gzip.decompress(published_bytes)))
-    assert profile.schema_version == 3
-    assert profile.role_profile is not None
-    assert profile.enhancement is not None
+    assert error.value.code == 2
     assert (
-        profile.enhancement.artifact_sha256
-        == hashlib.sha256(artifact.to_bytes()).hexdigest()
+        "unrecognized arguments: --enrichment enrichment.json"
+        in capsys.readouterr().err
     )
-    for card_id, role in (
-        (TYPED_SOURCE_CARD_ID, Role.TOKEN_MAKER),
-        (TYPED_TARGET_CARD_ID, Role.GO_WIDE_PAYOFF),
-    ):
-        resolved = resolve_card_roles(
-            database.cards[card_id],
-            profile=profile.role_profile,
-        )
-        assert resolved.source == "compiled_profile"
-        assert role in {assignment.role for assignment in resolved.assignments}
 
 
 @pytest.mark.parametrize(
@@ -4075,25 +3953,14 @@ def test_format_enrichment_review_renders_none_for_empty_inferred_section(
     assert "Inferred synergies\nnone\nUncertainty\n" in report
 
 
-def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
+def test_handle_enrich_set_confirm_reports_saved_artifact_and_reviewer_metadata(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
     analysis = _complete_enrichment_analysis(tmp_path)
     finalize_calls: dict[str, object] = {}
-    publication = SimpleNamespace(
-        artifact_path=tmp_path / "profile.json.gz",
-        manifest_path=tmp_path / "generation.json",
-        generation=SimpleNamespace(
-            report=SimpleNamespace(
-                profile_sha256="profile-sha",
-                gzip_sha256="gzip-sha",
-            )
-        ),
-    )
-    published_object = tmp_path / "website/public/profiles/objects/gzip-sha.json.gz"
-    published_manifest = tmp_path / "website/public/profiles/manifest.json"
+    artifact_path = tmp_path / "confirmed.json"
 
     monkeypatch.setattr(cli, "analyze_set_enrichment", lambda **kwargs: analysis)
     monkeypatch.setattr(cli, "_format_enrichment_review", lambda value: "")
@@ -4104,10 +3971,7 @@ def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
         return SimpleNamespace(
             decision=cli.EnrichmentReviewDecision.CONFIRM,
             artifact=SimpleNamespace(),
-            artifact_path=tmp_path / "confirmed.json",
-            publication=publication,
-            published_object_path=published_object,
-            published_manifest_path=published_manifest,
+            artifact_path=artifact_path,
         )
 
     monkeypatch.setattr(cli, "finalize_set_enrichment", finalize)
@@ -4118,17 +3982,14 @@ def test_handle_enrich_set_confirm_reports_publication_and_reviewer_metadata(
     assert exit_code == 0
     assert captured.out == (
         "decision=Confirm\n"
-        f"enrichment_artifact={tmp_path / 'confirmed.json'}\n"
-        f"published_profile_object={published_object}\n"
-        "profile_sha256=profile-sha\n"
-        "gzip_sha256=gzip-sha\n"
-        f"profile_manifest={published_manifest}\n"
+        f"enrichment_artifact={artifact_path}\n"
     )
     assert captured.err == ""
     assert finalize_calls["reviewer_id"] == "draftomen-tui"
     assert finalize_calls["decision"] is cli.EnrichmentReviewDecision.CONFIRM
     assert isinstance(finalize_calls["reviewed_at"], datetime)
     assert finalize_calls["reviewed_at"].tzinfo is not None
+    assert "profiles_dir" not in finalize_calls
 
 
 @pytest.mark.parametrize(
@@ -4185,7 +4046,6 @@ def test_handle_enrich_set_defaults_every_non_confirm_decision_to_cancel(
                 decision=cli.EnrichmentReviewDecision.CANCEL,
                 artifact=SimpleNamespace(),
                 artifact_path=tmp_path / "cancelled.json",
-                publication=None,
             )
         ),
     )
@@ -4199,7 +4059,6 @@ def test_handle_enrich_set_defaults_every_non_confirm_decision_to_cancel(
         prefix
         + "decision=Cancel\n"
         + f"enrichment_artifact={tmp_path / 'cancelled.json'}\n"
-        + "profile=not-published\n"
     )
     assert captured.err == (
         "Invalid decision; cancelling.\n" if invalid else ""
@@ -4273,36 +4132,19 @@ def test_handle_enrich_set_analysis_errors_are_bounded_and_path_free(
     assert sentinel not in captured.err
 
 
-@pytest.mark.parametrize(
-    ("message", "with_review_result"),
-    [
-        (NO_PUBLISHABLE_ERROR, True),
-        (cli.PROFILE_PUBLICATION_ERROR, True),
-        (cli.INCOMPLETE_ANALYSIS_ERROR, False),
-    ],
-    ids=["no-publishable-retains-review", "publication-retains-review", "without-review"],
-)
-def test_handle_enrich_set_finalization_failures_report_only_retained_review(
-    message: str,
-    with_review_result: bool,
+def test_handle_enrich_set_finalization_errors_do_not_claim_profile_publication(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
     analysis = _complete_enrichment_analysis(tmp_path)
-    retained_path = tmp_path / "confirmed.json"
 
     monkeypatch.setattr(cli, "analyze_set_enrichment", lambda **kwargs: analysis)
     monkeypatch.setattr(cli, "_format_enrichment_review", lambda value: "")
     monkeypatch.setattr("builtins.input", lambda prompt: "Confirm")
 
     def fail_finalize(**kwargs: object) -> NoReturn:
-        review_result = (
-            SimpleNamespace(artifact_path=retained_path)
-            if with_review_result
-            else None
-        )
-        raise cli.SetEnrichmentWorkflowError(message, review_result=review_result)
+        raise cli.SetEnrichmentWorkflowError(cli.INCOMPLETE_ANALYSIS_ERROR)
 
     monkeypatch.setattr(cli, "finalize_set_enrichment", fail_finalize)
 
@@ -4310,527 +4152,10 @@ def test_handle_enrich_set_finalization_failures_report_only_retained_review(
 
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert captured.err == f"enrich-set failed: {message}\n"
-    if with_review_result:
-        assert captured.out == (
-            "decision=Confirm\n"
-            f"enrichment_artifact={retained_path}\n"
-            "profile=not-published\n"
-        )
-    else:
-        assert captured.out == ""
-
-
-@pytest.mark.parametrize("missing", ["published_object_path", "published_manifest_path"])
-def test_handle_enrich_set_reports_not_published_for_incomplete_repository_publication(
-    missing: str,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    tmp_path: Path,
-) -> None:
-    analysis = _complete_enrichment_analysis(tmp_path)
-    retained_path = tmp_path / "confirmed.json"
-    publication = SimpleNamespace(generation=SimpleNamespace(report=SimpleNamespace()))
-
-    monkeypatch.setattr(cli, "analyze_set_enrichment", lambda **kwargs: analysis)
-    monkeypatch.setattr(cli, "_format_enrichment_review", lambda value: "")
-    monkeypatch.setattr("builtins.input", lambda prompt: "Confirm")
-    monkeypatch.setattr(
-        cli,
-        "finalize_set_enrichment",
-        lambda **kwargs: SimpleNamespace(
-            decision=cli.EnrichmentReviewDecision.CONFIRM,
-            artifact=SimpleNamespace(),
-            artifact_path=retained_path,
-            publication=publication,
-            published_object_path=None if missing == "published_object_path" else tmp_path / "object.json.gz",
-            published_manifest_path=None if missing == "published_manifest_path" else tmp_path / "manifest.json",
-        ),
-    )
-
-    exit_code = main(argv=_enrichment_handler_argv(tmp_path))
-
-    captured = capsys.readouterr()
-    assert exit_code == 1
-    assert captured.out == (
-        "decision=Confirm\n"
-        f"enrichment_artifact={retained_path}\n"
-        "profile=not-published\n"
-    )
-    assert captured.err == f"enrich-set failed: {cli.PROFILE_PUBLICATION_ERROR}\n"
-
-
-REPUBLISH_RUN_ID = "9574d202eef14943"
-REPUBLISH_REVIEWED_AT = "2026-09-01T14:00:00Z"
-REPUBLISH_GENERATED_AT = datetime(2026, 9, 19, 12, 20, 51, tzinfo=UTC)
-REPUBLISH_GUIDE_TEXT = "TST rewards going wide with support creatures."
-REPUBLISH_MISSING_CARD_DATA_ERROR = (
-    "The selected enrichment run is missing its frozen card data."
-)
-REPUBLISH_MISSING_SET_ERROR = (
-    "No confirmed enrichment artifact is available for the requested set."
-)
-REPUBLISH_MISSING_ARTIFACT_ERROR = (
-    "The requested enrichment artifact is not available or not confirmed."
-)
-
-
-def _republish_guide() -> GuideSource:
-    """Build the frozen guide shared by the saved artifact and its run directory."""
-
-    return GuideSource(
-        guide_id="tst-draftsim-guide",
-        url="https://draftsim.com/tst-limited-set-review/",
-        text=REPUBLISH_GUIDE_TEXT,
-        retrieved_at="2026-09-01T12:00:00Z",
-    )
-
-
-def _republish_enrichment_artifact(
-    *,
-    database: CardDatabase,
-    guide: GuideSource,
-) -> SemanticEnrichmentArtifact:
-    """Build one confirmed artifact that its frozen run sources can revalidate."""
-
-    sources = EnrichmentSources(
-        set_code="TST",
-        cards=tuple(database.cards.values()),
-        guides=(guide,),
-    )
-    relationship = replace(
-        _typed_relationship(),
-        run_id=REPUBLISH_RUN_ID,
-        guide_evidence=(
-            GuideEvidence(guide_id=guide.guide_id, quote="rewards going wide"),
-        ),
-    )
-    return SemanticEnrichmentArtifact(
-        set_code="TST",
-        set_source_id="tst-card-data-v1",
-        set_source_sha256=set_source_sha256(sources),
-        created_at="2026-09-01T12:02:00Z",
-        cards=tuple(
-            CardSourcePin(
-                card_id=card.grp_id,
-                oracle_id=card.oracle_id,
-                collector_number=card.collector_number,
-                sha256=card_source_sha256(card),
-            )
-            for card in sources.cards
-        ),
-        guides=(
-            GuideSourcePin(
-                guide_id=guide.guide_id,
-                url=guide.url,
-                sha256=guide.text_sha256,
-                retrieved_at=guide.retrieved_at,
-            ),
-        ),
-        runs=(_enrichment_run(run_id=REPUBLISH_RUN_ID),),
-        oracle_facts=(),
-        guide_claims=(),
-        relationships=(relationship,),
-        rejected_findings=(),
-        review=ArtifactReview(
-            state="confirmed",
-            reviewer_id="local-review",
-            reviewed_at=REPUBLISH_REVIEWED_AT,
-        ),
-        confirmed_relationship_ids=(relationship.finding_id,),
-        sources=sources,
-    )
-
-
-def _republish_card_database() -> CardDatabase:
-    """Build the store's frozen card data with production's lowercase set code."""
-
-    return CardDatabase(
-        cards={
-            card_id: replace(card, set_code="tst")
-            for card_id, card in _typed_database().cards.items()
-        }
-    )
-
-
-def _write_republish_store(*, store_dir: Path) -> Path:
-    """Write one confirmed artifact and its frozen run sources into a local store."""
-
-    database = _republish_card_database()
-    guide = _republish_guide()
-    artifact_bytes = _republish_enrichment_artifact(
-        database=database,
-        guide=guide,
-    ).to_bytes()
-    run_dir = store_dir / "enrichment-runs" / "tst" / REPUBLISH_RUN_ID
-    artifact_path = (
-        run_dir / "artifacts" / f"{hashlib.sha256(artifact_bytes).hexdigest()}.json"
-    )
-    artifact_path.parent.mkdir(parents=True)
-    artifact_path.write_bytes(artifact_bytes)
-    sources_dir = run_dir / "sources"
-    sources_dir.mkdir()
-    (sources_dir / "card-database.json").write_text(
-        json.dumps(database.to_json()),
-        encoding="utf-8",
-    )
-    (sources_dir / "guide.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "requested_url": "https://draftsim.com/tst-limited-set-review",
-                "guide_id": guide.guide_id,
-                "url": guide.url,
-                "text": guide.text,
-                "sha256": guide.text_sha256,
-                "retrieved_at": guide.retrieved_at,
-            }
-        ),
-        encoding="utf-8",
-    )
-    return artifact_path
-
-
-def _write_republish_ratings(*, path: Path) -> Path:
-    """Write the TST QuickDraft ratings cache the recovery command reads."""
-
-    path.write_text(json.dumps(_ratings().to_json()), encoding="utf-8")
-    return path
-
-
-def _write_republish_profiles(*, profiles_dir: Path) -> None:
-    """Write a published profiles tree whose manifest already holds another set."""
-
-    manifest = ProfileManifest(
-        artifacts=(
-            ProfileManifestArtifact(
-                set_code="oth",
-                event_format="QuickDraft",
-                set_profile_schema_version=3,
-                profile_version="1.0",
-                generated_at="2026-08-01T00:00:00+00:00",
-                url="https://www.draftomen.com/profiles/objects/oth.json.gz",
-                gzip_bytes=1,
-                profile_bytes=1,
-                gzip_sha256="a" * 64,
-                profile_sha256="b" * 64,
-                maturity="metadata-only",
-            ),
-        ),
-        published_at="2026-08-01T00:00:00+00:00",
-    )
-    profiles_dir.mkdir(parents=True)
-    (profiles_dir / "manifest.json").write_bytes(manifest.to_bytes())
-
-
-def test_republish_enrichment_publishes_a_saved_confirmed_artifact(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FrozenDateTime(datetime):
-        @classmethod
-        def now(cls, tz: object = None) -> datetime:
-            return REPUBLISH_GENERATED_AT
-
-    monkeypatch.setattr(cli, "datetime", FrozenDateTime)
-    store_dir = tmp_path / "set-enrichment"
-    artifact_path = _write_republish_store(store_dir=store_dir)
-    profiles_dir = tmp_path / "profiles"
-    _write_republish_profiles(profiles_dir=profiles_dir)
-
-    exit_code = main(
-        argv=[
-            "republish-enrichment",
-            "tst",
-            "--store-dir",
-            str(store_dir),
-            "--profiles-dir",
-            str(profiles_dir),
-        ]
-    )
-
-    captured = capsys.readouterr()
-    printed = dict(line.split("=", 1) for line in captured.out.splitlines())
-    artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-    gzip_sha256 = printed["gzip_sha256"]
-
-    assert exit_code == 0
-    assert captured.err == ""
-    assert printed["set_code"] == "tst"
-    assert printed["format"] == "quickdraft"
-    assert printed["artifact"] == str(artifact_path)
-    assert printed["artifact_sha256"] == artifact_sha256
-    assert printed["run_id"] == REPUBLISH_RUN_ID
-    assert printed["maturity"] == "metadata-only"
-    assert printed["object"] == str(profiles_dir / "objects" / f"{gzip_sha256}.json.gz")
-    assert printed["manifest"] == str(profiles_dir / "manifest.json")
-    assert printed["manifest_changed"] == "True"
-    assert printed["publications"] == str(
-        profiles_dir / "enrichment-publications.json"
-    )
-    assert (
-        store_dir
-        / "tst-quickdraft"
-        / "tst-quickdraft"
-        / "artifacts"
-        / f"{gzip_sha256}.json.gz"
-    ).is_file()
-
-    record = json.loads(
-        (profiles_dir / "enrichment-publications.json").read_text(encoding="utf-8")
-    )
-    assert record == {
-        "candidates": [],
-        "publications": [
-            {
-                "artifact_sha256": artifact_sha256,
-                "event_format": "quickdraft",
-                "profile_gzip_sha256": gzip_sha256,
-                "published_at": REPUBLISH_GENERATED_AT.isoformat(),
-                "reviewed_at": REPUBLISH_REVIEWED_AT,
-                "run_id": REPUBLISH_RUN_ID,
-                "set_code": "tst",
-            }
-        ],
-        "schema_version": 2,
-    }
-
-    manifest = ProfileManifest.from_bytes((profiles_dir / "manifest.json").read_bytes())
-    entry = manifest.select(set_code="tst", event_format="quickdraft")
-    assert entry is not None
-    assert entry.gzip_sha256 == gzip_sha256
-    assert entry.generated_at == REPUBLISH_GENERATED_AT.isoformat()
-    assert manifest.published_at == REPUBLISH_GENERATED_AT.isoformat()
-    assert manifest.select(set_code="oth", event_format="quickdraft") is not None
-
-    published_profile = json.loads(
-        gzip.decompress(
-            (profiles_dir / "objects" / f"{gzip_sha256}.json.gz").read_bytes()
-        )
-    )
-    assert published_profile["enhancement_status"] == "enhanced"
-    assert published_profile["enhancement"]["artifact_sha256"] == artifact_sha256
-
-
-def test_republish_enrichment_reports_an_unknown_set_without_touching_profiles(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store_dir = tmp_path / "set-enrichment"
-    _write_republish_store(store_dir=store_dir)
-    profiles_dir = tmp_path / "profiles"
-
-    exit_code = main(
-        argv=[
-            "republish-enrichment",
-            "zzz",
-            "--store-dir",
-            str(store_dir),
-            "--profiles-dir",
-            str(profiles_dir),
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert exit_code == 1
     assert captured.out == ""
     assert captured.err == (
-        f"republish-enrichment failed: {REPUBLISH_MISSING_SET_ERROR}\n"
+        f"enrich-set failed: {cli.INCOMPLETE_ANALYSIS_ERROR}\n"
     )
-    assert not profiles_dir.exists()
-
-
-def test_republish_enrichment_reports_an_unknown_artifact_digest(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store_dir = tmp_path / "set-enrichment"
-    _write_republish_store(store_dir=store_dir)
-    profiles_dir = tmp_path / "profiles"
-
-    exit_code = main(
-        argv=[
-            "republish-enrichment",
-            "tst",
-            "--artifact",
-            "f" * 64,
-            "--store-dir",
-            str(store_dir),
-            "--profiles-dir",
-            str(profiles_dir),
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert exit_code == 1
-    assert captured.out == ""
-    assert captured.err == (
-        f"republish-enrichment failed: {REPUBLISH_MISSING_ARTIFACT_ERROR}\n"
-    )
-    assert not profiles_dir.exists()
-
-
-def test_republish_enrichment_requires_the_frozen_card_data(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store_dir = tmp_path / "set-enrichment"
-    artifact_path = _write_republish_store(store_dir=store_dir)
-    (artifact_path.parent.parent / "sources" / "card-database.json").unlink()
-    profiles_dir = tmp_path / "profiles"
-
-    exit_code = main(
-        argv=[
-            "republish-enrichment",
-            "tst",
-            "--store-dir",
-            str(store_dir),
-            "--profiles-dir",
-            str(profiles_dir),
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert exit_code == 1
-    assert captured.out == ""
-    assert captured.err == (
-        f"republish-enrichment failed: {REPUBLISH_MISSING_CARD_DATA_ERROR}\n"
-    )
-    assert not profiles_dir.exists()
-
-
-def test_republish_enrichment_recovers_a_role_bearing_profile(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store_dir = tmp_path / "set-enrichment"
-    artifact_path = _write_republish_store(store_dir=store_dir)
-    ratings_path = _write_republish_ratings(
-        path=tmp_path / "tst-quickdraft-ratings.json"
-    )
-    profiles_dir = tmp_path / "profiles"
-    _write_republish_profiles(profiles_dir=profiles_dir)
-
-    exit_code = main(
-        argv=[
-            "republish-enrichment",
-            "tst",
-            "--store-dir",
-            str(store_dir),
-            "--profiles-dir",
-            str(profiles_dir),
-            "--stage",
-            "early",
-            "--ratings-file",
-            str(ratings_path),
-        ]
-    )
-
-    captured = capsys.readouterr()
-    printed = dict(line.split("=", 1) for line in captured.out.splitlines())
-    artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-
-    assert exit_code == 0
-    assert captured.err == ""
-    assert printed["maturity"] == "early"
-    assert printed["artifact_sha256"] == artifact_sha256
-
-    profile_bytes = (
-        profiles_dir / "objects" / f"{printed['gzip_sha256']}.json.gz"
-    ).read_bytes()
-    published_profile = json.loads(gzip.decompress(profile_bytes))
-
-    assert published_profile["schema_version"] == 3
-    assert published_profile["enhancement_status"] == "enhanced"
-    assert published_profile["enhancement"]["artifact_sha256"] == artifact_sha256
-    assert published_profile["role_profile"]["cards"]
-
-
-
-def test_republish_enrichment_requires_empirical_inputs_for_a_role_bearing_stage(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store_dir = tmp_path / "set-enrichment"
-    _write_republish_store(store_dir=store_dir)
-    profiles_dir = tmp_path / "profiles"
-    _write_republish_profiles(profiles_dir=profiles_dir)
-
-    exit_code = main(
-        argv=[
-            "republish-enrichment",
-            "tst",
-            "--store-dir",
-            str(store_dir),
-            "--profiles-dir",
-            str(profiles_dir),
-            "--stage",
-            "early",
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert exit_code == 1
-    assert captured.out == ""
-    assert captured.err == (
-        "republish-enrichment failed: Early profile generation requires "
-        "empirical ratings or accepted draft evidence.\n"
-    )
-    assert not (store_dir / "tst-quickdraft").exists()
-    assert not (profiles_dir / "objects").exists()
-    assert not (profiles_dir / "enrichment-publications.json").exists()
-    manifest = ProfileManifest.from_bytes((profiles_dir / "manifest.json").read_bytes())
-    assert manifest.select(set_code="tst", event_format="quickdraft") is None
-    assert manifest.select(set_code="oth", event_format="quickdraft") is not None
-
-
-def test_republish_enrichment_rejects_an_unusable_ratings_input(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store_dir = tmp_path / "set-enrichment"
-    _write_republish_store(store_dir=store_dir)
-    profiles_dir = tmp_path / "profiles"
-    _write_republish_profiles(profiles_dir=profiles_dir)
-    ratings_path = _write_republish_ratings(
-        path=tmp_path / "tst-quickdraft-ratings.json"
-    )
-    payload = json.loads(ratings_path.read_text(encoding="utf-8"))
-    payload["set_code"] = "OTH"
-    ratings_path.write_text(json.dumps(payload), encoding="utf-8")
-
-    for ratings_input in (ratings_path, tmp_path / "missing-ratings.json"):
-        exit_code = main(
-            argv=[
-                "republish-enrichment",
-                "tst",
-                "--store-dir",
-                str(store_dir),
-                "--profiles-dir",
-                str(profiles_dir),
-                "--stage",
-                "early",
-                "--ratings-file",
-                str(ratings_input),
-            ]
-        )
-
-        captured = capsys.readouterr()
-        assert exit_code == 1
-        assert captured.out == ""
-        assert captured.err == (
-            "republish-enrichment failed: Could not load the ratings input.\n"
-        )
-        assert not (store_dir / "tst-quickdraft").exists()
-        assert not (profiles_dir / "objects").exists()
-        assert not (profiles_dir / "enrichment-publications.json").exists()
-        manifest = ProfileManifest.from_bytes(
-            (profiles_dir / "manifest.json").read_bytes()
-        )
-        assert manifest.select(set_code="tst", event_format="quickdraft") is None
-        assert manifest.select(set_code="oth", event_format="quickdraft") is not None
-
 
 LIST_ENRICHMENT_CONFIRMED_SET = "hob"
 LIST_ENRICHMENT_CONFIRMED_RUN_ID = "9574d202eef14943"
@@ -4902,10 +4227,28 @@ def _write_list_enrichment_store(*, store_dir: Path) -> tuple[Path, Path]:
 
 
 def _write_list_enrichment_profiles(*, profiles_dir: Path, artifact_sha256: str) -> None:
-    """Write an orphaned enriched HOB object beside a manifest holding another set
-    and legacy non-profile payloads."""
+    """Write historical publication data beside a manifest holding another set."""
 
-    _write_republish_profiles(profiles_dir=profiles_dir)
+    manifest = ProfileManifest(
+        artifacts=(
+            ProfileManifestArtifact(
+                set_code="oth",
+                event_format="QuickDraft",
+                set_profile_schema_version=3,
+                profile_version="1.0",
+                generated_at="2026-08-01T00:00:00+00:00",
+                url="https://www.draftomen.com/profiles/objects/oth.json.gz",
+                gzip_bytes=1,
+                profile_bytes=1,
+                gzip_sha256="a" * 64,
+                profile_sha256="b" * 64,
+                maturity="metadata-only",
+            ),
+        ),
+        published_at="2026-08-01T00:00:00+00:00",
+    )
+    profiles_dir.mkdir(parents=True)
+    (profiles_dir / "manifest.json").write_bytes(manifest.to_bytes())
     objects_dir = profiles_dir / "objects"
     objects_dir.mkdir()
     (objects_dir / f"{LIST_ENRICHMENT_PROFILE_GZIP_SHA256}.json.gz").write_bytes(
@@ -4921,7 +4264,7 @@ def _write_list_enrichment_profiles(*, profiles_dir: Path, artifact_sha256: str)
             ).encode("utf-8")
         )
     )
-    # Legacy non-profile payloads under a content address stay skippable.
+    # Historical non-profile payloads under content-addressed paths stay skippable.
     (objects_dir / "not-gzip.json.gz").write_bytes(b"{not a gzip stream")
     (objects_dir / "not-utf8.json.gz").write_bytes(gzip.compress(b"\x80\x81"))
     (objects_dir / "not-json.json.gz").write_bytes(gzip.compress(b"{not json"))
@@ -4963,13 +4306,13 @@ def test_list_enrichment_prints_runs_artifacts_and_publication_state(
         f" {confirmed_sha256} created={LIST_ENRICHMENT_CREATED_AT}"
         f" reviewed={LIST_ENRICHMENT_REVIEWED_AT}"
         " state=confirmed relationships=3 confirmed=2"
-        " published=hob/quickdraft:orphaned\n"
+        " historical_publications=hob/quickdraft:orphaned\n"
         f"run {LIST_ENRICHMENT_PENDING_SET} {LIST_ENRICHMENT_PENDING_RUN_ID}"
         " artifacts=1\n"
         f"  artifact {LIST_ENRICHMENT_PENDING_SET} {LIST_ENRICHMENT_PENDING_RUN_ID}"
         f" {pending_sha256} created=unknown reviewed=unknown state=pending"
-        " relationships=0 confirmed=0 published=none\n"
-        "list-enrichment: runs=2 artifacts=2 confirmed=1 published=1 orphaned=1\n"
+        " relationships=0 confirmed=0 historical_publications=none\n"
+        "list-enrichment: runs=2 artifacts=2 confirmed=1 historical_publications=1 orphaned=1\n"
     )
     assert (profiles_dir / "manifest.json").read_bytes() == manifest_bytes
     assert not (profiles_dir / "enrichment-publications.json").exists()
@@ -5009,8 +4352,8 @@ def test_list_enrichment_filters_runs_by_set_code(
         f"  artifact {LIST_ENRICHMENT_PENDING_SET} {LIST_ENRICHMENT_PENDING_RUN_ID}"
         f" {hashlib.sha256(pending_path.read_bytes()).hexdigest()}"
         " created=unknown reviewed=unknown state=pending relationships=0 confirmed=0"
-        " published=none\n"
-        "list-enrichment: runs=1 artifacts=1 confirmed=0 published=0 orphaned=0\n"
+        " historical_publications=none\n"
+        "list-enrichment: runs=1 artifacts=1 confirmed=0 historical_publications=0 orphaned=0\n"
     )
 
 

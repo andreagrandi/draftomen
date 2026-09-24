@@ -52,6 +52,7 @@ from draftomen.session import (
     SetCardDataLoader,
 )
 from draftomen.set_profile import (
+    AggregateEvidence,
     CardRating,
     RateEstimate,
     SetProfile,
@@ -3014,14 +3015,7 @@ async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
         expected_set_code="TST",
         expected_format=QUICK_DRAFT_FORMAT,
     )
-    if profile.role_profile is not None:
-        profile = replace(
-            profile,
-            set_code="MSH",
-            role_profile=replace(profile.role_profile, set_code="MSH"),
-        )
-    else:
-        profile = replace(profile, set_code="MSH")
+    profile = replace(profile, set_code="MSH", schema_version=4)
     profile = replace(
         profile,
         card_ratings=(
@@ -3033,6 +3027,11 @@ async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
                     samples=2_000,
                     prior_value=0.50,
                     source="17lands",
+                    aggregate_evidence=AggregateEvidence(
+                        source_format=QUICK_DRAFT_FORMAT,
+                        fallback_reason=None,
+                        confidence=1.0,
+                    ),
                 ),
                 average_last_seen_at=3.0,
             ),
@@ -3044,6 +3043,11 @@ async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
                     samples=2_000,
                     prior_value=0.50,
                     source="17lands",
+                    aggregate_evidence=AggregateEvidence(
+                        source_format=QUICK_DRAFT_FORMAT,
+                        fallback_reason=None,
+                        confidence=1.0,
+                    ),
                 ),
                 average_last_seen_at=1.0,
             ),
@@ -3683,14 +3687,11 @@ def _profile_with_card_ratings(
         expected_set_code="TST",
         expected_format=QUICK_DRAFT_FORMAT,
     )
-    role_profile = profile.role_profile
-    if role_profile is not None:
-        role_profile = replace(role_profile, set_code="MSH")
     return replace(
         profile,
         set_code="MSH",
-        role_profile=role_profile,
         card_ratings=card_ratings,
+        schema_version=4,
     )
 
 
@@ -3726,6 +3727,11 @@ def _card_rating(
             samples=samples,
             prior_value=0.50,
             source="17lands",
+            aggregate_evidence=AggregateEvidence(
+                source_format=QUICK_DRAFT_FORMAT,
+                fallback_reason=None,
+                confidence=1.0,
+            ),
         ),
         average_last_seen_at=alsa,
     )

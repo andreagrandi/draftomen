@@ -1,7 +1,7 @@
 """UI-neutral application boundary for reviewed set-enrichment artifacts.
 
 The workflow freezes caller-selected sources, delegates resumable analysis to the
-set-enrichment engine, and crosses the local profile boundary only after confirmation.
+set-enrichment engine, and stores the reviewed standalone artifact.
 """
 
 from __future__ import annotations
@@ -24,17 +24,11 @@ from draftomen.card_data_client import (
     card_data_cache_path,
 )
 from draftomen.carddb import CardDatabase, CardDatabaseError, save_card_database
-from draftomen.guide_client import GuideClient, GuideClientError, GuideDocument
-from draftomen.profile_generation import ProfileGenerationStage
-from draftomen.profile_manifest import ProfileManifestError
-from draftomen.profile_publication import (
-    ProfilePublicationError,
-    ProfilePublicationResult,
-    generate_local_profile_artifacts,
-    publish_profile_publication,
-    _GUIDE_SCHEMA_VERSION,
-    _guide_freeze_record,
-    _strict_json,
+from draftomen.guide_client import (
+    GuideClient,
+    GuideClientError,
+    GuideDocument,
+    _validate_url as _validate_guide_url,
 )
 from draftomen.semantic_capability_records import CardCapability
 from draftomen.semantic_enrichment import (
@@ -96,7 +90,6 @@ from draftomen.set_enrichment_work import (
     WorkState,
     build_work_identity,
 )
-from draftomen.seventeen import QUICK_DRAFT_FORMAT
 
 
 PathInput: TypeAlias = str | os.PathLike[str]
@@ -110,7 +103,7 @@ DEFAULT_ENRICHMENT_MODEL_CONFIG = WorkModelConfig(
 
 
 class EnrichmentReviewDecision(StrEnum):
-    """The explicit human decision at the profile publication boundary."""
+    """The explicit human decision applied to a standalone enrichment artifact."""
 
     CONFIRM = "confirm"
     CANCEL = "cancel"
@@ -144,15 +137,11 @@ class SetEnrichmentWorkflowResult:
 
 @dataclass(frozen=True, slots=True)
 class SetEnrichmentReviewResult:
-    """Reviewed artifact and optional local profile publication result."""
+    """The decision and durable standalone enrichment artifact."""
 
     decision: EnrichmentReviewDecision
     artifact: SemanticEnrichmentArtifact
     artifact_path: Path
-    publication: ProfilePublicationResult | None
-    published_object_path: Path | None = None
-    published_manifest_path: Path | None = None
-
 
 class SetEnrichmentWorkflowError(RuntimeError):
     """Raised when a set-enrichment workflow cannot cross its next boundary."""
@@ -184,8 +173,7 @@ REVIEW_DECISION_ERROR = "decision must be an EnrichmentReviewDecision value."
 REVIEW_TIMESTAMP_ERROR = "reviewed_at must be a timezone-aware datetime."
 REVIEW_ORDER_ERROR = "reviewed_at must not precede the artifact creation time."
 REVIEW_PUBLICATION_ERROR = "Set-enrichment review artifact publication failed."
-NO_PUBLISHABLE_ERROR = "Set enrichment has no publishable confirmed findings."
-PROFILE_PUBLICATION_ERROR = "Set enrichment profile publication failed."
+
 
 # The structured local matcher is a decision surface of its own, so it publishes one zero-cost run
 # instead of borrowing the identity of a paid request that never produced these verdicts.
@@ -358,6 +346,83 @@ def _install_exclusive(path: Path, payload: bytes, root: Path) -> bool:
                 pass
 
 
+_FROZEN_GUIDE_SCHEMA_VERSION = 1
+_FROZEN_GUIDE_KEYS = frozenset(
+    {
+        "schema_version",
+        "requested_url",
+        "guide_id",
+        "url",
+        "text",
+        "sha256",
+        "retrieved_at",
+    }
+)
+
+
+def _strict_frozen_guide_json(payload: bytes) -> Any:
+    """Decode a frozen guide record without accepting duplicate keys or JSON constants."""
+
+    def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON object key")
+            value[key] = item
+        return value
+
+    def reject_constant(_value: str) -> Any:
+        raise ValueError("non-finite JSON constant")
+
+    return json.loads(
+        payload.decode("utf-8"),
+        object_pairs_hook=object_pairs,
+        parse_constant=reject_constant,
+    )
+
+
+def _frozen_guide_source(
+    *,
+    value: Any,
+    guide_url: str | None,
+    normalized_set: str,
+) -> GuideSource:
+    """Validate one frozen guide record and reconstruct its source value."""
+    if not isinstance(value, dict) or set(value) != _FROZEN_GUIDE_KEYS:
+        raise ValueError("The frozen guide record has an invalid schema.")
+    if (
+        type(value["schema_version"]) is not int
+        or value["schema_version"] != _FROZEN_GUIDE_SCHEMA_VERSION
+    ):
+        raise ValueError("The frozen guide record has an unsupported schema.")
+    guide_id = f"{normalized_set}-draftsim-guide"
+    if value["guide_id"] != guide_id:
+        raise ValueError("The frozen guide record has an unexpected guide identity.")
+
+    requested_url = value["requested_url"]
+    _validate_guide_url(requested_url)
+    if guide_url is not None:
+        _validate_guide_url(guide_url)
+        if requested_url != guide_url:
+            raise ValueError(
+                "The frozen guide record belongs to a different requested URL."
+            )
+
+    url = value["url"]
+    _validate_guide_url(url)
+    text = value["text"]
+    if not isinstance(text, str):
+        raise ValueError("The frozen guide text must be a string.")
+    if value["sha256"] != hashlib.sha256(text.encode("utf-8")).hexdigest():
+        raise ValueError("The frozen guide text digest does not match.")
+    return GuideSource(
+        guide_id=guide_id,
+        url=url,
+        text=text,
+        retrieved_at=value["retrieved_at"],
+    )
+
+
 def _freeze_guide(
     *,
     guide_path: Path,
@@ -374,24 +439,24 @@ def _freeze_guide(
         raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
     if present:
         try:
-            value = _strict_json(guide_path.read_bytes())
-            return _guide_freeze_record(
+            value = _strict_frozen_guide_json(guide_path.read_bytes())
+            return _frozen_guide_source(
                 value=value, guide_url=guide_url, normalized_set=normalized_set
             )
-        except ProfilePublicationError as error:
-            raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
-        except (OSError, UnicodeDecodeError, TypeError, ValueError, RecursionError) as error:
+        except Exception as error:
             raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
 
     try:
+        _validate_guide_url(guide_url)
         document = guide_client.fetch(url=guide_url)
     except (GuideClientError, OSError) as error:
         raise _workflow_error(GUIDE_ERROR, error) from error
     if not isinstance(document, GuideDocument):
         raise _workflow_error(SOURCE_ERROR)
     try:
+        _validate_guide_url(document.url)
         computed_sha256 = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
-    except (AttributeError, TypeError, UnicodeError) as error:
+    except (AttributeError, GuideClientError, TypeError, UnicodeError) as error:
         raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
     if document.sha256 != computed_sha256:
         raise _workflow_error(GUIDE_FREEZE_ERROR)
@@ -403,10 +468,10 @@ def _freeze_guide(
             text=document.text,
             retrieved_at=document.retrieved_at,
         )
-    except (TypeError, ValueError, UnicodeError) as error:
+    except (TypeError, ValueError, UnicodeError, OverflowError) as error:
         raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
     record = {
-        "schema_version": _GUIDE_SCHEMA_VERSION,
+        "schema_version": _FROZEN_GUIDE_SCHEMA_VERSION,
         "requested_url": guide_url,
         "guide_id": guide.guide_id,
         "url": guide.url,
@@ -430,11 +495,19 @@ def _freeze_guide(
     try:
         if _install_exclusive(guide_path, payload, root):
             return guide
-        value = _strict_json(guide_path.read_bytes())
-        return _guide_freeze_record(value=value, guide_url=guide_url, normalized_set=normalized_set)
-    except ProfilePublicationError as error:
-        raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
-    except (OSError, TypeError, ValueError, UnicodeError) as error:
+        value = _strict_frozen_guide_json(guide_path.read_bytes())
+        return _frozen_guide_source(
+            value=value, guide_url=guide_url, normalized_set=normalized_set
+        )
+    except (
+        GuideClientError,
+        OSError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        OverflowError,
+        RecursionError,
+    ) as error:
         raise _workflow_error(GUIDE_FREEZE_ERROR, error) from error
 
 
@@ -1228,14 +1301,8 @@ def finalize_set_enrichment(
     decision: EnrichmentReviewDecision,
     reviewer_id: str,
     reviewed_at: datetime,
-    profiles_dir: PathInput = Path("website/public/profiles"),
 ) -> SetEnrichmentReviewResult:
-    """Publish a review decision and optionally generate and publish the confirmed profile.
-
-    ``profiles_dir`` is resolved from the process current directory only after the
-    reviewed artifact is durable and only for Confirm, so Cancel never inspects or
-    creates the repository profile tree.
-    """
+    """Persist a review decision on the standalone enrichment artifact."""
     if (
         not isinstance(analysis, SetEnrichmentWorkflowResult)
         or analysis.run.outcome is not EnrichmentOutcome.COMPLETE
@@ -1248,7 +1315,11 @@ def finalize_set_enrichment(
         raise _workflow_error(REVIEW_DECISION_ERROR)
     if not isinstance(reviewer_id, str) or not reviewer_id.strip():
         raise _workflow_error(REVIEWER_ERROR)
-    if not isinstance(reviewed_at, datetime) or reviewed_at.tzinfo is None or reviewed_at.utcoffset() is None:
+    if (
+        not isinstance(reviewed_at, datetime)
+        or reviewed_at.tzinfo is None
+        or reviewed_at.utcoffset() is None
+    ):
         raise _workflow_error(REVIEW_TIMESTAMP_ERROR)
     normalized_reviewed_at = reviewed_at.astimezone(UTC)
     created_at = _parse_created_at(analysis.artifact.created_at)
@@ -1289,113 +1360,10 @@ def finalize_set_enrichment(
         raise _workflow_error(REVIEW_PUBLICATION_ERROR, error) from error
     except Exception as error:
         raise _workflow_error(REVIEW_PUBLICATION_ERROR, error) from error
-    review_result = SetEnrichmentReviewResult(
+    return SetEnrichmentReviewResult(
         decision=decision,
         artifact=reviewed,
         artifact_path=artifact_path,
-        publication=None,
-    )
-    if decision is EnrichmentReviewDecision.CANCEL:
-        return review_result
-    try:
-        publishable = any(
-            claim.category == "mechanic" and claim.review.status is FindingStatus.ACCEPTED
-            for claim in reviewed.guide_claims
-        ) or bool(reviewed.confirmed_relationships)
-        if not publishable:
-            raise SetEnrichmentWorkflowError(
-                NO_PUBLISHABLE_ERROR,
-                review_result=review_result,
-            )
-        profile_root = analysis.output_dir / f"{analysis.set_code}-{QUICK_DRAFT_FORMAT.casefold()}"
-        _contained(profile_root, analysis.output_dir)
-        _contained(profile_root / "artifacts", analysis.output_dir)
-        _contained(profile_root / "generation.json", analysis.output_dir)
-        _scan_no_symlinks(profile_root, root=analysis.output_dir)
-        publication = generate_local_profile_artifacts(
-            set_code=analysis.set_code,
-            event_format=QUICK_DRAFT_FORMAT,
-            stage=ProfileGenerationStage.METADATA,
-            generated_at=normalized_reviewed_at,
-            card_database_path=analysis.card_database_path,
-            output_dir=analysis.output_dir,
-            enrichment=reviewed,
-        )
-        _contained(publication.artifact_path, analysis.output_dir)
-        if publication.manifest_path != profile_root / "generation.json":
-            raise SetEnrichmentWorkflowError(
-                PROFILE_PUBLICATION_ERROR,
-                review_result=review_result,
-            )
-    except SetEnrichmentWorkflowError as error:
-        if error.review_result is not None:
-            raise
-        raise SetEnrichmentWorkflowError(
-            str(error),
-            review_result=review_result,
-        ) from error
-    except (ProfilePublicationError, OSError, TypeError, ValueError) as error:
-        raise SetEnrichmentWorkflowError(
-            PROFILE_PUBLICATION_ERROR,
-            review_result=review_result,
-        ) from error
-    return _publish_confirmed_profile(
-        publication=publication,
-        profiles_dir=profiles_dir,
-        published_at=normalized_reviewed_at,
-        run_id=analysis.run_dir.name,
-        review_result=SetEnrichmentReviewResult(
-            decision=decision,
-            artifact=reviewed,
-            artifact_path=artifact_path,
-            publication=publication,
-        ),
-    )
-
-
-def _publish_confirmed_profile(
-    *,
-    publication: ProfilePublicationResult,
-    profiles_dir: PathInput,
-    published_at: datetime,
-    run_id: str,
-    review_result: SetEnrichmentReviewResult,
-) -> SetEnrichmentReviewResult:
-    """Install one confirmed profile in the repository and keep the review result intact.
-
-    Every repository write belongs to ``publish_profile_publication``, which loads
-    the manifest before writing anything, installs the immutable object before the
-    provenance record, and the record before the manifest entry that names it.
-    This wrapper only attaches the installation paths to the confirmed review
-    result and maps any boundary failure onto the workflow error taxonomy.
-    """
-    try:
-        installed = publish_profile_publication(
-            publication=publication,
-            profiles_dir=profiles_dir,
-            published_at=published_at,
-            run_id=run_id,
-        )
-    except (
-        OSError,
-        ProfileManifestError,
-        ProfilePublicationError,
-        TypeError,
-        UnicodeError,
-        ValueError,
-    ) as error:
-        raise _workflow_error(
-            PROFILE_PUBLICATION_ERROR,
-            error,
-            review_result=review_result,
-        ) from error
-    return SetEnrichmentReviewResult(
-        decision=review_result.decision,
-        artifact=review_result.artifact,
-        artifact_path=review_result.artifact_path,
-        publication=publication,
-        published_object_path=installed.object_path,
-        published_manifest_path=installed.manifest_path,
     )
 
 
@@ -1412,9 +1380,6 @@ __all__ = [
     "GUIDE_ERROR",
     "GUIDE_FREEZE_ERROR",
     "INCOMPLETE_ANALYSIS_ERROR",
-    "NO_PUBLISHABLE_ERROR",
-    "OUTPUT_DIRECTORY_ERROR",
-    "PROFILE_PUBLICATION_ERROR",
     "REVIEWER_ERROR",
     "REVIEW_DECISION_ERROR",
     "REVIEW_ORDER_ERROR",

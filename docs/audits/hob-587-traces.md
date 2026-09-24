@@ -1,5 +1,7 @@
 # HOB 587 traces and run fingerprints
 
+> **Archive notice:** This report records observations from the pre-#663 schema-3 profile compiler. Its probe targets retired APIs and CLI options, is not runnable against current code, and does not show current runtime behavior. Commands below are historical records only, not verification instructions.
+
 Scope: AC5 (trace from saved evidence through generated representation, pool support and rendered advice for representative failures) and AC6 (original artifact, source and response digests, no provider calls, no changes to paid inputs).
 
 Owner: TraceAudit. Evidence files: `docs/audits/hob-587-run-fingerprint.json`, `docs/audits/hob-587-trace-cases.json`, `docs/audits/hob-587-run-manifest.sha256`, `docs/audits/hob-587-trace-out.json` (durable copy of the final run, sha256 `74244c03...`), `docs/audits/hob-587-trace-out-r2.json` (earlier successful run, sha256 `61bc5f54...`). Probe: `docs/audits/hob_587_trace_probe.py` — the capture used the checked-in revision 3, sha256 `24ac41a8...`, content-identical to the executed copy at `/tmp/hob_587_trace_probe.py` (sha256 `79bb6834...`) except for the portable default paths noted under Reproduction; the current checkout carries revision 4 for #589 (see the Reproduction note).
@@ -21,7 +23,7 @@ The confirmed artifact named by issue #587 is `artifacts/edc7d1666105fccdd382843
 
 The frozen guide is `hob-draftsim-guide` from `https://draftsim.com/mtg-hob-limited-set-review/`: its text hashes to `537de10ab83704b308d78efd21a77f9faf93b71ca1e24422de445aee3de30cbf`, which is the artifact's guide pin and the run's guide work-unit `input_sha256`. It is not the repo-local benchmark guide `.draftomen/enrichment-runs/hob/guide.txt` (`21f5d19e...`). The manifest covers 545 attempts and 544 responses; the probe re-derived the 544 results — 402 card-capability, 141 relationship, 1 guide — with 441 success and 103 malformed outcomes (`stages.saved_evidence.work_units`).
 
-Re-verify the whole run with:
+Historical capture-time input fingerprint check, retained for reference:
 
 ```
 cd /Users/andrea/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943
@@ -78,7 +80,7 @@ That teardown message is the warning seen earlier, now attributed: it fires afte
 - The published remote profile object served by `~/.draftomen/set-profiles/v1/manifest.json` was not compared with the locally installed profile.
 - Why the paid capability units accepted nothing while the local resolver produced all 583 oracle facts, and why the paid guide unit rejected all nine of its findings, belongs to the inventory and mechanic work.
 
-## Reproduction
+## Historical reproduction (pre-#663 probe)
 
 Note: #589 changed the projection gates after this capture with qualified prerequisite emission, zone-supply rejection, and per-finding conversion outcomes, so a rerun of the checked-in revision-4 probe classifies more rows as projected/qualified and no longer reproduces the committed `failure_reasons`, projected counts, or the revision-3 probe sha256.
 

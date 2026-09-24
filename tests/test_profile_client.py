@@ -26,7 +26,6 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.set_profile import (
     AggregateEvidence,
     CardRating,
-    EnhancementStatus,
     RateEstimate,
     SET_PROFILE_SCHEMA_VERSION,
     ProfileMaturity,
@@ -75,8 +74,8 @@ class _FrozenClock:
         return self.value
 
 
-def _profile(*, version: str = "1.0-semantic", generated_at: str = "2026-08-29T02:00:00+00:00") -> SetProfile:
-    value = json.loads((FIXTURE_DIR / "semantic-only.json").read_text(encoding="utf-8"))
+def _profile(*, version: str = "1.0-early", generated_at: str = "2026-08-29T02:00:00+00:00") -> SetProfile:
+    value = json.loads((FIXTURE_DIR / "early.json").read_text(encoding="utf-8"))
     value["profile_version"] = version
     value["generated_at"] = generated_at
     return SetProfile.from_json(value)
@@ -122,16 +121,31 @@ def _schema_two_profile(
     )
 
 
-def _enhanced_profile(
+def _schema_four_profile(
     *,
-    profile_version: str = "3.0-enhanced",
+    profile_version: str = "4.0-clean",
     generated_at: str = "2026-08-31T02:00:00+00:00",
 ) -> SetProfile:
-    value = json.loads((FIXTURE_DIR / "enhanced.json").read_text(encoding="utf-8"))
-    value["profile_version"] = profile_version
-    value["generated_at"] = generated_at
-    return SetProfile.from_json(value)
+    return replace(
+        _schema_two_profile(profile_version=profile_version, generated_at=generated_at),
+        schema_version=SET_PROFILE_SCHEMA_VERSION,
+    )
 
+
+def _canonical_json_bytes(value: dict[str, Any]) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _legacy_schema_three_bytes(profile: SetProfile) -> bytes:
+    value = profile.to_json()
+    value["schema_version"] = 3
+    value["role_profile"] = json.loads((FIXTURE_DIR / "semantic-only.json").read_text(encoding="utf-8"))[
+        "role_profile"
+    ]
+    historical_enhancement = json.loads((FIXTURE_DIR / "enhanced.json").read_text(encoding="utf-8"))
+    value["enhancement"] = historical_enhancement["enhancement"]
+    value["enhancement_status"] = historical_enhancement["enhancement_status"]
+    return _canonical_json_bytes(value)
 
 def _bundled_profile() -> SetProfile:
     return load_set_profile(
@@ -410,9 +424,15 @@ def test_refresh_schema_mismatch_preserves_last_good_schema_two_profile(tmp_path
     assert client.profile_path("TST", "QuickDraft").read_bytes() == installed_profile.to_bytes()
 
 
-def test_refresh_installs_and_loads_schema_three_enhanced_profile(tmp_path: Path) -> None:
-    profile = _enhanced_profile()
-    artifact, packed = _artifact(profile)
+def test_refresh_installs_legacy_schema_three_ratings_without_rewriting_semantic_fields(
+    tmp_path: Path,
+) -> None:
+    profile = replace(
+        _schema_two_profile(profile_version="3.0-historical", generated_at="2026-08-31T02:00:00+00:00"),
+        schema_version=3,
+    )
+    raw_bytes = _legacy_schema_three_bytes(profile)
+    artifact, packed = _artifact(profile, profile_bytes=raw_bytes)
     client = ProfileClient(
         tmp_path,
         manifest_url=MANIFEST_URL,
@@ -426,13 +446,9 @@ def test_refresh_installs_and_loads_schema_three_enhanced_profile(tmp_path: Path
     assert refreshed.profile == profile
     assert loaded.profile == profile
     assert loaded.profile.schema_version == 3
-    assert loaded.profile.enhancement_status is EnhancementStatus.ENHANCED
-    enhancement = loaded.profile.enhancement
-    assert enhancement is not None
-    assert enhancement.artifact_sha256 == "e43b831bd69c7c8c73a32fe348ef887712ee67493c7b7b64d4612e2128709a87"
-    assert enhancement.card_data.card_count == 3
-    assert enhancement.review.state == "confirmed"
-    assert client.profile_path("TST", "QuickDraft").read_bytes() == profile.to_bytes()
+    assert loaded.profile.card_ratings[0].gih_win_rate.samples == 1_000
+    assert not {"role_profile", "enhancement", "enhancement_status"}.intersection(loaded.profile.to_json())
+    assert client.profile_path("TST", "QuickDraft").read_bytes() == raw_bytes
 
 
 def test_unsupported_manifest_schema_version_keeps_cached_profile(tmp_path: Path) -> None:
@@ -451,7 +467,7 @@ def test_unsupported_manifest_schema_version_keeps_cached_profile(tmp_path: Path
     installed = client.refresh("TST", "QuickDraft", force=True)
     assert installed.outcome is ProfileRefreshOutcome.UPDATED
 
-    future_artifact, future_packed = _artifact(_enhanced_profile())
+    future_artifact, future_packed = _artifact(_schema_four_profile())
     manifest_payload = json.loads(_manifest(future_artifact).decode("utf-8"))
     manifest_payload["artifacts"][0]["set_profile_schema_version"] = SET_PROFILE_SCHEMA_VERSION + 1
     payloads[MANIFEST_URL] = json.dumps(manifest_payload).encode("utf-8")
@@ -481,7 +497,7 @@ def test_load_cached_is_local_only_and_offline_zero_network(tmp_path: Path) -> N
     result = client.refresh("TST", "QuickDraft")
 
     assert cached.profile == profile
-    assert cached.source == "local-semantic-only"
+    assert cached.source == "local-early"
     assert result.profile == profile
     assert result.outcome is ProfileRefreshOutcome.CACHED
     assert calls == []
@@ -514,13 +530,71 @@ def test_existing_historical_cache_is_adopted_without_network(tmp_path: Path) ->
     result = client.load_cached("TST", "QuickDraft")
 
     assert result.profile == profile
-    assert result.source == "legacy-migrated-semantic-only"
+    assert result.source == "legacy-migrated-early"
     assert client.profile_path("TST", "QuickDraft").read_bytes() == profile.to_bytes()
 
+def test_legacy_raw_cache_is_adopted_unchanged_without_fetch_or_rewrite(tmp_path: Path) -> None:
+    profile = replace(
+        _schema_two_profile(profile_version="3.0-historical", generated_at="2026-08-31T02:00:00+00:00"),
+        schema_version=3,
+    )
+    raw_bytes = _legacy_schema_three_bytes(profile)
+    legacy = tmp_path / "profiles" / "tst-quickdraft.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(raw_bytes)
+    parsed_profile = SetProfile.from_json(json.loads(raw_bytes))
+    artifact, _ = _artifact(parsed_profile, profile_bytes=raw_bytes)
+    calls: list[str] = []
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for({MANIFEST_URL: _manifest(artifact)}, calls),
+        clock=_FrozenClock(datetime.fromisoformat(NOW)),
+        manifest_ttl_seconds=0,
+    )
+
+    result = client.refresh("TST", "QuickDraft", force=True)
+
+    destination = client.profile_path("TST", "QuickDraft")
+    assert result.outcome is ProfileRefreshOutcome.UNCHANGED
+    assert result.profile == parsed_profile
+    assert result.profile.card_ratings[0].gih_win_rate.value == 0.61
+    assert b'"role_profile":' in raw_bytes and b'"enhancement":' in raw_bytes
+    assert not {"role_profile", "enhancement", "enhancement_status"}.intersection(parsed_profile.to_json())
+    assert destination.read_bytes() == raw_bytes
+    assert calls == [MANIFEST_URL]
+
+
+def test_noncanonical_legacy_cache_does_not_match_raw_manifest_identity(tmp_path: Path) -> None:
+    profile = replace(
+        _schema_two_profile(profile_version="3.0-noncanonical", generated_at="2026-08-31T02:00:00+00:00"),
+        schema_version=3,
+    )
+    raw_bytes = _legacy_schema_three_bytes(profile)[:-1]
+    assert raw_bytes != _canonical_json_bytes(json.loads(raw_bytes))
+    path = set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw_bytes)
+    artifact, packed = _artifact(profile, profile_bytes=raw_bytes)
+    calls: list[str] = []
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for({MANIFEST_URL: _manifest(artifact), ARTIFACT_URL: packed}, calls),
+        manifest_ttl_seconds=0,
+    )
+
+    result = client.refresh("TST", "QuickDraft", force=True)
+
+    assert result.outcome is ProfileRefreshOutcome.STALE_MANIFEST
+    assert "artifact:conflict" in result.diagnostics
+    assert result.profile == profile
+    assert path.read_bytes() == raw_bytes
+    assert calls == [MANIFEST_URL]
 
 def test_refresh_installs_newer_then_unchanged_without_artifact_download(tmp_path: Path) -> None:
     old = _profile()
-    new = _profile(version="1.1-semantic", generated_at="2026-08-30T02:00:00+00:00")
+    new = _profile(version="1.1-early", generated_at="2026-08-30T02:00:00+00:00")
     dump_set_profile(old, set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path))
     artifact, packed = _artifact(new)
     calls: list[str] = []
@@ -537,11 +611,34 @@ def test_refresh_installs_newer_then_unchanged_without_artifact_download(tmp_pat
     unchanged = client.refresh("TST", "QuickDraft", force=True)
 
     assert updated.outcome is ProfileRefreshOutcome.UPDATED
-    assert updated.profile.profile_version == "1.1-semantic"
+    assert updated.profile.profile_version == "1.1-early"
     assert unchanged.outcome is ProfileRefreshOutcome.UNCHANGED
     assert calls_after_update.count(ARTIFACT_URL) == 1
     assert calls.count(ARTIFACT_URL) == 1
 
+
+def test_schema_four_hosted_profile_is_canonical_and_unchanged_by_raw_identity(tmp_path: Path) -> None:
+    old = _schema_four_profile(profile_version="4.0-cache", generated_at="2026-08-30T02:00:00+00:00")
+    new = _schema_four_profile(profile_version="4.0-hosted", generated_at="2026-08-31T02:00:00+00:00")
+    cache_path = set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path)
+    dump_set_profile(old, cache_path)
+    artifact, packed = _artifact(new)
+    calls: list[str] = []
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for({MANIFEST_URL: _manifest(artifact), ARTIFACT_URL: packed}, calls),
+        manifest_ttl_seconds=0,
+    )
+
+    updated = client.refresh("TST", "QuickDraft", force=True)
+    unchanged = client.refresh("TST", "QuickDraft", force=True)
+
+    assert updated.outcome is ProfileRefreshOutcome.UPDATED
+    assert updated.profile == new
+    assert unchanged.outcome is ProfileRefreshOutcome.UNCHANGED
+    assert cache_path.read_bytes() == new.to_bytes()
+    assert calls.count(ARTIFACT_URL) == 1
 
 
 @pytest.mark.parametrize(
@@ -563,8 +660,8 @@ def test_manifest_cache_is_bound_to_exact_source_within_ttl(
     alternate_artifact_url: str,
 ) -> None:
     old = _profile()
-    first = _profile(version="1.1-semantic", generated_at="2026-08-30T02:00:00+00:00")
-    second = _profile(version="1.2-semantic", generated_at="2026-08-31T02:00:00+00:00")
+    first = _profile(version="1.1-early", generated_at="2026-08-30T02:00:00+00:00")
+    second = _profile(version="1.2-early", generated_at="2026-08-31T02:00:00+00:00")
     dump_set_profile(old, set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path))
     first_artifact, first_packed = _artifact(first)
     second_artifact, second_packed = _artifact(second, url=alternate_artifact_url)
@@ -604,7 +701,7 @@ def test_manifest_cache_is_bound_to_exact_source_within_ttl(
 
 def test_manifest_cache_without_source_is_refetched(tmp_path: Path) -> None:
     current = _profile()
-    candidate = _profile(version="1.1-semantic", generated_at="2026-08-30T02:00:00+00:00")
+    candidate = _profile(version="1.1-early", generated_at="2026-08-30T02:00:00+00:00")
     dump_set_profile(current, set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path))
     artifact, packed = _artifact(candidate)
     cache_path = tmp_path / "set-profiles" / "v1" / "manifest.json"
@@ -634,9 +731,9 @@ def test_manifest_cache_without_source_is_refetched(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("version", "generated_at", "maturity", "expected"),
     [
-        ("0.9-semantic", "2026-08-28T02:00:00+00:00", ProfileMaturity.SEMANTIC_ONLY, "stale"),
+        ("0.9-early", "2026-08-28T02:00:00+00:00", ProfileMaturity.EARLY, "stale"),
         ("2.0-metadata", "2026-08-31T02:00:00+00:00", ProfileMaturity.METADATA_ONLY, "stale"),
-        ("conflicting", "2026-08-29T02:00:00+00:00", ProfileMaturity.SEMANTIC_ONLY, "conflict"),
+        ("conflicting", "2026-08-29T02:00:00+00:00", ProfileMaturity.EARLY, "conflict"),
     ],
 )
 def test_refresh_rejects_older_conflicting_and_maturity_downgrade(
@@ -666,11 +763,38 @@ def test_refresh_rejects_older_conflicting_and_maturity_downgrade(
     assert f"artifact:{expected}" in result.diagnostics
     assert ARTIFACT_URL not in calls
 
+@pytest.mark.parametrize("cache_kind", ["empirical", "generic"])
+def test_semantic_only_manifest_falls_back_without_fetching_artifact(
+    tmp_path: Path,
+    cache_kind: str,
+) -> None:
+    if cache_kind == "empirical":
+        fallback = _schema_two_profile(profile_version="2.0-cache")
+        dump_set_profile(fallback, set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path))
+    else:
+        fallback = SetProfile.generic(set_code="tst", event_format="quickdraft")
+    historical = _schema_two_profile(profile_version="2.0-semantic-history")
+    artifact, _ = _artifact(historical, maturity=ProfileMaturity.SEMANTIC_ONLY)
+    calls: list[str] = []
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for({MANIFEST_URL: _manifest(artifact)}, calls),
+        manifest_ttl_seconds=0,
+    )
+
+    result = client.refresh("TST", "QuickDraft", force=True)
+
+    assert result.outcome is ProfileRefreshOutcome.ARTIFACT_INVALID
+    assert result.profile == fallback
+    assert "artifact:retired-semantic-only" in result.diagnostics
+    assert calls == [MANIFEST_URL]
+
 
 def test_refresh_failure_preserves_last_good_cache_and_manifest(tmp_path: Path) -> None:
     current = _profile()
     dump_set_profile(current, set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path))
-    artifact, _ = _artifact(_profile(version="1.1-semantic", generated_at="2026-08-30T02:00:00+00:00"))
+    artifact, _ = _artifact(_profile(version="1.1-early", generated_at="2026-08-30T02:00:00+00:00"))
     before = set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path).read_bytes()
     manifest_payload = _manifest(artifact)
     client = ProfileClient(
@@ -717,7 +841,7 @@ def test_redirect_final_origin_is_rejected_without_touching_cache(tmp_path: Path
     current = _profile()
     path = set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path)
     dump_set_profile(current, path)
-    artifact, packed = _artifact(_profile(version="1.1-semantic", generated_at="2026-08-30T02:00:00+00:00"))
+    artifact, packed = _artifact(_profile(version="1.1-early", generated_at="2026-08-30T02:00:00+00:00"))
 
     def opener(request: Any, *, timeout: float) -> _Response:
         del timeout
@@ -738,7 +862,7 @@ def test_artifact_bounds_decompression_and_hash_failures_preserve_cache(tmp_path
     current = _profile()
     path = set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path)
     dump_set_profile(current, path)
-    newer = _profile(version="1.1-semantic", generated_at="2026-08-30T02:00:00+00:00")
+    newer = _profile(version="1.1-early", generated_at="2026-08-30T02:00:00+00:00")
     artifact, packed = _artifact(newer)
     if failure == "compressed-size":
         client = ProfileClient(tmp_path, manifest_url=MANIFEST_URL, max_gzip_bytes=1)
@@ -780,13 +904,13 @@ def test_schema_identity_and_metadata_failures_are_structured(tmp_path: Path) ->
     dump_set_profile(current, path)
     malformed = json.loads(current.to_bytes())
     malformed["schema_version"] = SET_PROFILE_SCHEMA_VERSION + 1
-    malformed["profile_version"] = "1.1-semantic"
+    malformed["profile_version"] = "1.1-early"
     malformed["generated_at"] = "2026-08-30T02:00:00+00:00"
     raw = (json.dumps(malformed, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     artifact, packed = _artifact(
         current,
         generated_at="2026-08-30T02:00:00+00:00",
-        profile_version="1.1-semantic",
+        profile_version="1.1-early",
         profile_bytes=raw,
         compressed=gzip.compress(raw, mtime=0),
     )
@@ -800,6 +924,43 @@ def test_schema_identity_and_metadata_failures_are_structured(tmp_path: Path) ->
     assert result.outcome is ProfileRefreshOutcome.ARTIFACT_INVALID
     assert any(item.startswith("artifact:") for item in result.diagnostics)
 
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("role_profile", {}),
+        ("enhancement", {}),
+        ("enhancement_status", "enhanced"),
+    ],
+)
+def test_schema_four_rejects_retired_semantic_fields_in_hosted_profiles(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    current = _schema_two_profile(profile_version="2.0-cache")
+    cache_path = set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path)
+    dump_set_profile(current, cache_path)
+    clean = _schema_four_profile(profile_version="4.0-clean", generated_at="2026-08-31T02:00:00+00:00")
+    malformed = clean.to_json()
+    malformed[field] = value
+    raw_bytes = _canonical_json_bytes(malformed)
+    artifact, packed = _artifact(clean, profile_bytes=raw_bytes)
+    calls: list[str] = []
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for({MANIFEST_URL: _manifest(artifact), ARTIFACT_URL: packed}, calls),
+        manifest_ttl_seconds=0,
+    )
+
+    result = client.refresh("TST", "QuickDraft", force=True)
+
+    assert result.outcome is ProfileRefreshOutcome.ARTIFACT_INVALID
+    assert result.profile == current
+    assert "artifact:profile-invalid" in result.diagnostics
+    assert cache_path.read_bytes() == current.to_bytes()
+    assert calls == [MANIFEST_URL, ARTIFACT_URL]
 
 def test_refresh_outcomes_distinguish_offline_missing_manifest_and_remote_failures(tmp_path: Path) -> None:
     offline = ProfileClient(tmp_path, network_policy=ProfileNetworkPolicy.OFFLINE)
@@ -845,7 +1006,7 @@ def test_timeout_is_positive_and_passed_to_opener(tmp_path: Path) -> None:
         ProfileClient(tmp_path, timeout_seconds=float("inf"))
 
     seen: list[float] = []
-    profile = _profile(version="1.1-semantic", generated_at="2026-08-30T02:00:00+00:00")
+    profile = _profile(version="1.1-early", generated_at="2026-08-30T02:00:00+00:00")
     artifact, packed = _artifact(profile)
 
     def opener(request: Any, *, timeout: float) -> _Response:
@@ -860,7 +1021,7 @@ def test_timeout_is_positive_and_passed_to_opener(tmp_path: Path) -> None:
 
 def test_concurrent_refreshes_expose_only_whole_profiles(tmp_path: Path) -> None:
     old = _profile()
-    new = _profile(version="1.1-semantic", generated_at="2026-08-30T02:00:00+00:00")
+    new = _profile(version="1.1-early", generated_at="2026-08-30T02:00:00+00:00")
     path = set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path)
     dump_set_profile(old, path)
     artifact, packed = _artifact(new)

@@ -35,12 +35,8 @@ from draftomen.profile_manifest import (
     ProfileManifestArtifact,
     load_profile_manifest,
 )
-from draftomen.set_profile import EnhancementStatus, ProfileMaturity, SetProfile
+from draftomen.set_profile import SetProfile
 from draftomen.set_card_data import SetCardData
-from draftomen.set_enrichment_workflow import (
-    EnrichmentReviewDecision,
-    finalize_set_enrichment,
-)
 from draftomen.seventeen import (
     CARD_RATINGS_ENDPOINT,
     COLOR_RATINGS_ENDPOINT,
@@ -55,14 +51,6 @@ from draftomen.seventeen import (
     fetch_17lands_format_data,
 )
 
-from tests.test_profile_publication import (
-    _database as _enrichment_database,
-    _enrichment_artifact,
-)
-from tests.test_set_enrichment_workflow import (
-    _Completion as EnrichmentCompletion,
-    _run as run_enrichment_analysis,
-)
 
 NOW = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
 
@@ -188,50 +176,70 @@ def _manifest(root: Path) -> None:
     (objects / f"{report.gzip_sha256}.json.gz").write_bytes(generation.gzip_bytes)
 
 
-def _enriched_profile_artifact(
+def _legacy_enriched_profile_artifact(
     *,
     set_code: str,
     event_format: str,
 ) -> tuple[ProfileManifestArtifact, bytes]:
-    """Generate one enriched metadata profile and its manifest artifact."""
+    """Seed an immutable pre-schema-4 enriched profile as historical wire data."""
 
-    database = CardDatabase(
-        cards={
-            card_id: replace(card, set_code=set_code)
-            for card_id, card in _enrichment_database().cards.items()
-        }
-    )
     generation = generate_set_profile(
         set_code=set_code,
         event_format=event_format,
         stage="metadata",
-        card_database=database,
+        card_database=_database(set_code=set_code, set_name=f"{set_code.upper()} Set"),
         generated_at=NOW,
-        enrichment=_enrichment_artifact(database, set_code=set_code),
     )
-    report = generation.report
+    profile_json = generation.profile.to_json()
+    profile_json["schema_version"] = 3
+    profile_json["role_profile"] = {"schema_version": 1, "cards": []}
+    profile_json["enhancement_status"] = "enhanced"
+    profile_json["enhancement"] = {
+        "artifact_sha256": "a" * 64,
+        "review": {
+            "state": "confirmed",
+            "reviewer_id": "historical-reviewer",
+            "reviewed_at": NOW.isoformat(),
+        },
+        "relationships": [],
+    }
+    profile_bytes = (
+        json.dumps(
+            profile_json,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    payload = gzip.compress(profile_bytes, mtime=0)
+    gzip_sha256 = hashlib.sha256(payload).hexdigest()
     artifact = ProfileManifestArtifact(
-        set_code=report.set_code,
-        event_format=report.event_format,
-        set_profile_schema_version=report.set_profile_schema_version,
+        set_code=generation.profile.set_code,
+        event_format=generation.profile.event_format,
+        set_profile_schema_version=3,
         profile_version=generation.profile.profile_version,
-        generated_at=report.generated_at,
-        url=f"https://www.draftomen.com/profiles/objects/{report.gzip_sha256}.json.gz",
-        gzip_bytes=report.gzip_bytes,
-        profile_bytes=report.profile_bytes,
-        gzip_sha256=report.gzip_sha256,
-        profile_sha256=report.profile_sha256,
+        generated_at=generation.profile.generated_at,
+        url=f"https://www.draftomen.com/profiles/objects/{gzip_sha256}.json.gz",
+        gzip_bytes=len(payload),
+        profile_bytes=len(profile_bytes),
+        gzip_sha256=gzip_sha256,
+        profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
         maturity=generation.profile.maturity,
     )
-    return artifact, generation.gzip_bytes
+    return artifact, payload
 
 
-def _enriched_manifest(root: Path) -> tuple[ProfileManifestArtifact, bytes]:
-    """Seed the manifest with the plain fixture entry plus one enriched entry."""
+def _legacy_enriched_manifest(root: Path) -> tuple[ProfileManifestArtifact, bytes]:
+    """Add a schema-three enriched object directly to the historical manifest."""
 
     _manifest(root)
     profiles = root / "website/public/profiles"
-    artifact, payload = _enriched_profile_artifact(set_code="new", event_format="QuickDraft")
+    artifact, payload = _legacy_enriched_profile_artifact(
+        set_code="new",
+        event_format="QuickDraft",
+    )
     manifest_path = profiles / "manifest.json"
     seeded = load_profile_manifest(manifest_path)
     manifest_path.write_bytes(
@@ -1583,9 +1591,6 @@ def test_lci_fallback_then_exact_refresh_reaches_profile_consumer(
     assert mixed_profile.pair("UB").performance is not None  # type: ignore[union-attr]
     assert mixed_profile.pair("UB").performance.aggregate_evidence == mixed_pair_evidence  # type: ignore[union-attr]
 
-    first_role_profile = first_profile.role_profile
-    assert first_role_profile is not None
-    assert mixed_profile.role_profile == first_role_profile
     assert mixed_refresh.profile.fingerprint != first_refresh.profile.fingerprint
 
     clock_value[0] = NOW + timedelta(days=16)
@@ -1629,7 +1634,6 @@ def test_lci_fallback_then_exact_refresh_reaches_profile_consumer(
         87185: ("quickdraft", "quickdraft", None),
         87235: ("quickdraft", "quickdraft", None),
     }
-    assert exact_profile.role_profile == first_role_profile
     assert exact_refresh.profile.fingerprint not in {
         first_refresh.profile.fingerprint,
         mixed_refresh.profile.fingerprint,
@@ -1694,7 +1698,7 @@ def test_lci_fallback_then_exact_refresh_reaches_profile_consumer(
     assert first_object_bytes == first_object_path.read_bytes()
 
 
-def test_manually_published_enrichment_survives_refresh_and_reaches_profile_client(
+def test_historical_enriched_profile_survives_an_unrelated_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1705,46 +1709,21 @@ def test_manually_published_enrichment_survives_refresh_and_reaches_profile_clie
     root = tmp_path / "checkout"
     _static(root / "website/public/card-data", set_code="old", set_name="Old Set")
     inventory, bulk = _source(tmp_path)
-    _manifest(root)
+    legacy_artifact, legacy_bytes = _legacy_enriched_manifest(root)
     profiles = root / "website/public/profiles"
     manifest_path = profiles / "manifest.json"
-
-    def manifest_entries() -> dict[tuple[str, str], dict[str, Any]]:
-        manifest = json.loads(manifest_path.read_bytes())
-        return {
-            (entry["set_code"], entry["format"]): entry for entry in manifest["artifacts"]
-        }
-
-    seeded_entry = manifest_entries()[("old", "premierdraft")]
-
-    # A manual `enrich-set` Confirm publishes a real schema-three QuickDraft profile.
-    reviewed_at = datetime.now(tz=UTC) + timedelta(minutes=1)
-    analysis = run_enrichment_analysis(tmp_path, completion=EnrichmentCompletion())
-    review = finalize_set_enrichment(
-        analysis=analysis,
-        decision=EnrichmentReviewDecision.CONFIRM,
-        reviewer_id="operator",
-        reviewed_at=reviewed_at,
-        profiles_dir=profiles,
+    legacy_object_path = profiles / "objects" / f"{legacy_artifact.gzip_sha256}.json.gz"
+    legacy_entry = next(
+        entry
+        for entry in json.loads(manifest_path.read_bytes())["artifacts"]
+        if (entry["set_code"], entry["format"]) == ("new", "quickdraft")
     )
+    legacy_json = json.loads(gzip.decompress(legacy_bytes))
+    assert legacy_json["schema_version"] == 3
+    assert legacy_json["enhancement_status"] == "enhanced"
+    assert "enhancement" in legacy_json
+    assert legacy_object_path.read_bytes() == legacy_bytes
 
-    assert review.publication is not None
-    assert review.published_object_path is not None
-    assert review.published_manifest_path == manifest_path
-    enrichment_identity = (analysis.set_code, QUICK_DRAFT_FORMAT.casefold())
-    published_manifest = load_profile_manifest(manifest_path)
-    enrichment_artifact = published_manifest.select(
-        set_code=analysis.set_code, event_format=QUICK_DRAFT_FORMAT
-    )
-    assert enrichment_artifact is not None
-    assert enrichment_artifact.maturity is ProfileMaturity.METADATA_ONLY
-    enrichment_entry = manifest_entries()[enrichment_identity]
-    enrichment_object_path = review.published_object_path
-    enrichment_object_bytes = enrichment_object_path.read_bytes()
-
-    # An ordinary Profile Refresh of a different identity must merge its own
-    # identity into this manifest without disturbing the manual publication.
-    refresh_now = reviewed_at + timedelta(hours=1)
     card_adapter, ratings_adapter, public_adapter, ratings_requests, public_calls = (
         _fixture_adapters()
     )
@@ -1767,99 +1746,36 @@ def test_manually_published_enrichment_survives_refresh_and_reaches_profile_clie
         inventory_file=inventory,
         bulk_file=bulk,
         fetch_json=fetch_json,
-        clock=lambda: refresh_now,
+        clock=lambda: NOW + timedelta(hours=1),
         card_metadata_adapter=card_adapter,
         ratings_adapter=ratings_adapter,
         public_draft_adapter=public_adapter,
     )
 
     assert report["status"] == "success"
-    assert report["profiles"]["manifest_changed"] is True
     assert report["profiles"]["successful"] == [
         {"event_format": "PremierDraft", "set_code": "new", "set_name": "New Set"}
     ]
-    refreshed_entries = manifest_entries()
-    assert refreshed_entries[enrichment_identity] == enrichment_entry
-    assert refreshed_entries[("old", "premierdraft")] == seeded_entry
+    refreshed_entries = {
+        (entry["set_code"], entry["format"]): entry
+        for entry in json.loads(manifest_path.read_bytes())["artifacts"]
+    }
+    assert refreshed_entries[("new", "quickdraft")] == legacy_entry
     refreshed_manifest = load_profile_manifest(manifest_path)
-    assert (
-        refreshed_manifest.select(set_code=analysis.set_code, event_format=QUICK_DRAFT_FORMAT)
-        == enrichment_artifact
-    )
-    assert enrichment_object_path.read_bytes() == enrichment_object_bytes
-    refreshed_pair = refreshed_manifest.select(set_code="NEW", event_format="PremierDraft")
+    assert refreshed_manifest.select(set_code="new", event_format="QuickDraft") == legacy_artifact
+    assert legacy_object_path.read_bytes() == legacy_bytes
+    refreshed_pair = refreshed_manifest.select(set_code="new", event_format="PremierDraft")
     assert refreshed_pair is not None
-    assert (refreshed_pair.set_code, refreshed_pair.event_format) == ("new", "premierdraft")
     refreshed_object_path = profiles / "objects" / f"{refreshed_pair.gzip_sha256}.json.gz"
-    assert (
-        hashlib.sha256(refreshed_object_path.read_bytes()).hexdigest()
-        == refreshed_pair.gzip_sha256
-    )
+    assert hashlib.sha256(refreshed_object_path.read_bytes()).hexdigest() == refreshed_pair.gzip_sha256
     assert public_calls == []
-    # Profile Refresh acquires ratings for the casefolded format it normalized.
     assert set(ratings_requests) == {
         card_ratings_url(set_code="new", event_format="premierdraft"),
         color_ratings_url(set_code="new", event_format="premierdraft"),
     }
 
-    # The ordinary consumer downloads the manually published enrichment profile.
-    manifest_url = "https://www.draftomen.com/profiles/manifest.json"
-    consumer_dir = tmp_path / "consumer"
-    client = ProfileClient(
-        consumer_dir,
-        manifest_url=manifest_url,
-        opener=_local_profile_opener(root, manifest_url),
-        clock=lambda: refresh_now,
-        manifest_ttl_seconds=0,
-    )
-    downloaded = client.refresh(analysis.set_code, QUICK_DRAFT_FORMAT, force=True)
 
-    assert downloaded.outcome is ProfileRefreshOutcome.UPDATED
-    assert downloaded.manifest is not None
-    assert (
-        downloaded.manifest.select(set_code=analysis.set_code, event_format=QUICK_DRAFT_FORMAT)
-        == enrichment_artifact
-    )
-    profile = downloaded.profile
-    assert profile.schema_version == 3
-    assert (profile.set_code, profile.event_format) == enrichment_identity
-    assert profile.maturity is ProfileMaturity.METADATA_ONLY
-    assert profile.enhancement_status is EnhancementStatus.ENHANCED
-    assert profile.enhancement is not None
-    assert profile.enhancement.review == review.artifact.review
-    assert profile.enhancement.review.state == "confirmed"
-    assert profile.enhancement.review.reviewer_id == "operator"
-    assert profile.enhancement.artifact_sha256 == review.artifact_path.stem
-    assert (
-        tuple(item.finding_id for item in profile.enhancement.relationships)
-        == review.artifact.confirmed_relationship_ids
-    )
-    published_profile = SetProfile.from_json(json.loads(gzip.decompress(enrichment_object_bytes)))
-    assert profile == published_profile
-
-    # The same application directory serves the enrichment profile offline.
-    offline_calls: list[str] = []
-
-    def failing_opener(request: Any, *, timeout: float) -> Any:
-        del timeout
-        offline_calls.append(request.full_url)
-        raise AssertionError("the offline client must not open a request")
-
-    offline_client = ProfileClient(
-        consumer_dir,
-        manifest_url=manifest_url,
-        network_policy=ProfileNetworkPolicy.OFFLINE,
-        opener=failing_opener,
-        clock=lambda: refresh_now,
-    )
-    cached = offline_client.load_cached(analysis.set_code, QUICK_DRAFT_FORMAT)
-
-    assert cached.source == "local-metadata-only"
-    assert cached.profile == profile
-    assert offline_calls == []
-
-
-def test_refresh_retains_enriched_profile_and_reports_downgrade_conflict(
+def test_schema_four_profile_replaces_historical_enriched_manifest_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1870,33 +1786,30 @@ def test_refresh_retains_enriched_profile_and_reports_downgrade_conflict(
     root = tmp_path / "checkout"
     _static(root / "website/public/card-data", set_code="new", set_name="New Set")
     inventory, bulk = _source(tmp_path)
-    enriched_artifact, enriched_bytes = _enriched_manifest(root)
+    legacy_artifact, legacy_bytes = _legacy_enriched_manifest(root)
     profiles = root / "website/public/profiles"
-    enriched_object_path = profiles / "objects" / f"{enriched_artifact.gzip_sha256}.json.gz"
-    seeded_profile = SetProfile.from_json(json.loads(gzip.decompress(enriched_bytes)))
-    assert seeded_profile.enhancement_status is EnhancementStatus.ENHANCED
+    legacy_object_path = profiles / "objects" / f"{legacy_artifact.gzip_sha256}.json.gz"
     card_adapter, ratings_adapter, public_adapter, _, public_calls = _fixture_adapters()
 
     def fetch_json(url: str, timeout: int) -> dict[str, Any]:
         del timeout
         assert url == "https://www.17lands.com/data/filters"
         return {
-            "formats_by_expansion": {"NEW": ["PremierDraft", "QuickDraft"]},
+            "formats_by_expansion": {"NEW": ["QuickDraft"]},
             "live_formats_by_expansion": {},
         }
 
-    bundle = tmp_path / "bundle"
     report = workflow.generate_website(
         base_commit="base",
         selection_mode="one",
         selector="new",
         repo_root=root,
-        bundle_dir=bundle,
+        bundle_dir=tmp_path / "bundle",
         cache_dir=tmp_path / "cache",
         inventory_file=inventory,
         bulk_file=bulk,
         fetch_json=fetch_json,
-        clock=lambda: NOW,
+        clock=lambda: NOW + timedelta(hours=1),
         card_metadata_adapter=card_adapter,
         ratings_adapter=ratings_adapter,
         public_draft_adapter=public_adapter,
@@ -1905,49 +1818,21 @@ def test_refresh_retains_enriched_profile_and_reports_downgrade_conflict(
     assert report["status"] == "success"
     assert report["failures"] == []
     assert report["profiles"]["selected"] == [
-        {"set_code": "new", "set_name": "New Set", "event_format": "PremierDraft"},
-        {"set_code": "new", "set_name": "New Set", "event_format": "QuickDraft"},
+        {"event_format": "QuickDraft", "set_code": "new", "set_name": "New Set"}
     ]
-    assert report["profiles"]["successful"] == [
-        {"set_code": "new", "set_name": "New Set", "event_format": "PremierDraft"}
-    ]
-    assert report["profiles"]["manifest_changed"] is True
-    conflicts = report["profiles"]["enrichment_conflicts"]
-    assert len(conflicts) == 1
-    conflict = conflicts[0]
-    assert set(conflict) == {
-        "event_format",
-        "rejected_gzip_sha256",
-        "rejected_url",
-        "retained_gzip_sha256",
-        "retained_url",
-        "set_code",
-    }
-    assert conflict["set_code"] == "new"
-    assert conflict["event_format"] == "quickdraft"
-    assert conflict["retained_gzip_sha256"] == enriched_artifact.gzip_sha256
-    assert conflict["retained_url"] == enriched_artifact.url
-    rejected_sha256 = conflict["rejected_gzip_sha256"]
-    assert rejected_sha256 != enriched_artifact.gzip_sha256
-    assert conflict["rejected_url"] == (
-        f"https://www.draftomen.com/profiles/objects/{rejected_sha256}.json.gz"
-    )
-    assert not (profiles / "objects" / f"{rejected_sha256}.json.gz").exists()
+    assert report["profiles"]["successful"] == report["profiles"]["selected"]
+    assert report["profiles"]["enrichment_conflicts"] == []
 
     refreshed = load_profile_manifest(profiles / "manifest.json")
-    assert refreshed.select(set_code="new", event_format="QuickDraft") == enriched_artifact
-    assert enriched_object_path.read_bytes() == enriched_bytes
-    premier = refreshed.select(set_code="new", event_format="PremierDraft")
-    assert premier is not None
-    premier_object_path = profiles / "objects" / f"{premier.gzip_sha256}.json.gz"
-    assert (
-        hashlib.sha256(premier_object_path.read_bytes()).hexdigest() == premier.gzip_sha256
-    )
-
-    summary = (bundle / "summary.md").read_text(encoding="utf-8")
-    assert (
-        f"- new / quickdraft: retained {enriched_artifact.gzip_sha256}, "
-        f"rejected {rejected_sha256}" in summary
-    )
-    assert "new / QuickDraft / New Set: retained\\-enriched" in summary
+    replacement = refreshed.select(set_code="new", event_format="QuickDraft")
+    assert replacement is not None
+    assert replacement.set_profile_schema_version == 4
+    assert replacement.gzip_sha256 != legacy_artifact.gzip_sha256
+    replacement_path = profiles / "objects" / f"{replacement.gzip_sha256}.json.gz"
+    replacement_bytes = replacement_path.read_bytes()
+    profile_json = json.loads(gzip.decompress(replacement_bytes))
+    assert profile_json["schema_version"] == 4
+    assert {"role_profile", "enhancement", "enhancement_status"}.isdisjoint(profile_json)
+    assert hashlib.sha256(replacement_bytes).hexdigest() == replacement.gzip_sha256
+    assert legacy_object_path.read_bytes() == legacy_bytes
     assert public_calls == []

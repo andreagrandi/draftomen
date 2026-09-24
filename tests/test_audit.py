@@ -34,8 +34,10 @@ from draftomen.semantic_capability_records import (
     QuantityRelation,
 )
 from draftomen.semantic_enrichment import (
-    SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
+    EnrichmentSources,
+    SemanticEnrichmentArtifact,
     card_source_sha256,
+    set_source_sha256,
 )
 from draftomen.semantic_enrichment_records import (
     ArtifactReview,
@@ -54,19 +56,12 @@ from draftomen.semantic_relationship_records import (
     RelationshipTiming,
     RelationshipZone,
 )
-from draftomen.semantic_roles import (
-    CompiledRoleProfile,
-    ProfileCard,
-    Role,
-    RoleAssignment,
-)
+from draftomen.semantic_roles import Role
 from draftomen.set_profile import (
-    EnhancementCardData,
     PairProfile,
     ProfileMaturity,
     SampleSummary,
     SetProfile,
-    SetProfileEnhancement,
     SourceMetadata,
     dump_set_profile,
     load_scoring_profile,
@@ -471,12 +466,11 @@ def test_audit_omits_legacy_relationship_projections_and_preserves_contextual_ev
     tmp_path: Path,
 ) -> None:
     profile = _relationship_profile(tmp_path)
-    enhancement = profile.enhancement
-    assert enhancement is not None
-    relationship = enhancement.relationships[0]
+    artifact = _relationship_enrichment_artifact()
+    relationship = artifact.confirmed_relationships[0]
     assert relationship.claim == SENTINEL_CLAIM
     assert relationship.prerequisites == (SENTINEL_LEGACY_PREREQUISITE,)
-    assert enhancement.runs[0].provider == SENTINEL_MODEL_RUN
+    assert artifact.runs[0].provider == SENTINEL_MODEL_RUN
     database = _relationship_card_database()
     engine = PickEngine(set_profile=profile)
     scored_pack = engine.score_pack(
@@ -825,6 +819,7 @@ def _set_profile() -> SetProfile:
         samples=SampleSummary(total=1, by_pair=(("WU", 1),)),
         confidence=1.0,
         pairs=(PairProfile(pair="WU"),),
+        schema_version=4,
     )
 
 
@@ -1076,8 +1071,7 @@ def _relationship_participants() -> tuple[RelationshipParticipant, RelationshipP
 
 
 def _relationship_set_profile() -> SetProfile:
-    """Build one confirmed schema-three profile carrying the typed relationship."""
-    database = _relationship_card_database()
+    """Build the clean schema-four profile used for relationship scoring."""
     return SetProfile(
         set_code=RELATIONSHIP_SET_CODE,
         event_format="quickdraft",
@@ -1088,78 +1082,66 @@ def _relationship_set_profile() -> SetProfile:
         samples=SampleSummary(total=1, by_pair=(("WU", 1),)),
         confidence=1.0,
         pairs=(PairProfile(pair="WU"),),
-        role_profile=CompiledRoleProfile(
-            set_code=RELATIONSHIP_SET_CODE,
-            cards=(
-                ProfileCard(
-                    key=f"arena_id:{RELATIONSHIP_SOURCE_ID}",
-                    card_name=RELATIONSHIP_SOURCE_NAME,
-                    assignments=(RoleAssignment(Role.TOKEN_MAKER, confidence=0.9),),
-                ),
-                ProfileCard(
-                    key=f"arena_id:{RELATIONSHIP_TARGET_ID}",
-                    card_name=RELATIONSHIP_TARGET_NAME,
-                    assignments=(
-                        RoleAssignment(Role.GO_WIDE_PAYOFF, confidence=0.8),
-                    ),
-                ),
-            ),
+        schema_version=4,
+    )
+
+
+def _relationship_enrichment_artifact() -> SemanticEnrichmentArtifact:
+    """Build a confirmed relationship in the standalone enrichment workflow."""
+    database = _relationship_card_database()
+    sources = EnrichmentSources(
+        set_code=RELATIONSHIP_SET_CODE,
+        cards=tuple(database.cards.values()),
+        guides=(),
+    )
+    run = ModelRun(
+        run_id=RELATIONSHIP_RUN_ID,
+        provider=SENTINEL_MODEL_RUN,
+        model="audit-model",
+        reasoning=ReasoningConfig(
+            enabled=None,
+            effort=None,
+            max_tokens=None,
+            exclude=None,
         ),
-        schema_version=3,
-        enhancement=SetProfileEnhancement(
-            artifact_schema_version=SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
-            artifact_sha256="a" * 64,
-            set_code=RELATIONSHIP_SET_CODE,
-            set_source_id="audit-relationship-source",
-            set_source_sha256="b" * 64,
-            created_at="2026-07-27T09:00:00+00:00",
-            card_data=EnhancementCardData(
-                source="audit-relationship-source",
-                sha256="b" * 64,
-                card_count=2,
-            ),
-            cards=tuple(
-                CardSourcePin(
-                    card_id=card.grp_id,
-                    oracle_id=None,
-                    collector_number=None,
-                    sha256=card_source_sha256(card),
-                )
-                for card in database.cards.values()
-            ),
-            guides=(),
-            runs=(
-                ModelRun(
-                    run_id=RELATIONSHIP_RUN_ID,
-                    provider=SENTINEL_MODEL_RUN,
-                    model="audit-model",
-                    reasoning=ReasoningConfig(
-                        enabled=None,
-                        effort=None,
-                        max_tokens=None,
-                        exclude=None,
-                    ),
-                    prompt_id="prompt-audit-relationship",
-                    prompt_sha256="c" * 64,
-                    response_schema_id="schema-audit-relationship",
-                    response_schema_sha256="d" * 64,
-                    started_at="2026-07-27T08:00:00+00:00",
-                    completed_at="2026-07-27T08:05:00+00:00",
-                    input_tokens=None,
-                    output_tokens=None,
-                    reasoning_tokens=None,
-                    cost_usd=None,
-                ),
-            ),
-            mechanics=(),
-            relationships=(_relationship_record(),),
-            review=ArtifactReview(
-                state="confirmed",
-                reviewer_id="reviewer-a",
-                reviewed_at="2026-07-27T09:30:00+00:00",
-            ),
-            confidence=0.9,
+        prompt_id="prompt-audit-relationship",
+        prompt_sha256="c" * 64,
+        response_schema_id="schema-audit-relationship",
+        response_schema_sha256="d" * 64,
+        started_at="2026-07-27T08:00:00+00:00",
+        completed_at="2026-07-27T08:05:00+00:00",
+        input_tokens=None,
+        output_tokens=None,
+        reasoning_tokens=None,
+        cost_usd=None,
+    )
+    return SemanticEnrichmentArtifact(
+        set_code=RELATIONSHIP_SET_CODE,
+        set_source_id="audit-relationship-source",
+        set_source_sha256=set_source_sha256(sources),
+        created_at="2026-07-27T09:00:00+00:00",
+        cards=tuple(
+            CardSourcePin(
+                card_id=card.grp_id,
+                oracle_id=card.oracle_id,
+                collector_number=card.collector_number,
+                sha256=card_source_sha256(card),
+            )
+            for card in database.cards.values()
         ),
+        guides=(),
+        runs=(run,),
+        oracle_facts=(),
+        guide_claims=(),
+        relationships=(_relationship_record(),),
+        rejected_findings=(),
+        review=ArtifactReview(
+            state="confirmed",
+            reviewer_id="reviewer-a",
+            reviewed_at="2026-07-27T09:30:00+00:00",
+        ),
+        confirmed_relationship_ids=(RELATIONSHIP_FINDING_ID,),
+        sources=sources,
     )
 
 

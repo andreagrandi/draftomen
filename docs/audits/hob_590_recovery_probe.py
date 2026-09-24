@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Offline recruit/amass family recovery report for issue #590.
+"""ARCHIVED HISTORICAL PROBE: targets the retired pre-#663 schema-3 profile compiler. This script is not runnable against current code and is not evidence of current runtime behavior.
+
+The command below is preserved only as a historical capture record. Do not use it to verify current behavior.
 
 Read-only.  Network denial is installed before any ``draftomen`` module is
 imported, the 414 scoped finding ids are rebuilt from the frozen #587
@@ -8,7 +10,7 @@ recovery is then proved through the published offline consumer
 (``draftomen.cli.main(["generate-profile", ...])``) into a fresh temporary
 directory instead of only a private compiler helper.
 
-Checked-in audit utility; run from the repository root:
+Historical reproduction command from the capture (not runnable against current code):
 
     PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python \
         docs/audits/hob_590_recovery_probe.py --out /tmp/hob-590-recovery.json

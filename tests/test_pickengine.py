@@ -5,7 +5,6 @@ import math
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 
@@ -44,56 +43,24 @@ from draftomen.pool_ledger import (
 from draftomen.profile_generation import generate_set_profile
 from draftomen.ranking import RANKING_MODES, rank_scored_cards
 from draftomen.replay import format_pack_offered_event
-from draftomen.semantic_capability_records import (
-    CapabilityQuantity,
-    CapabilityZone,
-    PrerequisiteKind,
-    QuantityRelation,
-)
-from draftomen.semantic_enrichment import (
-    SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
-    card_source_sha256,
-)
-from draftomen.semantic_enrichment_records import (
-    ArtifactReview,
-    CardSourcePin,
-    FindingReview,
-    FindingStatus,
-    ModelRun,
-    OracleEvidence,
-    ReasoningConfig,
-)
-from draftomen.semantic_relationship_records import (
-    CardRelationship,
-    RelationshipParticipant,
-    RelationshipPrerequisite,
-    RelationshipPrerequisiteProjection,
-    RelationshipTiming,
-    RelationshipZone,
-)
 from draftomen.set_profile import (
-    SET_PROFILE_SCHEMA_VERSION,
     AggregateEvidence,
     CardPairSynergy,
     CardRating,
-    EnhancementCardData,
     PairProfile,
     ProfileMaturity,
     RateEstimate,
     RoleTarget,
     SampleSummary,
     SetProfile,
-    SetProfileEnhancement,
     SourceMetadata,
-    dump_set_profile,
-    load_scoring_profile,
 )
 from draftomen.semantic_roles import (
     CompiledRoleProfile,
     ProfileCard,
-    ProducedResources,
     Role,
     RoleAssignment,
+    resolve_card_roles,
 )
 from draftomen.seventeen import (
     PREMIER_DRAFT_FORMAT,
@@ -306,15 +273,21 @@ def test_every_engine_row_has_an_immutable_ordered_pick_rationale() -> None:
 def test_rationale_score_accounting_preserves_open_ramp_and_locked_math() -> None:
     engine = PickEngine(ratings_data=_ratings_data())
     database = _card_database()
+    local_roles_database = _contextual_database()
     database = replace(
         database,
         cards={
             **database.cards,
-            1: replace(database.cards[1], set_code="TST", arena_id=1),
-            7: replace(database.cards[7], set_code="TST", arena_id=7),
+            1: replace(
+                database.cards[1],
+                oracle_text=local_roles_database.cards[1].oracle_text,
+            ),
+            7: replace(
+                database.cards[7],
+                oracle_text=local_roles_database.cards[7].oracle_text,
+            ),
         },
     )
-
     for pick_index in (3, 10, 16):
         card = engine.score_pack(
             offered_grp_ids=(7,),
@@ -335,30 +308,19 @@ def test_rationale_score_accounting_preserves_open_ramp_and_locked_math() -> Non
             card.raw_score
         )
     cap_profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:1",
-                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
-            ),
-            ProfileCard(
-                key="arena_id:7",
-                assignments=(
-                    RoleAssignment(Role.DRAW),
-                    RoleAssignment(Role.GO_WIDE_ENABLER),
-                    RoleAssignment(
-                        Role.FIXING,
-                        parameters=ProducedResources(("W", "U")),
-                    ),
-                ),
-            ),
-        ),
         role_targets=(
             RoleTarget(Role.DRAW, 1),
             RoleTarget(Role.FIXING, 1),
         ),
     )
     capped = _score_with_context(
-        database=database,
+        database=_contextual_database_with_texts(
+            card_texts={
+                1: "Whenever two or more creatures you control attack.",
+                2: None,
+                7: "Draw a card. Create two 1/1 white Soldier creature tokens.",
+            }
+        ),
         profile=cap_profile,
         offered_grp_ids=(7,),
         pool_grp_ids=(1, 2),
@@ -369,12 +331,26 @@ def test_rationale_score_accounting_preserves_open_ramp_and_locked_math() -> Non
     ).cards[0]
     assert capped.contextual_breakdown.aggregate == MAX_CONTEXTUAL_ADJUSTMENT
     assert capped.contextual_breakdown.to_json()["aggregate"] == 6.0
-    assert capped.raw_score == pytest.approx(63.5)
-    assert capped.score == 63
-    assert capped.rationale.attributed_contribution == pytest.approx(16.0)
-    assert capped.rationale.unattributed_contribution == pytest.approx(-2.5)
-    assert capped.rationale.total_contribution == pytest.approx(13.5)
-
+    assert capped.raw_score == pytest.approx(
+        capped.base_score * capped.color_factor
+        + capped.contextual_breakdown.aggregate
+    )
+    assert capped.score == int(capped.raw_score + 0.5)
+    assert capped.rationale.attributed_contribution == pytest.approx(
+        sum(
+            reason.contribution
+            for reason in capped.rationale.reasons
+            if reason.contribution is not None
+        )
+    )
+    assert capped.rationale.unattributed_contribution == pytest.approx(
+        capped.raw_score
+        - capped.base_score
+        - capped.rationale.attributed_contribution
+    )
+    assert capped.rationale.total_contribution == pytest.approx(
+        capped.raw_score - capped.base_score
+    )
     clamped = engine.score_pack(
         offered_grp_ids=(9,),
         card_database=database,
@@ -390,39 +366,52 @@ def test_rationale_score_accounting_preserves_open_ramp_and_locked_math() -> Non
 
 
 def test_contextual_rationale_keeps_material_term_order_and_evidence() -> None:
-    database = _contextual_database()
+    database = _contextual_database_with_texts(
+        card_texts={
+            1: "Whenever two or more creatures you control attack, draw a card.",
+            2: (
+                "Whenever you draw your second card each turn, "
+                "draw an additional card."
+            ),
+            7: (
+                "Draw a card. Whenever you draw your second card each turn, "
+                "draw a card. Whenever two or more creatures you control attack, "
+                "draw a card."
+            ),
+        }
+    )
     profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:1",
-                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
-            ),
-            ProfileCard(
-                key="arena_id:2",
-                assignments=(RoleAssignment(Role.DRAW_SECOND_PAYOFF),),
-            ),
-            ProfileCard(
-                key="arena_id:5",
-                assignments=(RoleAssignment(Role.DRAW),),
-            ),
-            ProfileCard(
-                key="arena_id:7",
-                assignments=(
-                    RoleAssignment(Role.DRAW),
-                    RoleAssignment(Role.GO_WIDE_ENABLER),
-                    RoleAssignment(Role.DRAW_SECOND_PAYOFF),
-                    RoleAssignment(
-                        Role.FIXING,
-                        parameters=ProducedResources(("W", "U")),
-                    ),
-                ),
-            ),
-        ),
         role_targets=(
             RoleTarget(Role.DRAW, 2),
             RoleTarget(Role.FIXING, 2),
         ),
     )
+    candidate_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=7),
+            profile=None,
+        ).assignments
+    }
+    pool_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=1),
+            profile=None,
+        ).assignments
+    }
+    draw_enabler_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=2),
+            profile=None,
+        ).assignments
+    }
+    assert Role.GO_WIDE_PAYOFF in candidate_roles
+    assert Role.GO_WIDE_ENABLER not in candidate_roles
+    assert Role.GO_WIDE_PAYOFF in pool_roles
+    assert Role.FIXING in candidate_roles
+    assert Role.EXTRA_DRAW_ENABLER in draw_enabler_roles
     card = _score_with_context(
         database=database,
         profile=profile,
@@ -647,24 +636,34 @@ def test_detailed_rationale_describes_material_color_fit_by_sign() -> None:
 @pytest.mark.parametrize(
     ("confidence", "material"),
     (
-        # Profile confidence contributes to target pressure and evidence weight.
-        (0.068402, False),
-        (0.06841, True),
+        # Local card-text confidence moves this term across the materiality cutoff.
+        (0.073, False),
+        (0.075, True),
     ),
 )
 def test_contextual_reasons_require_more_than_one_hundredth_point(
     confidence: float,
     material: bool,
 ) -> None:
+    database = _card_database()
+    database = replace(
+        database,
+        cards={
+            **database.cards,
+            7: replace(database.cards[7], oracle_text="Draw a card."),
+        },
+    )
+    local_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=7),
+            profile=None,
+        ).assignments
+    }
+    assert Role.DRAW in local_roles
     card = _score_with_context(
-        database=_contextual_database(),
+        database=database,
         profile=_contextual_profile(
-            cards=(
-                ProfileCard(
-                    key="arena_id:7",
-                    assignments=(RoleAssignment(Role.DRAW),),
-                ),
-            ),
             role_targets=(RoleTarget(Role.DRAW, 1),),
             confidence=confidence,
         ),
@@ -672,11 +671,10 @@ def test_contextual_reasons_require_more_than_one_hundredth_point(
         pool_grp_ids=(),
     ).cards[0]
 
-    assert (
-        card.contextual_breakdown.role == pytest.approx(0.01)
-        if not material
-        else card.contextual_breakdown.role > 0.01
-    )
+    if material:
+        assert card.contextual_breakdown.role > 0.01
+    else:
+        assert card.contextual_breakdown.role <= 0.01
     role_reasons = tuple(
         reason for reason in card.rationale.reasons if reason.kind == "role"
     )
@@ -820,7 +818,7 @@ def test_concise_reasons_use_magnitude_ties_and_stable_nonadditive_fallback() ->
 
 
 def test_rating_copy_retains_profile_confidence_for_neutral_and_fallback_ratings() -> None:
-    profile = _contextual_profile(cards=(), confidence=0.42)
+    profile = _contextual_profile(confidence=0.42)
 
     neutral_card = _score_with_context(
         database=_contextual_database(),
@@ -849,7 +847,7 @@ def test_rating_copy_retains_profile_confidence_for_neutral_and_fallback_ratings
 def test_detailed_rating_reasons_retain_source_facts_and_evidence_scope() -> None:
     no_gih_card = _score_with_context(
         database=_contextual_database(),
-        profile=_contextual_profile(cards=(), confidence=0.42),
+        profile=_contextual_profile(confidence=0.42),
         offered_grp_ids=(7,),
         pool_grp_ids=(1,),
     ).cards[0]
@@ -858,7 +856,7 @@ def test_detailed_rating_reasons_retain_source_facts_and_evidence_scope() -> Non
         card_database=_card_database(),
     ).cards[0]
     profile = replace(
-        _contextual_profile(cards=(), confidence=0.42),
+        _contextual_profile(confidence=0.42),
         card_ratings=(_profile_card("ARENA_ID:7", 0.72),),
     )
     profile_card = _score_with_context(
@@ -1305,11 +1303,7 @@ def test_non_empirical_profiles_preserve_deterministic_fallback_and_partial_lega
         None,
         SetProfile.generic(set_code="TST", event_format="quickdraft"),
         _test_profile(maturity=ProfileMaturity.METADATA_ONLY, total_samples=None),
-        _test_profile(
-            maturity=ProfileMaturity.SEMANTIC_ONLY,
-            total_samples=None,
-            role_profile=CompiledRoleProfile(set_code="TST", cards=()),
-        ),
+        _test_profile(maturity=ProfileMaturity.EARLY, total_samples=1, by_pair=()),
     )
     expected = None
     for profile in profiles:
@@ -3223,6 +3217,7 @@ def _card(
     collector_number: str | None = None,
     arena_id: int | None = None,
     oracle_id: str | None = None,
+    oracle_text: str | None = None,
 ) -> CardInfo:
     return CardInfo(
         grp_id=grp_id,
@@ -3237,6 +3232,7 @@ def _card(
         collector_number=collector_number,
         arena_id=arena_id,
         oracle_id=oracle_id,
+        oracle_text=oracle_text,
     )
 
 
@@ -3270,7 +3266,6 @@ def _test_profile(
     by_pair: tuple[tuple[str, int], ...] = (("WU", 1),),
     pairs: tuple[PairProfile, ...] = (),
     card_ratings: tuple[CardRating, ...] = (),
-    role_profile: CompiledRoleProfile | None = None,
     schema_version: int = 1,
 ) -> SetProfile:
     return SetProfile(
@@ -3287,7 +3282,6 @@ def _test_profile(
         ),
         confidence=1.0,
         pairs=pairs,
-        role_profile=role_profile,
         card_ratings=card_ratings,
         schema_version=schema_version,
     )
@@ -3588,7 +3582,7 @@ def test_build_pick_scoring_context_uses_custom_pair_inference_config() -> None:
     assert scored_pack.cards[0].contextual_pair == "WU"
 
 
-def test_scoring_context_preserves_generic_scores_but_exposes_context() -> None:
+def test_constructor_and_per_call_scoring_context_match_scores_and_context() -> None:
     database = _card_database()
     ratings_data = _ratings_data()
     profile = _context_profile()
@@ -3596,10 +3590,7 @@ def test_scoring_context_preserves_generic_scores_but_exposes_context() -> None:
         set_profile=profile,
         role_ledger=_context_ledger(profile=profile, database=database),
     )
-    baseline = PickEngine(ratings_data=ratings_data).score_pack(
-        offered_grp_ids=(4, 3, 2, 1),
-        card_database=database,
-    )
+
     through_constructor = PickEngine(
         ratings_data=ratings_data,
         scoring_context=context,
@@ -3615,24 +3606,11 @@ def test_scoring_context_preserves_generic_scores_but_exposes_context() -> None:
 
     assert through_constructor.scoring_context is context
     assert through_call.scoring_context is context
-    assert tuple(card.score for card in baseline.cards) == (90, 67, 67, 22)
-    assert tuple(card.score for card in through_constructor.cards) == (
-        90,
-        67,
-        67,
-        22,
-    )
-    assert tuple(card.card.grp_id for card in through_constructor.cards) == tuple(
-        card.card.grp_id for card in baseline.cards
-    )
-    assert tuple(card.score for card in through_call.cards) == (
-        90,
-        67,
-        67,
-        22,
-    )
-    assert tuple(card.score for card in through_call.cards) == tuple(
-        card.score for card in baseline.cards
+    assert through_constructor.cards == through_call.cards
+    assert any(
+        card.contextual_breakdown != ContextualScoreBreakdown()
+        or card.contextual_evidence
+        for card in through_constructor.cards
     )
     assert through_constructor.commitment.pick_index == context.stage.global_pick_index
     assert through_call.commitment.pick_index == context.stage.global_pick_index
@@ -3648,17 +3626,6 @@ def test_freely_available_basic_land_ignores_contextual_adjustments() -> None:
     )
     database = CardDatabase(cards={**generic_database.cards, 13: basic_land})
     profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:13",
-                assignments=(
-                    RoleAssignment(
-                        Role.FIXING,
-                        parameters=ProducedResources(("W", "U")),
-                    ),
-                ),
-            ),
-        ),
         role_targets=(RoleTarget(Role.FIXING, 1),),
     )
     card = _score_with_context(
@@ -3712,16 +3679,31 @@ def test_contextual_terms_have_finite_individual_and_collective_bounds() -> None
 
 
 def test_early_quality_dominates_a_small_contextual_role_bonus() -> None:
-    database = _contextual_database()
+    database = _contextual_database_with_texts(
+        card_texts={
+            1: "Whenever one or more creatures you control attack.",
+            7: "Draw a card.",
+        }
+    )
     profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:7",
-                assignments=(RoleAssignment(Role.DRAW),),
-            ),
-        ),
         role_targets=(RoleTarget(Role.DRAW, 1),),
     )
+    candidate_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=7),
+            profile=None,
+        ).assignments
+    }
+    pool_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=1),
+            profile=None,
+        ).assignments
+    }
+    assert Role.DRAW in candidate_roles
+    assert Role.DRAW not in pool_roles
     scored_pack = _score_with_context(
         database=database,
         profile=profile,
@@ -3733,27 +3715,88 @@ def test_early_quality_dominates_a_small_contextual_role_bonus() -> None:
         estimated_remaining_picks=37,
         ratings_data=_contextual_ratings(),
     )
-
     by_id = {card.card.grp_id: card for card in scored_pack.cards}
     assert scored_pack.cards[0].card.grp_id == 8
     assert 0 < by_id[7].contextual_breakdown.role < MAX_ROLE_TERM
     assert by_id[8].contextual_breakdown.aggregate == 0
 
 
-def test_supported_semantic_package_adds_value_without_forcing_the_card() -> None:
-    database = _contextual_database()
-    profile = _contextual_profile(
+def test_legacy_role_profile_cannot_change_basic_do_or_contextual_output() -> None:
+    database = _contextual_database_with_texts(
+        card_texts={1: "Whenever one or more creatures you control attack."}
+    )
+    clean_profile = _contextual_profile(
+        role_targets=(RoleTarget(Role.DRAW, 1),),
+    )
+    assert clean_profile.schema_version == 1
+    forged_assignments = (RoleAssignment(Role.SACRIFICE_OUTLET),)
+    forged_roles = {assignment.role for assignment in forged_assignments}
+    local_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=7),
+            profile=None,
+        ).assignments
+    }
+    assert forged_roles != local_roles
+    assert Role.DRAW in local_roles
+    assert Role.SACRIFICE_OUTLET not in local_roles
+
+    forged_payload = clean_profile.to_json()
+    forged_payload["role_profile"] = CompiledRoleProfile(
+        set_code="TST",
         cards=(
             ProfileCard(
-                key="arena_id:1",
-                assignments=(RoleAssignment(Role.GO_WIDE_ENABLER),),
+                key="arena_id:7",
+                assignments=forged_assignments,
             ),
-            ProfileCard(
-                key="arena_id:2",
-                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
-            ),
+        ),
+    ).to_json()
+    forged_payload["schema_version"] = 3
+    forged_payload["enhancement_status"] = "not-enhanced"
+    forged_profile = SetProfile.from_json(forged_payload)
+    assert forged_profile.schema_version == 3
+    score_context = {
+        "database": database,
+        "offered_grp_ids": (7, 8),
+        "pool_grp_ids": (1,),
+        "global_pick_index": 5,
+        "pack_number": 0,
+        "pick_number": 4,
+        "estimated_remaining_picks": 37,
+        "ratings_data": _contextual_ratings(),
+    }
+
+    clean = _score_with_context(profile=clean_profile, **score_context)
+    forged = _score_with_context(profile=forged_profile, **score_context)
+
+    def observed(pack: ScoredPack) -> tuple[tuple[object, ...], ...]:
+        return tuple(
+            (
+                card.card.grp_id,
+                card.basic_score,
+                card.raw_score,
+                card.score,
+                card.contextual_breakdown,
+                card.contextual_evidence,
+            )
+            for card in pack.cards
         )
+
+    assert observed(forged) == observed(clean)
+    locally_classified = next(card for card in clean.cards if card.card.grp_id == 7)
+    assert locally_classified.contextual_breakdown.role > 0
+    assert "fills draw deficit (0/1)" in locally_classified.contextual_evidence
+
+
+def test_local_role_package_adds_value_without_forcing_the_card() -> None:
+    database = _contextual_database_with_texts(
+        card_texts={
+            1: "Create two 1/1 white Soldier creature tokens.",
+            2: "Whenever two or more creatures you control attack, draw a card.",
+        }
     )
+    profile = _contextual_profile()
     scored_pack = _score_with_context(
         database=database,
         profile=profile,
@@ -3761,31 +3804,43 @@ def test_supported_semantic_package_adds_value_without_forcing_the_card() -> Non
         pool_grp_ids=(1,),
         ratings_data=_contextual_ratings(),
     )
+    enabler_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=1),
+            profile=None,
+        ).assignments
+    }
+    payoff_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=2),
+            profile=None,
+        ).assignments
+    }
+    assert Role.TOKEN_MAKER in enabler_roles
+    assert Role.GO_WIDE_ENABLER in enabler_roles
+    assert Role.GO_WIDE_PAYOFF in payoff_roles
 
     by_id = {card.card.grp_id: card for card in scored_pack.cards}
     assert by_id[2].contextual_breakdown.synergy > 0
-    assert by_id[2].contextual_evidence == (
-        "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))",
+    assert (
+        "supports go_wide semantic package (2.0 enabler(s), 0.0 payoff(s))"
+        in by_id[2].contextual_evidence
     )
     assert by_id[2].contextual_breakdown.unsupported_payoff == 0
     assert scored_pack.cards[0].card.grp_id == 3
 
 
 def test_empirical_card_pair_synergy_does_not_change_contextual_score() -> None:
-    database = _contextual_database()
-    cards = (
-        ProfileCard(
-            key="arena_id:1",
-            assignments=(RoleAssignment(Role.GO_WIDE_ENABLER),),
-        ),
-        ProfileCard(
-            key="arena_id:2",
-            assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
-        ),
+    database = _contextual_database_with_texts(
+        card_texts={
+            1: "Create two 1/1 white Soldier creature tokens.",
+            2: "Whenever two or more creatures you control attack, draw a card.",
+        }
     )
-    plain_profile = _contextual_profile(cards=cards)
+    plain_profile = _contextual_profile()
     empirical_profile = _contextual_profile(
-        cards=cards,
         synergy=(
             CardPairSynergy(
                 first_card="arena_id:1",
@@ -3814,19 +3869,13 @@ def test_empirical_card_pair_synergy_does_not_change_contextual_score() -> None:
 
 
 def test_unsupported_payoff_is_penalized_without_an_enabler() -> None:
-    database = _contextual_database()
-    profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:1",
-                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
-            ),
-            ProfileCard(
-                key="arena_id:2",
-                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
-            ),
-        )
+    database = _contextual_database_with_texts(
+        card_texts={
+            1: "Whenever two or more creatures you control attack, draw a card.",
+            2: "Whenever two or more creatures you control attack, draw a card.",
+        }
     )
+    profile = _contextual_profile()
     card = _score_with_context(
         database=database,
         profile=profile,
@@ -3837,23 +3886,18 @@ def test_unsupported_payoff_is_penalized_without_an_enabler() -> None:
     assert card.contextual_breakdown.unsupported_payoff < 0
     assert any("unsupported go_wide payoff" in item for item in card.contextual_evidence)
 
+
 def test_dual_role_candidate_supplies_its_own_payoff_enabler() -> None:
-    database = _contextual_database()
-    profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:1",
-                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
+    database = _contextual_database_with_texts(
+        card_texts={
+            1: "Whenever two or more creatures you control attack, draw a card.",
+            2: (
+                "Create two 1/1 white Soldier creature tokens. "
+                "Whenever two or more creatures you control attack, draw a card."
             ),
-            ProfileCard(
-                key="arena_id:2",
-                assignments=(
-                    RoleAssignment(Role.GO_WIDE_ENABLER),
-                    RoleAssignment(Role.GO_WIDE_PAYOFF),
-                ),
-            ),
-        )
+        }
     )
+    profile = _contextual_profile()
 
     card = _score_with_context(
         database=database,
@@ -3871,25 +3915,6 @@ def test_dual_role_candidate_supplies_its_own_payoff_enabler() -> None:
 def test_fixing_and_redundancy_terms_use_projected_pool_evidence() -> None:
     database = _contextual_database()
     profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:4",
-                assignments=(RoleAssignment(Role.DRAW),),
-            ),
-            ProfileCard(
-                key="arena_id:5",
-                assignments=(RoleAssignment(Role.DRAW),),
-            ),
-            ProfileCard(
-                key="arena_id:6",
-                assignments=(
-                    RoleAssignment(
-                        Role.FIXING,
-                        parameters=ProducedResources(("W", "U")),
-                    ),
-                ),
-            ),
-        ),
         role_targets=(
             RoleTarget(Role.DRAW, 1),
             RoleTarget(Role.FIXING, 2),
@@ -3908,26 +3933,20 @@ def test_fixing_and_redundancy_terms_use_projected_pool_evidence() -> None:
     assert any("redundancy pressure" in item for item in by_id[5].contextual_evidence)
     assert any("fixing need" in item for item in by_id[6].contextual_evidence)
 
+
 def test_fixing_does_not_fallback_when_target_is_met_or_zero() -> None:
     database = _contextual_database()
-    cards = (
-        ProfileCard(
-            key="arena_id:6",
-            assignments=(
-                RoleAssignment(
-                    Role.FIXING,
-                    parameters=ProducedResources(("W", "U")),
-                ),
-            ),
+    met_profile = _contextual_profile(
+        role_targets=(
+            RoleTarget(Role.FIXING, 1),
+            RoleTarget(Role.MANA_PRODUCER, 1),
         ),
     )
-    met_profile = _contextual_profile(
-        cards=cards,
-        role_targets=(RoleTarget(Role.FIXING, 1),),
-    )
     zero_profile = _contextual_profile(
-        cards=cards,
-        role_targets=(RoleTarget(Role.FIXING, 0),),
+        role_targets=(
+            RoleTarget(Role.FIXING, 0),
+            RoleTarget(Role.MANA_PRODUCER, 0),
+        ),
     )
 
     met_card = _score_with_context(
@@ -3947,56 +3966,18 @@ def test_fixing_does_not_fallback_when_target_is_met_or_zero() -> None:
     assert zero_card.contextual_breakdown.fixing == 0
 
 
-def test_role_evidence_tie_uses_target_name_without_comparing_assignments() -> None:
-    database = _contextual_database()
-    profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:6",
-                assignments=(
-                    RoleAssignment(
-                        Role.FIXING,
-                        parameters=ProducedResources(("W",)),
-                    ),
-                    RoleAssignment(
-                        Role.FIXING,
-                        parameters=ProducedResources(("U",)),
-                    ),
-                ),
-            ),
-        ),
-        role_targets=(RoleTarget(Role.FIXING, 1),),
-    )
-
-    card = _score_with_context(
-        database=database,
-        profile=profile,
-        offered_grp_ids=(6,),
-        pool_grp_ids=(),
-    ).cards[0]
-
-    assert card.contextual_breakdown.role > 0
-    assert any("fills fixing deficit" in item for item in card.contextual_evidence)
-
 
 def test_generic_target_confidence_scales_redundancy_penalty() -> None:
     database = _contextual_database()
-    cards = (
-        ProfileCard(
-            key="arena_id:5",
-            assignments=(RoleAssignment(Role.DRAW),),
-        ),
-    )
     generic_card = _score_with_context(
         database=database,
-        profile=_contextual_profile(cards=cards),
+        profile=_contextual_profile(),
         offered_grp_ids=(5,),
         pool_grp_ids=(5,),
     ).cards[0]
     explicit_card = _score_with_context(
         database=database,
         profile=_contextual_profile(
-            cards=cards,
             role_targets=(RoleTarget(Role.DRAW, 1),),
         ),
         offered_grp_ids=(5,),
@@ -4011,18 +3992,10 @@ def test_generic_target_confidence_scales_redundancy_penalty() -> None:
 def test_low_confidence_target_scales_targeted_fixing() -> None:
     database = _contextual_database()
     profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:6",
-                assignments=(
-                    RoleAssignment(
-                        Role.FIXING,
-                        parameters=ProducedResources(("W", "U")),
-                    ),
-                ),
-            ),
+        role_targets=(
+            RoleTarget(Role.FIXING, 2),
+            RoleTarget(Role.MANA_PRODUCER, 2),
         ),
-        role_targets=(RoleTarget(Role.FIXING, 2),),
     )
     high_confidence = _score_with_context(
         database=database,
@@ -4034,7 +4007,7 @@ def test_low_confidence_target_scales_targeted_fixing() -> None:
     ledger = _context_ledger(profile=profile, database=database)
     low_confidence_coverage = tuple(
         replace(item, confidence=0.25)
-        if item.name == Role.FIXING.value
+        if item.name in {Role.FIXING.value, Role.MANA_PRODUCER.value}
         else item
         for item in ledger.target_coverage
     )
@@ -4054,20 +4027,41 @@ def test_low_confidence_target_scales_targeted_fixing() -> None:
     ).cards[0]
 
     assert low_confidence.contextual_breakdown.fixing == pytest.approx(
-        high_confidence.contextual_breakdown.fixing * 0.25
+        high_confidence.contextual_breakdown.fixing * 0.25,
+        abs=1e-6,
     )
 
 
 def test_detailed_rationale_explains_base_rating_and_material_role_gap() -> None:
-    database = _contextual_database()
-    profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:7",
-                assignments=(RoleAssignment(Role.DRAW),),
+    database = _card_database()
+    database = replace(
+        database,
+        cards={
+            **database.cards,
+            1: replace(
+                database.cards[1],
+                oracle_text="Whenever one or more creatures you control attack.",
             ),
-        ),
-        role_targets=(RoleTarget(Role.DRAW, 1),),
+            7: replace(database.cards[7], oracle_text="Draw a card."),
+        },
+    )
+    candidate_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=7),
+            profile=None,
+        ).assignments
+    }
+    pool_roles = {
+        assignment.role
+        for assignment in resolve_card_roles(
+            database.lookup(grp_id=1),
+            profile=None,
+        ).assignments
+    }
+    assert Role.DRAW in candidate_roles
+    assert Role.DRAW not in pool_roles
+    profile = _contextual_profile(
         theme="patient card advantage",
     )
     card = _score_with_context(
@@ -4095,7 +4089,7 @@ def test_detailed_rationale_explains_base_rating_and_material_role_gap() -> None
 
 
 
-def test_generated_early_semantic_profile_contributes_without_live_ratings() -> None:
+def test_generated_early_profile_uses_local_roles_without_live_ratings() -> None:
     database = _contextual_database()
     database = replace(
         database,
@@ -4153,12 +4147,6 @@ def test_contextual_adjustments_can_be_disabled_without_bypassing_profile_scorin
     database = _contextual_database()
     profile = replace(
         _contextual_profile(
-            cards=(
-                ProfileCard(
-                    key="arena_id:7",
-                    assignments=(RoleAssignment(Role.DRAW),),
-                ),
-            ),
             role_targets=(RoleTarget(Role.DRAW, 1),),
             theme="patient card advantage",
         ),
@@ -4184,7 +4172,11 @@ def test_contextual_adjustments_can_be_disabled_without_bypassing_profile_scorin
         contextual_adjustments_enabled=False,
     )
 
-    assert enabled.cards[0].contextual_breakdown.role > 0
+    assert any(
+        abs(card.contextual_breakdown.aggregate) >= 0.01
+        and card.contextual_evidence
+        for card in enabled.cards
+    )
     assert all(
         card.contextual_breakdown == ContextualScoreBreakdown()
         and card.contextual_evidence == ()
@@ -4293,15 +4285,6 @@ def test_disabled_contextual_adjustments_preserve_locked_splash_behavior() -> No
                 role_targets=(RoleTarget(Role.DRAW, 1),),
             ),
         ),
-        role_profile=CompiledRoleProfile(
-            set_code="TST",
-            cards=(
-                ProfileCard(
-                    key="arena_id:105",
-                    assignments=(RoleAssignment(Role.DRAW),),
-                ),
-            ),
-        ),
     )
     database = CardDatabase(
         cards={
@@ -4345,132 +4328,6 @@ def test_disabled_contextual_adjustments_preserve_locked_splash_behavior() -> No
         and card.contextual_evidence == ()
         for card in disabled.cards
     )
-
-
-def test_relationship_enhancement_does_not_change_basic_do() -> None:
-    database = _relationship_database()
-    profile = _relationship_profile(
-        relationships=(_token_sacrifice_relationship(),)
-    )
-    without_enhancement = replace(profile, enhancement=None)
-
-    with_relationships = _score_with_context(
-        database=database,
-        profile=profile,
-        offered_grp_ids=(602, 605),
-        pool_grp_ids=(601,),
-        pack_number=0,
-        pick_number=1,
-        global_pick_index=2,
-        estimated_remaining_picks=EXPECTED_TOTAL_PICKS - 2,
-    )
-    without_relationships = _score_with_context(
-        database=database,
-        profile=without_enhancement,
-        offered_grp_ids=(602, 605),
-        pool_grp_ids=(601,),
-        pack_number=0,
-        pick_number=1,
-        global_pick_index=2,
-        estimated_remaining_picks=EXPECTED_TOTAL_PICKS - 2,
-    )
-
-    relationship_order = tuple(card.card.grp_id for card in with_relationships.cards)
-    assert relationship_order == tuple(
-        card.card.grp_id for card in without_relationships.cards
-    )
-    assert tuple(
-        (card.card.grp_id, card.basic_score) for card in with_relationships.cards
-    ) == tuple(
-        (card.card.grp_id, card.basic_score) for card in without_relationships.cards
-    )
-    assert tuple(
-        (card.card.grp_id, card.raw_score) for card in with_relationships.cards
-    ) == tuple(
-        (card.card.grp_id, card.raw_score) for card in without_relationships.cards
-    )
-    assert tuple(
-        (card.card.grp_id, card.contextual_breakdown)
-        for card in with_relationships.cards
-    ) == tuple(
-        (card.card.grp_id, card.contextual_breakdown)
-        for card in without_relationships.cards
-    )
-    assert tuple(
-        render_pick_rationale_detailed(scored_card=card)
-        for card in with_relationships.cards
-    ) == tuple(
-        render_pick_rationale_detailed(scored_card=card)
-        for card in without_relationships.cards
-    )
-    assert all(
-        "relationship:" not in evidence
-        for card in with_relationships.cards
-        for evidence in card.contextual_evidence
-    )
-
-
-@pytest.mark.parametrize(
-    "variant",
-    (
-        "unconfirmed-review",
-        "uncertain-finding",
-        "bad-pin",
-        "third-party-required-card",
-        "unknown-relationship-key",
-        "unknown-projection-key",
-        "wrong-role-anchor",
-        "contradictory-color-evidence",
-    ),
-)
-def test_loader_rejects_invalid_relationship_variants_without_scoring_context(
-    tmp_path: Path,
-    variant: str,
-) -> None:
-    database = _relationship_database()
-    profile = _relationship_profile(relationships=(_token_sacrifice_relationship(),))
-    path = dump_set_profile(profile, tmp_path / "relationship-509.json")
-    loaded = load_scoring_profile("TST", "quickdraft", profile_path=path)
-    assert loaded is not None
-    assert loaded.to_bytes() == profile.to_bytes()
-
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    enhancement, relationship, projection = _relationship_payload_parts(payload)
-    mutations: dict[str, Callable[[], object]] = {
-        "unconfirmed-review": lambda: enhancement.__setitem__(
-            "review",
-            {"state": "pending", "reviewer_id": None, "reviewed_at": None},
-        ),
-        "uncertain-finding": lambda: relationship["review"].__setitem__(
-            "status",
-            "uncertain",
-        ),
-        "bad-pin": lambda: enhancement["cards"][0].__setitem__("sha256", "0" * 64),
-        "third-party-required-card": lambda: projection["target"]["prerequisites"][
-            0
-        ].__setitem__("required_card_id", 999),
-        "unknown-relationship-key": lambda: relationship.__setitem__("future_score", 5),
-        "unknown-projection-key": lambda: projection.__setitem__("future_score", 5),
-        "wrong-role-anchor": lambda: projection["source"].__setitem__(
-            "role",
-            "death_payoff",
-        ),
-        "contradictory-color-evidence": lambda: projection["source"]["prerequisites"][
-            0
-        ].__setitem__("colors", ["B"]),
-    }
-    mutations[variant]()
-    invalid_path = tmp_path / f"{variant}.json"
-    invalid_path.write_text(json.dumps(payload), encoding="utf-8")
-
-    assert load_scoring_profile("TST", "quickdraft", profile_path=invalid_path) is None
-    without_context = PickEngine().score_pack(
-        offered_grp_ids=(602,),
-        card_database=database,
-        pool_grp_ids=(601,),
-    ).cards[0]
-    assert without_context.contextual_breakdown == ContextualScoreBreakdown()
-    assert without_context.contextual_evidence == ()
 
 
 
@@ -4628,7 +4485,6 @@ def _score_with_context(
 
 def _contextual_profile(
     *,
-    cards: tuple[ProfileCard, ...],
     role_targets: tuple[RoleTarget, ...] = (),
     theme: str | None = None,
     confidence: float = 1.0,
@@ -4650,7 +4506,7 @@ def _contextual_profile(
         samples=SampleSummary(total=1, by_pair=(("WU", 1),)),
         confidence=confidence,
         pairs=(pair,),
-        role_profile=CompiledRoleProfile(set_code="TST", cards=cards),
+        schema_version=1,
     )
 
 
@@ -4663,6 +4519,16 @@ def _contextual_database() -> CardDatabase:
                 colors=("W",),
                 set_code="TST",
                 arena_id=grp_id,
+                oracle_text={
+                    1: "Whenever two or more creatures you control attack, draw a card.",
+                    2: "Whenever you draw your second card each turn, draw a card.",
+                    4: "Draw a card.",
+                    7: (
+                        "Draw a card. Whenever you draw your second card each turn, "
+                        "draw a card. Create two 1/1 white Soldier creature tokens."
+                    ),
+                }.get(grp_id),
+                produced_mana=("W", "U") if grp_id == 7 else (),
             )
             for grp_id in (1, 2, 3, 4, 7, 8)
         }
@@ -4673,6 +4539,7 @@ def _contextual_database() -> CardDatabase:
                 colors=("W",),
                 set_code="TST",
                 arena_id=5,
+                oracle_text="Draw a card.",
             ),
             6: _card(
                 grp_id=6,
@@ -4685,6 +4552,21 @@ def _contextual_database() -> CardDatabase:
                 set_code="TST",
                 arena_id=6,
             ),
+        },
+    )
+def _contextual_database_with_texts(
+    *,
+    card_texts: dict[int, str | None],
+) -> CardDatabase:
+    database = _contextual_database()
+    return replace(
+        database,
+        cards={
+            **database.cards,
+            **{
+                grp_id: replace(database.cards[grp_id], oracle_text=oracle_text)
+                for grp_id, oracle_text in card_texts.items()
+            },
         },
     )
 
@@ -4754,403 +4636,3 @@ def _context_ledger(
         set_profile=profile,
         likely_pair="WU",
     )
-
-
-_RELATIONSHIP_TOKEN_PARAGRAPH = "Create a 1/1 white Soldier creature token."
-_RELATIONSHIP_OUTLET_PARAGRAPH = "Sacrifice a creature: Draw a card."
-_RELATIONSHIP_MUSTER_OUTLET_PARAGRAPH = "Sacrifice one or more creatures: Draw a card."
-_RELATIONSHIP_DOUBLE_OUTLET_PARAGRAPH = "Sacrifice two or more creatures: Draw a card."
-_RELATIONSHIP_BLACK_OUTLET_PARAGRAPH = "Sacrifice a black creature: Draw a card."
-_RELATIONSHIP_ANTHEM_PARAGRAPH = "Creatures you control get +1/+1."
-_RELATIONSHIP_CLAIM = "The token maker feeds the sacrifice outlet."
-_RELATIONSHIP_SUMMARY = "A creature token is created for the outlet."
-_RELATIONSHIP_RUN_ID = "run-relationship-509"
-_RELATIONSHIP_ASSIGNMENTS: tuple[tuple[int, Role, float], ...] = (
-    (601, Role.TOKEN_MAKER, 1.0),
-    (602, Role.SACRIFICE_OUTLET, 1.0),
-    (603, Role.GO_WIDE_ENABLER, 1.0),
-    (604, Role.TOKEN_MAKER, 0.5),
-    (605, Role.GO_WIDE_PAYOFF, 1.0),
-    (606, Role.SACRIFICE_OUTLET, 1.0),
-    (607, Role.SACRIFICE_OUTLET, 1.0),
-    (608, Role.SACRIFICE_OUTLET, 1.0),
-)
-
-
-def _relationship_card(
-    *,
-    grp_id: int,
-    name: str,
-    oracle_text: str,
-) -> CardInfo:
-    """Build one frozen white creature card of the relationship fixture set."""
-    return replace(
-        _card(
-            grp_id=grp_id,
-            name=name,
-            colors=("W",),
-            set_code="tst",
-            collector_number=str(grp_id),
-            arena_id=grp_id,
-            oracle_id=f"oracle-relationship-{grp_id}",
-        ),
-        oracle_text=oracle_text,
-        type_line="Creature — Soldier",
-        subtypes=("Soldier",),
-    )
-
-
-def _relationship_database() -> CardDatabase:
-    """Build the card database of the typed relationship fixture set."""
-    return CardDatabase(
-        cards={
-            601: _relationship_card(
-                grp_id=601,
-                name="Omen Scrapwright",
-                oracle_text=_RELATIONSHIP_TOKEN_PARAGRAPH,
-            ),
-            602: _relationship_card(
-                grp_id=602,
-                name="Warhorn Outlet",
-                oracle_text=_RELATIONSHIP_OUTLET_PARAGRAPH,
-            ),
-            603: _relationship_card(
-                grp_id=603,
-                name="Omen Rally Captain",
-                oracle_text=_RELATIONSHIP_ANTHEM_PARAGRAPH,
-            ),
-            604: _relationship_card(
-                grp_id=604,
-                name="Omen Second Scrapwright",
-                oracle_text=_RELATIONSHIP_TOKEN_PARAGRAPH,
-            ),
-            605: _relationship_card(
-                grp_id=605,
-                name="Omen Rally Banner",
-                oracle_text=_RELATIONSHIP_ANTHEM_PARAGRAPH,
-            ),
-            606: _relationship_card(
-                grp_id=606,
-                name="Blighted Outlet",
-                oracle_text=_RELATIONSHIP_BLACK_OUTLET_PARAGRAPH,
-            ),
-            607: _relationship_card(
-                grp_id=607,
-                name="Muster Outlet",
-                oracle_text=_RELATIONSHIP_MUSTER_OUTLET_PARAGRAPH,
-            ),
-            608: _relationship_card(
-                grp_id=608,
-                name="Double Outlet",
-                oracle_text=_RELATIONSHIP_DOUBLE_OUTLET_PARAGRAPH,
-            ),
-            609: _relationship_card(
-                grp_id=609,
-                name="Omen Third Scrapwright",
-                oracle_text=_RELATIONSHIP_TOKEN_PARAGRAPH,
-            ),
-        }
-    )
-
-
-def _token_output_clause(*, card_id: int) -> RelationshipPrerequisite:
-    """Build one complete `Create a 1/1 white Soldier creature token.` clause."""
-    return RelationshipPrerequisite(
-        kind=PrerequisiteKind.CONDITION,
-        subject="output",
-        operation="create",
-        object_kind="token",
-        card_types=("creature",),
-        type_operator="all_of",
-        token_restriction="token",
-        exclusion="none",
-        subtype="soldier",
-        color_operator="exact",
-        colors=("W",),
-        controller="you",
-        owner="not_applicable",
-        quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
-        source_zone=None,
-        destination_zone=RelationshipZone(
-            zone=CapabilityZone.BATTLEFIELD,
-            player="you",
-        ),
-        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
-        required_card_id=None,
-        evidence=OracleEvidence(
-            card_id=card_id,
-            face_index=None,
-            quote=_RELATIONSHIP_TOKEN_PARAGRAPH,
-        ),
-        operation_quote="Create",
-        operation_occurrence=0,
-        object_quote="a 1/1 white Soldier creature token",
-        object_occurrence=0,
-        capability_prerequisite_indices=(),
-    )
-
-
-def _sacrifice_clause(*, card_id: int) -> RelationshipPrerequisite:
-    """Build one complete `Sacrifice a creature: Draw a card.` cost clause."""
-    return RelationshipPrerequisite(
-        kind=PrerequisiteKind.COST,
-        subject="input",
-        operation="sacrifice",
-        object_kind="permanent",
-        card_types=("creature",),
-        type_operator="all_of",
-        token_restriction="unrestricted",
-        exclusion="none",
-        subtype=None,
-        color_operator="unrestricted",
-        colors=(),
-        controller="you",
-        owner="not_applicable",
-        quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
-        source_zone=None,
-        destination_zone=RelationshipZone(
-            zone=CapabilityZone.GRAVEYARD,
-            player="owner",
-        ),
-        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
-        required_card_id=None,
-        evidence=OracleEvidence(
-            card_id=card_id,
-            face_index=None,
-            quote=_RELATIONSHIP_OUTLET_PARAGRAPH,
-        ),
-        operation_quote="Sacrifice",
-        operation_occurrence=0,
-        object_quote="a creature",
-        object_occurrence=0,
-        capability_prerequisite_indices=(),
-    )
-
-
-def _relationship_participant(
-    *,
-    card_id: int,
-    role: Role,
-    prerequisites: tuple[RelationshipPrerequisite, ...],
-) -> RelationshipParticipant:
-    """Build one frozen participant bound to its own card hash and clauses."""
-    card = _relationship_database().lookup(grp_id=card_id)
-    return RelationshipParticipant(
-        card_id=card_id,
-        capability_id=f"capability-relationship-{card_id}",
-        card_name=card.name,
-        face_index=None,
-        face_name=None,
-        card_source_sha256=card_source_sha256(card),
-        role=role,
-        capability_prerequisites=(),
-        prerequisites=prerequisites,
-        qualifications=(),
-    )
-
-
-def _token_source_participant(*, card_id: int) -> RelationshipParticipant:
-    """Build the token-making source of a typed relationship fixture."""
-    return _relationship_participant(
-        card_id=card_id,
-        role=Role.TOKEN_MAKER,
-        prerequisites=(_token_output_clause(card_id=card_id),),
-    )
-
-
-def _outlet_target_participant(
-    *,
-    card_id: int = 602,
-    clause: RelationshipPrerequisite | None = None,
-) -> RelationshipParticipant:
-    """Build the sacrifice-outlet target of a typed relationship fixture."""
-    return _relationship_participant(
-        card_id=card_id,
-        role=Role.SACRIFICE_OUTLET,
-        prerequisites=(
-            _sacrifice_clause(card_id=card_id) if clause is None else clause,
-        ),
-    )
-
-
-def _relationship(
-    *,
-    mechanism: str,
-    source: RelationshipParticipant,
-    target: RelationshipParticipant,
-    projection: RelationshipPrerequisiteProjection | None,
-    claim: str = _RELATIONSHIP_CLAIM,
-    prerequisites: tuple[str, ...] = (_RELATIONSHIP_SUMMARY,),
-) -> CardRelationship:
-    """Build one accepted relationship over the given directional participants."""
-    return CardRelationship(
-        finding_id=f"relationship:{mechanism}:{source.card_id}:{target.card_id}",
-        mechanism=mechanism,
-        participants=(source.card_id, target.card_id),
-        claim=claim,
-        prerequisites=prerequisites,
-        oracle_evidence=tuple(
-            item.evidence
-            for participant in (source, target)
-            for item in (*participant.prerequisites, *participant.qualifications)
-        ),
-        guide_evidence=(),
-        review=FindingReview(status=FindingStatus.ACCEPTED, reason=None),
-        run_id=_RELATIONSHIP_RUN_ID,
-        prerequisite_projection=projection,
-    )
-
-
-def _token_sacrifice_relationship(
-    *,
-    source_card_id: int = 601,
-    target_participant: RelationshipParticipant | None = None,
-    claim: str = _RELATIONSHIP_CLAIM,
-    prerequisites: tuple[str, ...] = (_RELATIONSHIP_SUMMARY,),
-) -> CardRelationship:
-    """Build one `token-sacrifice-outlet` relationship over the fixture set."""
-    source = _token_source_participant(card_id=source_card_id)
-    target = (
-        _outlet_target_participant()
-        if target_participant is None
-        else target_participant
-    )
-    return _relationship(
-        mechanism="token-sacrifice-outlet",
-        source=source,
-        target=target,
-        projection=RelationshipPrerequisiteProjection(source=source, target=target),
-        claim=claim,
-        prerequisites=prerequisites,
-    )
-
-
-def _relationship_run() -> ModelRun:
-    """Build the single recorded model run of the relationship enhancement."""
-    return ModelRun(
-        run_id=_RELATIONSHIP_RUN_ID,
-        provider="local",
-        model="relationship-test-model",
-        reasoning=ReasoningConfig(
-            enabled=None,
-            effort=None,
-            max_tokens=None,
-            exclude=None,
-        ),
-        prompt_id="prompt-relationship-509",
-        prompt_sha256="d" * 64,
-        response_schema_id="schema-relationship-509",
-        response_schema_sha256="e" * 64,
-        started_at="2026-09-01T00:00:00+00:00",
-        completed_at="2026-09-01T00:01:00+00:00",
-        input_tokens=None,
-        output_tokens=None,
-        reasoning_tokens=None,
-        cost_usd=None,
-    )
-
-
-def _relationship_enhancement(
-    *,
-    relationships: tuple[CardRelationship, ...],
-    confidence: float,
-) -> SetProfileEnhancement:
-    """Build one confirmed schema-one enhancement over the fixture cards."""
-    database = _relationship_database()
-    return SetProfileEnhancement(
-        artifact_schema_version=SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
-        artifact_sha256="a" * 64,
-        set_code="TST",
-        set_source_id="relationship-509",
-        set_source_sha256="b" * 64,
-        created_at="2026-09-01T00:00:00+00:00",
-        card_data=EnhancementCardData(
-            source="relationship-cards.json",
-            sha256="c" * 64,
-            card_count=len(database.cards),
-        ),
-        cards=tuple(
-            CardSourcePin(
-                card_id=card.grp_id,
-                oracle_id=card.oracle_id,
-                collector_number=card.collector_number,
-                sha256=card_source_sha256(card),
-            )
-            for card in database.cards.values()
-        ),
-        guides=(),
-        runs=(_relationship_run(),),
-        mechanics=(),
-        relationships=relationships,
-        review=ArtifactReview(
-            state="confirmed",
-            reviewer_id="local-review",
-            reviewed_at="2026-09-01T00:02:00+00:00",
-        ),
-        confidence=confidence,
-    )
-
-
-def _relationship_role_profile(
-    *,
-    assignments: tuple[tuple[int, Role, float], ...],
-) -> CompiledRoleProfile:
-    """Compile the exact-set role assignments of the fixture cards."""
-    grouped: dict[int, list[RoleAssignment]] = {}
-    for grp_id, role, confidence in assignments:
-        grouped.setdefault(grp_id, []).append(
-            RoleAssignment(role, confidence=confidence)
-        )
-    return CompiledRoleProfile(
-        set_code="TST",
-        cards=tuple(
-            ProfileCard(
-                key=f"arena_id:{grp_id}",
-                assignments=tuple(items),
-            )
-            for grp_id, items in sorted(grouped.items())
-        ),
-    )
-
-
-def _relationship_profile(
-    *,
-    relationships: tuple[CardRelationship, ...] = (),
-    assignments: tuple[tuple[int, Role, float], ...] = _RELATIONSHIP_ASSIGNMENTS,
-    confidence: float = 1.0,
-    maturity: ProfileMaturity = ProfileMaturity.MATURE,
-    enhancement_confidence: float = 0.9,
-) -> SetProfile:
-    """Build the schema-three scoring profile of the relationship fixture set."""
-    return SetProfile(
-        set_code="TST",
-        event_format="quickdraft",
-        profile_version="relationship-509",
-        generated_at="1970-01-01T00:00:00+00:00",
-        source=SourceMetadata(provider="test"),
-        maturity=maturity,
-        samples=SampleSummary(total=1, by_pair=(("WU", 1),)),
-        confidence=confidence,
-        pairs=(PairProfile(pair="WU"),),
-        role_profile=_relationship_role_profile(assignments=assignments),
-        schema_version=SET_PROFILE_SCHEMA_VERSION,
-        enhancement=_relationship_enhancement(
-            relationships=relationships,
-            confidence=enhancement_confidence,
-        ),
-    )
-
-
-def _relationship_payload_parts(
-    payload: dict[str, object],
-) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    """Return the enhancement, relationship and projection objects of one dump."""
-    enhancement = payload["enhancement"]
-    assert isinstance(enhancement, dict)
-    relationships = enhancement["relationships"]
-    assert isinstance(relationships, list)
-    relationship = relationships[0]
-    assert isinstance(relationship, dict)
-    projection = relationship["prerequisite_projection"]
-    assert isinstance(projection, dict)
-    return enhancement, relationship, projection

@@ -173,7 +173,7 @@ def test_default_live_session_snapshot_has_neutral_initial_state() -> None:
     assert snapshot.backtest is None
 
 def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
-    semantic_profile = _fixture_set_profile()
+    role_target_only_profile = _fixture_set_profile()
     empirical_profile = _fixture_empirical_profile()
 
     quickdraft = AggregateEvidence("quickdraft", None, 1.0)
@@ -217,11 +217,23 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
         aggregate_evidence=quickdraft,
     )
     pair_only_profile = replace(
-        semantic_profile,
+        role_target_only_profile,
         schema_version=2,
         pairs=(
-            replace(semantic_profile.pairs[0], performance=pair_rate),
-            *semantic_profile.pairs[1:],
+            replace(role_target_only_profile.pairs[0], performance=pair_rate),
+            *role_target_only_profile.pairs[1:],
+        ),
+    )
+    pair_fallback_rate = replace(pair_rate, aggregate_evidence=premierdraft)
+    pair_fallback_profile = replace(
+        role_target_only_profile,
+        schema_version=2,
+        pairs=(
+            replace(
+                role_target_only_profile.pairs[0],
+                performance=pair_fallback_rate,
+            ),
+            *role_target_only_profile.pairs[1:],
         ),
     )
     zero_sample_profile = replace(
@@ -239,41 +251,16 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
             for rating in empirical_profile.card_ratings
         ),
     )
-    role_profile = empirical_profile.role_profile
-    assert role_profile is not None
-    zero_assignment_profile = replace(
-        empirical_profile,
-        role_profile=replace(
-            role_profile,
-            cards=(
-                replace(
-                    role_profile.cards[0],
-                    assignments=(
-                        replace(
-                            role_profile.cards[0].assignments[0],
-                            confidence=0.0,
-                        ),
-                    ),
-                ),
-            ),
-        ),
-    )
-    empty_roles_profile = replace(
-        empirical_profile,
-        role_profile=replace(role_profile, cards=()),
-    )
-    incompatible_roles_profile = replace(
-        empirical_profile,
-        role_profile=replace(role_profile, classifier_version="old"),
-    )
     zero_profile_confidence = replace(empirical_profile, confidence=0.0)
 
-    legacy = session_module._contextual_evidence_for_profile(
+    assert session_module._contextual_evidence_for_profile(
         profile=empirical_profile,
         enabled=True,
+    ) == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.EXACT,
+        source_formats=("quickdraft",),
+        message="Contextual · QuickDraft evidence",
     )
-    assert legacy.status is ContextualEvidenceStatus.EXACT
-    assert legacy.source_formats == ("quickdraft",)
 
     assert session_module._contextual_evidence_for_profile(
         profile=exact_profile,
@@ -281,7 +268,7 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.EXACT,
         source_formats=("quickdraft",),
-        message="Contextual · semantic + QuickDraft evidence",
+        message="Contextual · QuickDraft evidence",
     )
     assert session_module._contextual_evidence_for_profile(
         profile=fallback_profile,
@@ -289,7 +276,7 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.FALLBACK,
         source_formats=("premierdraft",),
-        message="Contextual · semantic + PremierDraft fallback",
+        message="Contextual · PremierDraft fallback",
     )
     assert session_module._contextual_evidence_for_profile(
         profile=mixed_profile,
@@ -297,29 +284,29 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.FALLBACK,
         source_formats=("premierdraft", "quickdraft"),
-        message="Contextual · semantic + PremierDraft fallback, QuickDraft evidence",
+        message="Contextual · PremierDraft fallback, QuickDraft evidence",
     )
     assert session_module._contextual_evidence_for_profile(
         profile=pair_only_profile,
         enabled=True,
-    ).status is ContextualEvidenceStatus.EXACT
-    assert session_module._contextual_evidence_for_profile(
-        profile=semantic_profile,
-        enabled=True,
     ) == ContextualEvidenceState(
-        status=ContextualEvidenceStatus.SEMANTIC_ONLY,
-        message="Contextual · semantic-only (no aggregate evidence)",
+        status=ContextualEvidenceStatus.EXACT,
+        source_formats=("quickdraft",),
+        message="Contextual · QuickDraft evidence",
     )
     assert session_module._contextual_evidence_for_profile(
-        profile=zero_sample_profile,
+        profile=pair_fallback_profile,
         enabled=True,
-    ).status is ContextualEvidenceStatus.SEMANTIC_ONLY
+    ) == ContextualEvidenceState(
+        status=ContextualEvidenceStatus.FALLBACK,
+        source_formats=("premierdraft",),
+        message="Contextual · PremierDraft fallback",
+    )
     for profile in (
         None,
         SetProfile.generic(set_code="TST", event_format=QUICK_DRAFT_FORMAT),
-        incompatible_roles_profile,
-        empty_roles_profile,
-        zero_assignment_profile,
+        role_target_only_profile,
+        zero_sample_profile,
         zero_profile_confidence,
     ):
         assert session_module._contextual_evidence_for_profile(
@@ -1185,12 +1172,13 @@ def test_live_session_direct_and_parsed_pack_ingestion_are_equivalent(
     assert direct_snapshot.recommendations == parsed_snapshot.recommendations
 
 
-def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
+def test_live_session_direct_ingestion_loads_configured_empirical_profile(
     tmp_path: Path,
 ) -> None:
-    from tests.test_pickengine import _token_sacrifice_relationship
-
-    profile = _relationship_session_profile()
+    profile = _fixture_empirical_profile_with_authority(
+        source_format="quickdraft",
+        fallback_reason=None,
+    )
     app_dir = tmp_path / "app"
     dump_set_profile(
         profile,
@@ -1203,7 +1191,7 @@ def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
     session = LiveSession(
         log_path=None,
         app_dir=app_dir,
-        card_database=_relationship_session_database(),
+        card_database=_fixture_contextual_card_database(),
     )
 
     snapshot = session.process_events(
@@ -1220,7 +1208,7 @@ def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
                 set_code="TST",
                 pack_number=0,
                 pick_number=0,
-                offered_grp_ids=(601,),
+                offered_grp_ids=(104894, 104976),
                 pool_grp_ids=(),
                 account_id="direct-account",
             ),
@@ -1229,7 +1217,7 @@ def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
                 set_code="TST",
                 pack_number=0,
                 pick_number=0,
-                chosen_grp_id=601,
+                chosen_grp_id=104894,
                 account_id="direct-account",
             ),
             PackOfferedEvent(
@@ -1237,8 +1225,8 @@ def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
                 set_code="TST",
                 pack_number=0,
                 pick_number=1,
-                offered_grp_ids=(602, 605),
-                pool_grp_ids=(601,),
+                offered_grp_ids=(104976, 105080),
+                pool_grp_ids=(104894,),
                 account_id="direct-account",
             ),
         )
@@ -1251,6 +1239,7 @@ def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
     _assert_profile_context(scored_pack=scored_pack, profile=profile, event=event)
     assert snapshot.set_profile.phase is DataLoadPhase.READY
     assert snapshot.set_profile.source == "local-mature"
+
 
 
 def test_live_session_contextual_mode_controls_startup_and_local_rescore(
@@ -1322,7 +1311,7 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     assert enabled.contextual_evidence == ContextualEvidenceState(
         status=ContextualEvidenceStatus.FALLBACK,
         source_formats=("premierdraft",),
-        message="Contextual · semantic + PremierDraft fallback",
+        message="Contextual · PremierDraft fallback",
     )
     assert enabled.draft == initial.draft
     assert enabled.current_pack_event == initial.current_pack_event
@@ -1383,24 +1372,8 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
     assert len(events) == event_count
 
 
-def _relationship_session_profile() -> SetProfile:
-    """Build one enhanced schema-three profile over the session fixture cards."""
-    from tests.test_pickengine import (
-        _relationship_profile,
-        _token_sacrifice_relationship,
-    )
-
-    return _relationship_profile(relationships=(_token_sacrifice_relationship(),))
-
-
-def _relationship_session_database() -> CardDatabase:
-    from tests.test_pickengine import _relationship_database
-
-    return _relationship_database()
-
-
-def _save_relationship_backtest_draft(*, app_dir: Path) -> None:
-    """Persist a three-pick draft with relationship and contextual evidence."""
+def _save_empirical_backtest_draft(*, app_dir: Path) -> None:
+    """Persist a three-pick draft with empirical ratings and saved history."""
     save_draft_state(
         state=replace(
             _draft_state(
@@ -1408,29 +1381,29 @@ def _save_relationship_backtest_draft(*, app_dir: Path) -> None:
                 screen_name="Player",
                 draft_id="draft-1",
                 updated_at="2026-08-23T10:00:00+00:00",
-                pool_grp_ids=(602,),
+                pool_grp_ids=(104894, 104976, 104894),
             ),
             picks=(
                 DraftPick(
                     pack_number=0,
                     pick_number=0,
-                    offered_grp_ids=(601,),
+                    offered_grp_ids=(104894, 104976),
                     pool_before_pick=(),
-                    chosen_grp_id=601,
+                    chosen_grp_id=104894,
                 ),
                 DraftPick(
                     pack_number=0,
                     pick_number=1,
-                    offered_grp_ids=(602,),
-                    pool_before_pick=(601,),
-                    chosen_grp_id=602,
+                    offered_grp_ids=(104976,),
+                    pool_before_pick=(104894,),
+                    chosen_grp_id=104976,
                 ),
                 DraftPick(
                     pack_number=0,
                     pick_number=2,
-                    offered_grp_ids=(605,),
-                    pool_before_pick=(601, 602),
-                    chosen_grp_id=605,
+                    offered_grp_ids=(104894,),
+                    pool_before_pick=(104894, 104976),
+                    chosen_grp_id=104894,
                 ),
             ),
         ),
@@ -1451,256 +1424,61 @@ def test_live_session_rejects_unsupported_command(tmp_path: Path) -> None:
         session.dispatch(command=object())  # type: ignore[arg-type]
 
 
-def test_live_session_enhancement_does_not_change_basic_do_with_contextual_evidence(
+def test_live_session_saved_draft_backtest_keeps_empirical_contextual_evidence(
     tmp_path: Path,
 ) -> None:
-    profile = _relationship_session_profile()
-    assert profile.enhancement is not None
-    database = _relationship_session_database()
-    unenhanced_profile = replace(profile, enhancement=None)
-    enhanced_session = LiveSession(
-        log_path=tmp_path / "enhanced.log",
-        app_dir=tmp_path / "enhanced-app",
-        card_database=database,
+    profile = _fixture_empirical_profile_with_authority(
+        source_format="quickdraft",
+        fallback_reason=None,
+    )
+    app_dir = tmp_path / "app"
+    _save_empirical_backtest_draft(app_dir=app_dir)
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_fixture_contextual_card_database(),
         set_profile=profile,
     )
-    unenhanced_session = LiveSession(
-        log_path=tmp_path / "unenhanced.log",
-        app_dir=tmp_path / "unenhanced-app",
-        card_database=database,
-        set_profile=unenhanced_profile,
-    )
-    event = PackOfferedEvent(
-        event_name=CONTEXT_EVENT_NAME,
-        set_code="TST",
-        pack_number=CONTEXT_PACK_NUMBER,
-        pick_number=CONTEXT_PICK_NUMBER,
-        offered_grp_ids=(602, 605),
-        pool_grp_ids=(601,),
-        account_id=None,
-    )
-    enhanced_session._consume_event(event=event, state=None)
-    unenhanced_session._consume_event(event=event, state=None)
 
-    enhanced_snapshot = enhanced_session.snapshot
-    unenhanced_snapshot = unenhanced_session.snapshot
-    enhanced_pack = enhanced_snapshot.current_scored_pack
-    unenhanced_pack = unenhanced_snapshot.current_scored_pack
-    assert enhanced_pack is not None
-    assert unenhanced_pack is not None
-
-    assert tuple(
-        (row.card.grp_id, row.score)
-        for row in enhanced_snapshot.recommendations.cards
-    ) == tuple(
-        (row.card.grp_id, row.score)
-        for row in unenhanced_snapshot.recommendations.cards
-    )
-    assert tuple(
-        (row.card.grp_id, row.raw_score)
-        for row in sorted(enhanced_pack.cards, key=lambda card: card.card.grp_id)
-    ) == tuple(
-        (row.card.grp_id, row.raw_score)
-        for row in sorted(unenhanced_pack.cards, key=lambda card: card.card.grp_id)
-    )
-    package_payoff = next(
-        row for row in enhanced_pack.cards if row.card.grp_id == 605
-    )
-    assert package_payoff.contextual_evidence
-    assert all(
-        not hasattr(recommendation, attribute)
-        for snapshot in (enhanced_snapshot, unenhanced_snapshot)
-        for recommendation in snapshot.recommendations.cards
-        for attribute in (
-            "relationship_contributions",
-            "relationship_advice",
-            "relationship_advice_enabled",
-        )
+    snapshot = session.dispatch(
+        command=RequestBacktest(account_id="account-1", draft_id="draft-1")
     )
 
-
-def test_live_session_hob_enhancement_does_not_change_basic_do(
-    tmp_path: Path,
-) -> None:
-    profile = load_set_profile(
-        PROJECT_ROOT
-        / "tests"
-        / "fixtures"
-        / "hob-relationship-scoring-profile.json",
-        expected_set_code="HOB",
-        expected_format=QUICK_DRAFT_FORMAT,
-    )
-    assert profile.enhancement is not None
-    state = DraftState.from_json(
-        json.loads(
-            (
-                PROJECT_ROOT
-                / "tests"
-                / "fixtures"
-                / "hob-relationship-scoring-state.json"
-            ).read_text(encoding="utf-8")
-        )
-    )
-    card_database = SetCardData.from_gzip_bytes(
-        payload=(
-            PROJECT_ROOT / "website" / "public" / "card-data" / "hob.json.gz"
-        ).read_bytes(),
-        expected_set_code="hob",
-    ).to_card_database()
-    saved_pick = state.picks[1]
-    assert saved_pick.offered_grp_ids is not None
-    assert saved_pick.pool_before_pick is not None
-    assert saved_pick.pack_number == 0
-    assert saved_pick.pick_number == 5
-
-    start_event = DraftStartedEvent(
-        event_name=state.event_name,
-        set_code=state.set_code.upper(),
-        course_id=state.course_id,
-        account_id=state.account_id,
-    )
-    prior_picks = tuple(
-        PickMadeEvent(
-            event_name=state.event_name,
-            set_code=state.set_code.upper(),
-            pack_number=saved_pick.pack_number,
-            pick_number=pick_number,
-            chosen_grp_id=grp_id,
-            account_id=state.account_id,
-        )
-        for pick_number, grp_id in enumerate(saved_pick.pool_before_pick)
-    )
-    offer_event = PackOfferedEvent(
-        event_name=state.event_name,
-        set_code=state.set_code.upper(),
-        pack_number=saved_pick.pack_number,
-        pick_number=saved_pick.pick_number,
-        offered_grp_ids=saved_pick.offered_grp_ids,
-        pool_grp_ids=saved_pick.pool_before_pick,
-        account_id=state.account_id,
-    )
-    events = (start_event, *prior_picks, offer_event)
-    profiles = (profile, replace(profile, enhancement=None))
-    snapshots = []
-    for label, profile_variant in zip(
-        ("enhanced", "enhancement-removed"),
-        profiles,
-        strict=True,
-    ):
-        session = LiveSession(
-            log_path=None,
-            app_dir=tmp_path / label,
-            card_database=card_database,
-            set_profile=profile_variant,
-        )
-        snapshots.append(session.process_events(events=events))
-
-    enhanced_snapshot, removed_snapshot = snapshots
-    enhanced_pack = enhanced_snapshot.current_scored_pack
-    removed_pack = removed_snapshot.current_scored_pack
-    assert enhanced_pack is not None
-    assert removed_pack is not None
-    enhanced_scores = {
-        card.card.grp_id: (
-            card.basic_score,
-            card.raw_score,
-            card.contextual_breakdown,
-            card.contextual_evidence,
-        )
-        for card in enhanced_pack.cards
-    }
-    removed_scores = {
-        card.card.grp_id: (
-            card.basic_score,
-            card.raw_score,
-            card.contextual_breakdown,
-            card.contextual_evidence,
-        )
-        for card in removed_pack.cards
-    }
-    assert set(enhanced_scores) == set(saved_pick.offered_grp_ids)
-    assert enhanced_scores == removed_scores
-    assert tuple(
-        recommendation.card.grp_id
-        for recommendation in enhanced_snapshot.recommendations.cards
-    ) == tuple(
-        recommendation.card.grp_id
-        for recommendation in removed_snapshot.recommendations.cards
-    )
-    assert enhanced_snapshot.recommendations.cards[0].card.grp_id == 103526
-    assert any(
-        "semantic package" in evidence
-        for card in enhanced_pack.cards
-        for evidence in card.contextual_evidence
-    )
-
-
-def test_live_session_saved_draft_backtest_keeps_contextual_evidence(
-    tmp_path: Path,
-) -> None:
-    profile = _relationship_session_profile()
-    database = _relationship_session_database()
-    app_dirs = (tmp_path / "enhanced-app", tmp_path / "unenhanced-app")
-    for app_dir in app_dirs:
-        _save_relationship_backtest_draft(app_dir=app_dir)
-
-    backtests = []
-    for app_dir, set_profile in (
-        (app_dirs[0], profile),
-        (app_dirs[1], replace(profile, enhancement=None)),
-    ):
-        session = LiveSession(
-            log_path=tmp_path / f"{app_dir.name}.log",
-            app_dir=app_dir,
-            card_database=database,
-            set_profile=set_profile,
-        )
-        snapshot = session.dispatch(
-            command=RequestBacktest(account_id="account-1", draft_id="draft-1")
-        )
-        assert snapshot.backtest is not None
-        backtests.append(snapshot.backtest)
-
-    enhanced, unenhanced = backtests
+    assert snapshot.backtest is not None
+    assert snapshot.backtest.compared_count == 3
     assert all(
         row.recommended is not None and row.recommended_score is not None
-        for row in enhanced.rows
+        for row in snapshot.backtest.rows
     )
-    assert all(
-        row.recommended is not None and row.recommended_score is not None
-        for row in unenhanced.rows
-    )
-    assert tuple(
-        (row.recommended.grp_id, row.recommended_score)
-        for row in enhanced.rows
-        if row.recommended is not None
-    ) == tuple(
-        (row.recommended.grp_id, row.recommended_score)
-        for row in unenhanced.rows
-        if row.recommended is not None
-    )
-    assert tuple(row.contextual_evidence for row in enhanced.rows) == tuple(
-        row.contextual_evidence for row in unenhanced.rows
-    )
-    assert enhanced.rows[2].contextual_evidence
+    assert snapshot.backtest.rows[2].contextual_evidence
 
 
 def test_live_session_profile_refresh_replacement_keeps_backtest(
     tmp_path: Path,
 ) -> None:
-    enhanced = _relationship_session_profile()
-    unenhanced = replace(_relationship_session_profile(), enhancement=None)
-    database = _relationship_session_database()
+    profile = _fixture_empirical_profile_with_authority(
+        source_format="quickdraft",
+        fallback_reason=None,
+    )
+    replacement_profile = _fixture_empirical_profile_with_authority(
+        source_format="quickdraft",
+        fallback_reason=None,
+        first_gih=0.80,
+        second_gih=0.20,
+        profile_version="empirical-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    database = _fixture_contextual_card_database()
     app_dir = tmp_path / "app"
-    _save_relationship_backtest_draft(app_dir=app_dir)
+    _save_empirical_backtest_draft(app_dir=app_dir)
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=app_dir,
         card_database=database,
-        profile_client=_ProfileClientStub({"TST": enhanced}),
+        profile_client=_ProfileClientStub({"TST": profile}),
     )
-    source = database.cards[601]
-    target = database.cards[602]
+    source = database.cards[104894]
+    target = database.cards[104976]
     session._consume_event(
         event=PackOfferedEvent(
             event_name=CONTEXT_EVENT_NAME,
@@ -1727,7 +1505,7 @@ def test_live_session_profile_refresh_replacement_keeps_backtest(
     session.complete_profile_refresh(
         request=request,
         result=ProfileRefreshResult(
-            profile=unenhanced,
+            profile=replacement_profile,
             outcome=ProfileRefreshOutcome.UPDATED,
         ),
     )
@@ -1736,23 +1514,26 @@ def test_live_session_profile_refresh_replacement_keeps_backtest(
     replacement = published[0]
     assert replacement.backtest == compared.backtest
     assert replacement.progress is None
-    assert replacement.set_profile.profile_version == unenhanced.profile_version
+    assert replacement.set_profile.profile_version == replacement_profile.profile_version
     assert replacement.current_scored_pack is not None
 
 
-def test_live_session_profile_refresh_same_capability_keeps_backtest(
+def test_live_session_profile_refresh_same_maturity_keeps_backtest(
     tmp_path: Path,
 ) -> None:
-    enhanced = _relationship_session_profile()
-    bumped = replace(enhanced, profile_version="relationship-509-bump")
-    database = _relationship_session_database()
+    profile = _fixture_empirical_profile_with_authority(
+        source_format="quickdraft",
+        fallback_reason=None,
+    )
+    bumped = replace(profile, profile_version="empirical-1.0-bump")
+    database = _fixture_contextual_card_database()
     app_dir = tmp_path / "app"
-    _save_relationship_backtest_draft(app_dir=app_dir)
+    _save_empirical_backtest_draft(app_dir=app_dir)
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=app_dir,
         card_database=database,
-        profile_client=_ProfileClientStub({"TST": enhanced}),
+        profile_client=_ProfileClientStub({"TST": profile}),
     )
     session._consume_event(
         event=PackOfferedEvent(
@@ -1760,8 +1541,8 @@ def test_live_session_profile_refresh_same_capability_keeps_backtest(
             set_code="TST",
             pack_number=CONTEXT_PACK_NUMBER,
             pick_number=CONTEXT_PICK_NUMBER,
-            offered_grp_ids=(602,),
-            pool_grp_ids=(601,),
+            offered_grp_ids=(104976,),
+            pool_grp_ids=(104894,),
             account_id=None,
         ),
         state=None,
@@ -1813,7 +1594,7 @@ def test_live_session_contextual_mode_toggle_without_pack_publishes_only_mode(
     assert published[-1] is changed
 
 
-def test_live_session_semantic_status_does_not_require_current_card_adjustment(
+def test_live_session_profile_without_usable_rates_does_not_create_contextual_evidence(
     tmp_path: Path,
 ) -> None:
     session = LiveSession(
@@ -1832,10 +1613,7 @@ def test_live_session_semantic_status_does_not_require_current_card_adjustment(
         )
     )
 
-    assert snapshot.contextual_evidence == ContextualEvidenceState(
-        status=ContextualEvidenceStatus.SEMANTIC_ONLY,
-        message="Contextual · semantic-only (no aggregate evidence)",
-    )
+    assert snapshot.contextual_evidence == ContextualEvidenceState()
     assert snapshot.current_scored_pack is not None
     assert all(
         card.contextual_evidence == ()
@@ -1846,7 +1624,10 @@ def test_live_session_semantic_status_does_not_require_current_card_adjustment(
 def test_live_session_contextual_mode_survives_profile_and_pack_lifecycle(
     tmp_path: Path,
 ) -> None:
-    profile = _fixture_set_profile()
+    profile = _fixture_empirical_profile_with_authority(
+        source_format="quickdraft",
+        fallback_reason=None,
+    )
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=tmp_path / "app",
@@ -2504,13 +2285,15 @@ def test_live_session_forced_profile_command_bypasses_fresh_manifest_ttl(
         for recommendation in adopted.recommendations.cards
     } == {104894: 0.10, 104976: 0.90}
 
-@pytest.mark.parametrize("maturity", ("semantic-only", "metadata-only", "generic"))
+@pytest.mark.parametrize(
+    "maturity",
+    ("metadata-only", "generic"),
+)
 def test_live_session_non_empirical_profiles_use_deterministic_offline_fallbacks(
     tmp_path: Path,
     maturity: str,
 ) -> None:
     app_dir = tmp_path / "app"
-    fallback = _fixture_fallback_profile(maturity=maturity)
     opener_calls: list[object] = []
 
     def guarded_opener(request: object, *, timeout: float) -> None:
@@ -2519,8 +2302,12 @@ def test_live_session_non_empirical_profiles_use_deterministic_offline_fallbacks
         raise AssertionError("fallback scoring must not access the provider")
 
     client = ProfileClient(app_dir=app_dir, opener=guarded_opener)
+    profile_path = client.profile_path("TST", QUICK_DRAFT_FORMAT)
     if maturity != "generic":
-        dump_set_profile(fallback, client.profile_path("TST", QUICK_DRAFT_FORMAT))
+        dump_set_profile(
+            _fixture_fallback_profile(maturity=maturity),
+            profile_path,
+        )
     session = LiveSession(
         log_path=tmp_path / "Player.log",
         app_dir=app_dir,
@@ -2538,6 +2325,7 @@ def test_live_session_non_empirical_profiles_use_deterministic_offline_fallbacks
         )
     )
 
+    assert snapshot.contextual_evidence == ContextualEvidenceState()
     assert snapshot.ratings.phase is DataLoadPhase.UNAVAILABLE
     assert snapshot.ratings.last_successful_update is None
     assert snapshot.ratings.rated_cards == 0
@@ -8058,6 +7846,7 @@ def _fixture_contextual_card_database() -> CardDatabase:
             first_card.grp_id: replace(
                 first_card,
                 oracle_id="wu-bomb",
+                oracle_text="Draw two cards.",
                 set_code="tst",
             ),
         },
@@ -8184,11 +7973,11 @@ def _basic_do_rows(
 
 
 def _fixture_set_profile() -> SetProfile:
-    return load_set_profile(
-        FIXTURE_PROFILE_PATH,
-        expected_set_code="TST",
-        expected_format=QUICK_DRAFT_FORMAT,
-    )
+    value = json.loads(FIXTURE_PROFILE_PATH.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    # Keep only the historical fixture's empirical fields for session tests.
+    value.pop("role_profile", None)
+    return SetProfile.from_json(value)
 
 
 def _fixture_empirical_profile(
@@ -8267,28 +8056,12 @@ def _fixture_empirical_profile_with_authority(
 
 
 def _fixture_fallback_profile(*, maturity: str) -> SetProfile:
-    profile = _fixture_set_profile()
-    if maturity == "semantic-only":
-        return replace(
-            profile,
-            maturity=maturity,
-            samples=None,
-            card_ratings=(),
-            pairs=tuple(
-                replace(
-                    pair,
-                    structural_targets=(),
-                    role_targets=(),
-                    removal_targets=(),
-                    synergy=(),
-                    scarcity=(),
-                    performance=None,
-                )
-                for pair in profile.pairs
-            ),
-        )
     if maturity == "metadata-only":
-        return replace(profile, maturity=maturity, samples=None, pairs=(), role_profile=None)
+        return load_set_profile(
+            PROJECT_ROOT / "tests" / "fixtures" / "set-profiles" / "metadata-only.json",
+            expected_set_code="TST",
+            expected_format=QUICK_DRAFT_FORMAT,
+        )
     if maturity == "generic":
         return SetProfile.generic(set_code="TST", event_format=QUICK_DRAFT_FORMAT)
     raise AssertionError(f"unsupported fallback maturity: {maturity}")
@@ -8307,13 +8080,7 @@ def _fixture_empirical_profile_for_set(
         first_gih=first_gih,
         second_gih=second_gih,
     )
-    role_profile = profile.role_profile
-    assert role_profile is not None
-    return replace(
-        profile,
-        set_code=set_code,
-        role_profile=replace(role_profile, set_code=set_code),
-    )
+    return replace(profile, set_code=set_code)
 
 
 def _fixture_set_profile_for_set(
@@ -8322,13 +8089,10 @@ def _fixture_set_profile_for_set(
     profile_version: str = "alternate-set-1.0",
 ) -> SetProfile:
     profile = _fixture_set_profile()
-    role_profile = profile.role_profile
-    assert role_profile is not None
     return replace(
         profile,
         set_code=set_code,
         profile_version=profile_version,
-        role_profile=replace(role_profile, set_code=set_code),
     )
 
 

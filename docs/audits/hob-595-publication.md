@@ -1,5 +1,7 @@
 # HOB recovered-profile publication and draft evidence
 
+> **Archive notice:** This report preserves pre-#663 observations of schema-3 profile compilation. The `republish-enrichment` workflow it describes has been retired. Its commands and results are historical records, not runnable instructions or evidence of current runtime behavior.
+
 Issue: #595. Date: 2026-09-19. The recovery and every verification command ran with
 `OPENROUTER_API_KEY` and `OPENROUTER_KEY` removed from the environment. No model provider was
 constructed or contacted.

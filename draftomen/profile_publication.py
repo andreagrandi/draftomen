@@ -16,21 +16,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import tempfile
 from typing import Any, TypeAlias
 import zlib
 
 from draftomen.carddb import CardDatabase, CardDatabaseError, load_card_database
 from draftomen.enrichment_publications import (
-    EnrichmentPublication,
     EnrichmentPublicationError,
-    commit_enrichment_candidate,
     load_enrichment_publications,
-    resolve_enrichment_candidates,
-    write_enrichment_candidate,
 )
-from draftomen.guide_client import GuideClientError, _validate_url as _validate_guide_url
 from draftomen.profile_generation import (
     DEFAULT_PROFILE_GENERATION_CONFIG,
     ProfileGenerationConfig,
@@ -38,11 +32,8 @@ from draftomen.profile_generation import (
     ProfileGenerationReport,
     ProfileGenerationResult,
     ProfileGenerationStage,
-    ProfileEnhancementProvenance,
     generate_set_profile,
-    _requested_card_database,
 )
-from draftomen.profile_enhancement import ProfileEnhancementError
 from draftomen.profile_manifest import (
     ProfileManifest,
     ProfileManifestArtifact,
@@ -57,15 +48,8 @@ from draftomen.public_dump import (
     PublicDumpSource,
     load_public_dump_manifest,
 )
-from draftomen.semantic_enrichment import (
-    EnrichmentSources,
-    GuideSource,
-    SemanticEnrichmentArtifact,
-)
-from draftomen.semantic_enrichment_records import SemanticEnrichmentError
 from draftomen.seventeen import SeventeenLandsError, load_17lands_format_data
 from draftomen.set_profile import (
-    EnhancementStatus,
     ProfileMaturity,
     SetProfile,
     SetProfileError,
@@ -105,9 +89,6 @@ _MATURE_EVIDENCE_ERROR = (
     "targets for every accepted color pair."
 )
 _GENERATION_FALLBACK_ERROR = "Profile generation or validation failed before publication."
-_FROZEN_GUIDE_ERROR = "The frozen guide record is inconsistent."
-_ENRICHMENT_INPUT_ERROR = "Could not load the enrichment input."
-_ENRICHMENT_ARTIFACT_NAME = re.compile(r"[0-9a-f]{64}\.json")
 _ENRICHMENT_RETAINED_OBJECT_ERROR = "Could not read the retained profile object."
 _ENRICHMENT_REPLACEMENT_ERROR = "Could not read the generated profile payload."
 
@@ -120,7 +101,6 @@ _KNOWN_GENERATION_VALIDATION_ERRORS = frozenset(
         "Generated profile bytes are not canonical.",
         "Generated profile does not match the requested set and format.",
         "Generation report does not match the requested profile.",
-        "Generation report enhancement provenance does not match the profile.",
         "Generation report schema does not match the profile.",
         "Generation report checksums or sizes do not reconcile.",
         "Generation report could not be serialized and parsed.",
@@ -337,7 +317,6 @@ class PublishedProfilePublication:
     object_path: Path
     manifest_path: Path
     manifest_changed: bool
-    publications_path: Path | None
 
 
 def publish_profile_publication(
@@ -345,24 +324,13 @@ def publish_profile_publication(
     publication: ProfilePublicationResult,
     profiles_dir: PathInput,
     published_at: str | datetime,
-    run_id: str | None = None,
 ) -> PublishedProfilePublication:
-    """Install one validated local publication and record its enrichment provenance.
+    """Install one validated local publication in the repository profiles tree.
 
-    The manifest is loaded before any repository write, the immutable object is
-    installed before anything names it, and an enriched publication is recorded
-    as a candidate in the durable publication record before the manifest entry
-    that names it.  Writing that manifest entry is the commit point: only then
-    is the candidate promoted to the identity's committed entry.  An
-    interrupted publication therefore leaves the previously selected
-    publication's entry untouched while its own candidate still protects a
-    manifest that already selects it, and the next enriched publication
-    resolves a leftover candidate against the manifest it finds.  An identical
-    republication rewrites neither the object nor the manifest, a manifest
-    failure leaves the previous manifest authoritative, and a plain publication
-    never reads or writes the record.  Every failure, including an unusable
-    provenance record, is reported as :class:`ProfilePublicationError` so
-    callers keep one publication error taxonomy.
+    The immutable object is installed before the manifest entry that names it.
+    An identical republication rewrites neither the object nor the manifest.
+    Historical enrichment publication records are read only by the downgrade
+    guard and are never written by this publication path.
     """
 
     if not isinstance(publication, ProfilePublicationResult):
@@ -375,37 +343,6 @@ def publish_profile_publication(
         f"{PROFILE_BASE_URL}{report.gzip_sha256}.json.gz",
     )
     existing_manifest = load_profile_manifest(profiles / "manifest.json")
-    enhancement = report.enhancement
-    provenance: EnrichmentPublication | None = None
-    if enhancement is not None:
-        if not isinstance(run_id, str) or not run_id:
-            raise ProfilePublicationError(
-                "A published enrichment profile requires its run identity."
-            )
-        reviewed_at = enhancement.reviewed_at
-        if not reviewed_at:
-            raise ProfilePublicationError(
-                "A published enrichment profile requires its review timestamp."
-            )
-        provenance = EnrichmentPublication(
-            set_code=report.set_code,
-            event_format=report.event_format,
-            artifact_sha256=enhancement.artifact_sha256,
-            run_id=run_id,
-            reviewed_at=reviewed_at,
-            published_at=timestamp,
-            profile_gzip_sha256=report.gzip_sha256,
-        )
-        try:
-            resolve_enrichment_candidates(
-                profiles_dir=profiles,
-                selected={
-                    (entry.set_code, entry.event_format): entry.gzip_sha256
-                    for entry in existing_manifest.artifacts
-                },
-            )
-        except EnrichmentPublicationError as cause:
-            raise ProfilePublicationError(str(cause)) from cause
     payload = publication.artifact_path.read_bytes()
     if hashlib.sha256(payload).hexdigest() != report.gzip_sha256:
         raise ProfilePublicationError(
@@ -421,32 +358,16 @@ def publish_profile_publication(
         path=profiles / "objects" / f"{report.gzip_sha256}.json.gz",
         payload=payload,
     )
-    publications_path: Path | None = None
-    if provenance is not None:
-        try:
-            write_enrichment_candidate(profiles_dir=profiles, publication=provenance)
-        except EnrichmentPublicationError as cause:
-            raise ProfilePublicationError(str(cause)) from cause
     manifest_path = (
         publish_profile_manifest(profiles / "manifest.json", merged)
         if manifest_changed
         else profiles / "manifest.json"
     )
-    if provenance is not None:
-        try:
-            publications_path = commit_enrichment_candidate(
-                profiles_dir=profiles,
-                set_code=provenance.set_code,
-                event_format=provenance.event_format,
-            )
-        except EnrichmentPublicationError as cause:
-            raise ProfilePublicationError(str(cause)) from cause
     return PublishedProfilePublication(
         artifact=artifact,
         object_path=object_path,
         manifest_path=manifest_path,
         manifest_changed=manifest_changed,
-        publications_path=publications_path,
     )
 
 
@@ -499,21 +420,23 @@ def filter_enriched_profile_downgrades(
     """Split generated replacements into accepted artifacts and enriched downgrade conflicts.
 
     Producers that can emit plain profiles MUST route their replacements through
-    this filter before merging, so a published enriched entry is never replaced
-    by a non-enriched artifact.  A durable publication record protects only the
-    publications it describes: the identity counts as enriched when the record's
-    committed entry or its pending candidate carries the retained artifact's
-    digest, or, when the record protects that digest through neither, when the
-    retained profile object declares confirmed enrichment.  A record naming a
-    different digest is not a claim about the retained entry -- an unsuccessful
-    or superseded publication can leave one behind -- so the retained-object read
-    decides that case.  Because the record is consulted before the object, a
-    matching entry protects an entry even once its object file was removed, which
-    is what keeps a publication interrupted before its manifest entry was
-    durable from being downgraded, and a corrupt retained object no longer masks
-    a recorded publication.
+    this filter before merging, so an enriched historical entry cannot be
+    replaced by an older-schema plain artifact. Schema-4 profiles are the clean
+    cutover and may replace an enriched schema-3 entry when the replacement
+    payload validates as a schema-4 scoring profile. A durable publication
+    record protects only the publications it describes: the identity counts as
+    enriched when the record's committed entry or its pending candidate carries
+    the retained artifact's digest, or, when the record protects that digest
+    through neither, when the retained profile object declares confirmed
+    enrichment. A record naming a different digest is not a claim about the
+    retained entry -- an unsuccessful or superseded publication can leave one
+    behind -- so the retained-object read decides that case. Because the record
+    is consulted before the object, a matching entry protects an entry even
+    once its object file was removed, which is what keeps a publication
+    interrupted before its manifest entry was durable from being downgraded,
+    and a corrupt retained object no longer masks a recorded publication.
     Enriched-to-enriched replacement, unpublished identities, identical
-    artifacts, and non-enriched entries are unaffected.  A missing record file
+    artifacts, and non-enriched entries are unaffected. A missing record file
     keeps the retained-object behaviour, while an unreadable or invalid record
     fails closed with ``READ_ERROR``.
     """
@@ -542,14 +465,27 @@ def filter_enriched_profile_downgrades(
         replacement_fields = _decode_profile_object(
             payload=payload, error=_ENRICHMENT_REPLACEMENT_ERROR
         )
-        if _profile_declares_confirmed_enrichment(value=replacement_fields):
+        if (
+            artifact.set_profile_schema_version < 4
+            and _profile_declares_confirmed_enrichment(value=replacement_fields)
+        ):
             accepted.append(artifact)
             continue
+        is_schema_four_cutover = (
+            retained.set_profile_schema_version == 3
+            and _is_clean_schema_four_replacement(
+                artifact=artifact,
+                value=replacement_fields,
+            )
+        )
         if published_enrichment.protects(
             set_code=artifact.set_code,
             event_format=artifact.event_format,
             profile_gzip_sha256=retained.gzip_sha256,
         ):
+            if is_schema_four_cutover:
+                accepted.append(artifact)
+                continue
             conflicts.append(
                 EnrichmentDowngradeConflict(
                     set_code=artifact.set_code,
@@ -567,6 +503,9 @@ def filter_enriched_profile_downgrades(
         ):
             accepted.append(artifact)
             continue
+        if is_schema_four_cutover:
+            accepted.append(artifact)
+            continue
         conflicts.append(
             EnrichmentDowngradeConflict(
                 set_code=artifact.set_code,
@@ -576,6 +515,29 @@ def filter_enriched_profile_downgrades(
             )
         )
     return tuple(accepted), tuple(conflicts)
+
+
+def _is_clean_schema_four_replacement(
+    *,
+    artifact: ProfileManifestArtifact,
+    value: Mapping[str, Any],
+) -> bool:
+    """Return whether a replacement is a valid, matching schema-four profile."""
+
+    if artifact.set_profile_schema_version != 4:
+        return False
+    try:
+        profile = SetProfile.from_json(value)
+    except (SetProfileError, TypeError, ValueError, RecursionError):
+        return False
+    return (
+        profile.schema_version == 4
+        and profile.set_code == artifact.set_code
+        and profile.event_format == artifact.event_format
+        and profile.profile_version == artifact.profile_version
+        and profile.generated_at == artifact.generated_at
+        and profile.maturity == artifact.maturity
+    )
 
 
 def _replacement_pair(*, element: object) -> tuple[ProfileManifestArtifact, bytes]:
@@ -616,15 +578,14 @@ def _published_profile_object(*, path: Path) -> Mapping[str, Any] | None:
 
 
 def _profile_declares_confirmed_enrichment(*, value: Mapping[str, Any]) -> bool:
-    """Return True when decoded profile fields declare confirmed enhancement."""
+    """Return True when a historical profile object declares enhancement."""
 
     return (
-        value.get("enhancement_status") == EnhancementStatus.ENHANCED.value
+        value.get("enhancement_status") == "enhanced"
         and isinstance(value.get("enhancement"), Mapping)
     )
 
 
-# Keep the public signature explicit: callers must opt into every input source.
 def generate_local_profile_artifacts(
     *,
     set_code: str,
@@ -636,24 +597,18 @@ def generate_local_profile_artifacts(
     ratings_path: PathInput | None = None,
     source_manifest_path: PathInput | None = None,
     draft_source_name: str | None = None,
-    enrichment: SemanticEnrichmentArtifact | None = None,
-    enrichment_path: PathInput | None = None,
     profile_version: str = "1.0",
     config: ProfileGenerationConfig = DEFAULT_PROFILE_GENERATION_CONFIG,
 ) -> ProfilePublicationResult:
     """Generate and atomically publish one local profile artifact.
 
-    Inputs are loaded strictly from the paths supplied by the caller.  A
-    confirmed enrichment artifact supplied as a path is revalidated against the
-    requested set's frozen card data and guide.  The content-addressed gzip
-    object is committed before ``generation.json``; replacing the latter is the
-    sole authoritative commit operation.
+    Inputs are loaded strictly from the paths supplied by the caller.  The
+    content-addressed gzip object is committed before ``generation.json``;
+    replacing the latter is the sole authoritative commit operation.
     """
 
-    if enrichment is not None and enrichment_path is not None:
-        raise ProfilePublicationError("Supply either enrichment or enrichment_path, not both.")
-
     normalized_set = _normalize_component(value=set_code, field_name="set_code")
+
     normalized_format = _normalize_component(value=event_format, field_name="event_format")
     try:
         normalized_stage = ProfileGenerationStage.normalize(stage)
@@ -689,14 +644,6 @@ def generate_local_profile_artifacts(
             UnicodeError,
         ) as error:
             raise ProfilePublicationError("Could not load the ratings input.") from error
-
-    resolved_enrichment = enrichment
-    if enrichment_path is not None:
-        resolved_enrichment = _load_enrichment_artifact(
-            path=enrichment_path,
-            set_code=normalized_set,
-            card_database=card_database,
-        )
 
     if draft_source_name is not None and source_manifest_path is None:
         raise ProfilePublicationError(
@@ -758,7 +705,6 @@ def generate_local_profile_artifacts(
             profile_version=profile_version,
             ratings=ratings,
             draft_source_name=None if selected_source is None else selected_source.name,
-            enrichment=resolved_enrichment,
             config=config,
         )
         validated = validate_profile_generation(
@@ -771,8 +717,6 @@ def generate_local_profile_artifacts(
         report_bytes = validated.report_bytes
     except PublicDumpChecksumError as error:
         raise ProfilePublicationError(_SOURCE_CHECKSUM_ERROR) from error
-    except ProfileEnhancementError as error:
-        raise ProfilePublicationError(str(error)) from error
     except (ProfileGenerationError, SetProfileError) as error:
         evidence_error = _stage_evidence_error(stage=normalized_stage, error=error)
         raise ProfilePublicationError(
@@ -821,8 +765,7 @@ def generate_local_profile_artifacts(
         manifest_path=manifest_path,
         input_count=1
         + int(ratings is not None)
-        + int(selected_source is not None)
-        + int(enrichment_path is not None),
+        + int(selected_source is not None),
     )
 
 
@@ -844,143 +787,6 @@ def _path(*, value: PathInput, field_name: str) -> Path:
         raise ProfilePublicationError(f"{field_name} must be a valid local path.")
     return path
 
-
-_GUIDE_SCHEMA_VERSION = 1
-_GUIDE_KEYS = frozenset(
-    {
-        "schema_version",
-        "requested_url",
-        "guide_id",
-        "url",
-        "text",
-        "sha256",
-        "retrieved_at",
-    }
-)
-
-
-def _strict_json(payload: bytes) -> Any:
-    """Decode strict UTF-8 JSON while rejecting duplicate keys and constants."""
-    def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError("duplicate JSON object key")
-            value[key] = item
-        return value
-
-    def constant(_value: str) -> Any:
-        raise ValueError("non-finite JSON constant")
-
-    return json.loads(
-        payload.decode("utf-8"),
-        object_pairs_hook=object_pairs,
-        parse_constant=constant,
-    )
-
-
-def _guide_freeze_record(
-    *, value: Any, guide_url: str | None, normalized_set: str
-) -> GuideSource:
-    """Validate one frozen guide record and reconstruct its source value."""
-    if not isinstance(value, dict) or set(value) != _GUIDE_KEYS:
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
-    if type(value["schema_version"]) is not int or value["schema_version"] != _GUIDE_SCHEMA_VERSION:
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
-    guide_id = f"{normalized_set}-draftsim-guide"
-    if value["guide_id"] != guide_id:
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
-    if guide_url is None:
-        # A reused record has no requested URL to compare against, so its stored
-        # request must satisfy the same acquisition rules as a fresh request.
-        try:
-            _validate_guide_url(value["requested_url"])
-        except (GuideClientError, TypeError, ValueError, UnicodeError) as error:
-            raise ProfilePublicationError(_FROZEN_GUIDE_ERROR) from error
-    elif value["requested_url"] != guide_url:
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
-    if not isinstance(value["url"], str):
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
-    try:
-        # The private import is deliberate so the reuse path cannot drift from acquisition URL rules.
-        _validate_guide_url(value["url"])
-    except (GuideClientError, TypeError, ValueError, UnicodeError) as error:
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR) from error
-    text = value["text"]
-    if not isinstance(text, str):
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
-    try:
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    except UnicodeError as error:
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR) from error
-    if value["sha256"] != digest:
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR)
-    try:
-        return GuideSource(
-            guide_id=guide_id,
-            url=value["url"],
-            text=text,
-            retrieved_at=value["retrieved_at"],
-        )
-    except (TypeError, ValueError, UnicodeError) as error:
-        raise ProfilePublicationError(_FROZEN_GUIDE_ERROR) from error
-
-
-def _load_enrichment_artifact(
-    *,
-    path: PathInput,
-    set_code: str,
-    card_database: CardDatabase,
-) -> SemanticEnrichmentArtifact:
-    """Load one confirmed enrichment artifact from its content-addressed run file."""
-
-    artifact_path = _path(value=path, field_name="enrichment_path")
-    if _ENRICHMENT_ARTIFACT_NAME.fullmatch(artifact_path.name) is None:
-        raise ProfilePublicationError(_ENRICHMENT_INPUT_ERROR)
-    try:
-        payload = artifact_path.read_bytes()
-        if hashlib.sha256(payload).hexdigest() != artifact_path.stem:
-            raise ValueError("The enrichment artifact digest does not match its file name.")
-        value = _strict_json(payload)
-        if not isinstance(value, Mapping):
-            raise ValueError("The enrichment artifact must be a JSON object.")
-        requested = _requested_card_database(card_database, set_code)
-        pins = value.get("guides")
-        if not isinstance(pins, list):
-            raise ValueError("The enrichment artifact guide pins must be a JSON array.")
-        if len(pins) > 1:
-            # One artifact may pin exactly one guide; anything else would need a
-            # source the caller never supplied.
-            raise ValueError("The enrichment artifact pins more than one guide.")
-        guides: tuple[GuideSource, ...] = ()
-        if pins:
-            guide_path = artifact_path.parent.parent / "sources" / "guide.json"
-            guide_value = _strict_json(guide_path.read_bytes())
-            try:
-                guide = _guide_freeze_record(
-                    value=guide_value,
-                    guide_url=None,
-                    normalized_set=set_code,
-                )
-            except ProfilePublicationError as error:
-                raise ProfilePublicationError(_ENRICHMENT_INPUT_ERROR) from error
-            guides = (guide,)
-        sources = EnrichmentSources(
-            set_code=set_code,
-            cards=tuple(requested.cards.values()),
-            guides=guides,
-        )
-        return SemanticEnrichmentArtifact.from_bytes(payload, sources=sources)
-    except (
-        SemanticEnrichmentError,
-        OSError,
-        RecursionError,
-        TypeError,
-        ValueError,
-        UnicodeError,
-        json.JSONDecodeError,
-    ) as error:
-        raise ProfilePublicationError(_ENRICHMENT_INPUT_ERROR) from error
 
 
 def _canonical_published_at(published_at: str | datetime) -> str:
@@ -1067,6 +873,8 @@ def validate_profile_generation(
     if not isinstance(generation, ProfileGenerationResult):
         raise ProfilePublicationError("Profile generation returned an invalid result.")
     profile_bytes = generation.profile_bytes
+    normalized_set = _normalize_component(value=set_code, field_name="set_code")
+    normalized_format = _normalize_component(value=event_format, field_name="event_format")
     gzip_bytes = generation.gzip_bytes
     report = generation.report
 
@@ -1097,22 +905,16 @@ def validate_profile_generation(
         or rebuilt != generation.profile
     ):
         raise ProfilePublicationError("Generated profile bytes are not canonical.")
-    if rebuilt.set_code != set_code or rebuilt.event_format != event_format:
+    if rebuilt.set_code != normalized_set or rebuilt.event_format != normalized_format:
         raise ProfilePublicationError("Generated profile does not match the requested set and format.")
+    if (
+        report.set_code != normalized_set
+        or report.event_format != normalized_format
+        or report.stage != stage
+    ):
+        raise ProfilePublicationError("Generation report does not match the requested profile.")
     if report.set_profile_schema_version != rebuilt.schema_version:
         raise ProfilePublicationError("Generation report schema does not match the profile.")
-    if report.set_code != set_code or report.event_format != event_format or report.stage != stage:
-        raise ProfilePublicationError("Generation report does not match the requested profile.")
-    expected_provenance = (
-        None
-        if rebuilt.enhancement is None
-        else ProfileEnhancementProvenance.from_enhancement(rebuilt.enhancement)
-    )
-    if report.enhancement != expected_provenance:
-        raise ProfilePublicationError(
-            "Generation report enhancement provenance does not match the profile."
-        )
-
     profile_sha256 = hashlib.sha256(decompressed).hexdigest()
     gzip_sha256 = hashlib.sha256(gzip_bytes).hexdigest()
     if (

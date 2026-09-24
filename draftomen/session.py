@@ -316,14 +316,12 @@ class SetProfileState:
     message: str = "Set profile is not configured."
 
 class ContextualEvidenceStatus(str, Enum):
-    """Classify semantic and aggregate contextual evidence availability."""
+    """Classify empirical contextual evidence availability."""
 
     EXACT = "exact"
     FALLBACK = "fallback"
-    SEMANTIC_ONLY = "semantic-only"
     UNAVAILABLE = "unavailable"
     DISABLED = "disabled"
-
 
 @dataclass(frozen=True, slots=True)
 class ContextualEvidenceState:
@@ -627,12 +625,6 @@ def _contextual_evidence_for_profile(
         profile is None
         or profile.maturity is ProfileMaturity.GENERIC
         or profile.confidence <= 0
-        or not profile.roles_are_compatible
-        or not any(
-            assignment.confidence > 0
-            for card in profile.card_roles
-            for assignment in card.assignments
-        )
     ):
         return ContextualEvidenceState()
 
@@ -667,10 +659,7 @@ def _contextual_evidence_for_profile(
             fallback_sources.add(source_format)
 
     if not sources:
-        return ContextualEvidenceState(
-            status=ContextualEvidenceStatus.SEMANTIC_ONLY,
-            message="Contextual · semantic-only (no aggregate evidence)",
-        )
+        return ContextualEvidenceState()
 
     source_formats = tuple(sorted(sources))
     display_names = {
@@ -692,7 +681,7 @@ def _contextual_evidence_for_profile(
     return ContextualEvidenceState(
         status=status,
         source_formats=source_formats,
-        message=f"Contextual · semantic + {descriptions}",
+        message=f"Contextual · {descriptions}",
     )
 
 
@@ -4678,17 +4667,22 @@ def _profile_refresh_profile_is_adoptable(
     profile version.
     """
 
-    if profile.maturity is ProfileMaturity.GENERIC:
+    if profile.maturity in {
+        ProfileMaturity.GENERIC,
+        ProfileMaturity.SEMANTIC_ONLY,
+    }:
         return False
-    if current_profile is None or current_profile.maturity is ProfileMaturity.GENERIC:
+    if current_profile is None or current_profile.maturity in {
+        ProfileMaturity.GENERIC,
+        ProfileMaturity.SEMANTIC_ONLY,
+    }:
         return True
 
     maturity_rank = {
         ProfileMaturity.MATURE: 0,
         ProfileMaturity.EARLY: 1,
-        ProfileMaturity.SEMANTIC_ONLY: 2,
-        ProfileMaturity.METADATA_ONLY: 3,
-        ProfileMaturity.GENERIC: 4,
+        ProfileMaturity.METADATA_ONLY: 2,
+        ProfileMaturity.GENERIC: 3,
     }
     profile_rank = maturity_rank[profile.maturity]
     current_rank = maturity_rank[current_profile.maturity]

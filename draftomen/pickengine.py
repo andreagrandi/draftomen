@@ -1254,15 +1254,8 @@ def _contextual_score_for_card(
 
     evidence_weight = _profile_evidence_weight(profile=profile)
     stage_scale = _stage_scale(stage=scoring_context.stage)
-    resolution = resolve_card_roles(
-        card,
-        profile=profile.role_profile,
-    )
-    assignments = (
-        resolution.assignments
-        if resolution.source == "compiled_profile"
-        else ()
-    )
+    resolution = resolve_card_roles(card, profile=None)
+    assignments = resolution.assignments
     if not assignments:
         return ContextualScoreBreakdown(), ()
 

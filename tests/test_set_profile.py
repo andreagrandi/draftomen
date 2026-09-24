@@ -9,42 +9,13 @@ import pytest
 import draftomen.set_profile as set_profile_module
 
 from draftomen.config import COLOR_PAIRS
-from draftomen.semantic_capability_records import (
-    CapabilityQuantity,
-    CapabilityZone,
-    PrerequisiteKind,
-    QuantityRelation,
-)
-from draftomen.semantic_condition_records import (
-    CONDITION_MAP_SCHEMA_VERSION,
-    ConditionCapability,
-    ConditionEvidence,
-    ConditionInteraction,
-    ConditionMap,
-    ConditionSource,
-)
-from draftomen.semantic_enrichment import SEMANTIC_ENRICHMENT_SCHEMA_VERSION
-from draftomen.semantic_enrichment_records import OracleEvidence
-from draftomen.semantic_relationship_records import (
-    CardRelationship,
-    QualificationKind,
-    QualificationOutcome,
-    RelationshipParticipant,
-    RelationshipPrerequisite,
-    RelationshipPrerequisiteProjection,
-    RelationshipQualification,
-    RelationshipTiming,
-    RelationshipZone,
-)
-from draftomen.semantic_roles import CompiledRoleProfile, ProfileCard, Role, RoleAssignment
+from draftomen.semantic_roles import Role
 from draftomen.set_profile import (
     SET_PROFILE_SCHEMA_VERSION,
     SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS,
     AggregateEvidence,
     CardPairSynergy,
     CardRating,
-    EnhancementCardData,
-    EnhancementStatus,
     NumericTarget,
     PairProfile,
     ProfileMaturity,
@@ -142,19 +113,27 @@ def test_sparse_early_profile_preserves_only_available_empirical_evidence() -> N
     ]
 
 
-def test_metadata_and_semantic_only_profiles_omit_empirical_sections() -> None:
+def test_metadata_only_profile_and_semantic_only_legacy_fallback() -> None:
     metadata = load_set_profile(FIXTURE_DIR / "metadata-only.json")
-    semantic = load_set_profile(FIXTURE_DIR / "semantic-only.json")
 
     assert metadata.maturity is ProfileMaturity.METADATA_ONLY
     assert metadata.samples is None
-    assert semantic.maturity is ProfileMaturity.SEMANTIC_ONLY
-    assert semantic.samples is None
-    assert semantic.pair_profiles == (PairProfile(pair="WU", theme="tempo flyers"),)
-    semantic_json = semantic.to_json()
-    assert "samples" not in semantic_json
-    assert semantic_json["pair_profiles"] == [{"pair": "WU", "theme": "tempo flyers"}]
+    assert ProfileMaturity.SEMANTIC_ONLY.value == "semantic-only"
+    with pytest.raises(SetProfileSchemaError, match="semantic-only maturity"):
+        load_set_profile(FIXTURE_DIR / "semantic-only.json")
 
+    result = safe_load_set_profile(
+        "tst",
+        "quickdraft",
+        profile_path=FIXTURE_DIR / "semantic-only.json",
+    )
+    assert result.source == "generic"
+    assert result.profile.maturity is ProfileMaturity.GENERIC
+    assert load_scoring_profile(
+        "tst",
+        "quickdraft",
+        profile_path=FIXTURE_DIR / "semantic-only.json",
+    ) is None
 
 def test_unknown_optional_fields_are_ignored_and_output_is_stable(tmp_path: Path) -> None:
     payload = json.loads((FIXTURE_DIR / "early.json").read_text(encoding="utf-8"))
@@ -177,9 +156,17 @@ def test_domain_graph_is_deeply_immutable() -> None:
         profile.pairs[0].structural_targets = ()  # type: ignore[misc]
     assert isinstance(profile.pairs, tuple)
     assert isinstance(profile.pairs[0].structural_targets, tuple)
-    role_profile = profile.role_profile
-    assert role_profile is not None
-    assert isinstance(role_profile.cards, tuple)
+    assert all(
+        not hasattr(profile, name)
+        for name in (
+            "role_profile",
+            "enhancement",
+            "card_roles",
+            "roles_are_compatible",
+            "enhancement_status",
+            "resolve_roles",
+        )
+    )
 
 def test_strict_parser_rejects_missing_required_duplicate_unknown_and_future_schema() -> None:
     payload = json.loads((FIXTURE_DIR / "early.json").read_text(encoding="utf-8"))
@@ -203,28 +190,49 @@ def test_strict_parser_rejects_missing_required_duplicate_unknown_and_future_sch
         SetProfile.from_json(unsupported)
 
 
-def test_strict_loader_rejects_future_nested_role_schema_and_safe_loader_ignores_roles(tmp_path: Path) -> None:
-    payload = json.loads((FIXTURE_DIR / "semantic-only.json").read_text(encoding="utf-8"))
-    payload["role_profile"]["profile_schema_version"] = 999
-    path = tmp_path / "future-role-schema.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(SetProfileSchemaError, match="profile_schema_version"):
-        load_set_profile(path)
-
-    result = safe_load_set_profile("tst", "quickdraft", profile_path=path)
-    assert result.source == "generic"
-    assert result.profile.role_profile is None
-    resolution = result.profile.resolve_roles(
-        {
-            "oracle_id": "wu-bomb",
-            "name": "WU Bomb",
-            "set": "tst",
-            "oracle_text": "Draw a card.",
-        }
+@pytest.mark.parametrize("schema_version", (1, 2, 3))
+def test_rating_bearing_legacy_profiles_ignore_retired_semantic_keys(schema_version: int) -> None:
+    payload = json.loads((FIXTURE_DIR / "early.json").read_text(encoding="utf-8"))
+    payload["schema_version"] = schema_version
+    evidence = (
+        AggregateEvidence(source_format="quickdraft", fallback_reason=None, confidence=1.0)
+        if schema_version >= 2
+        else None
     )
-    assert resolution.source == "local_classifier"
+    rating = CardRating("oracle_id:legacy-rating", _rate(aggregate_evidence=evidence))
+    payload["card_ratings"] = [rating.to_json()]
+    payload["role_profile"] = {"profile_schema_version": 999}
+    payload["enhancement"] = ["ignored legacy payload"]
+    payload["enhancement_status"] = "not-a-supported-status"
 
+    profile = SetProfile.from_json(payload)
+
+    assert profile.schema_version == schema_version
+    assert profile.card_ratings == (rating,)
+    serialized = profile.to_json()
+    assert not {"role_profile", "enhancement", "enhancement_status"}.intersection(serialized)
+
+
+@pytest.mark.parametrize("retired_key", ("role_profile", "enhancement", "enhancement_status"))
+def test_schema_four_rejects_any_retired_semantic_key(retired_key: str) -> None:
+    payload = json.loads((FIXTURE_DIR / "early.json").read_text(encoding="utf-8"))
+    payload["schema_version"] = SET_PROFILE_SCHEMA_VERSION
+    payload[retired_key] = None
+
+    with pytest.raises(SetProfileSchemaError, match="schema-4 profiles cannot contain retired semantic fields"):
+        SetProfile.from_json(payload)
+
+
+def test_schema_four_clean_profile_constructs_and_serializes_without_retired_keys() -> None:
+    early = load_set_profile(FIXTURE_DIR / "early.json")
+    profile = replace(early, schema_version=SET_PROFILE_SCHEMA_VERSION)
+    serialized = profile.to_json()
+
+    assert SET_PROFILE_SCHEMA_VERSION == 4
+    assert SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS == (1, 2, 3, 4)
+    assert profile.schema_version == 4
+    assert profile.card_ratings == ()
+    assert not {"role_profile", "enhancement", "enhancement_status"}.intersection(serialized)
 
 def test_maturity_invariants_reject_inconsistent_evidence_labels() -> None:
     mature_without_evidence = json.loads((FIXTURE_DIR / "mature.json").read_text(encoding="utf-8"))
@@ -243,26 +251,9 @@ def test_maturity_invariants_reject_inconsistent_evidence_labels() -> None:
     metadata_with_samples["samples"] = {"total": 1}
     with pytest.raises(SetProfileSchemaError, match="cannot contain empirical evidence"):
         SetProfile.from_json(metadata_with_samples)
-    metadata_with_semantic = json.loads((FIXTURE_DIR / "metadata-only.json").read_text(encoding="utf-8"))
-    semantic_payload = json.loads((FIXTURE_DIR / "semantic-only.json").read_text(encoding="utf-8"))
-    metadata_with_semantic["role_profile"] = semantic_payload["role_profile"]
-    with pytest.raises(SetProfileSchemaError, match="semantic evidence"):
-        SetProfile.from_json(metadata_with_semantic)
-
-    semantic_without_roles = semantic_payload
-    semantic_without_roles.pop("role_profile")
-    with pytest.raises(SetProfileSchemaError, match="must contain semantic evidence"):
-        SetProfile.from_json(semantic_without_roles)
-
-    semantic_with_pair = json.loads((FIXTURE_DIR / "semantic-only.json").read_text(encoding="utf-8"))
-    semantic_with_pair["pair_profiles"] = [
-        {"pair": "WU", "structural_targets": [{"name": "lands", "value": 17}]}
-    ]
-    with pytest.raises(SetProfileSchemaError, match="cannot contain empirical evidence"):
-        SetProfile.from_json(semantic_with_pair)
 
 
-def test_safe_loader_precedence_prefers_mature_then_early_then_semantic_then_metadata() -> None:
+def test_safe_loader_precedence_prefers_mature_then_early_then_metadata() -> None:
     result = safe_load_set_profile(
         "tst",
         "quickdraft",
@@ -276,7 +267,7 @@ def test_safe_loader_precedence_prefers_mature_then_early_then_semantic_then_met
     assert result.source == "local-mature"
     assert result.profile.maturity is ProfileMaturity.MATURE
 
-    semantic_result = safe_load_set_profile(
+    result = safe_load_set_profile(
         "tst",
         "quickdraft",
         profile_paths=(
@@ -284,9 +275,9 @@ def test_safe_loader_precedence_prefers_mature_then_early_then_semantic_then_met
             FIXTURE_DIR / "semantic-only.json",
         ),
     )
-    assert semantic_result.source == "local-semantic-only"
-    assert semantic_result.profile.maturity is ProfileMaturity.SEMANTIC_ONLY
-
+    assert result.source == "local-metadata-only"
+    assert result.profile.maturity is ProfileMaturity.METADATA_ONLY
+    assert any("semantic-only maturity" in diagnostic for diagnostic in result.diagnostics)
 
 def test_safe_loader_rejects_wrong_target_and_direct_missing_corrupt_future_fallbacks(tmp_path: Path) -> None:
     wrong_target = json.loads((FIXTURE_DIR / "early.json").read_text(encoding="utf-8"))
@@ -357,7 +348,7 @@ def test_safe_loader_candidate_discovery_failures_fall_back_without_raising(
     monkeypatch: pytest.MonkeyPatch,
     method: str,
 ) -> None:
-    last_valid = load_set_profile(FIXTURE_DIR / "semantic-only.json")
+    last_valid = load_set_profile(FIXTURE_DIR / "early.json")
 
     def fail_candidate_discovery(*args: object, **kwargs: object) -> None:
         raise OSError("simulated candidate discovery failure")
@@ -380,7 +371,7 @@ def test_safe_loader_candidate_discovery_failures_fall_back_without_raising(
 
 
 def test_recursive_json_decoder_failure_is_wrapped_and_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    last_valid = load_set_profile(FIXTURE_DIR / "semantic-only.json")
+    last_valid = load_set_profile(FIXTURE_DIR / "early.json")
     path = tmp_path / "recursive.json"
     path.write_text("{}", encoding="utf-8")
 
@@ -407,7 +398,7 @@ def test_recursive_json_decoder_failure_is_wrapped_and_falls_back(tmp_path: Path
 
 
 def test_safe_loader_uses_compatible_last_valid_then_generic() -> None:
-    last_valid = load_set_profile(FIXTURE_DIR / "semantic-only.json")
+    last_valid = load_set_profile(FIXTURE_DIR / "early.json")
     from_last_valid = safe_load_set_profile(
         "tst",
         "quickdraft",
@@ -417,18 +408,7 @@ def test_safe_loader_uses_compatible_last_valid_then_generic() -> None:
     assert from_last_valid.source == "last-valid"
     assert from_last_valid.profile is last_valid
 
-    wrong_last = SetProfile(
-        set_code="other",
-        event_format=last_valid.event_format,
-        profile_version=last_valid.profile_version,
-        generated_at=last_valid.generated_at,
-        source=last_valid.source,
-        maturity=ProfileMaturity.METADATA_ONLY,
-        samples=last_valid.samples,
-        confidence=last_valid.confidence,
-        pairs=last_valid.pairs,
-        role_profile=None,
-    )
+    wrong_last = SetProfile.generic(set_code="other", event_format=last_valid.event_format)
     generic = safe_load_set_profile(
         "tst",
         "quickdraft",
@@ -439,41 +419,6 @@ def test_safe_loader_uses_compatible_last_valid_then_generic() -> None:
     assert any("rejected:last-valid" in diagnostic for diagnostic in generic.diagnostics)
 
 
-def test_semantic_roles_survive_absent_empirical_sections_and_incompatible_data_does_not_merge() -> None:
-    profile = load_set_profile(FIXTURE_DIR / "semantic-only.json")
-    card = {
-        "oracle_id": "wu-bomb",
-        "name": "WU Bomb",
-        "set": "tst",
-        "oracle_text": "Draw a card.",
-    }
-    resolved = profile.resolve_roles(card)
-    assert resolved.source == "compiled_profile"
-    role_profile = profile.role_profile
-    assert role_profile is not None
-    assert resolved.assignments == role_profile.cards[0].assignments
-
-    incompatible = CompiledRoleProfile(
-        set_code="tst",
-        cards=(ProfileCard(key="oracle_id:wu-bomb", assignments=(RoleAssignment(Role.RAMP),)),),
-        role_schema_version=999,
-    )
-    profile_with_incompatible_roles = SetProfile(
-        set_code=profile.set_code,
-        event_format=profile.event_format,
-        profile_version=profile.profile_version,
-        generated_at=profile.generated_at,
-        source=profile.source,
-        maturity=profile.maturity,
-        samples=profile.samples,
-        confidence=profile.confidence,
-        pairs=profile.pairs,
-        role_profile=incompatible,
-    )
-    fallback = profile_with_incompatible_roles.resolve_roles(card)
-    assert fallback.source == "local_classifier"
-    assert fallback.diagnostics == ("profile_incompatible_versions:used_local_classifier",)
-    assert Role.RAMP not in fallback.assignments
 def _rate(
     *,
     raw_value: float | None = 0.55,
@@ -799,14 +744,8 @@ def test_maturity_rejects_new_evidence_in_metadata_semantic_and_generic_profiles
     card_ratings = (CardRating("a", _rate()),)
     with pytest.raises(SetProfileSchemaError, match="cannot contain empirical evidence"):
         SetProfile(maturity=ProfileMaturity.METADATA_ONLY, pairs=(), card_ratings=card_ratings, **common)
-    with pytest.raises(SetProfileSchemaError, match="cannot contain empirical evidence"):
-        SetProfile(
-            maturity=ProfileMaturity.SEMANTIC_ONLY,
-            pairs=(PairProfile("WU", performance=_rate()),),
-            role_profile=load_set_profile(FIXTURE_DIR / "semantic-only.json").role_profile,
-            card_ratings=(),
-            **common,
-        )
+    with pytest.raises(SetProfileSchemaError, match="semantic-only maturity"):
+        SetProfile(maturity=ProfileMaturity.SEMANTIC_ONLY, pairs=(), card_ratings=(), **common)
     with pytest.raises(SetProfileSchemaError, match="cannot contain evidence"):
         SetProfile(maturity=ProfileMaturity.GENERIC, pairs=(), card_ratings=card_ratings, **common)
 
@@ -842,837 +781,13 @@ def test_target_evidence_round_trip_preserves_all_fields() -> None:
         restored = type(target).from_json(target.to_json())
         assert restored == target
 
-
-_REMOVED = object()
-
-
-def _enhanced_payload() -> dict[str, object]:
-    return json.loads((FIXTURE_DIR / "enhanced.json").read_text(encoding="utf-8"))
-
-
-def _apply(
-    payload: dict[str, object],
-    *operations: tuple[tuple[object, ...], object],
-) -> dict[str, object]:
-    for path, value in operations:
-        target: object = payload
-        for key in path[:-1]:
-            target = target[key]  # type: ignore[index]
-        if callable(value):
-            value = value(target[path[-1]])  # type: ignore[operator]
-        if value is _REMOVED:
-            del target[path[-1]]  # type: ignore[index]
-        else:
-            target[path[-1]] = value  # type: ignore[index]
-    return payload
-
-
-def _runs_with_unreferenced_copy(runs: object) -> object:
-    first = runs[0]  # type: ignore[index]
-    return [first, {**first, "run_id": "run-2"}]  # type: ignore[operator]
-
-
-def test_enhanced_profile_round_trip_preserves_enhancement_content_and_provenance() -> None:
-    profile = load_set_profile(
-        FIXTURE_DIR / "enhanced.json",
-        expected_set_code="TST",
-        expected_format="QuickDraft",
-    )
-
-    assert profile.schema_version == 3
-    assert profile.enhancement_status is EnhancementStatus.ENHANCED
-    enhancement = profile.enhancement
-    assert enhancement is not None
-    assert enhancement.card_data == EnhancementCardData(
-        "scryfall-default-cards",
-        "e97753089bb1b800165c1e84a8ada89b18b082dad70a0b7f84eb744c303d332b",
-        3,
-    )
-    assert [pin.card_id for pin in enhancement.cards] == [101, 102, 103]
-    assert enhancement.artifact_sha256 == "e43b831bd69c7c8c73a32fe348ef887712ee67493c7b7b64d4612e2128709a87"
-    assert (
-        enhancement.runs[0].prompt_sha256
-        == "f580e1722c8ceaf5602bacfd653f477192f481468eaf48177bc1f636455fefb2"
-    )
-    assert enhancement.review.state == "confirmed"
-    assert enhancement.confidence == 0.72
-    assert profile.confidence == 0.6
-    assert SetProfile.from_json(profile.to_json()).to_bytes() == profile.to_bytes()
-
-
-def test_explicitly_unenhanced_schema_three_profile_round_trips() -> None:
-    profile = load_set_profile(
-        FIXTURE_DIR / "unenhanced.json",
-        expected_set_code="TST",
-        expected_format="QuickDraft",
-    )
-
-    assert profile.schema_version == 3
-    assert profile.enhancement is None
-    assert profile.enhancement_status is EnhancementStatus.NOT_ENHANCED
-    serialized = profile.to_json()
-    assert serialized["enhancement_status"] == "not-enhanced"
-    assert "enhancement" not in serialized
-    assert SetProfile.from_json(serialized).to_bytes() == profile.to_bytes()
-
-
-def test_schema_one_and_two_fixtures_load_as_not_enhanced_without_fabricating_metadata() -> None:
-    early = load_set_profile(FIXTURE_DIR / "early.json")
-    profiles = (
-        load_set_profile(FIXTURE_DIR / "mature.json"),
-        early,
-        load_set_profile(FIXTURE_DIR / "metadata-only.json"),
-        load_set_profile(FIXTURE_DIR / "semantic-only.json"),
-        load_set_profile(Path(__file__).parents[1] / "draftomen" / "baseline_profiles" / "hob-quickdraft.json"),
-        replace(early, schema_version=2),
-    )
-
-    for profile in profiles:
-        assert profile.enhancement is None
-        assert profile.enhancement_status is EnhancementStatus.NOT_ENHANCED
-        serialized = profile.to_json()
-        assert "enhancement" not in serialized
-        assert "enhancement_status" not in serialized
-        assert SetProfile.from_json(serialized).to_bytes() == profile.to_bytes()
-
-
-def test_semantic_relationships_and_empirical_synergy_remain_separate_fields() -> None:
-    profile = load_set_profile(
-        FIXTURE_DIR / "enhanced.json",
-        expected_set_code="TST",
-        expected_format="QuickDraft",
-    )
-    enhancement = profile.enhancement
-    assert enhancement is not None
-    relationship = enhancement.relationships[0]
-    assert isinstance(relationship, CardRelationship)
-
-    serialized = profile.to_json()
-    assert "synergy" not in serialized["enhancement"]  # type: ignore[operator]
-    assert serialized["enhancement"]["relationships"][0]["mechanism"] == "token-go-wide-payoff"  # type: ignore[index]
-
+def test_empirical_synergy_remains_a_pair_profile_input() -> None:
     empirical = CardPairSynergy(first_card="oracle_id:a", second_card="oracle_id:b", value=0.4)
     early = load_set_profile(FIXTURE_DIR / "early.json")
-    empirical_profile = replace(early, pairs=(replace(early.pairs[0], synergy=(empirical,)),))
-    assert empirical_profile.to_json()["pair_profiles"][0]["synergy"] == [  # type: ignore[index]
+    profile = replace(early, pairs=(replace(early.pairs[0], synergy=(empirical,)),))
+
+    serialized = profile.to_json()
+    assert serialized["pair_profiles"][0]["synergy"] == [
         {"first_card": "oracle_id:a", "second_card": "oracle_id:b", "value": 0.4}
     ]
-    assert isinstance(empirical_profile.pairs[0].synergy[0], CardPairSynergy)
-
-    with pytest.raises(SetProfileSchemaError, match="must contain the expected target objects"):
-        replace(empirical_profile.pairs[0], synergy=(relationship,))
-    with pytest.raises(SetProfileSchemaError, match="enhancement.relationships must contain CardRelationship"):
-        replace(enhancement, relationships=(empirical,))
-
-
-def test_profile_fingerprint_includes_enhancement_content_and_provenance() -> None:
-    profile = load_set_profile(
-        FIXTURE_DIR / "enhanced.json",
-        expected_set_code="TST",
-        expected_format="QuickDraft",
-    )
-    fingerprint = profile.fingerprint
-    assert SetProfile.from_json(profile.to_json()).fingerprint == fingerprint
-
-    for operations in (
-        ((("enhancement", "confidence"), 0.5),),
-        ((("enhancement", "artifact_sha256"), "0" * 64),),
-        ((("enhancement", "relationships", 0, "claim"), "changed claim"),),
-    ):
-        payload = _enhanced_payload()
-        _apply(payload, *operations)
-        assert SetProfile.from_json(payload).fingerprint != fingerprint
-
-
-_ENHANCEMENT_REJECTION_CASES: tuple[tuple[str, tuple[tuple[tuple[object, ...], object], ...], str], ...] = (
-    ("missing-status", ((("enhancement_status",), _REMOVED),), "Missing required field enhancement_status"),
-    ("unknown-status", ((("enhancement_status",), "unenhanced"),), "Unsupported enhancement status"),
-    (
-        "status-not-enhanced-with-data",
-        ((("enhancement_status",), "not-enhanced"),),
-        "exactly when enhancement data is present",
-    ),
-    (
-        "missing-enhancement-with-enhanced-status",
-        ((("enhancement",), _REMOVED),),
-        "exactly when enhancement data is present",
-    ),
-    (
-        "future-artifact-schema",
-        ((("enhancement", "artifact_schema_version"), SEMANTIC_ENRICHMENT_SCHEMA_VERSION + 1),),
-        "Unsupported semantic enrichment schema",
-    ),
-    (
-        "pending-review",
-        ((("enhancement", "review"), {"state": "pending", "reviewer_id": None, "reviewed_at": None}),),
-        "confirmed enrichment review",
-    ),
-    (
-        "cancelled-review",
-        (
-            (
-                ("enhancement", "review"),
-                {"state": "cancelled", "reviewer_id": "local-review", "reviewed_at": "2026-08-27T10:10:00+00:00"},
-            ),
-        ),
-        "confirmed enrichment review",
-    ),
-    ("set-code-mismatch", ((("enhancement", "set_code"), "other"),), "enhancement.set_code must match set_code"),
-    (
-        "no-confirmed-findings",
-        ((("enhancement", "mechanics"), []), (("enhancement", "relationships"), [])),
-        "at least one confirmed semantic relationship or mechanic finding",
-    ),
-    ("card-count-mismatch", ((("enhancement", "card_data", "card_count"), 4),), "cover the declared card data exactly"),
-    ("empty-cards-with-declared-count", ((("enhancement", "cards"), []),), "enhancement.cards must not be empty"),
-    (
-        "unpinned-participants",
-        (
-            (("enhancement", "relationships", 0, "participants"), [102, 999]),
-            (
-                ("enhancement", "relationships", 0, "oracle_evidence"),
-                [
-                    {"card_id": 102, "face_index": None, "quote": "Create a 1/1 red Goblin creature token."},
-                    {"card_id": 999, "face_index": None, "quote": "Unpinned card quote."},
-                ],
-            ),
-        ),
-        "pinned card data",
-    ),
-    (
-        "unpinned-oracle-evidence",
-        ((("enhancement", "relationships", 0, "oracle_evidence", 0, "card_id"), 999),),
-        "Oracle evidence for exactly their participants",
-    ),
-    (
-        "rejected-relationship",
-        ((("enhancement", "relationships", 0, "review"), {"status": "rejected", "reason": "no support"}),),
-        "accepted findings",
-    ),
-    (
-        "rejected-mechanic",
-        ((("enhancement", "mechanics", 0, "review"), {"status": "rejected", "reason": "no support"}),),
-        "enhancement.mechanics must contain accepted findings",
-    ),
-    ("wrong-mechanic-category", ((("enhancement", "mechanics", 0, "category"), "archetype"),), "mechanic category"),
-    ("missing-run-reference", ((("enhancement", "mechanics", 0, "run_id"), "run-missing"),), "recorded model run"),
-    (
-        "unrecorded-guide-source",
-        ((("enhancement", "mechanics", 0, "evidence"), [{"guide_id": "other-guide", "quote": "x"}]),),
-        "recorded guide source",
-    ),
-    (
-        "duplicate-finding-id",
-        ((("enhancement", "mechanics", 0, "finding_id"), "relationship-token-go-wide"),),
-        "globally unique",
-    ),
-    (
-        "unreferenced-run",
-        ((("enhancement", "runs"), _runs_with_unreferenced_copy),),
-        "referenced by an included finding",
-    ),
-    ("unbounded-confidence", ((("enhancement", "confidence"), 1.5),), "enhancement.confidence"),
-    ("malformed-artifact-digest", ((("enhancement", "artifact_sha256"), "not-a-digest"),), "SHA-256 digest"),
-    (
-        "empty-cards-and-zero-count",
-        ((("enhancement", "cards"), []), (("enhancement", "card_data", "card_count"), 0)),
-        "card_count must be a positive integer",
-    ),
-    ("schema-two-cannot-declare-enhancement", ((("schema_version",), 2),), "cannot declare enhancement data"),
-    ("schema-one-cannot-declare-enhancement", ((("schema_version",), 1),), "cannot declare enhancement data"),
-)
-
-
-@pytest.mark.parametrize(
-    ("operations", "expected"),
-    [row[1:] for row in _ENHANCEMENT_REJECTION_CASES],
-    ids=[row[0] for row in _ENHANCEMENT_REJECTION_CASES],
-)
-def test_enhancement_rejects_malformed_unconfirmed_mismatched_and_incompatible_data(
-    operations: tuple[tuple[tuple[object, ...], object], ...],
-    expected: str,
-) -> None:
-    payload = _enhanced_payload()
-    _apply(payload, *operations)
-    with pytest.raises(SetProfileSchemaError, match=expected):
-        SetProfile.from_json(payload)
-
-
-def test_generic_profiles_reject_enhancement_data() -> None:
-    enhancement = load_set_profile(FIXTURE_DIR / "enhanced.json").enhancement
-    generic = SetProfile.generic(set_code="TST", event_format="quickdraft")
-
-    with pytest.raises(SetProfileSchemaError, match="generic profiles cannot contain enhancement data"):
-        replace(generic, schema_version=3, enhancement=enhancement)
-
-
-FIXTURE_SOURCE_CARD_ID = 102
-FIXTURE_TARGET_CARD_ID = 103
-FIXTURE_TOKEN_QUOTE = "Create a 1/1 red Goblin creature token."
-FIXTURE_ATTACK_QUOTE = "Whenever a creature you control attacks, it gets +1/+0 until end of turn."
-FIXTURE_ANTHEM_QUOTE = "Creatures you control get +1/+1."
-
-
-def _fixture_projection() -> RelationshipPrerequisiteProjection:
-    """Build one self-consistent typed projection for the enhanced fixture pair."""
-    payload = _enhanced_payload()
-    pins = {
-        pin["card_id"]: pin["sha256"]
-        for pin in payload["enhancement"]["cards"]  # type: ignore[index]
-    }
-    source = RelationshipParticipant(
-        card_id=FIXTURE_SOURCE_CARD_ID,
-        capability_id="capability-token-maker",
-        card_name="Goblin Enabler",
-        face_index=None,
-        face_name=None,
-        card_source_sha256=pins[FIXTURE_SOURCE_CARD_ID],
-        role=Role.TOKEN_MAKER,
-        capability_prerequisites=(),
-        prerequisites=(
-            RelationshipPrerequisite(
-                kind=PrerequisiteKind.CONDITION,
-                subject="output",
-                operation="create",
-                object_kind="token",
-                card_types=("creature",),
-                type_operator="all_of",
-                token_restriction="token",
-                exclusion="none",
-                subtype="Goblin",
-                color_operator="exact",
-                colors=("R",),
-                controller="you",
-                owner="not_applicable",
-                quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
-                source_zone=None,
-                destination_zone=RelationshipZone(
-                    zone=CapabilityZone.BATTLEFIELD,
-                    player="you",
-                ),
-                timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
-                required_card_id=None,
-                evidence=OracleEvidence(
-                    card_id=FIXTURE_SOURCE_CARD_ID,
-                    face_index=None,
-                    quote=FIXTURE_TOKEN_QUOTE,
-                ),
-                operation_quote="Create",
-                operation_occurrence=0,
-                object_quote="a 1/1 red Goblin creature token",
-                object_occurrence=0,
-                capability_prerequisite_indices=(),
-            ),
-        ),
-    )
-    target = RelationshipParticipant(
-        card_id=FIXTURE_TARGET_CARD_ID,
-        capability_id="capability-attack-payoff",
-        card_name="Attack Payoff",
-        face_index=None,
-        face_name=None,
-        card_source_sha256=pins[FIXTURE_TARGET_CARD_ID],
-        role=Role.GO_WIDE_PAYOFF,
-        capability_prerequisites=(),
-        prerequisites=(
-            RelationshipPrerequisite(
-                kind=PrerequisiteKind.CONDITION,
-                subject="participant",
-                operation="control",
-                object_kind="permanent",
-                card_types=("creature",),
-                type_operator="all_of",
-                token_restriction="unrestricted",
-                exclusion="none",
-                subtype=None,
-                color_operator="unrestricted",
-                colors=(),
-                controller="you",
-                owner="not_applicable",
-                quantity=None,
-                source_zone=None,
-                destination_zone=None,
-                timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
-                required_card_id=None,
-                evidence=OracleEvidence(
-                    card_id=FIXTURE_TARGET_CARD_ID,
-                    face_index=None,
-                    quote=FIXTURE_ANTHEM_QUOTE,
-                ),
-                operation_quote="control",
-                operation_occurrence=0,
-                object_quote="Creatures you control",
-                object_occurrence=0,
-                capability_prerequisite_indices=(),
-            ),
-        ),
-    )
-    return RelationshipPrerequisiteProjection(source=source, target=target)
-
-
-def _enhanced_payload_with_projection() -> dict[str, Any]:
-    """Return the enhanced fixture payload carrying the typed projection."""
-    payload = _enhanced_payload()
-    relationship = payload["enhancement"]["relationships"][0]  # type: ignore[index]
-    # The payoff clause binds to a retained anthem paragraph: the fixture's attack trigger
-    # quote states "until end of turn", which the bounded timing vocabulary rejects.
-    relationship["oracle_evidence"].append(  # type: ignore[union-attr]
-        {
-            "card_id": FIXTURE_TARGET_CARD_ID,
-            "face_index": None,
-            "quote": FIXTURE_ANTHEM_QUOTE,
-        }
-    )
-    relationship["prerequisite_projection"] = _fixture_projection().to_json()  # type: ignore[index]
-    return payload
-
-
-def test_legacy_enhanced_and_unenhanced_fixtures_stay_projection_free() -> None:
-    enhanced = load_set_profile(
-        FIXTURE_DIR / "enhanced.json",
-        expected_set_code="TST",
-        expected_format="QuickDraft",
-    )
-    enhancement = enhanced.enhancement
-    assert enhancement is not None
-    relationship = enhancement.relationships[0]
-    assert relationship.prerequisite_projection is None
-    assert relationship.prerequisites == ("a creature token is created",)
-    assert relationship.identity[2] == ()
-    serialized = enhanced.to_json()
-    assert all(
-        "prerequisite_projection" not in item
-        for item in serialized["enhancement"]["relationships"]  # type: ignore[index]
-    )
-    assert SetProfile.from_json(serialized).to_bytes() == enhanced.to_bytes()
-
-    unenhanced = load_set_profile(
-        FIXTURE_DIR / "unenhanced.json",
-        expected_set_code="TST",
-        expected_format="QuickDraft",
-    )
-    assert unenhanced.enhancement is None
-    assert SetProfile.from_json(unenhanced.to_json()).to_bytes() == unenhanced.to_bytes()
-
-
-def test_typed_projection_survives_profile_serialization_with_direction() -> None:
-    profile = SetProfile.from_json(_enhanced_payload_with_projection())
-    enhancement = profile.enhancement
-    assert enhancement is not None
-    relationship = enhancement.relationships[0]
-    projection = relationship.prerequisite_projection
-    assert projection is not None
-    assert relationship.identity[2] == (
-        FIXTURE_SOURCE_CARD_ID,
-        "capability-token-maker",
-        -1,
-        FIXTURE_TARGET_CARD_ID,
-        "capability-attack-payoff",
-        -1,
-    )
-    assert projection.source.prerequisites[0].colors == ("R",)
-    assert projection.source.prerequisites[0].quantity == CapabilityQuantity(
-        value=1,
-        relation=QuantityRelation.EXACTLY,
-    )
-    assert projection.target.prerequisites[0].operation == "control"
-    assert projection.target.prerequisites[0].card_types == ("creature",)
-    assert projection.target.prerequisites[0].controller == "you"
-    assert projection.target.prerequisites[0].evidence.quote == FIXTURE_ANTHEM_QUOTE
-    assert projection.source.prerequisites[0].evidence.quote == FIXTURE_TOKEN_QUOTE
-    assert (
-        OracleEvidence(
-            card_id=FIXTURE_TARGET_CARD_ID,
-            face_index=None,
-            quote=FIXTURE_ATTACK_QUOTE,
-        )
-        in relationship.oracle_evidence
-    )
-
-    restored = SetProfile.from_json(profile.to_json())
-    assert restored.to_bytes() == profile.to_bytes()
-    restored_enhancement = restored.enhancement
-    assert restored_enhancement is not None
-    assert restored_enhancement.relationships[0].prerequisite_projection == projection
-    assert restored_enhancement.relationships[0].claim == "A token maker pairs with a go-wide payoff."
-
-
-def test_enhanced_profile_reader_rejects_invalid_present_projections() -> None:
-    unsupported = _enhanced_payload_with_projection()
-    unsupported["enhancement"]["relationships"][0]["prerequisite_projection"]["schema_version"] = 2  # type: ignore[index]
-    with pytest.raises(SetProfileSchemaError, match="schema_version is unsupported"):
-        SetProfile.from_json(unsupported)
-
-    missing_target = _enhanced_payload_with_projection()
-    del missing_target["enhancement"]["relationships"][0]["prerequisite_projection"]["target"]  # type: ignore[index]
-    with pytest.raises(SetProfileSchemaError, match="Invalid enhancement"):
-        SetProfile.from_json(missing_target)
-
-    mismatched_hash = _enhanced_payload_with_projection()
-    mismatched_hash["enhancement"]["relationships"][0]["prerequisite_projection"]["source"][  # type: ignore[index]
-        "card_source_sha256"
-    ] = "0" * 64
-    with pytest.raises(SetProfileSchemaError, match="hash must match its card source pin"):
-        SetProfile.from_json(mismatched_hash)
-
-    mismatched_participants = _enhanced_payload_with_projection()
-    mismatched_participants["enhancement"]["relationships"][0]["participants"] = [101, FIXTURE_TARGET_CARD_ID]  # type: ignore[index]
-    with pytest.raises(SetProfileSchemaError, match="projection participants must match"):
-        SetProfile.from_json(mismatched_participants)
-
-    uncertain = _enhanced_payload_with_projection()
-    uncertain["enhancement"]["relationships"][0]["review"] = {  # type: ignore[index]
-        "status": "uncertain",
-        "reason": "Needs a reviewer.",
-    }
-    with pytest.raises(SetProfileSchemaError, match="accepted review"):
-        SetProfile.from_json(uncertain)
-
-
-def _stored_projection(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return the enhanced fixture relationship's stored projection object."""
-    return payload["enhancement"]["relationships"][0]["prerequisite_projection"]  # type: ignore[index]
-
-
-def _stored_clause(payload: dict[str, Any], side: str) -> dict[str, Any]:
-    """Return one stored participant's only atomic clause object."""
-    return _stored_projection(payload)[side]["prerequisites"][0]
-
-
-@pytest.mark.parametrize(
-    ("mutate", "expected"),
-    (
-        (
-            lambda payload: _stored_clause(payload, "source").update({"colors": ["U"]}),
-            "contradict their source evidence",
-        ),
-        (
-            lambda payload: _stored_projection(payload)["source"].update({"face_index": 1}),
-            "contradict their source evidence",
-        ),
-        (
-            lambda payload: _stored_projection(payload)["source"].update(
-                {"card_id": FIXTURE_TARGET_CARD_ID}
-            ),
-            "contradict their source evidence",
-        ),
-        (
-            lambda payload: _stored_projection(payload)["source"].update(
-                {"role": Role.GO_WIDE_PAYOFF.value}
-            ),
-            "relationship prerequisites are incomplete",
-        ),
-        (
-            lambda payload: _stored_clause(payload, "target").update({"controller": "opponent"}),
-            "contradict their source evidence",
-        ),
-        (
-            lambda payload: _stored_clause(payload, "source").update({"required_card_id": 999}),
-            "relationship prerequisites are incomplete",
-        ),
-        (
-            lambda payload: payload["enhancement"]["relationships"][0].update(
-                {"prerequisite_projection": None}
-            ),
-            "prerequisite_projection must be an object when present",
-        ),
-    ),
-    ids=(
-        "clause-color-contradicts-its-quotation",
-        "participant-face-index-mismatches-its-clause",
-        "participant-card-id-mismatches-its-clause",
-        "participant-role-mismatches-its-clauses",
-        "clause-controller-contradicts-its-quotation",
-        "clause-required-card-is-not-a-participant",
-        "explicit-null-projection-is-not-absent",
-    ),
-)
-def test_enhanced_profile_reader_rejects_mutated_stored_projection_clauses(
-    mutate: Any,
-    expected: str,
-) -> None:
-    payload = _enhanced_payload_with_projection()
-    mutate(payload)
-
-    with pytest.raises(SetProfileSchemaError, match=expected):
-        SetProfile.from_json(payload)
-
-    profile = SetProfile.from_json(_enhanced_payload_with_projection())
-    enhancement = profile.enhancement
-    assert enhancement is not None
-    assert enhancement.relationships[0].prerequisite_projection is not None
-
-
-def test_unloadable_stored_projection_falls_back_instead_of_losing_prerequisites(tmp_path: Path) -> None:
-    payload = _enhanced_payload_with_projection()
-    _stored_clause(payload, "source").update({"colors": ["U"]})
-    path = tmp_path / "invalid-projection.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(SetProfileSchemaError, match="contradict their source evidence"):
-        load_set_profile(path)
-
-    result = safe_load_set_profile("tst", "quickdraft", profile_path=path)
-
-    assert result.source == "generic"
-    assert result.profile.enhancement is None
-    assert result.profile.enhancement_status is EnhancementStatus.NOT_ENHANCED
-    assert any("contradict their source evidence" in diagnostic for diagnostic in result.diagnostics)
-
-
-def test_enhanced_profile_reader_rejects_score_weight_and_adjustment_fields() -> None:
-    scored = _enhanced_payload_with_projection()
-    scored["enhancement"]["relationships"][0]["score"] = 0.75  # type: ignore[index]
-    with pytest.raises(SetProfileSchemaError, match="unknown fields"):
-        SetProfile.from_json(scored)
-
-    weighted = _enhanced_payload_with_projection()
-    weighted["enhancement"]["relationships"][0]["prerequisite_projection"]["source"]["prerequisites"][0][  # type: ignore[index]
-        "weight"
-    ] = 2
-    with pytest.raises(SetProfileSchemaError, match="unknown fields"):
-        SetProfile.from_json(weighted)
-
-    adjusted = _enhanced_payload_with_projection()
-    adjusted["enhancement"]["relationships"][0]["prerequisite_projection"]["adjustment"] = 0.25  # type: ignore[index]
-    with pytest.raises(SetProfileSchemaError, match="unknown fields"):
-        SetProfile.from_json(adjusted)
-
-
-def test_typed_projection_ignores_claim_prose_at_the_profile_boundary() -> None:
-    plain = SetProfile.from_json(_enhanced_payload_with_projection())
-    prose = _enhanced_payload_with_projection()
-    prose["enhancement"]["relationships"][0]["claim"] = "Score 0.8: the enabler is worth four points."  # type: ignore[index]
-    prose["enhancement"]["relationships"][0]["prerequisites"] = ["a different reading"]  # type: ignore[index]
-    verbose = SetProfile.from_json(prose)
-
-    plain_enhancement = plain.enhancement
-    verbose_enhancement = verbose.enhancement
-    assert plain_enhancement is not None
-    assert verbose_enhancement is not None
-    plain_projection = plain_enhancement.relationships[0].prerequisite_projection
-    verbose_projection = verbose_enhancement.relationships[0].prerequisite_projection
-    assert plain_projection is not None
-    assert plain_projection == verbose_projection
-    assert plain.enhancement.relationships[0].prerequisites != verbose.enhancement.relationships[0].prerequisites
-    assert plain.fingerprint != verbose.fingerprint
-
-
-def test_profile_round_trip_preserves_qualified_relationships() -> None:
-    """A qualified enhancement relationship survives the profile bytes on schema 3."""
-    assert SET_PROFILE_SCHEMA_VERSION == 3
-    assert SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS == (1, 2, 3)
-    payload = _enhanced_payload_with_projection()
-    projection = _fixture_projection()
-    qualification = RelationshipQualification(
-        kind=QualificationKind.CONDITION,
-        evidence=OracleEvidence(
-            card_id=FIXTURE_SOURCE_CARD_ID,
-            face_index=None,
-            quote=FIXTURE_TOKEN_QUOTE,
-        ),
-        selector="a 1/1 red Goblin creature token",
-        occurrence=0,
-    )
-    qualified = RelationshipPrerequisiteProjection(
-        source=replace(projection.source, prerequisites=(), qualifications=(qualification,)),
-        target=projection.target,
-    )
-    assert qualified.outcome is QualificationOutcome.QUALIFIED
-    payload["enhancement"]["relationships"][0]["prerequisite_projection"] = qualified.to_json()  # type: ignore[index]
-    profile = SetProfile.from_json(payload)
-    relationship = profile.enhancement.relationships[0]  # type: ignore[union-attr]
-    stored = relationship.prerequisite_projection
-    assert stored is not None
-    assert stored.outcome is QualificationOutcome.QUALIFIED
-    assert stored.source.qualifications[0].kind is QualificationKind.CONDITION
-    assert stored.source.qualifications[0].selector == "a 1/1 red Goblin creature token"
-    assert stored.source.qualifications[0].occurrence == 0
-    assert stored.source.qualifications[0].evidence.quote == FIXTURE_TOKEN_QUOTE
-    restored = SetProfile.from_json(json.loads(profile.to_bytes().decode()))
-    assert restored.to_bytes() == profile.to_bytes()
-    assert restored.enhancement.relationships[0].prerequisite_projection == stored  # type: ignore[union-attr]
-    legacy = SetProfile.from_json(_enhanced_payload_with_projection())
-    legacy_payload = _enhanced_payload_with_projection()
-    assert "qualifications" not in json.dumps(
-        legacy_payload["enhancement"]["relationships"][0]["prerequisite_projection"]["source"]  # type: ignore[index]
-    )
-    assert SetProfile.from_json(legacy_payload).to_bytes() == legacy.to_bytes()
-
-
-def _fixture_condition_map(
-    *,
-    source_card_id: int = FIXTURE_SOURCE_CARD_ID,
-    source_sha256: str | None = None,
-) -> ConditionMap:
-    """Build one self-consistent condition map over the enhanced fixture pins."""
-    payload = _enhanced_payload()
-    pins = {
-        pin["card_id"]: pin["sha256"]
-        for pin in payload["enhancement"]["cards"]  # type: ignore[index]
-    }
-    token_source = ConditionSource.create(
-        card_id=source_card_id,
-        face_index=None,
-        card_source_sha256=source_sha256 or pins[FIXTURE_SOURCE_CARD_ID],
-        type_line="Creature — Goblin",
-        oracle_text=FIXTURE_TOKEN_QUOTE,
-        power="1",
-    )
-    payoff_source = ConditionSource.create(
-        card_id=FIXTURE_TARGET_CARD_ID,
-        face_index=None,
-        card_source_sha256=pins[FIXTURE_TARGET_CARD_ID],
-        type_line="Creature — Goblin Warrior",
-        oracle_text=FIXTURE_ATTACK_QUOTE,
-        power="2",
-    )
-    enabler = ConditionCapability.create(
-        source=token_source,
-        family="ferocious",
-        role="enabler",
-        kind="created_creature_power",
-        controller="you",
-        quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
-        evidence=(
-            ConditionEvidence(
-                field="oracle_text",
-                kind=QualificationKind.CONDITION,
-                selector="a 1/1 red Goblin creature token",
-                occurrence=0,
-            ),
-        ),
-        source_finding_ids=("relationship-token-go-wide",),
-    )
-    payoff = ConditionCapability.create(
-        source=payoff_source,
-        family="ferocious",
-        role="payoff",
-        kind="power_threshold",
-        controller="any",
-        quantity=CapabilityQuantity(value=4, relation=QuantityRelation.AT_LEAST),
-        evidence=(
-            ConditionEvidence(
-                field="oracle_text",
-                kind=QualificationKind.TIMING,
-                selector="Whenever a creature you control attacks",
-                occurrence=0,
-            ),
-        ),
-    )
-    return ConditionMap(
-        schema_version=CONDITION_MAP_SCHEMA_VERSION,
-        scope="draft_potential",
-        sources=(token_source, payoff_source),
-        capabilities=(enabler, payoff),
-        interactions=(
-            ConditionInteraction(
-                enabler_id=enabler.capability_id,
-                payoff_id=payoff.capability_id,
-                support="can_enable",
-            ),
-        ),
-    )
-
-
-def _payload_with_condition_map() -> dict[str, object]:
-    """Return the enhanced fixture payload carrying the derived condition map."""
-    payload = _enhanced_payload_with_projection()
-    payload["enhancement"]["condition_map"] = json.loads(  # type: ignore[index]
-        json.dumps(_fixture_condition_map().to_json())
-    )
-    return payload
-
-
-def test_profile_round_trip_preserves_the_condition_map_beside_reviewed_rows() -> None:
-    """A derived condition map survives the profile bytes without changing reviewed content."""
-    payload = _payload_with_condition_map()
-    profile = SetProfile.from_json(payload)
-    enhancement = profile.enhancement
-    assert enhancement is not None
-    condition_map = enhancement.condition_map
-    assert condition_map == _fixture_condition_map()
-    assert condition_map is not None
-    enabler = next(item for item in condition_map.capabilities if item.role == "enabler")
-    assert enabler.source_finding_ids == ("relationship-token-go-wide",)
-    assert [item.support for item in condition_map.interactions] == ["can_enable"]
-    assert [item.family for item in condition_map.capabilities] == ["ferocious", "ferocious"]
-
-    restored = SetProfile.from_json(json.loads(profile.to_bytes().decode()))
-    assert restored.to_bytes() == profile.to_bytes()
-    restored_enhancement = restored.enhancement
-    assert restored_enhancement is not None
-    assert restored_enhancement.condition_map == condition_map
-
-    plain = SetProfile.from_json(_enhanced_payload_with_projection())
-    plain_enhancement = plain.enhancement
-    assert plain_enhancement is not None
-    assert plain_enhancement.condition_map is None
-    assert plain_enhancement.relationships == enhancement.relationships
-    assert plain_enhancement.runs == enhancement.runs
-    assert plain_enhancement.confidence == enhancement.confidence
-    assert plain.fingerprint != profile.fingerprint
-    assert {
-        key: value for key, value in enhancement.to_json().items() if key != "condition_map"
-    } == plain_enhancement.to_json()
-
-
-def test_schema_three_profile_without_the_condition_map_keeps_its_original_bytes() -> None:
-    """A missing or null condition map stays absent from the serialized enhancement."""
-    profile = SetProfile.from_json(_enhanced_payload())
-    enhancement = profile.enhancement
-    assert enhancement is not None
-    assert enhancement.condition_map is None
-    assert "condition_map" not in enhancement.to_json()
-    assert sorted(enhancement.to_json()) == [
-        "artifact_schema_version",
-        "artifact_sha256",
-        "card_data",
-        "cards",
-        "confidence",
-        "created_at",
-        "guides",
-        "mechanics",
-        "relationships",
-        "review",
-        "runs",
-        "set_code",
-        "set_source_id",
-        "set_source_sha256",
-    ]
-    assert "condition_map" not in profile.to_bytes().decode()
-
-    explicit_null = _enhanced_payload()
-    explicit_null["enhancement"]["condition_map"] = None  # type: ignore[index]
-    assert SetProfile.from_json(explicit_null).to_bytes() == profile.to_bytes()
-
-
-def test_enhanced_profile_reader_rejects_invalid_condition_maps() -> None:
-    unpinned = _payload_with_condition_map()
-    unpinned["enhancement"]["condition_map"] = json.loads(  # type: ignore[index]
-        json.dumps(_fixture_condition_map(source_card_id=999).to_json())
-    )
-    with pytest.raises(SetProfileSchemaError, match="pinned card sources"):
-        SetProfile.from_json(unpinned)
-
-    mismatched = _payload_with_condition_map()
-    mismatched["enhancement"]["condition_map"] = json.loads(  # type: ignore[index]
-        json.dumps(_fixture_condition_map(source_sha256="0" * 64).to_json())
-    )
-    with pytest.raises(SetProfileSchemaError, match="card source pin"):
-        SetProfile.from_json(mismatched)
-
-    unsupported = _payload_with_condition_map()
-    unsupported["enhancement"]["condition_map"]["schema_version"] = 2  # type: ignore[index]
-    with pytest.raises(SetProfileSchemaError, match="Invalid enhancement"):
-        SetProfile.from_json(unsupported)
-
-    malformed = _payload_with_condition_map()
-    malformed["enhancement"]["condition_map"] = []  # type: ignore[index]
-    with pytest.raises(SetProfileSchemaError, match="enhancement.condition_map must be an object"):
-        SetProfile.from_json(malformed)
-
-    manipulated = _payload_with_condition_map()
-    manipulated["enhancement"]["condition_map"]["capabilities"][0]["kind"] = "land_card"  # type: ignore[index]
-    with pytest.raises(SetProfileSchemaError, match="Invalid enhancement"):
-        SetProfile.from_json(manipulated)
+    assert SetProfile.from_json(serialized).pairs[0].synergy == (empirical,)

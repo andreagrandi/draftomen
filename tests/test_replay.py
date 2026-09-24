@@ -34,7 +34,16 @@ from draftomen.replay import (
     replay_log_file,
 )
 from draftomen.set_card_data import SetCardData
-from draftomen.set_profile import SetProfile, dump_set_profile, set_profile_path
+from draftomen.semantic_roles import Role
+from draftomen.set_profile import (
+    PairProfile,
+    ProfileMaturity,
+    RoleTarget,
+    SetProfile,
+    SourceMetadata,
+    dump_set_profile,
+    set_profile_path,
+)
 from draftomen.seventeen import (
     PREMIER_DRAFT_FORMAT,
     QUICK_DRAFT_FORMAT,
@@ -291,13 +300,15 @@ def test_replay_uses_pre_pick_context_for_recommendation_evidence(
     database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
     database = CardDatabase(
         cards={
-            grp_id: replace(card, set_code="MSH")
-            if grp_id in {105003, 105097, 105134}
-            else card
+            grp_id: replace(
+                card,
+                set_code="MSH" if grp_id in {105003, 105097, 105134} else card.set_code,
+                oracle_text="Draw a card." if grp_id == 105003 else card.oracle_text,
+            )
             for grp_id, card in database.cards.items()
         }
     )
-    profile = _replay_semantic_profile()
+    profile = _replay_profile()
     calls: list[tuple[dict[str, object], ScoredPack]] = []
     score_pack = PickEngine.score_pack
 
@@ -366,7 +377,7 @@ def test_replay_cli_loads_local_profile_once(
 ) -> None:
     app_dir = tmp_path / "app"
     dump_set_profile(
-        _replay_semantic_profile(),
+        _replay_profile(),
         set_profile_path(
             set_code="MSH",
             event_format=QUICK_DRAFT_FORMAT,
@@ -415,7 +426,7 @@ def test_replay_cli_loads_local_profile_once(
     assert captured.err == ""
 
 
-def test_replay_explains_profile_context_without_material_terms(
+def test_replay_renders_local_profile_context_without_legacy_claims(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
@@ -427,7 +438,11 @@ def test_replay_explains_profile_context_without_material_terms(
             for grp_id, card in database.cards.items()
         }
     )
-    profile = replace(_replay_semantic_profile(), role_profile=None)
+    profile = replace(
+        _replay_profile(),
+        maturity=ProfileMaturity.METADATA_ONLY,
+        pairs=(PairProfile(pair="UG", theme="replay tempo"),),
+    )
     calls: list[ScoredPack] = []
     score_pack = PickEngine.score_pack
 
@@ -447,8 +462,15 @@ def test_replay_explains_profile_context_without_material_terms(
     assert len(calls) == 1
     recommended_card = calls[0].cards[0]
     assert recommended_card.contextual_profile_confidence == pytest.approx(0.8)
-    assert recommended_card.contextual_evidence == ()
-    assert recommended_card.contextual_breakdown.aggregate == 0.0
+    assert (
+        "fills low_cost_creature deficit (0/4)" in recommended_card.contextual_evidence
+    )
+    assert (
+        "emerging role urgency 0.10" in recommended_card.contextual_evidence
+    )
+    assert recommended_card.contextual_breakdown.role > 0.0
+    assert recommended_card.contextual_breakdown.urgency > 0.0
+    assert recommended_card.contextual_breakdown.synergy == 0.0
     assert "Recommendation: " in output
     assert (
         "Recommendation: "
@@ -457,8 +479,6 @@ def test_replay_explains_profile_context_without_material_terms(
     )
     assert "context UG" not in output
     assert "theme replay tempo" not in output
-    assert "Helps fill" not in output
-    assert "Filling a missing role matters more" not in output
     assert "Works with support already" not in output
     assert "Overlaps with roles" not in output
     assert "Needs support" not in output
@@ -468,7 +488,7 @@ def test_replay_explains_profile_context_without_material_terms(
 def test_replay_profile_loader_is_skipped_for_explicit_profile() -> None:
     database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
     calls: list[str] = []
-    profile = _replay_semantic_profile()
+    profile = _replay_profile()
 
     def fail_loader(set_code: str) -> SetProfile:
         calls.append(set_code)
@@ -485,11 +505,11 @@ def test_replay_profile_loader_is_skipped_for_explicit_profile() -> None:
     assert calls == []
 
 
-def test_hob_enhancement_does_not_change_replay_output() -> None:
-    profile = SetProfile.from_json(
+def test_legacy_enrichment_does_not_change_replay_output() -> None:
+    legacy_profile = SetProfile.from_json(
         json.loads(HOB_PROFILE_PATH.read_text(encoding="utf-8"))
     )
-    assert profile.enhancement is not None
+    clean_profile = replace(legacy_profile, schema_version=4)
     state = json.loads(HOB_STATE_PATH.read_text(encoding="utf-8"))
     first_pick = state["picks"][0]
     pool_before_pick = tuple(first_pick["pool_before_pick"])
@@ -534,22 +554,22 @@ def test_hob_enhancement_does_not_change_replay_output() -> None:
         expected_set_code="hob",
     ).to_card_database()
 
-    enhanced_output = render_replay_events(
+    legacy_output = render_replay_events(
         events=events,
         card_database=card_database,
-        set_profile=profile,
+        set_profile=legacy_profile,
         splash_enabled=False,
     )
-    removed_output = render_replay_events(
+    clean_output = render_replay_events(
         events=events,
         card_database=card_database,
-        set_profile=replace(profile, enhancement=None),
+        set_profile=clean_profile,
         splash_enabled=False,
     )
 
-    assert enhanced_output == removed_output
-    assert "relationship advice" not in enhanced_output.casefold()
-    assert "confirmed relationship support" not in enhanced_output.casefold()
+    assert legacy_output == clean_output
+    assert "relationship advice" not in legacy_output.casefold()
+    assert "confirmed relationship support" not in legacy_output.casefold()
 
 
 def _replay_context_events() -> tuple[
@@ -592,48 +612,24 @@ def _replay_context_events() -> tuple[
     )
 
 
-def _replay_semantic_profile() -> SetProfile:
-    return SetProfile.from_json(
-        {
-            "schema_version": 1,
-            "set_code": "MSH",
-            "format": "quickdraft",
-            "profile_version": "replay-test",
-            "generated_at": "2026-08-29T00:00:00+00:00",
-            "source": {"provider": "replay-test"},
-            "maturity": "early",
-            "confidence": 0.8,
-            "pair_profiles": [
-                {
-                    "pair": "UG",
-                    "theme": "replay tempo",
-                    "role_targets": [
-                        {"role": "draw", "value": 3},
-                    ],
-                }
-            ],
-            "role_profile": {
-                "schema_version": 2,
-                "set_code": "MSH",
-                "classifier_version": "1.5",
-                "role_schema_version": 6,
-                "profile_schema_version": 2,
-                "cards": [
-                    {
-                        "key": "arena_id:105003",
-                        "card_name": "Fixture Card 105003",
-                        "roles": [
-                            {
-                                "role": "draw",
-                                "confidence": 1.0,
-                                "provenance": ["replay-test"],
-                                "evidence": ["replay test role"],
-                            }
-                        ],
-                    }
-                ],
-            },
-        }
+def _replay_profile() -> SetProfile:
+    return SetProfile(
+        set_code="MSH",
+        event_format="quickdraft",
+        profile_version="replay-test",
+        generated_at="2026-08-29T00:00:00+00:00",
+        source=SourceMetadata(provider="replay-test"),
+        maturity=ProfileMaturity.EARLY,
+        samples=None,
+        confidence=0.8,
+        pairs=(
+            PairProfile(
+                pair="UG",
+                theme="replay tempo",
+                role_targets=(RoleTarget(role=Role.DRAW, value=3),),
+            ),
+        ),
+        schema_version=4,
     )
 
 

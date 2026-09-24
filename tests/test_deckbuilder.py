@@ -52,7 +52,7 @@ from draftomen.set_profile import (
     SampleSummary,
     ScarcityTarget,
     SetProfile,
-    load_set_profile,
+    SourceMetadata,
 )
 
 FIXTURE_NOW = datetime(2026, 7, 3, 12, 0, tzinfo=UTC).isoformat()
@@ -387,7 +387,7 @@ def test_spell_optimizer_is_deterministic_for_same_candidates_and_config() -> No
     assert first == second
 
 
-def test_hob_profile_brings_patient_instructor_into_complete_package() -> None:
+def test_hob_local_classifier_roles_support_complete_package() -> None:
     candidates, config, constraints, available_quantities, profile = _hob_optimizer_setup(
         spell_count=4
     )
@@ -406,64 +406,68 @@ def test_hob_profile_brings_patient_instructor_into_complete_package() -> None:
         config=config,
         set_profile=profile,
     )
+    unclassified_candidates = tuple(
+        replace(card, card=replace(card.card, oracle_text=None))
+        for card in candidates
+    )
+    unclassified_selection = _select_with_constraints(
+        candidates=unclassified_candidates,
+        available_quantities=available_quantities,
+        pair="UR",
+        constraints=constraints,
+        config=config,
+        set_profile=profile,
+    )
 
     assert baseline is not None
     assert selected is not None
+    assert unclassified_selection is not None
     baseline_names = {card.card.name for card in baseline}
     selected_names = {card.card.name for card in selected}
+    unclassified_names = {card.card.name for card in unclassified_selection}
     assert "Patient Instructor" not in baseline_names
     assert "Patient Instructor" in selected_names
-    assert sum(card.card.name == "Master's Councillor" for card in selected) >= 2
+    assert "Patient Instructor" not in unclassified_names
+    assert "Master's Councillor" in selected_names
 
 
-def test_hob_profile_payoff_counterfactual_removes_package_advantage() -> None:
+def test_legacy_profile_roles_do_not_change_optimizer_package_selection() -> None:
     candidates, config, constraints, available_quantities, profile = _hob_optimizer_setup(
         spell_count=4,
-        redundancy_weight=0.1,
     )
-    assert any(card.card.name == "Patient Instructor" for card in candidates)
-    assert profile.role_profile is not None
-    counterfactual_role_profile = replace(
-        profile.role_profile,
-        cards=tuple(
-            card
-            for card in profile.role_profile.cards
-            if card.card_name != "Patient Instructor"
-        ),
+    legacy_profile = _legacy_profile_with_role(
+        profile=profile,
+        card_key="arena_id:1902",
+        card_name="Patient Instructor",
+        role="go_wide_enabler",
     )
-    counterfactual_profile = replace(
-        profile,
-        role_profile=counterfactual_role_profile,
-    )
-    assert all(
-        card.card_name != "Patient Instructor"
-        for card in counterfactual_profile.card_roles
-    )
-    baseline = _greedy_feasible_package(
+    clean_selection = _select_with_constraints(
         candidates=candidates,
         available_quantities=available_quantities,
         pair="UR",
         constraints=constraints,
         config=config,
+        set_profile=profile,
     )
-    selected = _select_with_constraints(
+    legacy_selection = _select_with_constraints(
         candidates=candidates,
         available_quantities=available_quantities,
         pair="UR",
         constraints=constraints,
         config=config,
-        set_profile=counterfactual_profile,
+        set_profile=legacy_profile,
     )
 
-    assert baseline is not None
-    assert selected is not None
-    assert {card.original_index for card in selected} == {
-        card.original_index for card in baseline
-    }
-    assert "Patient Instructor" not in {card.card.name for card in selected}
+    assert clean_selection is not None
+    assert legacy_selection is not None
+    assert Counter(card.card.grp_id for card in clean_selection) == Counter(
+        card.card.grp_id for card in legacy_selection
+    )
+    assert "Patient Instructor" in {card.card.name for card in clean_selection}
+    assert "Patient Instructor" in {card.card.name for card in legacy_selection}
 
 
-def test_hob_profile_does_not_force_weak_redundant_enabler() -> None:
+def test_hob_local_classifier_does_not_force_weak_redundant_enabler() -> None:
     candidates, config, constraints, available_quantities, profile = _hob_optimizer_setup(
         spell_count=5
     )
@@ -514,29 +518,13 @@ def test_empirical_pair_and_scarcity_evidence_reorders_complete_packages() -> No
         optimizer_unsupported_payoff_weight=0.0,
         optimizer_mana_strain_weight=0.0,
     )
-    fixture_profile = load_set_profile(FIXTURES_DIR / "deckbuilder-hob-profile.json")
-    empirical_profile = replace(
-        fixture_profile,
-        profile_version="hob-empirical-test",
-        maturity=ProfileMaturity.MATURE,
-        samples=SampleSummary(total=100, by_pair=(("UR", 100),)),
-        confidence=1.0,
-        pairs=(
-            PairProfile(
-                pair="UR",
-                synergy=(
-                    CardPairSynergy(
-                        first_card="arena_id:1901",
-                        second_card="arena_id:1902",
-                        value=2.0,
-                    ),
-                ),
-                scarcity=(
-                    ScarcityTarget(card_key="arena_id:1902", value=1.0),
-                ),
-            ),
+    empirical_profile = _empirical_pair_profile(
+        synergy=CardPairSynergy(
+            first_card="arena_id:1901",
+            second_card="arena_id:1902",
+            value=2.0,
         ),
-        role_profile=None,
+        scarcity=ScarcityTarget(card_key="arena_id:1902", value=1.0),
     )
     generic_score = _optimizer_objective(
         cards=generic_package,
@@ -737,10 +725,12 @@ def _empirical_pair_profile(
     synergy: CardPairSynergy | None = None,
     scarcity: ScarcityTarget | None = None,
 ) -> SetProfile:
-    fixture_profile = load_set_profile(FIXTURES_DIR / "deckbuilder-hob-profile.json")
-    return replace(
-        fixture_profile,
+    return SetProfile(
+        set_code="HOB",
+        event_format="quickdraft",
         profile_version="hob-empirical-behavior-test",
+        generated_at=FIXTURE_NOW,
+        source=SourceMetadata(provider="test"),
         maturity=ProfileMaturity.MATURE,
         samples=SampleSummary(total=100, by_pair=(("UR", 100),)),
         confidence=1.0,
@@ -751,10 +741,41 @@ def _empirical_pair_profile(
                 scarcity=() if scarcity is None else (scarcity,),
             ),
         ),
-        role_profile=None,
     )
 
 
+def _legacy_profile_with_role(
+    *,
+    profile: SetProfile,
+    card_key: str,
+    card_name: str,
+    role: str,
+) -> SetProfile:
+    payload = profile.to_json()
+    payload["schema_version"] = 3
+    payload["enhancement_status"] = "not-enhanced"
+    payload["role_profile"] = {
+        "cards": [
+            {
+                "card_name": card_name,
+                "key": card_key,
+                "roles": [
+                    {
+                        "confidence": 1.0,
+                        "evidence": ["oracle_text"],
+                        "provenance": ["historical"],
+                        "role": role,
+                    }
+                ],
+            }
+        ],
+        "classifier_version": "1.5",
+        "profile_schema_version": 2,
+        "role_schema_version": 6,
+        "schema_version": 2,
+        "set_code": profile.set_code,
+    }
+    return SetProfile.from_json(payload)
 
 
 def test_optimizer_requires_generic_term_even_when_profile_weights_are_nonzero() -> None:
@@ -1835,8 +1856,18 @@ def _hob_optimizer_candidates() -> tuple[ScoredCard, ...]:
         (FIXTURES_DIR / "deckbuilder-hob-pool.json").read_text(encoding="utf-8")
     )
     cards = fixture["cards"]
+    oracle_text_by_grp_id = {
+        901: "Draw an additional card each turn.",
+        902: "Whenever you draw your second card each turn, this creature gets +1/+1.",
+    }
     database = CardDatabase(
-        cards={item["grp_id"]: CardInfo.from_json(item) for item in cards}
+        cards={
+            item["grp_id"]: replace(
+                CardInfo.from_json(item),
+                oracle_text=oracle_text_by_grp_id.get(item["grp_id"]),
+            )
+            for item in cards
+        }
     )
     scored = PickEngine().score_pack(
         offered_grp_ids=tuple(fixture["offered_grp_ids"]),
@@ -1898,7 +1929,7 @@ def _hob_optimizer_setup(
     available_quantities = Counter(
         _card_quantity_key(card=card.card) for card in candidates
     )
-    profile = load_set_profile(FIXTURES_DIR / "deckbuilder-hob-profile.json")
+    profile = _empirical_pair_profile()
     return candidates, config, constraints, available_quantities, profile
 
 

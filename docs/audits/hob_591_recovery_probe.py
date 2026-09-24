@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Offline landfall/ferocious/storied family recovery report for issue #591.
+"""ARCHIVED HISTORICAL PROBE: targets the retired pre-#663 schema-3 profile compiler. This script is not runnable against current code and is not evidence of current runtime behavior.
+
+The command below is preserved only as a historical capture record. Do not use it to verify current behavior.
 
 Read-only.  Network denial is installed before any ``draftomen`` module is
 imported, the union of the frozen #587 ledger's landfall, ferocious and storied
@@ -9,7 +11,7 @@ recovery is proved through the published offline consumer
 (``draftomen.cli.main(["generate-profile", ...])``) into two fresh temporary
 directories instead of only a private compiler helper.
 
-Checked-in audit utility; run from the repository root:
+Historical reproduction command from the capture (not runnable against current code):
 
     PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python \
         docs/audits/hob_591_recovery_probe.py --out /tmp/hob-591-recovery.json

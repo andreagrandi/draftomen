@@ -61,17 +61,21 @@ are checked and a usable non-generic profile may be migrated to the flat path.
 Invalid files are diagnostics, not automatic deletions.
 
 When candidate loading has multiple valid profiles, maturity precedence is
-`mature`, `early`, `semantic-only`, `metadata-only`, then a matching
-`last_valid_profile`, and finally generic. `load_scoring_profile` converts
-that generic result to `None`, so the existing rating/color path remains
-unchanged when no usable profile is available. If a live manifest URL is
-explicitly configured, an adapter-owned refresh can atomically install a
-validated newer profile and rescore the active pack; stale, invalid, or
-unavailable remote data leaves the profile already selected for scoring in
-place. Without that opt-in URL, live scoring remains offline.
-Normal live hosted refresh remains explicit here; the default manifest URL work
-owned by issue #353 and the native default-URL and ratings-presentation work
-owned by issue #354 remain outside this change.
+`mature`, `early`, `metadata-only`, then a matching `last_valid_profile`, and
+finally generic. Legacy `semantic-only` profiles are not scoreable and do not
+take precedence over metadata-only or a matching last-valid profile.
+`load_scoring_profile` converts a generic result to `None`, so scoring uses its
+ordinary rating/color fallback when no usable profile is available. A permitted
+hosted refresh can install a validated newer profile and rescore the active
+pack; stale, invalid, or unavailable remote data leaves the selected profile
+in place.
+
+Local role assignments come from deterministic classification of loaded card
+data, not stored SetProfile fields. Legacy schema-1 through schema-3 profiles
+may contain retired semantic fields, but the reader ignores them; schema 4
+rejects them. The independent Augmented Intelligence path loads its own
+`AugmentedArtifact` and applies its result after Basic DO. It does not change
+the Basic DO score or supply SetProfile semantics.
 
 `PickScoringContext` is an immutable value with exactly two fields:
 

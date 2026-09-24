@@ -17,7 +17,6 @@ from draftomen.profile_input_acquisition import (
 import draftomen.profile_batch_generation as batch
 import draftomen.profile_refresh_execution as refresh
 from draftomen.refresh_plan import LifecycleMetadata, PlannedEnvironment, RefreshPlan
-from draftomen.semantic_roles import Role
 from draftomen.set_profile import ProfileMaturity
 from draftomen.seventeen import load_17lands_format_data
 
@@ -139,7 +138,7 @@ def test_batch_report_has_versions_sources_counts_and_artifact_hashes(tmp_path: 
     assert report["versions"]["generator_version"]
     assert report["versions"]["profile_generation_schema_version"]
     assert report["versions"]["profile_generation_execution_schema_version"]
-    assert report["versions"]["set_profile_schema_version"]
+    assert report["versions"]["set_profile_schema_version"] == 4
     assert report["versions"]["public_dump_manifest_schema_version"]
     assert report["versions"]["statistics_version"]
     assert report["counts"] == {"failed": 0, "planned": 1, "publication_eligible": 1}
@@ -223,7 +222,7 @@ def test_batch_keeps_distinct_staged_roles_with_one_shared_digest(
     assert by_role["seventeen_lands_public_drafts"]["attribution"] == "fixture"
     assert by_role["seventeen_lands_public_drafts"]["license"] == "CC0"
 
-def test_aggregate_only_acquisition_generates_semantic_early_batch(
+def test_aggregate_only_acquisition_generates_schema_four_early_batch(
     tmp_path: Path,
 ) -> None:
     environment = _environment("TST")
@@ -305,10 +304,11 @@ def test_aggregate_only_acquisition_generates_semantic_early_batch(
     assert generated.selection.stage.value == "early"
     assert generated.generation is not None
     profile = generated.generation.profile
+    profile_json = json.loads(profile.to_bytes())
     assert profile.maturity is ProfileMaturity.EARLY
-    assert profile.roles_are_compatible
-    draw = profile.resolve_roles(cards.cards[1])
-    assert any(assignment.role is Role.DRAW for assignment in draw.assignments)
+    assert profile.schema_version == 4
+    assert profile_json["schema_version"] == 4
+    assert {"role_profile", "enhancement", "enhancement_status"}.isdisjoint(profile_json)
     assert any(item.gih_win_rate.samples > 0 for item in profile.card_ratings)
     pair = profile.pair("WU")
     assert pair is not None
@@ -318,9 +318,7 @@ def test_aggregate_only_acquisition_generates_semantic_early_batch(
         source["role"] for source in sources
     } == {"card_database", "seventeen_lands_ratings"}
     ratings_source = next(
-        source
-        for source in sources
-        if source["role"] == "seventeen_lands_ratings"
+        source for source in sources if source["role"] == "seventeen_lands_ratings"
     )
     assert ratings_source["acquired_at"] == NOW.isoformat()
     assert ratings_source["outcome"] == "acquired"
@@ -487,6 +485,10 @@ def test_mixed_maturity_partial_failure_and_repeat_runs_are_deterministic(tmp_pa
     assert [item.profile_bytes for item in first.eligible_results] == [
         item.profile_bytes for item in second.eligible_results
     ]
+    for generated in first.eligible_results:
+        profile_json = json.loads(generated.profile_bytes)
+        assert profile_json["schema_version"] == 4
+        assert {"role_profile", "enhancement", "enhancement_status"}.isdisjoint(profile_json)
     assert [item.failure_reason.value for item in first.environments if not item.publication_eligible] == [
         "refresh-execution-failed"
     ]

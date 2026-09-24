@@ -26,13 +26,9 @@ from draftomen.pickengine import (
     ScoredCard,
 )
 from draftomen.pool import DraftPick, DraftState, draft_state_path, save_draft_state
-from draftomen.semantic_roles import (
-    CompiledRoleProfile,
-    ProfileCard,
-    Role,
-    RoleAssignment,
-)
+from draftomen.semantic_roles import Role
 from draftomen.set_profile import (
+    AggregateEvidence,
     CardRating,
     PairProfile,
     ProfileMaturity,
@@ -239,6 +235,7 @@ def _set_profile() -> SetProfile:
         samples=SampleSummary(total=1, by_pair=(("WU", 1),)),
         confidence=1.0,
         pairs=(PairProfile(pair="WU"),),
+        schema_version=4,
     )
 
 
@@ -258,15 +255,6 @@ def _contextual_backtest_profile() -> SetProfile:
                 role_targets=(RoleTarget(role=Role.DRAW, value=1),),
             ),
         ),
-        role_profile=CompiledRoleProfile(
-            set_code="TST",
-            cards=(
-                ProfileCard(
-                    key="arena_id:3",
-                    assignments=(RoleAssignment(role=Role.DRAW),),
-                ),
-            ),
-        ),
         card_ratings=tuple(
             CardRating(
                 card_key=f"arena_id:{grp_id}",
@@ -276,10 +264,16 @@ def _contextual_backtest_profile() -> SetProfile:
                     samples=100,
                     prior_value=0.5,
                     source="test",
+                    aggregate_evidence=AggregateEvidence(
+                        source_format="quickdraft",
+                        fallback_reason=None,
+                        confidence=1.0,
+                    ),
                 ),
             )
             for grp_id, value in ((3, 0.72), (4, 0.68), (5, 0.90))
         ),
+        schema_version=4,
     )
 
 
@@ -288,6 +282,7 @@ def _contextual_backtest_database() -> CardDatabase:
         grp_id: replace(card, set_code="TST", arena_id=grp_id)
         for grp_id, card in _card_database().cards.items()
     }
+    cards[3] = replace(cards[3], oracle_text="Draw a card.")
     cards[5] = replace(
         _card(grp_id=5, name="White Ceiling", colors=("W",)),
         set_code="TST",
@@ -670,7 +665,7 @@ _CONTEXTUAL_PICK_REASON_KINDS = frozenset(
 
 
 def _hob_fixtures() -> tuple[CardDatabase, SetProfile, DraftState]:
-    """Load the tracked HOB artifact, profile, and saved-draft fixtures."""
+    """Load HOB artifacts and use a clean schema-4 profile for scoring."""
     card_database = SetCardData.from_gzip_bytes(
         _HOB_CARD_ARTIFACT_PATH.read_bytes(),
         expected_set_code="hob",
@@ -680,6 +675,7 @@ def _hob_fixtures() -> tuple[CardDatabase, SetProfile, DraftState]:
         expected_set_code="hob",
         expected_format="quickdraft",
     )
+    profile = replace(profile, schema_version=4)
     state = DraftState.from_json(
         json.loads(_HOB_STATE_FIXTURE_PATH.read_text(encoding="utf-8"))
     )
@@ -707,102 +703,54 @@ def _score_hob_pick(
     return rank_scored_cards(cards=scored_pack.cards, ranking_mode="score")
 
 
-def test_hob_enhancement_does_not_change_basic_do_backtest() -> None:
+def test_hob_backtest_preserves_recommendations_for_clean_profile() -> None:
     database, profile, state = _hob_fixtures()
-    unenhanced_profile = replace(profile, enhancement=None)
-    enhanced_engine = PickEngine(set_profile=profile)
-    unenhanced_engine = PickEngine(set_profile=unenhanced_profile)
-    enhanced_report = generate_backtest_report(
+    engine = PickEngine(set_profile=profile)
+    report = generate_backtest_report(
         state=state,
         card_database=database,
         set_profile=profile,
-    )
-    unenhanced_report = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=unenhanced_profile,
     )
     supplied_engine_report = generate_backtest_report(
         state=state,
         card_database=database,
         set_profile=profile,
-        pick_engine=enhanced_engine,
+        pick_engine=engine,
     )
 
-    assert profile.schema_version == 3
-    assert profile.enhancement is not None
-    assert unenhanced_profile.enhancement is None
+    assert profile.schema_version == 4
     assert len(state.picks) == len(_HOB_EXPECTED_RECOMMENDATIONS)
-    assert len(enhanced_report.rows) == len(state.picks)
-    assert len(unenhanced_report.rows) == len(state.picks)
+    assert len(report.rows) == len(state.picks)
     assert len(supplied_engine_report.rows) == len(state.picks)
 
-    for index, (pick, enhanced_row, unenhanced_row, supplied_row) in enumerate(
-        zip(
-            state.picks,
-            enhanced_report.rows,
-            unenhanced_report.rows,
-            supplied_engine_report.rows,
-            strict=True,
-        )
+    for index, (pick, row, supplied_row) in enumerate(
+        zip(state.picks, report.rows, supplied_engine_report.rows, strict=True)
     ):
         assert pick.offered_grp_ids == _HOB_EXPECTED_OFFERS[index]
         assert pick.pool_before_pick == _HOB_EXPECTED_POOLS[index]
 
-        enhanced_cards = _score_hob_pick(
-            engine=enhanced_engine,
+        ranked_cards = _score_hob_pick(
+            engine=engine,
             card_database=database,
             pick=pick,
         )
-        unenhanced_cards = _score_hob_pick(
-            engine=unenhanced_engine,
-            card_database=database,
-            pick=pick,
-        )
-        enhanced_order = tuple(
-            (card.card.grp_id, card.basic_score, card.raw_score)
-            for card in enhanced_cards
-        )
-        unenhanced_order = tuple(
-            (card.card.grp_id, card.basic_score, card.raw_score)
-            for card in unenhanced_cards
-        )
-        assert enhanced_order == unenhanced_order
-        assert tuple(
-            (card.contextual_breakdown, card.contextual_evidence)
-            for card in enhanced_cards
-        ) == tuple(
-            (card.contextual_breakdown, card.contextual_evidence)
-            for card in unenhanced_cards
-        )
-        assert enhanced_cards[0].card.grp_id == (
-            _HOB_EXPECTED_RECOMMENDATIONS[index]
-        )
+        best_card = ranked_cards[0]
+        assert best_card.card.grp_id == _HOB_EXPECTED_RECOMMENDATIONS[index]
 
-        for row in (enhanced_row, unenhanced_row, supplied_row):
-            recommended = row.recommended
+        for report_row in (row, supplied_row):
+            recommended = report_row.recommended
             assert recommended is not None
-            assert recommended.card.grp_id == enhanced_cards[0].card.grp_id
-            assert recommended.basic_score == enhanced_cards[0].basic_score
-            assert recommended.raw_score == enhanced_cards[0].raw_score
-            assert recommended.contextual_breakdown == (
-                enhanced_cards[0].contextual_breakdown
-            )
-            assert recommended.contextual_evidence == (
-                enhanced_cards[0].contextual_evidence
-            )
-            assert row.contextual_evidence == enhanced_cards[0].contextual_evidence
+            assert recommended.card.grp_id == best_card.card.grp_id
+            assert recommended.basic_score == best_card.basic_score
+            assert recommended.raw_score == best_card.raw_score
+            assert recommended.contextual_breakdown == best_card.contextual_breakdown
+            assert recommended.contextual_evidence == best_card.contextual_evidence
+            assert report_row.contextual_evidence == best_card.contextual_evidence
 
-    assert enhanced_engine.set_profile is profile
 
 
 def test_hob_contextual_adjustments_can_be_disabled() -> None:
     database, profile, state = _hob_fixtures()
-    enabled = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-    )
     disabled = generate_backtest_report(
         state=state,
         card_database=database,
@@ -820,7 +768,6 @@ def test_hob_contextual_adjustments_can_be_disabled() -> None:
         disabled_kinds = {reason.kind for reason in recommended.rationale.reasons}
         assert disabled_kinds.isdisjoint(_CONTEXTUAL_PICK_REASON_KINDS)
         assert recommended.rating.metadata.source == "profile"
-    assert enabled.rows[1].contextual_evidence
 
 
 def test_hob_backtest_does_not_mutate_state_bytes() -> None:
@@ -834,11 +781,6 @@ def test_hob_backtest_does_not_mutate_state_bytes() -> None:
             state=state,
             card_database=database,
             set_profile=profile,
-        )
-        generate_backtest_report(
-            state=state,
-            card_database=database,
-            set_profile=replace(profile, enhancement=None),
         )
         generate_backtest_report(
             state=state,

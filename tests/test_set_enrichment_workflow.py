@@ -13,27 +13,15 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-import gzip
 
 import pytest
 
-import draftomen.profile_publication as profile_publication
 import draftomen.set_enrichment as set_enrichment_engine
 import draftomen.set_enrichment_workflow as workflow
 from draftomen.card_data_client import CardDataClient, card_data_cache_path
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.enrichment_publications import (
-    ENRICHMENT_PUBLICATIONS_FILE_NAME,
-    load_enrichment_publications,
-)
 from draftomen.guide_client import GuideClient
 from draftomen.openrouter_client import OpenRouterResponse
-from draftomen.profile_manifest import (
-    ProfileManifest,
-    ProfileManifestArtifact,
-    load_profile_manifest,
-)
-from draftomen.profile_publication import PROFILE_BASE_URL, ProfilePublicationError
 from draftomen.semantic_capability_records import CapabilityQuantity, CapabilityZone, QuantityRelation
 from draftomen.semantic_enrichment import SemanticEnrichmentArtifact
 from draftomen.semantic_enrichment_records import FindingStatus, ReasoningConfig
@@ -70,8 +58,6 @@ from draftomen.set_enrichment_extraction import (
     ValidatedRelationship,
 )
 from draftomen.set_enrichment_work import WorkIdentity, WorkKind, WorkModelConfig
-from draftomen.set_profile import ProfileMaturity, SetProfile, load_set_profile
-from draftomen.seventeen import QUICK_DRAFT_FORMAT
 
 
 SET_CODE = "TST"
@@ -88,9 +74,6 @@ OUTPUT_TOKENS = 200
 REASONING_TOKENS = 40
 CALL_COST = "0.002"
 MODEL_CONFIG = WorkModelConfig(model=MODEL, reasoning_effort="high", max_tokens=4096)
-
-UNRELATED_SET_CODE = "unr"
-UNRELATED_MANIFEST_TIMESTAMP = "2026-09-01T00:00:00+00:00"
 
 TOKEN_ID = 1
 TOKEN_NAME = "Token Maker"
@@ -999,49 +982,6 @@ def _message(name: str) -> str:
     return value
 
 
-def _profile_marker(output_dir: Path) -> Path:
-    return output_dir / "tst-quickdraft" / "generation.json"
-
-
-def _profile_snapshot(output_dir: Path) -> dict[str, bytes]:
-    profile_root = output_dir / "tst-quickdraft"
-    return {
-        str(path.relative_to(profile_root)): path.read_bytes()
-        for path in sorted(profile_root.rglob("*"))
-        if path.is_file()
-    }
-
-
-def _unrelated_manifest_artifact() -> ProfileManifestArtifact:
-    """Return the seeded manifest entry of a set this workflow never confirms."""
-    digest = "0" * 64
-    return ProfileManifestArtifact(
-        set_code=UNRELATED_SET_CODE,
-        event_format=QUICK_DRAFT_FORMAT,
-        set_profile_schema_version=3,
-        profile_version="1.0",
-        generated_at=UNRELATED_MANIFEST_TIMESTAMP,
-        url=f"{PROFILE_BASE_URL}{digest}.json.gz",
-        gzip_bytes=64,
-        profile_bytes=256,
-        gzip_sha256=digest,
-        profile_sha256="1" * 64,
-        maturity=ProfileMaturity.METADATA_ONLY,
-    )
-
-
-def _seed_profiles_dir(tmp_path: Path, *, name: str = "profiles") -> Path:
-    """Seed one temporary repository tree with a single unrelated manifest entry."""
-    profiles = tmp_path / name
-    (profiles / "objects").mkdir(parents=True, exist_ok=True)
-    manifest = ProfileManifest(
-        artifacts=(_unrelated_manifest_artifact(),),
-        published_at=UNRELATED_MANIFEST_TIMESTAMP,
-    )
-    (profiles / "manifest.json").write_bytes(manifest.to_bytes())
-    return profiles
-
-
 def _tree_snapshot(root: Path) -> dict[str, bytes]:
     """Return every file byte of one directory tree keyed by relative path."""
     return {
@@ -1049,25 +989,6 @@ def _tree_snapshot(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
-
-
-def _create_metadata_profile(tmp_path: Path, *, output_dir: Path) -> Path:
-    result = _run(tmp_path, output_dir=output_dir, completion=_Completion())
-    assert result.artifact_path is not None
-    pending_path = result.artifact_path
-    assert pending_path.exists()
-    review = workflow.finalize_set_enrichment(
-        analysis=result,
-        decision=workflow.EnrichmentReviewDecision.CONFIRM,
-        reviewer_id="operator",
-        reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        profiles_dir=_seed_profiles_dir(tmp_path),
-    )
-    assert review.publication is not None
-    assert review.published_object_path is not None
-    assert review.published_manifest_path is not None
-    assert _profile_marker(output_dir).exists()
-    return output_dir
 
 
 def _second_work_dir(output_dir: Path) -> Path:
@@ -1140,10 +1061,10 @@ def test_injected_card_client_cache_mismatch_fails_before_network(tmp_path: Path
     assert guide_calls == []
 
 
-def test_nested_source_work_and_profile_symlinks_fail_without_external_mutation(
+def test_nested_source_and_work_symlinks_fail_without_external_mutation(
     tmp_path: Path,
 ) -> None:
-    for kind in ("source", "work", "profile"):
+    for kind in ("source", "work"):
         case_root = tmp_path / kind
         output = case_root / "output"
         external = case_root / "external"
@@ -1158,28 +1079,15 @@ def test_nested_source_work_and_profile_symlinks_fail_without_external_mutation(
         if kind == "source":
             (output / "enrichment-runs").mkdir(parents=True)
             os.symlink(external, output / "enrichment-runs" / "card-data")
-        elif kind == "work":
+        else:
             guide_key = hashlib.sha256(GUIDE_URL.encode("utf-8")).hexdigest()[:16]
             run_dir = output / "enrichment-runs" / "tst" / guide_key
             run_dir.mkdir(parents=True)
             os.symlink(external, run_dir / "work")
-        else:
-            output.mkdir(parents=True)
-            os.symlink(external, output / "tst-quickdraft")
-        if kind == "profile":
-            result = _run(output, output_dir=output, completion=_Completion())
-            profiles = _seed_profiles_dir(case_root)
-            with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-                workflow.finalize_set_enrichment(
-                    analysis=result,
-                    decision=workflow.EnrichmentReviewDecision.CONFIRM,
-                    reviewer_id="reviewer",
-                    reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-                    profiles_dir=profiles,
-                )
-        else:
-            with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-                _run(output, output_dir=output, completion=_Completion())
+
+        with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
+            _run(output, output_dir=output, completion=_Completion())
+
         assert str(raised.value) == _message("CONTAINMENT_ERROR")
         after_external = {
             path.relative_to(external): path.read_bytes()
@@ -1188,7 +1096,6 @@ def test_nested_source_work_and_profile_symlinks_fail_without_external_mutation(
         }
         assert after_external == before_external
         assert sentinel.read_bytes() == b"authoritative"
-
 
 def test_reused_frozen_guide_never_refetches(tmp_path: Path) -> None:
     first_guide_calls: list[dict[str, Any]] = []
@@ -1919,7 +1826,6 @@ def test_cancellation_and_keyboard_interrupt_preserve_durable_prefix_without_pub
     assert cancelled.artifact is None
     assert cancelled.artifact_path is None
     assert tuple(cancelled.work_dir.joinpath("results").glob("*.json"))
-    assert not _profile_marker(cancelled.output_dir).exists()
 
     interrupted_output = tmp_path / "interrupted"
     with pytest.raises(KeyboardInterrupt):
@@ -1932,14 +1838,10 @@ def test_cancellation_and_keyboard_interrupt_preserve_durable_prefix_without_pub
         hashlib.sha256(GUIDE_URL.encode("utf-8")).hexdigest()[:16]
     ) / "work"
     assert tuple(work_root.joinpath("results").glob("*.json"))
-    assert not _profile_marker(interrupted_output).exists()
     assert not tuple((work_root.parent / "artifacts").glob("*.json"))
 
 
-def test_cancel_publishes_only_cancelled_review_artifact(tmp_path: Path) -> None:
-    profiles = _seed_profiles_dir(tmp_path)
-    profiles_before = _tree_snapshot(profiles)
-    absent = tmp_path / "absent-profiles"
+def test_cancel_persists_only_cancelled_review_artifact(tmp_path: Path) -> None:
     result = _run(tmp_path, completion=_Completion())
     assert result.artifact_path is not None
     pending_path = result.artifact_path
@@ -1948,122 +1850,40 @@ def test_cancel_publishes_only_cancelled_review_artifact(tmp_path: Path) -> None
         decision=workflow.EnrichmentReviewDecision.CANCEL,
         reviewer_id="operator",
         reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        profiles_dir=profiles,
     )
 
+    assert review.decision is workflow.EnrichmentReviewDecision.CANCEL
     assert review.artifact.review.state == "cancelled"
     assert review.artifact.confirmed_relationship_ids == ()
-    assert review.publication is None
-    assert review.published_object_path is None
-    assert review.published_manifest_path is None
     assert review.artifact_path.exists()
     assert review.artifact_path != pending_path
-    assert not _profile_marker(result.output_dir).exists()
+    assert review.artifact_path.read_bytes() == review.artifact.to_bytes()
     assert pending_path.exists()
-    assert not (profiles / ENRICHMENT_PUBLICATIONS_FILE_NAME).exists()
-    assert _tree_snapshot(profiles) == profiles_before
-
-    second = _run(tmp_path, completion=_Completion(interrupt_after=0))
-    cancelled = workflow.finalize_set_enrichment(
-        analysis=second,
-        decision=workflow.EnrichmentReviewDecision.CANCEL,
-        reviewer_id="operator",
-        reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=2),
-        profiles_dir=absent,
-    )
-
-    assert cancelled.publication is None
-    assert cancelled.published_object_path is None
-    assert cancelled.published_manifest_path is None
-    assert not absent.exists()
+    assert not (result.output_dir / "tst-quickdraft").exists()
 
 
-def test_confirm_selects_all_accepted_relationships_and_publishes_metadata_profile(
+def test_confirm_saves_standalone_artifact_without_profile_side_effects(
     tmp_path: Path,
 ) -> None:
-    result = _run(tmp_path, completion=_Completion())
+    output_dir = tmp_path / "output"
+    local_profile_root = output_dir / "tst-quickdraft"
+    local_profile_root.mkdir(parents=True)
+    generation_marker = local_profile_root / "generation.json"
+    generation_marker.write_bytes(b"existing generation marker\n")
+    repository_profiles = tmp_path / "website" / "public" / "profiles"
+    repository_profiles.mkdir(parents=True)
+    repository_manifest = repository_profiles / "manifest.json"
+    repository_manifest.write_bytes(b"historical manifest bytes\n")
+    local_before = _tree_snapshot(local_profile_root)
+    repository_before = _tree_snapshot(repository_profiles)
+
+    result = _run(tmp_path, output_dir=output_dir, completion=_Completion())
     assert result.artifact is not None
     accepted_ids = tuple(
         relationship.finding_id
         for relationship in result.artifact.relationships
         if relationship.review.status is FindingStatus.ACCEPTED
     )
-    profiles = _seed_profiles_dir(tmp_path)
-    reviewed_at = datetime.now(tz=UTC) + timedelta(minutes=1)
-    review = workflow.finalize_set_enrichment(
-        analysis=result,
-        decision=workflow.EnrichmentReviewDecision.CONFIRM,
-        reviewer_id="operator",
-        reviewed_at=reviewed_at,
-        profiles_dir=profiles,
-    )
-
-    assert review.artifact.review.state == "confirmed"
-    assert review.artifact.confirmed_relationship_ids == accepted_ids
-    assert review.publication is not None
-    publication = review.publication
-    assert publication.artifact_path.exists()
-    assert publication.manifest_path.exists()
-    compressed = publication.artifact_path.read_bytes()
-    profile_bytes = gzip.decompress(compressed)
-    profile = SetProfile.from_json(json.loads(profile_bytes))
-    report = publication.generation.report
-    assert profile.schema_version == 3
-    assert report.stage == "metadata"
-    assert report.profile_sha256 == hashlib.sha256(profile_bytes).hexdigest()
-    assert report.gzip_sha256 == hashlib.sha256(compressed).hexdigest()
-    assert report.gzip_bytes == len(compressed)
-    assert publication.manifest_path == _profile_marker(result.output_dir)
-
-    published_object = profiles / "objects" / f"{report.gzip_sha256}.json.gz"
-    manifest_path = profiles / "manifest.json"
-    assert review.published_object_path == published_object
-    assert review.published_manifest_path == manifest_path
-    assert published_object.read_bytes() == compressed
-    assert sorted(path.name for path in (profiles / "objects").iterdir()) == [
-        f"{report.gzip_sha256}.json.gz"
-    ]
-    manifest = load_profile_manifest(manifest_path)
-    assert manifest.published_at == reviewed_at.isoformat()
-    entry = next(item for item in manifest.artifacts if item.set_code == result.set_code)
-    assert entry.set_code == result.set_code
-    assert entry.event_format == QUICK_DRAFT_FORMAT.casefold()
-    assert entry.url == f"{PROFILE_BASE_URL}{report.gzip_sha256}.json.gz"
-    assert entry.gzip_sha256 == report.gzip_sha256
-    assert entry.gzip_bytes == len(compressed)
-    assert entry.profile_sha256 == report.profile_sha256
-    assert entry.profile_bytes == len(profile_bytes)
-    assert entry.generated_at == profile.generated_at
-    assert entry.maturity is ProfileMaturity.METADATA_ONLY
-    retained = [item for item in manifest.artifacts if item.set_code == UNRELATED_SET_CODE]
-    assert retained == [_unrelated_manifest_artifact()]
-
-    record_path = profiles / ENRICHMENT_PUBLICATIONS_FILE_NAME
-    record = load_enrichment_publications(profiles_dir=profiles)
-    assert record_path.is_file()
-    assert len(record.publications) == 1
-    assert record.candidates == ()
-    provenance = record.publications[0]
-    assert provenance.set_code == result.set_code
-    assert provenance.event_format == QUICK_DRAFT_FORMAT.casefold()
-    assert provenance.artifact_sha256 == hashlib.sha256(
-        review.artifact_path.read_bytes()
-    ).hexdigest()
-    assert provenance.run_id == result.run_dir.name
-    assert provenance.reviewed_at == report.enhancement.reviewed_at
-    assert datetime.fromisoformat(provenance.reviewed_at) == reviewed_at
-    assert provenance.published_at == reviewed_at.isoformat()
-    assert provenance.profile_gzip_sha256 == report.gzip_sha256
-
-
-def test_confirm_publishes_into_the_relative_default_repository_tree(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    profiles = _seed_profiles_dir(tmp_path, name="website/public/profiles")
-    result = _run(tmp_path, completion=_Completion())
-
     review = workflow.finalize_set_enrichment(
         analysis=result,
         decision=workflow.EnrichmentReviewDecision.CONFIRM,
@@ -2071,189 +1891,15 @@ def test_confirm_publishes_into_the_relative_default_repository_tree(
         reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
     )
 
-    assert review.published_manifest_path == Path("website/public/profiles/manifest.json")
-    assert review.published_object_path is not None
-    assert review.published_object_path.parent == Path("website/public/profiles/objects")
-    manifest = load_profile_manifest(profiles / "manifest.json")
-    assert any(item.set_code == result.set_code for item in manifest.artifacts)
-    assert (
-        profiles / "objects" / f"{review.publication.generation.report.gzip_sha256}.json.gz"
-    ).read_bytes() == review.publication.artifact_path.read_bytes()
+    assert review.decision is workflow.EnrichmentReviewDecision.CONFIRM
+    assert review.artifact.review.state == "confirmed"
+    assert review.artifact.confirmed_relationship_ids == accepted_ids
+    assert review.artifact_path.exists()
+    assert review.artifact_path.read_bytes() == review.artifact.to_bytes()
+    assert _tree_snapshot(local_profile_root) == local_before
+    assert _tree_snapshot(repository_profiles) == repository_before
 
-
-def test_repeated_confirm_reuses_repository_object_and_manifest_bytes(tmp_path: Path) -> None:
-    profiles = _seed_profiles_dir(tmp_path)
-    reviewed_at = datetime.now(tz=UTC) + timedelta(minutes=1)
-    first = _run(tmp_path, completion=_Completion())
-    first_review = workflow.finalize_set_enrichment(
-        analysis=first,
-        decision=workflow.EnrichmentReviewDecision.CONFIRM,
-        reviewer_id="operator",
-        reviewed_at=reviewed_at,
-        profiles_dir=profiles,
-    )
-    assert first_review.published_object_path is not None
-    published_before = _tree_snapshot(profiles)
-    object_mtime = first_review.published_object_path.stat().st_mtime_ns
-    manifest_mtime = (profiles / "manifest.json").stat().st_mtime_ns
-
-    second = _run(tmp_path, completion=_Completion())
-    second_review = workflow.finalize_set_enrichment(
-        analysis=second,
-        decision=workflow.EnrichmentReviewDecision.CONFIRM,
-        reviewer_id="operator",
-        reviewed_at=reviewed_at,
-        profiles_dir=profiles,
-    )
-
-    assert second_review.published_object_path == first_review.published_object_path
-    assert second_review.published_manifest_path == profiles / "manifest.json"
-    assert _tree_snapshot(profiles) == published_before
-    assert first_review.published_object_path.stat().st_mtime_ns == object_mtime
-    assert (profiles / "manifest.json").stat().st_mtime_ns == manifest_mtime
-
-
-def test_confirm_fails_closed_without_an_existing_repository_manifest(tmp_path: Path) -> None:
-    profiles = _seed_profiles_dir(tmp_path)
-    (profiles / "manifest.json").unlink()
-    absent = _tree_snapshot(profiles)
-    result = _run(tmp_path, completion=_Completion())
-
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=result,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            profiles_dir=profiles,
-        )
-
-    assert str(raised.value) == workflow.PROFILE_PUBLICATION_ERROR
-    assert raised.value.review_result is not None
-    assert raised.value.review_result.artifact.review.state == "confirmed"
-    assert raised.value.review_result.artifact_path.exists()
-    assert raised.value.review_result.publication is not None
-    assert raised.value.review_result.published_object_path is None
-    assert raised.value.review_result.published_manifest_path is None
-    assert _tree_snapshot(profiles) == absent
-
-
-def test_confirm_fails_closed_on_an_invalid_publication_record(tmp_path: Path) -> None:
-    profiles = _seed_profiles_dir(tmp_path)
-    record_path = profiles / ENRICHMENT_PUBLICATIONS_FILE_NAME
-    record_path.write_bytes(b"{not a publication record")
-    manifest_before = (profiles / "manifest.json").read_bytes()
-    result = _run(tmp_path, completion=_Completion())
-
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=result,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            profiles_dir=profiles,
-        )
-
-    error = raised.value
-    assert str(error) == workflow.PROFILE_PUBLICATION_ERROR
-    assert error.review_result is not None
-    assert error.review_result.artifact.review.state == "confirmed"
-    assert error.review_result.artifact_path.exists()
-    assert error.review_result.publication is not None
-    assert error.review_result.published_object_path is None
-    assert error.review_result.published_manifest_path is None
-    assert record_path.read_bytes() == b"{not a publication record"
-    assert (profiles / "manifest.json").read_bytes() == manifest_before
-
-
-def test_confirm_rejects_a_local_run_identity_without_repository_mutation(
-    tmp_path: Path,
-) -> None:
-    profiles = _seed_profiles_dir(tmp_path)
-    profiles_before = _tree_snapshot(profiles)
-    result = _run(tmp_path, completion=_Completion())
-    assert result.artifact is not None
-    assert result.artifact.runs
-    poisoned = replace(
-        result,
-        artifact=replace(
-            result.artifact,
-            runs=tuple(
-                replace(run, model="/local/private/model") for run in result.artifact.runs
-            ),
-            sources=result.sources,
-        ),
-    )
-
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=poisoned,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            profiles_dir=profiles,
-        )
-
-    assert str(raised.value) == workflow.PROFILE_PUBLICATION_ERROR
-    assert raised.value.review_result is not None
-    assert raised.value.review_result.artifact.review.state == "confirmed"
-    assert raised.value.review_result.artifact_path.exists()
-    assert raised.value.review_result.publication is None
-    assert raised.value.review_result.published_object_path is None
-    assert raised.value.review_result.published_manifest_path is None
-    assert _tree_snapshot(profiles) == profiles_before
-
-
-@pytest.mark.parametrize("boundary", ["publish_profile_object", "publish_profile_manifest"])
-def test_confirm_repository_publication_boundary_failure_is_fail_closed(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    boundary: str,
-) -> None:
-    profiles = _seed_profiles_dir(tmp_path)
-    profiles_before = _tree_snapshot(profiles)
-    result = _run(tmp_path, completion=_Completion())
-
-    def fail_publication(*_: object, **__: object) -> object:
-        raise OSError("boom")
-
-    # The repository installation boundary lives in the shared publisher the workflow delegates to.
-    monkeypatch.setattr(profile_publication, boundary, fail_publication)
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=result,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            profiles_dir=profiles,
-        )
-
-    error = raised.value
-    assert str(error) == workflow.PROFILE_PUBLICATION_ERROR
-    assert error.review_result is not None
-    assert error.review_result.artifact.review.state == "confirmed"
-    assert error.review_result.artifact_path.exists()
-    assert error.review_result.publication is not None
-    assert error.review_result.published_object_path is None
-    assert error.review_result.published_manifest_path is None
-    assert (profiles / "manifest.json").read_bytes() == profiles_before["manifest.json"]
-    report = error.review_result.publication.generation.report
-    object_path = profiles / "objects" / f"{report.gzip_sha256}.json.gz"
-    if boundary == "publish_profile_manifest":
-        payload = object_path.read_bytes()
-        assert payload == error.review_result.publication.artifact_path.read_bytes()
-        assert hashlib.sha256(payload).hexdigest() == report.gzip_sha256
-        record = load_enrichment_publications(profiles_dir=profiles)
-        assert record.publications == ()
-        assert tuple(entry.profile_gzip_sha256 for entry in record.candidates) == (
-            report.gzip_sha256,
-        )
-    else:
-        assert not object_path.exists()
-        assert _tree_snapshot(profiles) == profiles_before
-
-
-def test_typed_prerequisite_projection_reaches_the_confirmed_profile(
+def test_typed_prerequisite_projection_reaches_the_confirmed_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2303,30 +1949,20 @@ def test_typed_prerequisite_projection_reaches_the_confirmed_profile(
     assert target_clause.quantity is None
 
     reviewed_at = datetime.fromisoformat(analysis.artifact.created_at.replace("Z", "+00:00"))
-    profiles = _seed_profiles_dir(tmp_path)
     review = workflow.finalize_set_enrichment(
         analysis=analysis,
         decision=workflow.EnrichmentReviewDecision.CONFIRM,
         reviewer_id="operator",
         reviewed_at=reviewed_at + timedelta(seconds=1),
-        profiles_dir=profiles,
     )
     assert set(review.artifact.confirmed_relationship_ids) == {
         original.finding_id,
         local.finding_id,
     }
-    assert review.publication is not None
-    plain = tmp_path / "loaded-profile.json"
-    plain.write_bytes(gzip.decompress(review.publication.artifact_path.read_bytes()))
-    loaded = load_set_profile(
-        path=plain,
-        expected_set_code=analysis.set_code,
-        expected_format="quickdraft",
-    )
-    assert loaded.enhancement is not None
+    assert review.artifact_path.read_bytes() == review.artifact.to_bytes()
     restored = next(
         relationship
-        for relationship in loaded.enhancement.relationships
+        for relationship in review.artifact.relationships
         if relationship.finding_id == original.finding_id
     )
     assert restored.prerequisite_projection == projection
@@ -2363,19 +1999,16 @@ def test_contradictory_complete_payload_yields_a_rejected_diagnostic(
     assert result.artifact.review.state == "pending"
 
     reviewed_at = datetime.fromisoformat(result.artifact.created_at.replace("Z", "+00:00"))
-    profiles = _seed_profiles_dir(tmp_path)
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=result,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=reviewed_at + timedelta(seconds=1),
-            profiles_dir=profiles,
-        )
-    assert str(raised.value) == workflow.NO_PUBLISHABLE_ERROR
-    assert raised.value.review_result is not None
-    assert raised.value.review_result.artifact.confirmed_relationship_ids == ()
-    assert raised.value.review_result.publication is None
+    review = workflow.finalize_set_enrichment(
+        analysis=result,
+        decision=workflow.EnrichmentReviewDecision.CONFIRM,
+        reviewer_id="operator",
+        reviewed_at=reviewed_at + timedelta(seconds=1),
+    )
+    assert review.artifact.confirmed_relationship_ids == ()
+    assert review.artifact.review.state == "confirmed"
+    assert review.artifact.rejected_findings == result.artifact.rejected_findings
+    assert review.artifact_path.read_bytes() == review.artifact.to_bytes()
 
 
 def test_reversed_direction_never_collapses_during_relationship_grouping(
@@ -2405,70 +2038,8 @@ def test_reversed_direction_never_collapses_during_relationship_grouping(
     assert workflow._project_relationships((original, original)) == (original,)
 
 
-def test_no_publishable_confirmation_keeps_review_artifact_and_marker_bytes(
-    tmp_path: Path,
-) -> None:
-    # The guide states no mechanic and the only constructed pair is rejected locally by the
-    # structured parameters, so the confirmed review has nothing publishable to project.
-    result = _run(
-        tmp_path,
-        cards=_local_cards(),
-        completion=_Completion(guide_category="strategy", local_conflict=True),
-    )
-    marker = _profile_marker(result.output_dir)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_bytes(b"authoritative-generation\n")
-    marker_before = marker.read_bytes()
-    profiles = _seed_profiles_dir(tmp_path)
-    profiles_before = _tree_snapshot(profiles)
-
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=result,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            profiles_dir=profiles,
-        )
-    assert str(raised.value) == workflow.NO_PUBLISHABLE_ERROR
-    assert _tree_snapshot(profiles) == profiles_before
-    assert raised.value.review_result is not None
-    assert raised.value.review_result.artifact.review.state == "confirmed"
-    assert raised.value.review_result.artifact_path.exists()
-    assert raised.value.review_result.artifact_path.parent == result.run_dir / "artifacts"
-    assert marker.read_bytes() == marker_before
 
 
-def test_profile_publication_failure_keeps_confirmed_review_and_marker_bytes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _run(tmp_path, completion=_Completion())
-    marker = _profile_marker(result.output_dir)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_bytes(b"authoritative-generation\n")
-    marker_before = marker.read_bytes()
-    profiles = _seed_profiles_dir(tmp_path)
-    profiles_before = _tree_snapshot(profiles)
-
-    def fail_publication(**_: object) -> object:
-        raise ProfilePublicationError("injected publication failure")
-
-    monkeypatch.setattr(workflow, "generate_local_profile_artifacts", fail_publication)
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=result,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            profiles_dir=profiles,
-        )
-    assert str(raised.value) == workflow.PROFILE_PUBLICATION_ERROR
-    assert raised.value.review_result is not None
-    assert raised.value.review_result.artifact.review.state == "confirmed"
-    assert raised.value.review_result.artifact_path.exists()
-    assert raised.value.review_result.artifact_path.parent == result.run_dir / "artifacts"
-    assert marker.read_bytes() == marker_before
 
 
 def _durable_identities(work_dir: Path) -> dict[str, WorkIdentity]:
@@ -2586,127 +2157,6 @@ def test_provider_failure_preserves_durable_prefix_without_publication(tmp_path:
     run_dir = result_root / "enrichment-runs" / "tst" / guide_key
     assert len(tuple((run_dir / "work" / "results").glob("*.json"))) == 1
     assert tuple((run_dir / "artifacts").glob("*.json")) == ()
-    assert not _profile_marker(result_root).exists()
-
-
-def test_profile_tree_is_preserved_after_explicit_cancel(tmp_path: Path) -> None:
-    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
-    profile_before = _profile_snapshot(output_dir)
-    profiles = _seed_profiles_dir(tmp_path, name="cancel-profiles")
-    profiles_before = _tree_snapshot(profiles)
-    result = _run(
-        tmp_path,
-        output_dir=output_dir,
-        completion=_Completion(),
-        guide_url=SECOND_GUIDE_URL,
-    )
-    assert result.artifact_path is not None
-    pending_path = result.artifact_path
-    assert pending_path.exists()
-    review = workflow.finalize_set_enrichment(
-        analysis=result,
-        decision=workflow.EnrichmentReviewDecision.CANCEL,
-        reviewer_id="operator",
-        reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        profiles_dir=profiles,
-    )
-
-    assert review.artifact.review.state == "cancelled"
-    assert review.publication is None
-    assert review.published_object_path is None
-    assert review.published_manifest_path is None
-    assert review.artifact_path != pending_path
-    assert pending_path.exists()
-    assert review.artifact_path.exists()
-    assert tuple((_second_work_dir(output_dir) / "results").glob("*.json"))
-    assert _profile_snapshot(output_dir) == profile_before
-    assert _tree_snapshot(profiles) == profiles_before
-
-
-def test_profile_tree_is_preserved_after_cooperative_analysis_cancellation(
-    tmp_path: Path,
-) -> None:
-    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
-    profile_before = _profile_snapshot(output_dir)
-    cancellation = {"requested": False}
-
-    def observe(event: EnrichmentProgress) -> None:
-        if event.phase is EnrichmentPhase.CARD_CAPABILITIES and event.cards_completed == 1:
-            cancellation["requested"] = True
-
-    result = _run(
-        tmp_path,
-        output_dir=output_dir,
-        completion=_Completion(),
-        observer=observe,
-        is_cancelled=lambda: cancellation["requested"],
-        guide_url=SECOND_GUIDE_URL,
-    )
-
-    assert result.run.outcome is EnrichmentOutcome.CANCELLED
-    assert result.artifact is None
-    assert tuple((_second_work_dir(output_dir) / "results").glob("*.json"))
-    assert _profile_snapshot(output_dir) == profile_before
-
-
-def test_profile_tree_is_preserved_after_keyboard_interrupt(tmp_path: Path) -> None:
-    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
-    profile_before = _profile_snapshot(output_dir)
-    with pytest.raises(KeyboardInterrupt):
-        _run(
-            tmp_path,
-            output_dir=output_dir,
-            completion=_Completion(interrupt_after=1),
-            guide_url=SECOND_GUIDE_URL,
-        )
-
-    assert tuple((_second_work_dir(output_dir) / "results").glob("*.json"))
-    assert _profile_snapshot(output_dir) == profile_before
-
-
-def test_profile_tree_is_preserved_after_provider_failure(tmp_path: Path) -> None:
-    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
-    profile_before = _profile_snapshot(output_dir)
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        _run(
-            tmp_path,
-            output_dir=output_dir,
-            completion=_Completion(fail_after=1),
-            guide_url=SECOND_GUIDE_URL,
-        )
-
-    assert str(raised.value) == workflow.ANALYSIS_ERROR
-    assert tuple((_second_work_dir(output_dir) / "results").glob("*.json"))
-    assert _profile_snapshot(output_dir) == profile_before
-
-
-def test_non_publishable_confirm_preserves_profile_tree_and_review_artifact(
-    tmp_path: Path,
-) -> None:
-    output_dir = _create_metadata_profile(tmp_path, output_dir=tmp_path / "output")
-    profile_before = _profile_snapshot(output_dir)
-    result = _run(
-        tmp_path,
-        output_dir=output_dir,
-        cards=_local_cards(),
-        completion=_Completion(guide_category="strategy", local_conflict=True),
-        guide_url=SECOND_GUIDE_URL,
-    )
-
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=result,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        )
-
-    assert str(raised.value) == workflow.NO_PUBLISHABLE_ERROR
-    assert raised.value.review_result is not None
-    review = raised.value.review_result
-    assert review.artifact.review.state == "confirmed"
-    assert review.artifact_path.exists()
-    assert _profile_snapshot(output_dir) == profile_before
 
 
 def test_review_guards_reject_an_incomplete_analysis_and_invalid_review_input(
@@ -2771,7 +2221,6 @@ def test_review_guards_reject_an_incomplete_analysis_and_invalid_review_input(
 
     assert result.artifact_path.exists()
     assert tuple(result.artifact_path.parent.glob("*.json")) == (result.artifact_path,)
-    assert not _profile_marker(result.output_dir).exists()
 
 
 def test_output_root_must_be_an_existing_directory(tmp_path: Path) -> None:
@@ -2809,53 +2258,8 @@ def test_swapped_source_symlink_is_rejected_before_finalization(tmp_path: Path) 
     assert workflow.CONTAINMENT_ERROR in str(error)
     assert error.review_result is None
     assert sentinel.read_bytes() == b"authoritative"
-    assert not _profile_marker(result.output_dir).exists()
 
 
-def test_preplanted_profile_artifact_symlink_blocks_publication_and_reports_review(
-    tmp_path: Path,
-) -> None:
-    first = _run(tmp_path, completion=_Completion())
-    profiles = _seed_profiles_dir(tmp_path)
-    workflow.finalize_set_enrichment(
-        analysis=first,
-        decision=workflow.EnrichmentReviewDecision.CONFIRM,
-        reviewer_id="operator",
-        reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        profiles_dir=profiles,
-    )
-    profile_artifacts = first.output_dir / "tst-quickdraft" / "artifacts"
-    published = next(profile_artifacts.glob("*.json.gz"))
-    external_dir = tmp_path.parent / f"{tmp_path.name}-profile-external"
-    external_dir.mkdir()
-    sentinel = external_dir / "sentinel"
-    sentinel.write_bytes(b"authoritative")
-    marker = _profile_marker(first.output_dir)
-    marker_before = marker.read_bytes()
-
-    second = _run(tmp_path, completion=_Completion())
-    published.unlink()
-    os.symlink(sentinel, published)
-
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=second,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            profiles_dir=profiles,
-        )
-
-    error = raised.value
-    assert workflow.CONTAINMENT_ERROR in str(error)
-    assert error.review_result is not None
-    assert error.review_result.artifact.review.state == "confirmed"
-    reviewed_path = error.review_result.artifact_path
-    assert reviewed_path.exists()
-    assert reviewed_path.parent.name == "artifacts"
-    assert reviewed_path.is_relative_to(second.output_dir / "enrichment-runs" / "tst")
-    assert sentinel.read_bytes() == b"authoritative"
-    assert marker.read_bytes() == marker_before
 
 
 def test_artifact_collision_with_different_bytes_fails_closed(tmp_path: Path) -> None:
@@ -2905,13 +2309,11 @@ def test_unusable_guide_freeze_destination_reports_a_workflow_error(tmp_path: Pa
 
 def test_confirming_an_already_reviewed_artifact_fails_closed(tmp_path: Path) -> None:
     result = _run(tmp_path, completion=_Completion())
-    profiles = _seed_profiles_dir(tmp_path)
     first_review = workflow.finalize_set_enrichment(
         analysis=result,
         decision=workflow.EnrichmentReviewDecision.CONFIRM,
         reviewer_id="operator",
         reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        profiles_dir=profiles,
     )
     assert first_review.artifact.review.state == "confirmed"
     confirmed_path = first_review.artifact_path
@@ -2929,7 +2331,6 @@ def test_confirming_an_already_reviewed_artifact_fails_closed(tmp_path: Path) ->
             decision=workflow.EnrichmentReviewDecision.CONFIRM,
             reviewer_id="operator",
             reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=2),
-            profiles_dir=profiles,
         )
 
     assert workflow.INCOMPLETE_ANALYSIS_ERROR in str(raised.value)
@@ -2979,55 +2380,6 @@ def test_cached_input_token_drift_is_rejected(
     assert workflow.ACCOUNTING_ERROR in str(raised.value)
 
 
-def test_real_publication_failure_preserves_the_existing_generation_marker(
-    tmp_path: Path,
-) -> None:
-    first = _run(tmp_path, output_dir=tmp_path / "output", completion=_Completion())
-    profiles = _seed_profiles_dir(tmp_path)
-    first_review = workflow.finalize_set_enrichment(
-        analysis=first,
-        decision=workflow.EnrichmentReviewDecision.CONFIRM,
-        reviewer_id="operator",
-        reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        profiles_dir=profiles,
-    )
-    assert first_review.publication is not None
-    marker = _profile_marker(first.output_dir)
-    marker_before = marker.read_bytes()
-
-    second = _run(
-        tmp_path,
-        output_dir=first.output_dir,
-        guide_url=f"{GUIDE_URL}?fresh-publication",
-        completion=_Completion(),
-    )
-    assert second.artifact_path is not None
-    assert second.artifact_path != first.artifact_path
-    profile_root = second.output_dir / "tst-quickdraft"
-    original_mode = profile_root.stat().st_mode
-    publication_error: workflow.SetEnrichmentWorkflowError | None = None
-    try:
-        profile_root.chmod(original_mode & ~0o222)
-        try:
-            workflow.finalize_set_enrichment(
-                analysis=second,
-                decision=workflow.EnrichmentReviewDecision.CONFIRM,
-                reviewer_id="operator",
-                reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-                profiles_dir=profiles,
-            )
-        except workflow.SetEnrichmentWorkflowError as error:
-            publication_error = error
-        else:
-            pytest.skip("platform permits the read-only profile-root publication")
-    finally:
-        profile_root.chmod(original_mode)
-
-    assert publication_error is not None
-    assert str(publication_error) == workflow.PROFILE_PUBLICATION_ERROR
-    assert publication_error.review_result is not None
-    assert publication_error.review_result.artifact_path.exists()
-    assert marker.read_bytes() == marker_before
 
 
 def test_completed_prefix_is_reused_after_a_failed_run(tmp_path: Path) -> None:
@@ -3058,42 +2410,33 @@ def test_completed_prefix_is_reused_after_a_failed_run(tmp_path: Path) -> None:
         (call.prompt_id, call.user_prompt) != (completed_request.prompt_id, completed_request.user_prompt)
         for call in rerun_completion.calls
     )
-    assert not _profile_marker(result_root).exists()
 
 
-def test_confirm_selection_matrix_covers_mechanic_only_relationship_only_and_uncertain(
+def test_confirm_selection_matrix_keeps_only_accepted_artifact_findings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profiles = _seed_profiles_dir(tmp_path)
-    profiles_before = _tree_snapshot(profiles)
-    # A locally rejected pair is terminal before any batch, so the confirmed review publishes
-    # nothing even though the run completed and kept its own rejection diagnostic.
+    # Confirmation persists even when no finding can be projected into scoring data.
     uncertain_guide = _run(
         tmp_path,
         output_dir=tmp_path / "uncertain-guide",
         cards=_local_cards(),
         completion=_Completion(guide_category="strategy", local_conflict=True),
     )
-    with pytest.raises(workflow.SetEnrichmentWorkflowError) as raised:
-        workflow.finalize_set_enrichment(
-            analysis=uncertain_guide,
-            decision=workflow.EnrichmentReviewDecision.CONFIRM,
-            reviewer_id="operator",
-            reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            profiles_dir=profiles,
-        )
-    assert str(raised.value) == workflow.NO_PUBLISHABLE_ERROR
-    assert raised.value.review_result is not None
-    assert raised.value.review_result.artifact.relationships == ()
+    assert uncertain_guide.artifact is not None
+    assert uncertain_guide.artifact.relationships == ()
+    uncertain_review = workflow.finalize_set_enrichment(
+        analysis=uncertain_guide,
+        decision=workflow.EnrichmentReviewDecision.CONFIRM,
+        reviewer_id="operator",
+        reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
+    )
+    assert uncertain_review.artifact.review.state == "confirmed"
+    assert uncertain_review.artifact.confirmed_relationship_ids == ()
     assert LOCAL_CONFLICT_REASON_TEMPLATE.format(field="zone") in {
-        finding.reason for finding in raised.value.review_result.artifact.rejected_findings
+        finding.reason for finding in uncertain_review.artifact.rejected_findings
     }
-    assert raised.value.review_result.artifact.review.state == "confirmed"
-    assert raised.value.review_result.artifact_path.exists()
-    assert not _profile_marker(uncertain_guide.output_dir).exists()
-    assert not (uncertain_guide.output_dir / "tst-quickdraft").exists()
-    assert _tree_snapshot(profiles) == profiles_before
+    assert uncertain_review.artifact_path.read_bytes() == uncertain_review.artifact.to_bytes()
 
     relationship_only = _run(
         tmp_path,
@@ -3105,19 +2448,19 @@ def test_confirm_selection_matrix_covers_mechanic_only_relationship_only_and_unc
         claim.category == "mechanic" and claim.review.status is FindingStatus.ACCEPTED
         for claim in relationship_only.artifact.guide_claims
     )
+    relationship_ids = tuple(
+        relationship.finding_id
+        for relationship in relationship_only.artifact.relationships
+        if relationship.review.status is FindingStatus.ACCEPTED
+    )
     relationship_review = workflow.finalize_set_enrichment(
         analysis=relationship_only,
         decision=workflow.EnrichmentReviewDecision.CONFIRM,
         reviewer_id="operator",
         reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        profiles_dir=profiles,
     )
-    assert relationship_review.publication is not None
-    assert relationship_review.artifact.confirmed_relationship_ids
-    assert all(
-        identifier.startswith("local-")
-        for identifier in relationship_review.artifact.confirmed_relationship_ids
-    )
+    assert relationship_review.artifact.confirmed_relationship_ids == relationship_ids
+    assert relationship_ids
 
     _residual_pairs(monkeypatch, residual_only=True)
     mixed = _run(
@@ -3132,12 +2475,14 @@ def test_confirm_selection_matrix_covers_mechanic_only_relationship_only_and_unc
     accepted_relationships = [
         item.relationship
         for item in mixed.run.relationship_results
-        if item.relationship is not None and item.relationship.review.status is FindingStatus.ACCEPTED
+        if item.relationship is not None
+        and item.relationship.review.status is FindingStatus.ACCEPTED
     ]
     uncertain_relationships = [
         item.relationship
         for item in mixed.run.relationship_results
-        if item.relationship is not None and item.relationship.review.status is FindingStatus.UNCERTAIN
+        if item.relationship is not None
+        and item.relationship.review.status is FindingStatus.UNCERTAIN
     ]
     assert len(accepted_relationships) == 1
     assert uncertain_relationships
@@ -3151,21 +2496,17 @@ def test_confirm_selection_matrix_covers_mechanic_only_relationship_only_and_unc
         (relationship.mechanism, relationship.participants)
         for relationship in mixed.artifact.relationships
     ) == (accepted_identity,)
-    accepted_ids = (mixed.artifact.relationships[0].finding_id,)
+    accepted_ids = tuple(
+        relationship.finding_id
+        for relationship in mixed.artifact.relationships
+        if relationship.review.status is FindingStatus.ACCEPTED
+    )
     mixed_review = workflow.finalize_set_enrichment(
         analysis=mixed,
         decision=workflow.EnrichmentReviewDecision.CONFIRM,
         reviewer_id="operator",
         reviewed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-        profiles_dir=profiles,
     )
-    assert mixed_review.publication is not None
     assert mixed_review.artifact.confirmed_relationship_ids == accepted_ids
-    assert all(identifier not in mixed_review.artifact.confirmed_relationship_ids for identifier in uncertain_ids)
-    profile_bytes = gzip.decompress(mixed_review.publication.artifact_path.read_bytes())
-    profile = SetProfile.from_json(json.loads(profile_bytes))
-    assert tuple(
-        (relationship.mechanism, relationship.participants)
-        for relationship in profile.enhancement.relationships
-    ) == (accepted_identity,)
-    assert profile.enhancement.relationships[0].prerequisite_projection is None
+    assert all(identifier not in accepted_ids for identifier in uncertain_ids)
+    assert mixed_review.artifact_path.read_bytes() == mixed_review.artifact.to_bytes()

@@ -87,11 +87,11 @@ override malformed, unsafe, incomplete, or unknown-source metadata. Applied
 assignments retain `reviewed_override` provenance. Add a correction only when a
 reusable generic rule cannot represent an exception.
 
-## Compiled set profiles and precedence
+## Standalone serialized role profiles
 
-A profile contains compiled assignments for one exact set and records all three
-versions: `profile_schema_version`, `classifier_version`, and
-`role_schema_version`. Build one from deterministic local results:
+`RoleProfile` is a serialized classifier artifact for one exact set. It records
+`profile_schema_version`, `classifier_version`, and `role_schema_version`.
+Build one from deterministic local results:
 
 ```python
 from draftomen.semantic_roles import compile_role_profile, dump_role_profile
@@ -99,6 +99,9 @@ from draftomen.semantic_roles import compile_role_profile, dump_role_profile
 profile = compile_role_profile(set_code="hbl", results=classifier.classify_many(rows))
 dump_role_profile(profile, ".draftomen/roles/HBL/profile.json")
 ```
+
+These artifacts remain standalone classifier inputs. They are not embedded in
+or consumed by SetProfile scoring.
 
 Profile keys prefer identities shared by normalized corpus rows and `CardInfo`:
 numeric Arena/group identity first, then exact set-plus-collector identity, then
@@ -110,13 +113,14 @@ normalized row can authoritatively resolve its equivalent `CardInfo`.
 `dump_role_profile()` writes through a flushed, fsynced sibling temporary file
 and atomically replaces the destination, preserving an existing artifact if
 writing fails. `RoleClassifier.resolve(card, profile=profile)` (or
-`resolve_card_roles`) uses this precedence:
+`resolve_card_roles`) uses this standalone resolution precedence:
 
 1. an exact-set profile with compatible classifier and role-schema versions is
    authoritative for the card assignment;
-2. a missing profile, wrong set, missing card entry, or incompatible version falls
-   back wholly to the local classifier plus bundled reviewed overrides;
+2. a missing profile, wrong set, missing card entry, or incompatible version
+   falls back wholly to the local classifier plus bundled reviewed overrides;
 3. assignments from incompatible sources are never merged.
+
 When a novel mechanic maps to an existing role, add only a conservative metadata
 pattern and, if needed, a recognized explicit value in `SUPPORTED_MECHANICS`.
 When it introduces a genuinely reusable concept that the vocabulary cannot
@@ -128,9 +132,9 @@ express:
    and `tests/test_semantic_roles.py`;
 4. increment `ROLE_SCHEMA_VERSION` when the serialized role contract changes,
    and increment `CLASSIFIER_VERSION` when classification semantics change;
-5. rebuild affected profiles offline with `rebuild_role_profile`, which uses
-   `load_normalized_rows`, `RoleClassifier.classify_many()`, and
-   `dump_role_profile()`:
+5. rebuild affected standalone role artifacts offline with
+   `rebuild_role_profile`, which uses `load_normalized_rows`,
+   `RoleClassifier.classify_many()`, and `dump_role_profile()`:
 
    ```bash
    python -c 'from draftomen.semantic_roles import rebuild_role_profile; rebuild_role_profile(normalized_path=".draftomen/corpus-artifacts/normalized.jsonl", set_code="hbl", output_path=".draftomen/roles/HBL/profile.json")'
@@ -138,11 +142,12 @@ express:
 
    The helper filters to the requested set and emits stable JSON; it never
    touches the live card database.
-6. inspect unknown reports and keep the generated profile's version fields
-   compatible before publishing it.
+6. inspect unknown reports and keep the generated artifact's version fields
+   compatible before distributing it.
 
-Unknown or unsafe results are omitted from compiled profiles rather than written
-as empty authoritative entries. Rebuilds coalesce duplicate stable identities
-only when their assignments are equal and fail clearly on conflicts. Raw corpus
-acquisition remains the responsibility of `draftomen.corpus`; a rebuild consumes
-its normalized JSONL output and does not modify the live card database.
+Unknown or unsafe results are omitted from standalone role artifacts rather
+than written as empty authoritative entries. Rebuilds coalesce duplicate stable
+identities only when their assignments are equal and fail clearly on conflicts.
+Raw corpus acquisition remains the responsibility of `draftomen.corpus`; a
+rebuild consumes normalized JSONL output and does not modify the live card
+database.

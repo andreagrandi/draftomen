@@ -39,7 +39,7 @@ def test_qt_translation_publishes_plain_values_without_domain_payloads() -> None
     assert values["contextual_adjustments_enabled"] is True
     assert values["contextual_evidence"]["status"] == "exact"
     assert values["contextual_evidence"]["message"] == (
-        "Contextual · semantic + QuickDraft evidence"
+        "Contextual · QuickDraft evidence"
     )
     assert "contextual_breakdown" in recommendation
     assert "contextual_evidence" in recommendation

@@ -161,6 +161,13 @@ class ProfileManifestArtifact:
             raise ProfileManifestSchemaError(f"Unsupported profile maturity {self.maturity!r}.") from error
         if maturity is ProfileMaturity.GENERIC:
             raise ProfileManifestSchemaError("Profile manifest artifacts cannot have generic maturity.")
+        if (
+            maturity is ProfileMaturity.SEMANTIC_ONLY
+            and schema_version >= 4
+        ):
+            raise ProfileManifestSchemaError(
+                "semantic-only maturity is only supported for older set-profile schemas."
+            )
         object.__setattr__(self, "maturity", maturity)
 
     @property

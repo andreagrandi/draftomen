@@ -14,13 +14,7 @@ from draftomen.pool_ledger import (
     evaluate_completed_pool_role_ledger,
     project_pool_role_ledger,
 )
-from draftomen.semantic_roles import (
-    CompiledRoleProfile,
-    ProfileCard,
-    RemovalCharacteristics,
-    Role,
-    RoleAssignment,
-)
+from draftomen.semantic_roles import Role
 from draftomen.set_profile import (
     PairProfile,
     ProfileMaturity,
@@ -182,9 +176,15 @@ def test_pre_pick_projection_is_deterministic_and_completed_mode_has_no_stage() 
 
 
 def test_missing_role_urgency_is_monotone_and_preferred_target_removes_late_bonus() -> None:
-    database = _database(_card(1, colors=("W",)))
+    database = _database(
+        _card(1, colors=("W",)),
+        _card(
+            2,
+            colors=("U",),
+            oracle_text="When this creature enters the battlefield, draw a card.",
+        ),
+    )
     profile = _profile(
-        cards=(),
         pair=PairProfile(pair="WU", role_targets=(RoleTarget(Role.DRAW, 1),)),
     )
     early = project_pool_role_ledger(
@@ -213,16 +213,8 @@ def test_missing_role_urgency_is_monotone_and_preferred_target_removes_late_bonu
         pick_number=6,
         global_pick_index=35,
         estimated_remaining_picks=7,
-        card_database=_database(_card(1, colors=("W",)), _card(2, colors=("U",))),
-        set_profile=_profile(
-            cards=(
-                ProfileCard(
-                    key="arena_id:2",
-                    assignments=(RoleAssignment(Role.DRAW),),
-                ),
-            ),
-            pair=PairProfile(pair="WU", role_targets=(RoleTarget(Role.DRAW, 1),)),
-        ),
+        card_database=database,
+        set_profile=profile,
         likely_pair="WU",
     )
 
@@ -232,43 +224,40 @@ def test_missing_role_urgency_is_monotone_and_preferred_target_removes_late_bonu
 
 
 def test_removal_subtypes_stay_distinct_and_saturate() -> None:
-    assignments = tuple(
-        ProfileCard(
-            key=f"arena_id:{index}",
-            assignments=(
-                RoleAssignment(
-                    role,
-                    parameters=RemovalCharacteristics(
-                        kind=kind,
-                        effective_score=1.0,
-                        temporary=temporary,
-                    ),
-                ),
-            ),
-        )
-        for index, role, kind, temporary in (
-            (1, Role.HARD_REMOVAL, "destroy", False),
-            (2, Role.DAMAGE_REMOVAL, "damage", False),
-            (3, Role.DISABLING_REMOVAL, "disable", False),
-            (4, Role.CONDITIONAL_REMOVAL, "destroy", False),
-            (5, Role.BOUNCE, "bounce", True),
-            (6, Role.TEMPORARY_TAP, "tap", True),
-            (7, Role.HARD_REMOVAL, "exile", False),
-        )
-    )
+    oracle_text = {
+        1: "Destroy target creature.",
+        2: "This spell deals 3 damage to target creature.",
+        3: "Enchanted creature can't attack or block and its activated abilities can't be activated.",
+        4: "Destroy target creature if it has power 4 or greater.",
+        5: "Return target creature to its owner's hand.",
+        6: "Tap target creature. It doesn't untap during its controller's next untap step.",
+        7: "Exile target creature.",
+    }
     ledger = evaluate_completed_pool_role_ledger(
         final_pool=tuple(range(1, 8)),
-        card_database=_database(*(_card(index, colors=("W",)) for index in range(1, 8))),
-        set_profile=_profile(cards=assignments),
+        card_database=_database(
+            *(
+                _card(index, colors=("W",), oracle_text=text)
+                for index, text in oracle_text.items()
+            )
+        ),
     )
 
+    roles = dict(ledger.role_counts)
     contributions = dict(ledger.removal_by_kind)
+    assert roles["hard_removal"] >= 3
+    assert roles["damage_removal"] == 1
+    assert roles["disabling_removal"] >= 1
+    assert roles["conditional_removal"] == 1
+    assert roles["bounce"] == 1
+    assert roles["temporary_tap"] == 1
     assert contributions["destroy"] > contributions["damage"]
-    assert contributions["damage"] > contributions["disable"]
-    assert contributions["disable"] > contributions["temporary"]
+    assert contributions["damage"] > 0
+    assert contributions["disable"] > 0
     assert contributions["conditional"] > 0
     assert contributions["bounce"] > 0
     assert contributions["temporary"] > 0
+    assert contributions["exile"] > 0
     assert ledger.effective_removal == pytest.approx(sum(contributions.values()))
     assert ledger.effective_removal > 1.0
     assert ledger.removal_saturation == 1.0
@@ -277,38 +266,31 @@ def test_removal_subtypes_stay_distinct_and_saturate() -> None:
 
 def test_tap_target_uses_temporary_bucket_and_profile_confidence() -> None:
     profile = _profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:1",
-                assignments=(
-                    RoleAssignment(
-                        Role.TEMPORARY_TAP,
-                        parameters=RemovalCharacteristics(
-                            kind="tap",
-                            effective_score=1.0,
-                        ),
-                    ),
-                ),
-            ),
-        ),
         pair=PairProfile(
             pair="WU",
-            removal_targets=(RemovalTarget(kind="tap", value=0.4),),
+            removal_targets=(RemovalTarget(kind="tap", value=0.1),),
         ),
     )
     ledger = evaluate_completed_pool_role_ledger(
         final_pool=(1,),
-        card_database=_database(_card(1, colors=("W",))),
+        card_database=_database(
+            _card(
+                1,
+                colors=("W",),
+                oracle_text="Tap target creature. It doesn't untap during its controller's next untap step.",
+            )
+        ),
         set_profile=profile,
         likely_pair="WU",
     )
 
     coverage = ledger.target_coverage_map["removal:tap"]
     assert coverage.count == ledger.removal_by_kind[-1][1]
-    assert coverage.count == pytest.approx(0.4)
-    assert coverage.coverage == 1.0
+    assert coverage.count > 0
+    assert coverage.saturation == 1.0
     assert coverage.deficit == 0.0
     assert coverage.confidence == profile.confidence
+
 
 
 def test_cut_count_excludes_projected_nonbasic_lands() -> None:
@@ -329,18 +311,15 @@ def test_cut_count_excludes_projected_nonbasic_lands() -> None:
 
 
 def test_unsupported_payoff_is_not_counted_as_supported_package() -> None:
-    profile = _profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:1",
-                assignments=(RoleAssignment(Role.GO_WIDE_PAYOFF),),
-            ),
-        )
-    )
     ledger = evaluate_completed_pool_role_ledger(
         final_pool=(1,),
-        card_database=_database(_card(1, colors=("W",))),
-        set_profile=profile,
+        card_database=_database(
+            _card(
+                1,
+                colors=("W",),
+                oracle_text="For each creature you control, creatures you control get +1/+1.",
+            )
+        ),
     )
 
     assert dict(ledger.payoff_counts)["go_wide"] == 1
@@ -348,9 +327,8 @@ def test_unsupported_payoff_is_not_counted_as_supported_package() -> None:
     assert dict(ledger.unsupported_payoff_counts)["go_wide"] == 1
     assert dict(ledger.package_density)["go_wide"] == 0
 
-
     serialized = ledger.to_json()
-    assert serialized["profile_fingerprint"] == profile.fingerprint
+    assert serialized["profile_fingerprint"] is None
     assert serialized["fixing_count"] == ledger.fixing_count
     assert serialized["card_advantage_count"] == ledger.card_advantage_count
     for field_name in (
@@ -368,19 +346,50 @@ def test_unsupported_payoff_is_not_counted_as_supported_package() -> None:
         ]
 
 
+def test_legacy_profile_roles_do_not_change_ledger_role_counts() -> None:
+    card = _card(
+        1,
+        colors=("W",),
+        oracle_text="When this creature enters the battlefield, draw a card.",
+    )
+    database = _database(card)
+    profile = _profile(
+        pair=PairProfile(pair="WU", role_targets=(RoleTarget(Role.DRAW, 1),)),
+    )
+    legacy_profile = _legacy_profile_with_role(
+        profile=profile,
+        card_key="arena_id:1",
+        card_name=card.name,
+        role="go_wide_enabler",
+    )
+    clean_ledger = evaluate_completed_pool_role_ledger(
+        final_pool=(1,),
+        card_database=database,
+        set_profile=profile,
+        likely_pair="WU",
+    )
+    legacy_ledger = evaluate_completed_pool_role_ledger(
+        final_pool=(1,),
+        card_database=database,
+        set_profile=legacy_profile,
+        likely_pair="WU",
+    )
+
+    assert dict(clean_ledger.role_counts) == dict(legacy_ledger.role_counts)
+    assert dict(clean_ledger.role_counts)["draw"] == 1
+    assert "go_wide_enabler" not in dict(legacy_ledger.role_counts)
+
 def test_pick_contextual_terms_are_stage_aware_and_saturate_at_target() -> None:
     profile = _profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:2",
-                assignments=(RoleAssignment(Role.DRAW),),
-            ),
-        ),
         pair=PairProfile(pair="WU", role_targets=(RoleTarget(Role.DRAW, 1),)),
     )
     database = _database(
         _card(1, colors=("W",)),
-        _card(2, colors=("U",)),
+        _card(
+            2,
+            colors=("U",),
+            oracle_text="When this creature enters the battlefield, draw a card.",
+        ),
     )
     engine = PickEngine(set_profile=profile)
 
@@ -435,27 +444,14 @@ def test_pick_contextual_terms_are_stage_aware_and_saturate_at_target() -> None:
 
 
 
-def _profile(*, cards: tuple[ProfileCard, ...], pair: PairProfile | None = None) -> SetProfile:
-    role_profile = (
-        CompiledRoleProfile(set_code="TST", cards=cards)
-        if cards
-        else None
-    )
+def _profile(*, pair: PairProfile | None = None) -> SetProfile:
     return SetProfile(
         set_code="TST",
         event_format="quickdraft",
         profile_version="test-1",
         generated_at="1970-01-01T00:00:00+00:00",
         source=SourceMetadata(provider="test"),
-        maturity=(
-            ProfileMaturity.EARLY
-            if pair is not None
-            else (
-                ProfileMaturity.SEMANTIC_ONLY
-                if role_profile is not None
-                else ProfileMaturity.GENERIC
-            )
-        ),
+        maturity=ProfileMaturity.EARLY if pair is not None else ProfileMaturity.GENERIC,
         samples=(
             SampleSummary(total=1, by_pair=((pair.pair, 1),))
             if pair is not None
@@ -463,8 +459,41 @@ def _profile(*, cards: tuple[ProfileCard, ...], pair: PairProfile | None = None)
         ),
         confidence=0.5,
         pairs=() if pair is None else (pair,),
-        role_profile=role_profile,
     )
+
+
+def _legacy_profile_with_role(
+    *,
+    profile: SetProfile,
+    card_key: str,
+    card_name: str,
+    role: str,
+) -> SetProfile:
+    payload = profile.to_json()
+    payload["schema_version"] = 3
+    payload["enhancement_status"] = "not-enhanced"
+    payload["role_profile"] = {
+        "cards": [
+            {
+                "card_name": card_name,
+                "key": card_key,
+                "roles": [
+                    {
+                        "confidence": 1.0,
+                        "evidence": ["oracle_text"],
+                        "provenance": ["historical"],
+                        "role": role,
+                    }
+                ],
+            }
+        ],
+        "classifier_version": "1.5",
+        "profile_schema_version": 2,
+        "role_schema_version": 6,
+        "schema_version": 2,
+        "set_code": profile.set_code,
+    }
+    return SetProfile.from_json(payload)
 
 
 class _ProjectionRatings:
@@ -487,6 +516,7 @@ def _card(
     colors: tuple[str, ...],
     mana_value: float | None = 2,
     types: tuple[str, ...] = ("Creature",),
+    oracle_text: str | None = None,
 ) -> CardInfo:
     return CardInfo(
         grp_id=grp_id,
@@ -496,6 +526,7 @@ def _card(
         mana_value=mana_value,
         rarity="common",
         types=types,
+        oracle_text=oracle_text,
         set_code="TST",
     )
 

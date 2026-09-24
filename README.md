@@ -100,11 +100,10 @@ coalesce, and `watch --plain` has no command UI.
 
 ### Terminal interface
 
-For a terminal workflow, use the stable `draftomen-tui` command. It preserves
-the watch, replay, build, backtest, benchmark, data-refresh,
-`export-set-data`, local `generate-profile`, `refresh-profile`,
-`list-enrichment`, `republish-enrichment`, and interactive `enrich-set`
-subcommands:
+For a terminal workflow, use the stable `draftomen-tui` command. It provides
+watch, replay, build, backtest, benchmark, data-refresh, `export-set-data`,
+local `generate-profile`, `refresh-profile`, `list-enrichment`, and interactive
+`enrich-set` commands:
 
 ```bash
 draftomen-tui
@@ -125,28 +124,12 @@ card-database, and output paths. The producer and cache workflow, including
 remote manifest fields, validation, refresh, recovery, and explicit provider
 ingestion, is documented in [set profiles](docs/set-profiles.md).
 
-A confirmed enrichment run can be fed back into staged generation without
-repeating any analysis or making a model request: pass
-`--enrichment "$RUN/artifacts/<sha256>.json"` with `--stage early` and a pinned
-ratings file to generate one schema-3 profile that carries the confirmed
-enhancement and compiled roles. Generation also recovers eligible typed
-relationship projections from the artifact's retained capability facts.
-It preserves the saved artifact and leaves unsupported relationships intact.
-See [saved confirmed enrichment](docs/set-profiles.md#saved-confirmed-enrichment)
-for the offline command and validation requirements.
-
-To enrich one set from a published draft guide, use the interactive
-`enrich-set` command. It freezes the given guide URL and the pinned card data
-under the selected output directory, streams per-phase progress with running
-token and cost accounting, prints a review of accepted, uncertain, rejected,
-and failed findings with source, model, prompt, and path provenance, and
-publishes the metadata-only QuickDraft profile only for an explicit `Confirm`
-at the prompt. A confirmed publication writes the content-addressed object to
-`website/public/profiles/objects/<gzip_sha256>.json.gz` under the current
-directory and merges its entry into `website/public/profiles/manifest.json`,
-installing the object before the manifest so the manifest stays authoritative.
-Every other input, including an empty line, cancels, publishes nothing, and
-keeps the resumable work for a later run:
+To review semantic enrichment for a set, run `enrich-set`. It freezes the guide
+and pinned card data under the selected output directory and streams analysis
+progress and findings for review. An explicit `Confirm` saves a standalone
+enrichment artifact. It does not compile the artifact into a SetProfile or
+publish a SetProfile object or manifest. Other responses cancel and retain the
+resumable work:
 
 ```bash
 draftomen-tui enrich-set LCI \
@@ -154,29 +137,11 @@ draftomen-tui enrich-set LCI \
   --output-dir "$HOME/.draftomen/set-enrichment"
 ```
 
-Use `republish-enrichment` to recover work that is already paid for: it
-recompiles and publishes a profile from a saved confirmed artifact without
-freezing a guide and without any model call, selecting the newest confirmed
-artifact for the set unless `--artifact` pins an exact SHA-256 or `--run`
-restricts the search to one run directory. It takes the same explicit `--stage`
-and `--ratings-file`/`--source-manifest`/`--draft-source-name` inputs as
-`generate-profile`, so a role-bearing recovery publishes a profile the runtime
-gate accepts while the default metadata recovery stays metadata-only.
-Publication also records the source artifact SHA-256, run identity, and review
-timestamp per set and format in
-`website/public/profiles/enrichment-publications.json`, which survives every
-website data refresh and protects the entry from a later plain regeneration, and
-an interrupted publication cannot lose that protection: the record keeps the
-selected publication's entry until the replacement's manifest entry is durable.
-See [saved confirmed enrichment](docs/set-profiles.md#saved-confirmed-enrichment)
-for the command and the run layout it reads.
-
-Use `list-enrichment` to see what enrichment work is on disk before recovering
-it. It reports every run and saved artifact with its set, run identity, created
-and reviewed timestamps, review state, relationship and confirmed counts, and
-artifact SHA-256, plus the profiles each artifact was published as, marking an
-identity `orphaned` when the manifest no longer selects the published object. It
-reads local files only and makes no network request and no model call:
+Use `list-enrichment` to inspect local runs and saved artifacts. It also reads
+retained historical profile-publication records, so older enrichment
+publications remain visible without implying that the current review workflow
+publishes SetProfiles. It reads local files only and makes no network request
+or model call:
 
 ```bash
 draftomen-tui list-enrichment --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft"

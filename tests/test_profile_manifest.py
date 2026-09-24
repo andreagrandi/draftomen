@@ -28,6 +28,7 @@ def _artifact(
     *,
     url: str | None = None,
     schema_version: int = SET_PROFILE_SCHEMA_VERSION,
+    maturity: ProfileMaturity | str = ProfileMaturity.EARLY,
 ) -> ProfileManifestArtifact:
     return ProfileManifestArtifact(
         set_code=set_code,
@@ -44,7 +45,7 @@ def _artifact(
         profile_bytes=100,
         gzip_sha256="a" * 64,
         profile_sha256="b" * 64,
-        maturity=ProfileMaturity.EARLY,
+        maturity=maturity,
     )
 
 
@@ -68,10 +69,41 @@ def test_manifest_round_trip_is_canonical_and_sorted(tmp_path: Path) -> None:
 
 
 def test_manifest_accepts_each_supported_set_profile_schema_version() -> None:
-    for schema_version in (1, 2, 3):
+    for schema_version in (1, 2, 3, 4):
         artifact = _artifact("TST", "QuickDraft", schema_version=schema_version)
         restored = ProfileManifestArtifact.from_json(artifact.to_json())
         assert restored.set_profile_schema_version == schema_version
+        assert restored.maturity is ProfileMaturity.EARLY
+
+
+@pytest.mark.parametrize("schema_version", (1, 2, 3))
+def test_manifest_keeps_historical_semantic_only_maturity(schema_version: int) -> None:
+    artifact = _artifact(
+        "TST",
+        "QuickDraft",
+        schema_version=schema_version,
+        maturity=ProfileMaturity.SEMANTIC_ONLY,
+    )
+
+    manifest = ProfileManifest(artifacts=(artifact,), published_at=PUBLISHED_AT)
+    restored = ProfileManifest.from_bytes(manifest.to_bytes()).artifacts[0]
+
+    assert restored.set_profile_schema_version == schema_version
+    assert restored.maturity is ProfileMaturity.SEMANTIC_ONLY
+
+
+def test_schema_four_manifest_rejects_semantic_only_maturity() -> None:
+    artifact = _artifact("TST", "QuickDraft", schema_version=4).to_json()
+    artifact["maturity"] = ProfileMaturity.SEMANTIC_ONLY.value
+    manifest = {
+        "artifacts": [artifact],
+        "published_at": PUBLISHED_AT,
+        "schema_version": PROFILE_MANIFEST_SCHEMA_VERSION,
+    }
+
+    with pytest.raises(ProfileManifestSchemaError, match="semantic-only maturity"):
+        ProfileManifest.from_json(manifest)
+
 
 def test_selection_requires_exact_normalized_set_and_format() -> None:
     artifact = _artifact("TST", "QuickDraft")

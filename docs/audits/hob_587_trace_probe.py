@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Offline trace probe for issue #587 (AC5/AC6).
+"""ARCHIVED HISTORICAL PROBE: targets the retired pre-#663 schema-3 profile compiler. This script is not runnable against current code and is not evidence of current runtime behavior.
+
+The command below is preserved only as a historical capture record. Do not use it to verify current behavior.
 
 Read-only.  Enforces network denial inside the process, imports no provider
 client, and writes no audited input.  It traces saved paid-run evidence through
 the real compiler, the generated profile representation, pool support, and the
 offscreen QML explanation.
 
-Checked-in audit utility; run from the repository root:
+Historical reproduction command from the capture (not runnable against current code):
 
     QT_QPA_PLATFORM=offscreen uv run --no-sync python \
         docs/audits/hob_587_trace_probe.py --out /tmp/hob-587-trace-out.json

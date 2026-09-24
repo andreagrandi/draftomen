@@ -51,7 +51,6 @@ from draftomen.profile_client import (
 from draftomen.profile_publication import (
     ProfilePublicationError,
     generate_local_profile_artifacts,
-    publish_profile_publication,
 )
 from draftomen.profile_data_refresh import (
     execute_profile_data_refresh,
@@ -81,7 +80,6 @@ from draftomen.enrichment_inventory import (
     EnrichmentPublicationState,
     inventory_enrichment_runs,
     published_enrichment_states,
-    select_confirmed_artifact,
 )
 from draftomen.enrichment_publications import EnrichmentPublicationError
 from draftomen.events import DraftLogParseError
@@ -127,7 +125,6 @@ from draftomen.set_enrichment import (
 from draftomen.set_enrichment_workflow import (
     EnrichmentReviewDecision,
     INCOMPLETE_ANALYSIS_ERROR,
-    PROFILE_PUBLICATION_ERROR,
     SetEnrichmentWorkflowError,
     SetEnrichmentWorkflowResult,
     analyze_set_enrichment,
@@ -865,12 +862,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional source name to select from --source-manifest.",
     )
     profile_parser.add_argument(
-        "--enrichment",
-        type=Path,
-        default=None,
-        help="Confirmed enrichment artifact at <run>/artifacts/<sha256>.json; uses the run's frozen guide.",
-    )
-    profile_parser.add_argument(
         "--profile-version",
         default="1.0",
         help="Profile schema version to embed (default: 1.0).",
@@ -1006,11 +997,10 @@ def build_parser() -> argparse.ArgumentParser:
     batch_parser.set_defaults(handler=handle_generate_profile_refresh_batch)
     enrich_set_parser = subparsers.add_parser(
         name="enrich-set",
-        help="Interactively enrich one set profile from a draft guide.",
+        help="Interactively review standalone semantic enrichment for one set.",
         description=(
-            "Freeze one draft guide, analyze a set against it, review the results, and "
-            "publish the confirmed enrichment as a QuickDraft profile under the current "
-            "directory's website/public/profiles tree."
+            "Freeze one draft guide, analyze a set against it, and save a reviewed "
+            "standalone semantic enrichment artifact."
         ),
     )
     enrich_set_parser.add_argument("set", metavar="SET", help="Exact set code (case-insensitive).")
@@ -1025,97 +1015,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Caller-selected set-enrichment output directory.",
     )
     enrich_set_parser.set_defaults(handler=handle_enrich_set)
-    republish_parser = subparsers.add_parser(
-        name="republish-enrichment",
-        help="Re-publish a profile from a saved confirmed enrichment artifact.",
-        description=(
-            "Recompile and publish one profile from a confirmed enrichment artifact "
-            "already on disk, without freezing a guide and without any model call."
-        ),
-    )
-    republish_parser.add_argument(
-        "set", metavar="SET", help="Exact set code (case-insensitive)."
-    )
-    republish_parser.add_argument(
-        "--format",
-        default="QuickDraft",
-        help="Profile format to publish (default: QuickDraft).",
-    )
-    republish_parser.add_argument(
-        "--stage",
-        default="metadata",
-        choices=("metadata", "early", "mature"),
-        help=(
-            "Explicit generation stage for the recovered profile. The default "
-            "metadata produces a metadata-only profile, which the runtime "
-            "AI-enhanced suggestions gate does not accept; a role-bearing "
-            "early or mature profile needs its empirical inputs."
-        ),
-    )
-    republish_parser.add_argument(
-        "--ratings-file",
-        type=Path,
-        default=None,
-        help="Optional local 17Lands ratings JSON cache for the requested set and format.",
-    )
-    republish_parser.add_argument(
-        "--source-manifest",
-        type=Path,
-        default=None,
-        help="Optional manifest selecting a pinned local draft-data source.",
-    )
-    republish_parser.add_argument(
-        "--draft-source-name",
-        default=None,
-        help="Optional source name to select from --source-manifest.",
-    )
-    republish_parser.add_argument(
-        "--artifact",
-        default=None,
-        help="Exact confirmed artifact SHA-256 to re-publish.",
-    )
-    republish_parser.add_argument(
-        "--run",
-        dest="run_id",
-        default=None,
-        help="Restrict selection to one run identity.",
-    )
-    republish_parser.add_argument(
-        "--store-dir",
-        type=Path,
-        default=None,
-        help="Set-enrichment store (default: the app data directory's set-enrichment).",
-    )
-    republish_parser.add_argument(
-        "--profiles-dir",
-        type=Path,
-        default=Path("website/public/profiles"),
-        help="Published profiles tree to update.",
-    )
-    republish_parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        help="Local artifact directory (default: <store-dir>/<set>-<format>).",
-    )
-    republish_parser.add_argument(
-        "--generated-at",
-        type=_parse_generated_at,
-        default=None,
-        help="Override the profile timestamp (default: the current UTC time).",
-    )
-    republish_parser.add_argument(
-        "--profile-version",
-        default="1.0",
-        help="Profile schema version to embed (default: 1.0).",
-    )
-    republish_parser.set_defaults(handler=handle_republish_enrichment)
     list_parser = subparsers.add_parser(
         name="list-enrichment",
-        help="List local enrichment runs, artifacts, and their publication state.",
+        help="List local enrichment runs, artifacts, and their historical publication state.",
         description=(
             "Report every local enrichment run and saved artifact with its review state, "
-            "counts, and the profiles it was published as, using local files only."
+            "counts, and historical profile publication records, using local files only."
         ),
     )
     list_parser.add_argument(
@@ -1193,7 +1098,6 @@ def handle_generate_profile(args: argparse.Namespace) -> int:
             ratings_path=args.ratings_file,
             source_manifest_path=args.source_manifest,
             draft_source_name=args.draft_source_name,
-            enrichment_path=args.enrichment,
             profile_version=args.profile_version,
         )
     except ProfilePublicationError as error:
@@ -2359,8 +2263,8 @@ def _prompt_enrichment_decision() -> EnrichmentReviewDecision:
 
 
 def handle_enrich_set(args: argparse.Namespace) -> int:
-    """Handle interactive set enrichment and its review boundary.
-    The UI adapter delegates source, work, accounting, and publication to the workflow.
+    """Handle interactive set enrichment and its standalone review boundary.
+    The UI adapter delegates source, work, accounting, and artifact persistence to the workflow.
     """
 
     try:
@@ -2402,116 +2306,22 @@ def handle_enrich_set(args: argparse.Namespace) -> int:
             reviewed_at=datetime.now(tz=UTC),
         )
     except SetEnrichmentWorkflowError as error:
-        if (
-            decision is EnrichmentReviewDecision.CONFIRM
-            and error.review_result is not None
-        ):
-            print("decision=Confirm")
-            print(f"enrichment_artifact={error.review_result.artifact_path}")
-            print("profile=not-published")
         print(f"enrich-set failed: {error}", file=sys.stderr)
         return 1
 
-    if decision is EnrichmentReviewDecision.CANCEL:
-        print("decision=Cancel")
-        print(f"enrichment_artifact={review.artifact_path}")
-        print("profile=not-published")
-        return 0
-
-    if (
-        review.publication is None
-        or review.published_object_path is None
-        or review.published_manifest_path is None
-    ):
-        print("decision=Confirm")
-        print(f"enrichment_artifact={review.artifact_path}")
-        print("profile=not-published")
-        print(f"enrich-set failed: {PROFILE_PUBLICATION_ERROR}", file=sys.stderr)
-        return 1
-
-    publication = review.publication
-    print("decision=Confirm")
+    label = "Confirm" if decision is EnrichmentReviewDecision.CONFIRM else "Cancel"
+    print(f"decision={label}")
     print(f"enrichment_artifact={review.artifact_path}")
-    print(f"published_profile_object={review.published_object_path}")
-    print(f"profile_sha256={publication.generation.report.profile_sha256}")
-    print(f"gzip_sha256={publication.generation.report.gzip_sha256}")
-    print(f"profile_manifest={review.published_manifest_path}")
     return 0
 
 
-def handle_republish_enrichment(args: argparse.Namespace) -> int:
-    """Re-publish one profile from a saved confirmed enrichment artifact.
-    No guide is frozen and no model provider is contacted; the stage and every empirical input are explicit.
-    """
-
-    store_dir = args.store_dir or (app_data_dir() / "set-enrichment")
-    try:
-        summary = select_confirmed_artifact(
-            store_dir=store_dir,
-            set_code=args.set,
-            artifact_sha256=args.artifact,
-            run_id=args.run_id,
-        )
-        card_database_path = summary.path.parent.parent / "sources" / "card-database.json"
-        if not card_database_path.is_file():
-            raise EnrichmentInventoryError(
-                "The selected enrichment run is missing its frozen card data."
-            )
-        generated_at = args.generated_at or datetime.now(UTC)
-        output_dir = args.output_dir or (
-            Path(store_dir) / f"{summary.set_code}-{args.format.casefold()}"
-        )
-        publication = generate_local_profile_artifacts(
-            set_code=summary.set_code,
-            event_format=args.format,
-            stage=args.stage,
-            generated_at=generated_at,
-            card_database_path=card_database_path,
-            output_dir=output_dir,
-            ratings_path=args.ratings_file,
-            source_manifest_path=args.source_manifest,
-            draft_source_name=args.draft_source_name,
-            enrichment_path=summary.path,
-            profile_version=args.profile_version,
-        )
-        installed = publish_profile_publication(
-            publication=publication,
-            profiles_dir=args.profiles_dir,
-            published_at=generated_at,
-            run_id=summary.run_id,
-        )
-    except (
-        EnrichmentInventoryError,
-        EnrichmentPublicationError,
-        ProfilePublicationError,
-        OSError,
-        TypeError,
-        ValueError,
-    ) as error:
-        print(f"republish-enrichment failed: {error}", file=sys.stderr)
-        return 1
-
-    published_record = installed.publications_path
-    print(f"set_code={summary.set_code}")
-    print(f"format={publication.generation.profile.event_format}")
-    print(f"artifact={summary.path}")
-    print(f"artifact_sha256={summary.sha256}")
-    print(f"run_id={summary.run_id}")
-    print(f"maturity={publication.generation.profile.maturity.value}")
-    print(f"gzip_sha256={publication.generation.report.gzip_sha256}")
-    print(f"object={installed.object_path}")
-    print(f"manifest={installed.manifest_path}")
-    print(f"manifest_changed={installed.manifest_changed}")
-    print(
-        f"publications={'not-recorded' if published_record is None else published_record}"
-    )
-    return 0
 
 
 def handle_list_enrichment(args: argparse.Namespace) -> int:
-    """Report local enrichment runs, their artifacts, and publication state.
+    """Report local enrichment runs, artifacts, and historical publication state.
     The --set filter selects one set code for both the printed runs and the counts.
     """
+
 
     store_dir = args.store_dir or (app_data_dir() / "set-enrichment")
     try:
@@ -2547,14 +2357,14 @@ def handle_list_enrichment(args: argparse.Namespace) -> int:
                 f" state={artifact.review_state}"
                 f" relationships={artifact.relationship_count}"
                 f" confirmed={artifact.confirmed_relationship_count}"
-                f" published={_published_state_entries(states=states, artifact=artifact)}"
+                f" historical_publications={_published_state_entries(states=states, artifact=artifact)}"
             )
 
     artifacts = tuple(artifact for run in runs for artifact in run.artifacts)
     print(
         f"list-enrichment: runs={len(runs)} artifacts={len(artifacts)}"
         f" confirmed={sum(1 for artifact in artifacts if artifact.review_state == 'confirmed')}"
-        f" published={len(states)} orphaned={sum(1 for state in states if not state.referenced)}"
+        f" historical_publications={len(states)} orphaned={sum(1 for state in states if not state.referenced)}"
     )
     return 0
 
@@ -2564,7 +2374,7 @@ def _published_state_entries(
     states: tuple[EnrichmentPublicationState, ...],
     artifact: EnrichmentArtifactSummary,
 ) -> str:
-    """Return the publication states naming one saved artifact as a comma-joined list."""
+    """Return historical publication records naming an artifact as a comma-joined list."""
 
     entries = [
         f"{state.set_code}/{state.event_format}:"

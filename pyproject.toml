@@ -109,7 +109,6 @@ files = [
     "draftomen/profile_batch_generation.py",
     "draftomen/profile_condition_projection.py",
     "draftomen/profile_data_refresh.py",
-    "draftomen/profile_enhancement.py",
     "draftomen/profile_manifest.py",
     "draftomen/profile_publication.py",
     "draftomen/profile_relationship_projection.py",

@@ -27,12 +27,7 @@ from draftomen.pool_ledger import (
     PoolRoleLedger,
     evaluate_completed_pool_role_ledger,
 )
-from draftomen.semantic_roles import (
-    CompiledRoleProfile,
-    Role,
-    RoleAssignment,
-    resolve_card_roles,
-)
+from draftomen.semantic_roles import Role, RoleAssignment, resolve_card_roles
 from draftomen.set_profile import PairProfile, ProfileMaturity, SetProfile
 from draftomen.seventeen import (
     SEVENTEEN_LANDS_ATTRIBUTION,
@@ -268,7 +263,6 @@ class _ConstraintPlan:
 _PROFILE_MATURITY_WEIGHTS = {
     ProfileMaturity.MATURE: 1.0,
     ProfileMaturity.EARLY: 0.65,
-    ProfileMaturity.SEMANTIC_ONLY: 0.8,
     ProfileMaturity.METADATA_ONLY: 0.35,
     ProfileMaturity.GENERIC: 0.0,
 }
@@ -2194,7 +2188,6 @@ def _build_optimizer_context(
     if influence <= 0.0:
         return _OptimizerContext(pair=pair)
     pair_profile = set_profile.pair(pair)
-    role_profile = set_profile.role_profile
     pair_sample_count = None if set_profile.samples is None else set_profile.samples.count_for(pair)
     synergy_values: dict[tuple[str, str], float] = {}
     scarcity_values: dict[str, float] = {}
@@ -2221,7 +2214,6 @@ def _build_optimizer_context(
         _optimizer_card_evidence(
             card=card,
             pair=pair,
-            role_profile=role_profile,
             scarcity_lookup=scarcity_lookup,
         )
         for card in candidates
@@ -2259,16 +2251,11 @@ def _optimizer_card_evidence(
     *,
     card: ScoredCard,
     pair: str,
-    role_profile: CompiledRoleProfile | None,
     scarcity_lookup: Mapping[str, float],
 ) -> _OptimizerCardEvidence:
     card_keys = _optimizer_card_keys(card=card.card)
-    assignments: tuple[RoleAssignment, ...] = ()
-    if role_profile is not None and role_profile.is_compatible():
-        resolution = resolve_card_roles(card.card, profile=role_profile)
-        if resolution.source == "compiled_profile":
-            assignments = resolution.assignments
-
+    resolution = resolve_card_roles(card.card, profile=None)
+    assignments = resolution.assignments
     role_values_counter: Counter[str] = Counter()
     removal_values_counter: Counter[str] = Counter()
     for assignment in assignments:
@@ -2402,7 +2389,6 @@ def _optimizer_aggregate_for_cards(
             evidence = _optimizer_card_evidence(
                 card=card,
                 pair=context.pair,
-                role_profile=None,
                 scarcity_lookup=context.scarcity_lookup,
             )
         aggregate = _optimizer_add_card(

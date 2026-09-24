@@ -1,8 +1,7 @@
 """Versioned local set-profile data and safe loading boundary.
 
-Profiles are intentionally independent from the card, ratings, and 17Lands
-cache schemas.  They can carry only the evidence that is available while
-keeping semantic roles usable when empirical sections are absent.
+Profiles are independent from card, ratings, and 17Lands cache schemas.
+They carry empirical profile evidence available for a set and format.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -22,35 +20,16 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 from draftomen.config import COLOR_PAIRS
 from draftomen.paths import app_data_dir
-from draftomen.semantic_condition_records import ConditionMap, validate_condition_map_pins
-from draftomen.semantic_enrichment import SEMANTIC_ENRICHMENT_SCHEMA_VERSION
-from draftomen.semantic_enrichment_records import (
-    ArtifactReview,
-    CardSourcePin,
-    FindingStatus,
-    GuideClaim,
-    GuideSourcePin,
-    ModelRun,
-    SemanticEnrichmentError,
-)
-from draftomen.semantic_relationship_records import CardRelationship, validate_relationship_pins
-from draftomen.semantic_roles import (
-    CompiledRoleProfile,
-    ProfileCard,
-    Role,
-    RoleClassifier,
-    RoleProfileError,
-    RoleSchemaError,
-    ResolutionResult,
-)
+from draftomen.semantic_roles import Role
 
 if TYPE_CHECKING:
     from draftomen.carddb import CardInfo
 
-SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS = (1, 2, 3)
-SET_PROFILE_SCHEMA_VERSION = 3
+SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS = (1, 2, 3, 4)
+SET_PROFILE_SCHEMA_VERSION = 4
 SET_PROFILE_DIRECTORY_NAME = "set-profiles"
 GENERIC_PROFILE_GENERATED_AT = "1970-01-01T00:00:00+00:00"
+_RETIRED_SEMANTIC_KEYS = frozenset({"role_profile", "enhancement", "enhancement_status"})
 
 PathInput: TypeAlias = str | os.PathLike[str]
 
@@ -780,236 +759,6 @@ class PairProfile:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class EnhancementCardData:
-    """Identify the card data reviewed model-assisted enhancement was built from."""
-
-    source: str
-    sha256: str
-    card_count: int
-
-    def __post_init__(self) -> None:
-        source = _non_empty_string(self.source, "enhancement.card_data.source").casefold()
-        if "/" in source or "\\" in source:
-            raise SetProfileSchemaError("enhancement.card_data.source cannot contain path separators.")
-        object.__setattr__(self, "source", source)
-        object.__setattr__(self, "sha256", _sha256(self.sha256, "enhancement.card_data.sha256"))
-        card_count = _non_negative_int(self.card_count, "enhancement.card_data.card_count")
-        if card_count <= 0:
-            raise SetProfileSchemaError("enhancement.card_data.card_count must be a positive integer.")
-        object.__setattr__(self, "card_count", card_count)
-
-    def to_json(self) -> dict[str, object]:
-        return {"source": self.source, "sha256": self.sha256, "card_count": self.card_count}
-
-    @classmethod
-    def from_json(cls, value: Mapping[str, Any]) -> EnhancementCardData:
-        _object(value, "enhancement.card_data")
-        return cls(
-            source=_required_string(value, "source", "enhancement.card_data.source"),
-            sha256=_required_string(value, "sha256", "enhancement.card_data.sha256"),
-            card_count=_required_int(value, "card_count", "enhancement.card_data.card_count"),
-        )
-
-
-class EnhancementStatus(str, Enum):
-    """Stated availability of reviewed model-assisted set enhancement."""
-
-    ENHANCED = "enhanced"
-    NOT_ENHANCED = "not-enhanced"
-
-
-@dataclass(frozen=True, slots=True)
-class SetProfileEnhancement:
-    """Confirmed semantic enhancement content carried by a schema-three profile."""
-
-    artifact_schema_version: int
-    artifact_sha256: str
-    set_code: str
-    set_source_id: str
-    set_source_sha256: str
-    created_at: str
-    card_data: EnhancementCardData
-    cards: tuple[CardSourcePin, ...]
-    guides: tuple[GuideSourcePin, ...]
-    runs: tuple[ModelRun, ...]
-    mechanics: tuple[GuideClaim, ...]
-    relationships: tuple[CardRelationship, ...]
-    review: ArtifactReview
-    confidence: float
-    condition_map: ConditionMap | None = None
-
-    def __post_init__(self) -> None:
-        if (
-            isinstance(self.artifact_schema_version, bool)
-            or not isinstance(self.artifact_schema_version, int)
-            or self.artifact_schema_version != SEMANTIC_ENRICHMENT_SCHEMA_VERSION
-        ):
-            raise SetProfileSchemaError(
-                f"Unsupported semantic enrichment schema {self.artifact_schema_version!r}; "
-                f"expected {SEMANTIC_ENRICHMENT_SCHEMA_VERSION}."
-            )
-        object.__setattr__(self, "artifact_schema_version", self.artifact_schema_version)
-        object.__setattr__(self, "artifact_sha256", _sha256(self.artifact_sha256, "enhancement.artifact_sha256"))
-        object.__setattr__(
-            self,
-            "set_source_sha256",
-            _sha256(self.set_source_sha256, "enhancement.set_source_sha256"),
-        )
-        object.__setattr__(self, "set_code", _safe_component(self.set_code, "enhancement.set_code"))
-        object.__setattr__(self, "set_source_id", _non_empty_string(self.set_source_id, "enhancement.set_source_id"))
-        created_at = _non_empty_string(self.created_at, "enhancement.created_at")
-        _parse_datetime(created_at, "enhancement.created_at")
-        object.__setattr__(self, "created_at", created_at)
-        if not isinstance(self.card_data, EnhancementCardData):
-            raise SetProfileSchemaError("enhancement.card_data must be an EnhancementCardData.")
-        cards = _records(self.cards, CardSourcePin, "enhancement.cards", key=lambda pin: pin.card_id)
-        if not cards:
-            raise SetProfileSchemaError("enhancement.cards must not be empty.")
-        if len(cards) != self.card_data.card_count:
-            raise SetProfileSchemaError("enhancement.cards must cover the declared card data exactly.")
-        object.__setattr__(self, "cards", cards)
-        guides = _records(self.guides, GuideSourcePin, "enhancement.guides", key=lambda pin: pin.guide_id)
-        object.__setattr__(self, "guides", guides)
-        runs = _records(self.runs, ModelRun, "enhancement.runs", key=lambda run: run.run_id)
-        if not runs:
-            raise SetProfileSchemaError("enhancement.runs must not be empty.")
-        object.__setattr__(self, "runs", runs)
-        mechanics = _records(self.mechanics, GuideClaim, "enhancement.mechanics", key=lambda item: item.finding_id)
-        if any(item.category != "mechanic" for item in mechanics):
-            raise SetProfileSchemaError(
-                "enhancement.mechanics must contain guide claims with the mechanic category."
-            )
-        if any(item.review.status is not FindingStatus.ACCEPTED for item in mechanics):
-            raise SetProfileSchemaError("enhancement.mechanics must contain accepted findings.")
-        object.__setattr__(self, "mechanics", mechanics)
-        relationships = _records(
-            self.relationships,
-            CardRelationship,
-            "enhancement.relationships",
-            key=lambda item: item.identity,
-        )
-        if any(item.review.status is not FindingStatus.ACCEPTED for item in relationships):
-            raise SetProfileSchemaError("enhancement.relationships must contain accepted findings.")
-        if any(
-            {evidence.card_id for evidence in item.oracle_evidence} != set(item.participants)
-            for item in relationships
-        ):
-            raise SetProfileSchemaError(
-                "enhancement.relationships must carry Oracle evidence for exactly their participants."
-            )
-        object.__setattr__(self, "relationships", relationships)
-        try:
-            for item in relationships:
-                validate_relationship_pins(
-                    relationship=item,
-                    pins={pin.card_id: pin for pin in cards},
-                )
-        except SemanticEnrichmentError as error:
-            raise SetProfileSchemaError(f"Invalid enhancement: {error}") from error
-        if self.condition_map is not None:
-            if not isinstance(self.condition_map, ConditionMap):
-                raise SetProfileSchemaError("enhancement.condition_map must be a ConditionMap or None.")
-            try:
-                validate_condition_map_pins(
-                    condition_map=self.condition_map,
-                    pins={pin.card_id: pin for pin in cards},
-                )
-            except SemanticEnrichmentError as error:
-                raise SetProfileSchemaError(f"Invalid enhancement: {error}") from error
-        if not mechanics and not relationships:
-            raise SetProfileSchemaError(
-                "enhanced profiles require at least one confirmed semantic relationship or mechanic finding."
-            )
-        if not isinstance(self.review, ArtifactReview):
-            raise SetProfileSchemaError("enhancement.review must be an ArtifactReview.")
-        if self.review.state != "confirmed":
-            raise SetProfileSchemaError("enhanced profiles require a confirmed enrichment review.")
-        object.__setattr__(self, "confidence", _bounded_number(self.confidence, "enhancement.confidence"))
-        card_ids = {pin.card_id for pin in cards}
-        guide_ids = {pin.guide_id for pin in guides}
-        run_ids = {run.run_id for run in runs}
-        findings: tuple[GuideClaim | CardRelationship, ...] = mechanics + relationships
-        if len({item.finding_id for item in findings}) != len(findings):
-            raise SetProfileSchemaError("enhancement finding IDs must be globally unique.")
-        if any(item.run_id not in run_ids for item in findings):
-            raise SetProfileSchemaError("enhancement findings must reference a recorded model run.")
-        if any(
-            evidence.guide_id not in guide_ids
-            for item in findings
-            for evidence in (item.evidence if isinstance(item, GuideClaim) else item.guide_evidence)
-        ):
-            raise SetProfileSchemaError("enhancement findings must reference a recorded guide source.")
-        if any(
-            card_id not in card_ids
-            for item in findings
-            for card_id in (item.card_ids if isinstance(item, GuideClaim) else item.participants)
-        ):
-            raise SetProfileSchemaError("enhancement findings must reference pinned card data.")
-        if run_ids - {item.run_id for item in findings}:
-            raise SetProfileSchemaError("enhancement.runs must be referenced by an included finding.")
-
-    def to_json(self) -> dict[str, object]:
-        encoded: dict[str, object] = {
-            "artifact_schema_version": self.artifact_schema_version,
-            "artifact_sha256": self.artifact_sha256,
-            "set_code": self.set_code,
-            "set_source_id": self.set_source_id,
-            "set_source_sha256": self.set_source_sha256,
-            "created_at": self.created_at,
-            "card_data": self.card_data.to_json(),
-            "cards": [item.to_json() for item in self.cards],
-            "guides": [item.to_json() for item in self.guides],
-            "runs": [item.to_json() for item in self.runs],
-            "mechanics": [item.to_json() for item in self.mechanics],
-            "relationships": [item.to_json() for item in self.relationships],
-            "review": self.review.to_json(),
-            "confidence": self.confidence,
-        }
-        if self.condition_map is not None:
-            encoded["condition_map"] = self.condition_map.to_json()
-        return encoded
-
-    @classmethod
-    def from_json(cls, value: Mapping[str, Any]) -> SetProfileEnhancement:
-        _object(value, "enhancement")
-        try:
-            return cls(
-                artifact_schema_version=_required_int(
-                    value,
-                    "artifact_schema_version",
-                    "enhancement.artifact_schema_version",
-                ),
-                artifact_sha256=_required_string(value, "artifact_sha256", "enhancement.artifact_sha256"),
-                set_code=_required_string(value, "set_code", "enhancement.set_code"),
-                set_source_id=_required_string(value, "set_source_id", "enhancement.set_source_id"),
-                set_source_sha256=_required_string(value, "set_source_sha256", "enhancement.set_source_sha256"),
-                created_at=_required_string(value, "created_at", "enhancement.created_at"),
-                card_data=EnhancementCardData.from_json(
-                    _required_mapping(value, "card_data", "enhancement.card_data")
-                ),
-                cards=_array_of(value, "cards", CardSourcePin.from_json, "enhancement.cards"),
-                guides=_array_of(value, "guides", GuideSourcePin.from_json, "enhancement.guides"),
-                runs=_array_of(value, "runs", ModelRun.from_json, "enhancement.runs"),
-                mechanics=_array_of(value, "mechanics", GuideClaim.from_json, "enhancement.mechanics"),
-                relationships=_array_of(
-                    value,
-                    "relationships",
-                    CardRelationship.from_json,
-                    "enhancement.relationships",
-                ),
-                review=ArtifactReview.from_json(_required_mapping(value, "review", "enhancement.review")),
-                confidence=_required_number(value, "confidence", "enhancement.confidence"),
-                condition_map=_optional_record(
-                    value,
-                    "condition_map",
-                    ConditionMap.from_json,
-                    "enhancement.condition_map",
-                ),
-            )
-        except SemanticEnrichmentError as error:
-            raise SetProfileSchemaError(f"Invalid enhancement: {error}") from error
-
 
 @dataclass(frozen=True, slots=True)
 class SetProfileLoadResult:
@@ -1040,10 +789,8 @@ class SetProfile:
     samples: SampleSummary | None
     confidence: float
     pairs: tuple[PairProfile, ...]
-    role_profile: CompiledRoleProfile | None = None
     card_ratings: tuple[CardRating, ...] = ()
     schema_version: int = 1
-    enhancement: SetProfileEnhancement | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -1078,6 +825,8 @@ class SetProfile:
         except (TypeError, ValueError, SetProfileSchemaError) as error:
             raise SetProfileSchemaError(f"Unsupported profile maturity {self.maturity!r}.") from error
         object.__setattr__(self, "maturity", maturity)
+        if maturity is ProfileMaturity.SEMANTIC_ONLY:
+            raise SetProfileSchemaError("semantic-only maturity is not supported for scoring profiles.")
         if self.samples is not None and not isinstance(self.samples, SampleSummary):
             raise SetProfileSchemaError("samples must be SampleSummary or None.")
         object.__setattr__(self, "confidence", _bounded_number(self.confidence, "confidence"))
@@ -1103,11 +852,6 @@ class SetProfile:
             pairs=normalized_pairs,
             card_ratings=normalized_card_ratings,
         )
-        if self.role_profile is not None:
-            if not isinstance(self.role_profile, CompiledRoleProfile):
-                raise SetProfileSchemaError("role_profile must be a CompiledRoleProfile or None.")
-            if self.role_profile.set_code != set_code:
-                raise SetProfileSchemaError("role_profile.set_code must match set_code.")
         has_empirical_evidence = _has_empirical_evidence(
             self.samples,
             normalized_pairs,
@@ -1115,57 +859,19 @@ class SetProfile:
         )
         if maturity in {ProfileMaturity.MATURE, ProfileMaturity.EARLY} and not has_empirical_evidence:
             raise SetProfileSchemaError(f"{maturity.value} profiles must contain empirical evidence.")
-        if maturity is ProfileMaturity.METADATA_ONLY and self.role_profile is not None:
-            raise SetProfileSchemaError("metadata-only profiles cannot contain semantic evidence.")
-        if maturity is ProfileMaturity.SEMANTIC_ONLY and self.role_profile is None:
-            raise SetProfileSchemaError("semantic-only profiles must contain semantic evidence.")
-        if maturity in {ProfileMaturity.METADATA_ONLY, ProfileMaturity.SEMANTIC_ONLY} and has_empirical_evidence:
-            raise SetProfileSchemaError(f"{maturity.value} profiles cannot contain empirical evidence.")
-        if maturity is ProfileMaturity.GENERIC and (has_empirical_evidence or self.role_profile is not None):
+        if maturity is ProfileMaturity.METADATA_ONLY and has_empirical_evidence:
+            raise SetProfileSchemaError("metadata-only profiles cannot contain empirical evidence.")
+        if maturity is ProfileMaturity.GENERIC and has_empirical_evidence:
             raise SetProfileSchemaError("generic profiles cannot contain evidence.")
-        if self.enhancement is not None:
-            if not isinstance(self.enhancement, SetProfileEnhancement):
-                raise SetProfileSchemaError("enhancement must be a SetProfileEnhancement or None.")
-            if self.schema_version < 3:
-                raise SetProfileSchemaError("enhancement requires set profile schema 3.")
-            if self.enhancement.set_code != set_code:
-                raise SetProfileSchemaError("enhancement.set_code must match set_code.")
-            if maturity is ProfileMaturity.GENERIC:
-                raise SetProfileSchemaError("generic profiles cannot contain enhancement data.")
 
     @property
     def pair_profiles(self) -> tuple[PairProfile, ...]:
         return self.pairs
 
-    @property
-    def enhancement_status(self) -> EnhancementStatus:
-        """Return whether this profile carries confirmed enhancement content."""
-
-        return EnhancementStatus.ENHANCED if self.enhancement is not None else EnhancementStatus.NOT_ENHANCED
-
-
-    @property
-    def card_roles(self) -> tuple[ProfileCard, ...]:
-        return () if self.role_profile is None else self.role_profile.cards
-
-    @property
-    def roles_are_compatible(self) -> bool:
-        return self.role_profile is not None and self.role_profile.is_compatible()
-
     def pair(self, pair: str) -> PairProfile | None:
         normalized = _pair(pair)
         return next((item for item in self.pairs if item.pair == normalized), None)
 
-    def resolve_roles(
-        self,
-        card: Any,
-        *,
-        classifier: RoleClassifier | None = None,
-    ) -> ResolutionResult:
-        """Resolve roles through RoleClassifier without cross-version merging."""
-
-        resolver = classifier or RoleClassifier()
-        return resolver.resolve(card, profile=self.role_profile)
 
     def to_json(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -1184,12 +890,6 @@ class SetProfile:
             result["pair_profiles"] = [item.to_json() for item in self.pairs]
         if self.samples is not None:
             result["samples"] = self.samples.to_json()
-        if self.role_profile is not None:
-            result["role_profile"] = self.role_profile.to_json()
-        if self.schema_version >= 3:
-            result["enhancement_status"] = self.enhancement_status.value
-        if self.enhancement is not None:
-            result["enhancement"] = self.enhancement.to_json()
         return result
 
     def to_bytes(self) -> bytes:
@@ -1212,26 +912,10 @@ class SetProfile:
                 f"Unsupported set profile schema {schema_version}; "
                 f"supported versions are {SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS}."
             )
-        enhancement: SetProfileEnhancement | None = None
-        if schema_version < 3:
-            if {"enhancement", "enhancement_status"}.intersection(value):
-                raise SetProfileSchemaError(
-                    f"schema-{schema_version} profiles cannot declare enhancement data."
-                )
-        else:
-            status = _required_string(value, "enhancement_status", "enhancement_status")
-            try:
-                parsed_status = EnhancementStatus(status)
-            except ValueError as error:
-                raise SetProfileSchemaError(f"Unsupported enhancement status {status!r}.") from error
-            enhancement_value = value.get("enhancement")
-            if (parsed_status is EnhancementStatus.ENHANCED) != (enhancement_value is not None):
-                raise SetProfileSchemaError(
-                    "enhancement_status must be 'enhanced' exactly when enhancement data is present."
-                )
-            if enhancement_value is not None:
-                _object(enhancement_value, "enhancement")
-                enhancement = SetProfileEnhancement.from_json(enhancement_value)
+        retired_keys = _RETIRED_SEMANTIC_KEYS.intersection(value)
+        if schema_version == SET_PROFILE_SCHEMA_VERSION and retired_keys:
+            keys = ", ".join(sorted(retired_keys))
+            raise SetProfileSchemaError(f"schema-4 profiles cannot contain retired semantic fields: {keys}.")
         pair_values = value.get("pair_profiles", [])
         if not isinstance(pair_values, list):
             raise SetProfileSchemaError("pair_profiles must be an array.")
@@ -1248,7 +932,6 @@ class SetProfile:
         )
         if len({item.card_key for item in card_ratings}) != len(card_ratings):
             raise SetProfileSchemaError("card_ratings contains duplicate card identities.")
-        role_profile = _parse_role_profile(value.get("role_profile"), set_code=value.get("set_code"))
         samples_value = value.get("samples")
         samples = None if samples_value is None else SampleSummary.from_json(samples_value)
         return cls(
@@ -1261,10 +944,8 @@ class SetProfile:
             samples=samples,
             confidence=_required_number(value, "confidence", "confidence"),
             pairs=pair_profiles,
-            role_profile=role_profile,
             schema_version=schema_version,
             card_ratings=card_ratings,
-            enhancement=enhancement,
         )
 
     @classmethod
@@ -1389,7 +1070,6 @@ def safe_load_set_profile(
         if profile.maturity not in {
             ProfileMaturity.MATURE,
             ProfileMaturity.EARLY,
-            ProfileMaturity.SEMANTIC_ONLY,
             ProfileMaturity.METADATA_ONLY,
         }:
             diagnostics.append(f"rejected:{candidate}:unsupported local maturity {profile.maturity.value}")
@@ -1399,8 +1079,7 @@ def safe_load_set_profile(
     rank = {
         ProfileMaturity.MATURE: 0,
         ProfileMaturity.EARLY: 1,
-        ProfileMaturity.SEMANTIC_ONLY: 2,
-        ProfileMaturity.METADATA_ONLY: 3,
+        ProfileMaturity.METADATA_ONLY: 2,
     }
     if valid:
         _, selected, _ = min(valid, key=lambda item: (rank[item[1].maturity], item[0]))
@@ -1449,21 +1128,6 @@ def load_scoring_profile(
     if result.source == "generic" or result.profile.maturity is ProfileMaturity.GENERIC:
         return None
     return result.profile
-
-
-def _parse_role_profile(value: Any, *, set_code: Any) -> CompiledRoleProfile | None:
-    if value is None:
-        return None
-    _object(value, "role_profile")
-    normalized_set = _safe_component(set_code, "set_code")
-    try:
-        role_profile = CompiledRoleProfile.from_json(value)
-    except (RoleProfileError, RoleSchemaError) as error:
-        raise SetProfileSchemaError(f"Invalid role_profile: {error}") from error
-    nested_set = _safe_component(role_profile.set_code, "role_profile.set_code")
-    if nested_set != normalized_set:
-        raise SetProfileSchemaError("role_profile.set_code must match set_code.")
-    return role_profile
 
 
 def _validate_aggregate_authority(
@@ -1599,20 +1263,6 @@ def _check_target(
         )
 
 
-_SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}\Z")
-
-
-def _sha256(value: Any, field_name: str) -> str:
-    if not isinstance(value, str) or _SHA256_PATTERN.fullmatch(value) is None:
-        raise SetProfileSchemaError(f"{field_name} must be a SHA-256 digest.")
-    return value.lower()
-
-
-def _records(values: Any, expected_type: Any, field_name: str, *, key: Any) -> tuple[Any, ...]:
-    if not isinstance(values, tuple) or any(not isinstance(item, expected_type) for item in values):
-        raise SetProfileSchemaError(f"{field_name} must contain {expected_type.__name__} objects.")
-    return _sorted_unique(values, key=key, field_name=field_name)
-
 
 def _safe_component(value: str, field_name: str) -> str:
     normalized = _non_empty_string(value, field_name).casefold()
@@ -1682,7 +1332,6 @@ def _bounded_number(value: Any, field_name: str) -> float:
         raise SetProfileSchemaError(f"{field_name} must be from 0 to 1.")
     return number
 
-
 def _non_negative_int(value: Any, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise SetProfileSchemaError(f"{field_name} must be a non-negative integer.")
@@ -1732,12 +1381,6 @@ def _array_of(
     return tuple(parser(item) for item in _mapping_items(nested, field_name))
 
 
-def _optional_record(value: Mapping[str, Any], key: str, parser: Any, field_name: str) -> Any:
-    nested = value.get(key)
-    if nested is None:
-        return None
-    _object(nested, field_name)
-    return parser(nested)
 
 
 def _sorted_unique(values: Iterable[Any], *, key: Any, field_name: str) -> tuple[Any, ...]:

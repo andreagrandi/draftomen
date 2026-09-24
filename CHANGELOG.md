@@ -4,8 +4,12 @@
 
 ## [Unreleased]
 - Remove typed relationship scoring, pool-ledger support, and advice. Keep
-  schema-3 profile reading, compiled-role contextual scoring, generic synergy,
+  empirical SetProfile scoring, local card-role classification, generic synergy,
   and existing audit and draft-history readers. (#673)
+- Generate clean schema-4 SetProfiles. Ignore retired semantic fields when
+  reading schemas 1–3 and reject them in schema 4. Keep confirmed enrichment
+  artifacts standalone, treat old `semantic-only` manifests as history, and
+  preserve the independent augmented artifact path. (#663)
 - Retire relationship availability, advice, and preference state from shared
   and mocked sessions, test-draft APIs, and CLI output. Keep Basic DO scoring
   and contextual evidence. (#672)

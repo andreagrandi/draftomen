@@ -184,9 +184,6 @@ The optional input and metadata options are:
 - `--draft-source-name NAME`: the exact source name to select from the
   manifest. It is required when the manifest contains more than one source
   and is not needed when it contains exactly one.
-- `--enrichment PATH`: a confirmed enrichment artifact at
-  `<run>/artifacts/<sha256>.json`. It uses the run's frozen guide and changes
-  nothing else about the selected stage.
 - `--profile-version VERSION`: the non-empty profile artifact version. It
   defaults to `1.0`.
 
@@ -220,245 +217,70 @@ macOS, `shasum -a 256 "$DUMP_FILE"` prints it). Keep the attribution and
 license entries accurate for the source you use; the generator records them
 but does not determine or grant rights.
 
-### Saved confirmed enrichment
+### Standalone semantic enrichment
 
-`--enrichment` feeds an already-reviewed enrichment run into staged generation
-without repeating any analysis and without a model or network request. The
-command itself never decodes the artifact and never searches a cache: it hands
-the path to the publication layer, which re-validates it against the requested
-set's card data before profile bytes exist.
+`enrich-set` analyzes a set and saves its reviewed
+`SemanticEnrichmentArtifact` in the local enrichment store. Confirm records the
+standalone artifact only. It does not compile the artifact into a SetProfile,
+write a profile object, or change a profile manifest. The artifact remains
+available to local enrichment inventory and review workflows; it is not a
+SetProfile scoring input.
 
-```sh
-RUN="$HOME/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943"
-SMOKE="$(mktemp -d)"
-uv run draftomen-tui generate-profile \
-  --set-code HOB \
-  --format QuickDraft \
-  --stage early \
-  --generated-at 2026-09-16T00:00:00Z \
-  --card-database-file "$RUN/sources/card-database.json" \
-  --ratings-file "$HOME/.draftomen/17lands/HOB-QuickDraft.json" \
-  --enrichment "$RUN/artifacts/edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84.json" \
-  --output-dir "$SMOKE/generated"
-```
-
-The loader accepts only the run's own frozen inputs. The artifact file name
-must be the SHA-256 of its exact bytes; malformed UTF-8 or JSON, duplicate
-object keys, non-finite constants, and a digest that does not match the name
-are rejected. Card pins, guide quotes, Oracle quotes, relationship projections,
-and the review must all bind to the requested set's pinned card data through
-`_requested_card_database`: the artifact's `set_source_sha256` must equal the
-semantic digest of those cards. When the artifact pins exactly one guide, the
-loader reads `<run>/sources/guide.json` and validates the frozen record's
-schema, guide identity, requested and final URL, retrieval timestamp, and text
-hash; an artifact that pins no guide reads no guide file, and one that pins
-more than one is rejected rather than guessing or fetching a source. An
-unconfirmed or cancelled review is rejected by the compiler, exactly as for an
-in-process artifact. Invalid inputs exit `1` before new profile artifacts or
-the generation marker are written, so the last valid generation stays
-authoritative. Loader failures use a bounded message without source text.
-Supplying both the in-process artifact argument and
-`--enrichment` is rejected instead of picking an implicit precedence.
-
-An explicitly supplied `--enrichment` counts as one input in `input_count`. The
-path never enters the generation report; the enhancement provenance already
-records the artifact's canonical digest, and publication reconciles it against
-the published block.
-
-For confirmed local-matcher relationships, generation can compile missing
-typed projections from the capability facts already stored in the artifact.
-It needs neither the work-response directory nor another model request.
-Each compiled clause must bind to the pinned Oracle text, retain the
-capability's prerequisites, and pass the existing source and role checks.
-Missing or ambiguous evidence and unrepresented conditions leave the
-relationship unprojected. For example, generation must not turn conditional
-Amass token creation into an unconditional token source.
-
-This is a generated representation of the confirmed input, not a new review.
-The original artifact bytes, canonical digest, review and confidence remain
-unchanged. Existing projections and all confirmed relationships are retained;
-additional evidence consists only of exact spans from the frozen sources.
-The profile records the original artifact digest and generator version.
-No relationship is silently removed because it cannot be projected.
-
-Because the artifact is compiled into a schema-3 profile, the generated profile
-carries a role profile at `early` and `mature` even when the artifact supplies
-no draft dump. Compiled roles from confirmed relationships with projections
-matching the declared enabler-to-payoff rules are merged into the role profile,
-so participants the local classifier misses can still resolve. Existing
-classifier assignments keep their confidence, parameters, provenance, and
-evidence. `metadata` still omits the role profile. Compiled profile roles can
-still affect ordinary contextual scoring, but stored relationship records no
-longer trigger typed relationship scoring, pool-ledger support records, or
-relationship advice.
-
-The command writes only below the fresh `$SMOKE` directory. It does not
-overwrite the saved confirmation, install a user profile, or publish a website
-manifest. Verify the generated profile through `load_scoring_profile` and a
-`LiveSession` before installing it.
-Use the updated Draft Omen checkout or build for this verification. Generating
-a profile does not update an already-installed native application.
-
-#### Re-publishing a saved confirmation
-
-`republish-enrichment` recompiles and publishes one profile from an
-already-saved confirmed artifact, with no guide freeze, no card-data download
-and no model call. It is the recovery path for already-paid work. It selects the
-newest confirmed artifact for the requested set unless `--artifact` pins an
-exact digest or `--run` restricts the search to one run directory. The
-generation stage is explicit and defaults to `metadata`: metadata recovery keeps
-its display-only purpose, while an `early` or `mature` recovery can publish
-compiled profile roles that affect ordinary contextual scoring.
-
-```sh
-uv run draftomen-tui republish-enrichment HOB \
-  --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft" \
-  --profiles-dir website/public/profiles
-```
-
-A role-bearing recovery recompiles the confirmed artifact with its empirical
-evidence:
-
-```sh
-RUN="$HOME/.draftomen/set-enrichment/hob-quickdraft/enrichment-runs/hob/9574d202eef14943"
-SMOKE="$(mktemp -d)"
-mkdir -p "$SMOKE/profiles/objects"
-cp website/public/profiles/manifest.json "$SMOKE/profiles/manifest.json"
-uv run draftomen-tui republish-enrichment HOB \
-  --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft" \
-  --artifact edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84 \
-  --stage early \
-  --ratings-file "$HOME/.draftomen/17lands/HOB-QuickDraft.json" \
-  --profiles-dir "$SMOKE/profiles" \
-  --output-dir "$SMOKE/recovered"
-```
-
-The default `--store-dir` is `<app data directory>/set-enrichment`, the shared
-store layout. Runs created by the desktop `enrich-set` live under a
-profile-keyed store such as `$HOME/.draftomen/set-enrichment/hob-quickdraft`, so
-pass `--store-dir` explicitly to reach them. The selected run must still hold its
-frozen `sources/card-database.json`, because the artifact is revalidated against
-that card data and its frozen guide exactly as `--enrichment` does.
-
-The command takes the same explicit stage and empirical-input flags as
-`generate-profile`: `--stage {metadata,early,mature}` (default `metadata`, never
-inferred), `--ratings-file PATH` for a local 17Lands ratings cache,
-`--source-manifest PATH` with `--draft-source-name NAME` for a pinned local
-draft-data source. A role-bearing stage needs empirical evidence: either ratings
-or accepted draft evidence satisfies `early`.
-
-There is no fallback to a weaker stage. A role-bearing stage with no usable
-empirical input fails with `republish-enrichment failed: Early profile generation requires empirical ratings or accepted draft evidence.`,
-and an unusable input such as a ratings cache for another set or format fails
-with `republish-enrichment failed: Could not load the ratings input.`; both
-exit `1` before any object, manifest entry, or publication record is written, so
-a truncated or foreign run also fails before any repository file changes.
-
-Success prints `set_code`, `format`, `artifact`, `artifact_sha256`, `run_id`,
-`maturity`, `gzip_sha256`, `object`, `manifest`, `manifest_changed`, and
-`publications`; `maturity` is `metadata-only` for the default stage and names the
-role-bearing stage (`early` or `mature`) otherwise.
-
-#### HOB coverage audit
+### Historical HOB coverage audit
 
 The [#587 inventory and capability audit](audits/hob-587-inventory.md),
 [mechanic matrix and qualified-synergy contract](audits/hob-587-mechanics.md),
 and [offline runtime traces and fingerprints](audits/hob-587-traces.md)
-examine the existing paid HOB confirmation without changing it. The accompanying
-machine ledgers account for the saved findings. Retained findings, executable
-projections, pool support, and rendered advice are separate stages; a compatible
-profile alone does not prove useful coverage.
+preserve findings from earlier HOB runs. Their compiled projections and
+runtime traces describe those historical artifacts, not current SetProfile
+generation or scoring.
 
-The audit reconciles all 583 capability facts and 685 relationship findings.
-The offline compiler at capture time produced three executable projections; this is a diagnosis,
-not a recovery target. #589 later recovered qualified prerequisites through the same pipeline
-(see the projection contract above): on the same frozen run the compiler now reports 433 projected
-rows (2 decoded, 431 qualified), 16 zone-supply contradictions, and 236 unsupported, with no paid
-input changed. Network-denied compiler, pool and offscreen QML component
-traces leave the 1,638-file paid-run fingerprint unchanged.
+The audit reconciled 583 capability facts and 685 relationship findings. At
+capture time, the offline compiler produced three projections; #589 later
+recorded 433 projected rows (2 decoded, 431 qualified), 16 zone-supply
+contradictions, and 236 unsupported findings for the same frozen run. Those
+counts are historical. Network-denied compiler, pool, and offscreen QML traces
+also recorded an unchanged 1,638-file paid-run fingerprint.
 
-The approved missing-work tickets are native children of
-[#559](https://github.com/andreagrandi/draftomen/issues/559):
-[#596](https://github.com/andreagrandi/draftomen/issues/596) owns saved-candidate
-accounting, [#597](https://github.com/andreagrandi/draftomen/issues/597) owns
-missing role recovery, and [#598](https://github.com/andreagrandi/draftomen/issues/598)
-owns token replacement payoffs. Their project classification is High priority,
-Card Data, size M, with High orchestration risk. The acceptance matrices in
-#588 through #595 reference these audit findings, and #595 is blocked by the
-three additional tickets. No production fix, profile publication or full
-application draft journey is claimed by this audit.
+At the time of the audit, the approved missing-work tickets were native
+children of [#559](https://github.com/andreagrandi/draftomen/issues/559):
+[#596](https://github.com/andreagrandi/draftomen/issues/596) covered
+saved-candidate accounting, [#597](https://github.com/andreagrandi/draftomen/issues/597)
+covered missing role recovery, and [#598](https://github.com/andreagrandi/draftomen/issues/598)
+covered token replacement payoffs. Their project labels, issue relationships,
+and blockers describe that historical plan, not current issue status. The audit
+does not claim current SetProfile publication or a full application draft
+journey.
 
-#### Listing local enrichment work
+### Listing local enrichment work
 
-`list-enrichment` reports every local run and every saved artifact with its set,
-run identity, created and reviewed timestamps, review state, relationship and
-confirmed counts, artifact SHA-256, and the profiles it was published as. It
-reads local files only — no network request and no model call — and writes
-nothing.
+`list-enrichment` reports local runs and saved artifacts with their set, run
+identity, timestamps, review state, relationship and confirmed counts, and
+artifact SHA-256. It also shows any historical profile-publication records
+associated with an artifact. The command reads local files only and makes no
+network request or model call:
 
 ```sh
 uv run draftomen-tui list-enrichment --set hob \
   --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft"
 ```
 
-```text
-run hob 1a7229377cb30f6d artifacts=0
-run hob 9574d202eef14943 artifacts=2
-  artifact hob 9574d202eef14943 bb00b761b8c1489bb560c6ea233c7d5eb70bb3c6bd52ef484313f12dc0957cae created=2026-09-14T18:25:30.788004Z reviewed=unknown state=pending relationships=685 confirmed=0 published=none
-  artifact hob 9574d202eef14943 edc7d1666105fccdd38284367396400f3999d55f98d1469990bfde1a6773be84 created=2026-09-14T18:25:30.788004Z reviewed=2026-09-14T18:34:09.071794Z state=confirmed relationships=685 confirmed=685 published=hob/quickdraft:orphaned
-list-enrichment: runs=2 artifacts=2 confirmed=1 published=1 orphaned=1
-```
+`--store-dir` selects the enrichment store; runs from `enrich-set` may be under
+a profile-keyed directory such as
+`$HOME/.draftomen/set-enrichment/hob-quickdraft`. `--set` restricts output to a
+set code. `--profiles-dir` selects the profile tree used to resolve whether a
+historical publication is still referenced; it defaults to
+`website/public/profiles`. Pending and cancelled artifacts remain visible.
 
-Each artifact line ends with every publication recorded for its digest, joined
-by commas, or `none`. An identity is `referenced` when the manifest's entry for
-that set and format still selects the published object and `orphaned` when it no
-longer does, so work that was published and then replaced stays visible instead
-of silent. The summary counts runs, artifacts, confirmed artifacts, distinct
-publications, and distinct orphaned publications.
+### Historical profile-publication records
 
-The default `--store-dir` is `<app data directory>/set-enrichment`, the shared
-store layout. Runs created by the desktop `enrich-set` live under a
-profile-keyed store such as `$HOME/.draftomen/set-enrichment/hob-quickdraft`, so
-pass `--store-dir` explicitly to see them. `--set` restricts the printed runs and
-every count to one set code, and `--profiles-dir` selects the published profiles
-tree used to resolve publication state (default `website/public/profiles`).
-Pending and cancelled artifacts are listed too, because an inventory that hides a
-run's non-confirmed artifacts cannot explain where a set's work went.
-
-#### Durable publication provenance
-
-Every publication of an enriched profile records `artifact_sha256`, `run_id`,
-`reviewed_at`, `published_at`, and `profile_gzip_sha256` per `(set, format)` in
-`website/public/profiles/enrichment-publications.json` (schema `2`). The record
-holds one committed entry per `(set, format)` identity plus at most one
-candidate, which describes a publication whose manifest entry is not written
-yet. The record lives in the repository beside `manifest.json`, because the
-refresh CI job runs from a checkout with no local store. The website data
-refresh allowlist covers `card-data/*`, `profiles/manifest.json`, and
-`profiles/objects/*.json.gz`, and it never rewrites or deletes unrelated files,
-so the record survives every refresh.
-
-A publication writes the candidate first, then the manifest entry that names the
-new profile, and only then commits the candidate as that identity's entry.
-Writing the manifest entry is the commit point, so an interrupted publication
-leaves the previously selected publication's entry authoritative while its own
-candidate still protects a manifest that already selected it. The refresh
-preservation check reads the record before merging generated profiles: an
-identity counts as enriched when its committed entry or its candidate carries
-the retained manifest entry's digest, even when the retained object file has
-been removed or is unreadable, so a refresh can no longer replace an enriched
-entry by losing its object, and a record entry left behind by a superseded or
-unsuccessful publication never blocks a replacement it does not describe. The
-next enriched publication resolves a leftover candidate by promoting it when the
-manifest selects its digest and dropping it when it does not, so re-running the
-publication command is the recovery action after an interruption.
-
-Allowing a deliberate downgrade therefore takes deleting the identity's
-committed entry and any candidate from the record, plus removing the retained
-enriched object at `profiles/objects/<gzip_sha256>.json.gz`. Removing only the
-record entries leaves the retained-object check in force, and the refresh keeps
-reporting the identity as a retained enriched profile with its existing object
-and manifest entry untouched.
+The retained
+`website/public/profiles/enrichment-publications.json` file records older
+enrichment-to-profile publications. `list-enrichment` can read those records
+and use the current manifest to label a historical publication as referenced
+or orphaned. Keep the records and old objects unchanged. Schema-4 profile
+generation does not create new enrichment-publication records, and these
+historical records do not make a `semantic-only` profile scoreable.
 
 ### Lifecycle stages
 
@@ -467,7 +289,7 @@ directory for each stage. The following commands show the complete progression
 for one local input set:
 
 ```sh
-# 1. No empirical or semantic evidence: metadata-only.
+# 1. No empirical evidence: metadata-only.
 uv run draftomen-tui generate-profile \
   --set-code TST \
   --format quickdraft \
@@ -508,8 +330,8 @@ available empirical inputs; the resulting profile must contain empirical
 evidence, so generation fails if the supplied inputs cannot provide any.
 `mature` requires accepted deck evidence and Stage C structure targets for
 every accepted color pair. It fails rather than silently publishing a weaker
-profile when those requirements are not met. `semantic-only` is a separate
-profile maturity for local loading and is not a `--stage` choice here.
+profile when those requirements are not met. All stages generate schema-4
+profiles; `semantic-only` is a retired maturity and is not scoreable.
 
 ### Publication, validation, and repeatability
 
@@ -609,17 +431,10 @@ remote publication:
    `(set_code, event_format)`, and retains every unrelated entry. It returns
    the original manifest when every supplied artifact already matches.
 
-`enrich-set` Confirm publishes into the current directory's repository profile
-tree through these primitives: the content-addressed object is installed
-before the merged manifest, so the manifest stays authoritative and an
-identical publication rewrites neither file. Cancel publishes nothing.
-
-Both `generate_local_profile_artifacts(...)` and `generate_set_profile(...)`
-accept one optional keyword-only `enrichment`: a confirmed
-`SemanticEnrichmentArtifact` that is compiled into the profile's `enhancement`
-block. It is an in-process value, not a path input, so it never changes
-`input_count`; the caller must derive it from the same card data the generation
-reads, because a different card data projection is rejected.
+`enrich-set` Confirm uses the separate standalone enrichment workflow. It saves
+a reviewed `SemanticEnrichmentArtifact` without creating a SetProfile, profile
+object, or manifest entry. Set-profile publication uses the generated profile
+artifacts described above.
 
 ### Hosted publication boundary (current)
 
@@ -1776,228 +1591,65 @@ profile, and it does not certify that the generator will accept the selected
 stage; callers must invoke the unchanged explicit generator and its validation
 workflow separately.
 
-## Set-profile schema versions 1, 2, and 3
+## Set-profile schema version 4
 
-A profile is a JSON object with these required fields:
+A SetProfile is a JSON object for one set and event format:
 
-- `schema_version`: supported values are `1`, `2`, and `3`. Other values are
-  rejected rather than guessed. Historical schema-1 and schema-2 artifacts
-  retain their canonical bytes; newly generated empirical profiles remain
-  schema 1 or schema 2, and schema 3 currently means an enhanced profile.
+- `schema_version`: readers support `1`, `2`, `3`, and `4`. Every newly
+  generated profile uses schema 4, including metadata-only, early, and mature
+  profiles. Other versions are rejected.
 - `profile_version`: the producer's non-empty artifact version.
-- `set_code` and `format`: the exact target set and event format.
+- `set_code` and `format`: the target set and event format.
 - `generated_at`: an ISO-8601 timestamp.
-- `maturity`: `mature`, `early`, `metadata-only`, or `semantic-only` for local
-  artifacts. The in-memory generic fallback is marked `generic` and is never
-  written as an evidence artifact.
+- `maturity`: `metadata-only`, `early`, or `mature`. The in-memory generic
+  fallback is not written as an evidence artifact. `semantic-only` is retired
+  and is not a scoreable SetProfile maturity.
 - `confidence`: a finite number from `0` through `1`.
-- `source`: an object with a non-empty `provider` and optional artifact metadata.
+- `source`: an object with a non-empty `provider` and optional artifact
+  metadata.
+
+Schema-1, schema-2, and schema-3 profiles remain compatibility inputs. The
+reader preserves their original schema number and usable empirical ratings,
+while ignoring the retired `role_profile`, `enhancement_status`, and
+`enhancement` fields. It does not rewrite the stored legacy bytes. Schema-4
+profiles reject any of those three fields.
 
 Empirical sections are sparse and optional:
 
 - `samples`, when present, contains a non-negative `total` and an optional
-  `by_pair` object. The map contains only observed configured pairs; an omitted
-  map means that per-pair counts are unavailable. `SampleSummary.count_for()`
-  returns `None` for an unavailable pair.
-- `pair_profiles`, when present, is an array containing only configured pairs
-  for which a context is available. Each pair is listed at most once, in
-  canonical `config.COLOR_PAIRS` order. A missing context is exposed by
-  `SetProfile.pair()` returning `None`, not by an empty fabricated context.
-  A context can contain optional empirical `structural_targets`, `role_targets`,
-  `removal_targets`, `synergy`, and `scarcity` arrays. Empty arrays mean no
-  evidence was supplied and are omitted during canonical serialization.
-
-Schema-2 positive-sample card GIH estimates and pair-performance estimates
-also contain `aggregate_evidence`. This object has exactly `source_format`,
-`fallback_reason`, and `confidence`. Exact-format evidence uses the requested
-format and a null reason. Cross-format evidence is valid only when the requested
-format is QuickDraft, the source is PremierDraft or TradDraft, and the reason is
-`missing-exact-evidence`, `thin-exact-evidence`, or
-`invalid-exact-evidence`. Zero-sample priors have no aggregate authority.
-Schema-1 profiles reject this field so older artifacts cannot silently claim
-the new provenance contract.
+  `by_pair` map. The map contains only observed configured pairs; an omitted
+  map means pair sample counts are unavailable.
+- `pair_profiles`, when present, contains available configured pairs at most
+  once in canonical `config.COLOR_PAIRS` order. Each context can carry
+  empirical structural, role, removal, synergy, and scarcity targets. Empty
+  evidence arrays are omitted.
+- Card ratings and pair performance are empirical. Available values retain
+  their source samples. Schema-2 and later positive-sample GIH and
+  pair-performance estimates require `aggregate_evidence` with
+  `source_format`, `fallback_reason`, and `confidence`. Schema-1 profiles
+  reject that field; zero-sample priors do not claim aggregate evidence.
 
 `generate_set_profile(..., ratings=..., fallback_ratings=...)` keeps `ratings`
 as the exact requested-format dataset. `fallback_ratings` accepts only
 already-loaded same-set PremierDraft and TradDraft candidates. QuickDraft
 selects supported observations independently for each canonical card and color
-pair in exact, PremierDraft, then TradDraft order; other requested formats
+pair in exact, PremierDraft, then TradDraft order. Other requested formats
 remain exact-only. This API does not acquire or stage fallback data.
 
-Pair-profile semantic annotations are separate from empirical evidence:
-
-- `theme`, when present, is a trimmed, non-empty descriptive label for a pair
-  context. It is semantic annotation metadata, not evidence, and may be used
-  in semantic-only profiles. It annotates the canonical pair for explanations
-  and is never a whitelist: a theme does not make other canonical pairs
-  ineligible.
+`PairProfile.theme` remains serializable as an optional, trimmed descriptive
+label. It does not make a color pair eligible or affect scoring.
+`PairProfile.role_targets` remain
+empirical deck-structure targets; they are not serialized per-card semantic
+assignments.
 
 Mature and early profiles must contain empirical evidence. Metadata-only
-profiles must contain neither empirical nor semantic evidence. Semantic-only
-profiles must carry the compiled `role_profile`, may carry semantic pair
-annotations such as `theme`, and must not contain empirical evidence. Thus
-metadata-only artifacts can omit `samples` and `pair_profiles`, while
-semantic-only artifacts omit empirical sections but retain `role_profile` and
-may retain theme annotations. The generic fallback contains neither empirical
-section.
+profiles do not contain empirical card or pair evidence. A metadata-only
+profile may omit `samples` and `pair_profiles`; a generic fallback is not
+serialized as an evidence artifact.
 
-### Enhancement block (schema 3)
-
-`enhancement_status` is present exactly when `schema_version` is `3`: `enhanced`
-when the `enhancement` object is present, otherwise `not-enhanced`. Schema-1 and
-schema-2 payloads must not declare either key; declaring one is rejected rather
-than ignored, so an artifact can never silently drop a model-assisted claim.
-
-The `enhancement` object has `artifact_schema_version`, `artifact_sha256`,
-`set_code`, `set_source_id`, `set_source_sha256`, `created_at`, `card_data`,
-`cards`, `guides`, `runs`, `mechanics`, `relationships`, `review`, and
-`confidence`. `artifact_schema_version` must equal
-`SEMANTIC_ENRICHMENT_SCHEMA_VERSION`; an artifact written against a newer
-semantic-enrichment schema is rejected as incompatible instead of being
-partially read.
-
-A block must satisfy all of the following; failing any condition rejects it:
-
-- `card_data` pins the reviewed card source (`source`, `sha256`, `card_count`)
-  and `cards` pins the reviewed cards, which must cover `card_count` exactly.
-  `guides` pins guide sources and may be empty.
-- `runs` records the model runs that produced the findings and must not be
-  empty. `mechanics` and `relationships` hold the included findings: every
-  mechanics entry must be a `mechanic`-category claim, every entry in either
-  list must be accepted, and at least one of the two lists must be non-empty.
-- Finding IDs must be globally unique, `set_code` must match the profile,
-  every run, guide, and card a finding references must resolve against the
-  block's own `runs`, `guides`, and `cards`, and every recorded run must be
-  referenced by an included finding. A relationship's `oracle_evidence` must
-  cover its `participants` exactly.
-- `review` must have `state` `confirmed`. `confidence` is a bounded number
-  separate from the profile's own `confidence`.
-
-Enhancement is orthogonal to empirical maturity: a schema-3 profile has two
-independent axes, maturity and enhancement status. The block carries
-model-assisted semantic claims only, and `PairProfile.synergy` remains the
-empirical 17Lands-derived field, never a place for enhancement content.
-
-Only enhanced profiles are schema 3. Empirical generation still emits schema 1
-for the metadata stage and schema 2 for early and mature stages, and a profile
-becomes schema 3 exactly when `compile_profile_enhancement` compiles one
-confirmed artifact into it: the compiler is the only schema-3 writer. It takes
-the already-decoded artifact in process and gates on a `confirmed` review, the
-artifact `set_code` matching the requested set, and the semantic set-source
-digest of the generation card data equalling the artifact's
-`set_source_sha256`. It then includes accepted `mechanic`-category guide claims
-and the artifact's confirmed relationships, drops runs no included finding
-references, keeps every pinned card and guide, and records `artifact_sha256` as
-the SHA-256 of the artifact's canonical bytes. Every rejection is a bounded,
-path-free message: an unconfirmed or cancelled review, a set mismatch, card
-data that does not match the generation card database, a card-data identity
-that cannot be a profile identity, a published identity (guide, run, provider,
-or model) that looks like a local filesystem path, or no included finding. A
-rejected artifact fails before any profile bytes exist.
-
-The generation report records the same identity under a privacy-safe
-`enhancement` object with `artifact_schema_version`, `artifact_sha256`,
-`set_source_id`, `set_source_sha256`, `created_at`, `card_data`, `guide_ids`,
-`run_ids`, `providers`, `models`, `mechanic_count`, `relationship_count`,
-`confidence`, `review_state`, and `reviewed_at`. Guide text, oracle text, and
-reviewer identity never enter it, and an identity that looks like a local
-filesystem path is rejected before compilation: an absolute POSIX, Windows
-drive, or UNC form; a `~`-relative form; or a `./`/`../`-relative form.
-Provider-qualified identifiers such as `openai/gpt-5.6-luna` stay valid. The
-key is absent — with byte-identical report output — when no artifact is
-compiled. Publication reconciles that provenance against the published block
-during validation.
-`generate-profile --enrichment` is the artifact input path for the CLI, so a
-refresh can reproduce an enriched publication from the stored run without a
-bespoke script; without it the CLI keeps publishing schema 1 or schema 2, and
-the interactive enrichment review workflow supplies the artifact in process.
-The generic fallback never carries enhancement data; the profile fingerprint,
-the SHA-256 of the canonical bytes, covers the block's content and provenance.
-
-The block reuses the semantic-enrichment record types (`CardSourcePin`,
-`GuideSourcePin`, `ModelRun`, `GuideClaim`, `CardRelationship`,
-`ArtifactReview`) verbatim instead of defining parallel profile-side records.
-`CardRelationship` and the typed relationship records live in
-`draftomen.semantic_relationship_records`; the semantic-enrichment record module
-keeps the guide, card-pin and run records.
-
-An accepted relationship may carry an optional `prerequisite_projection`
-(projection `schema_version` 1) whose `source` and `target` participants name
-one capability, card and face each in the validated direction, independently of
-the sorted `participants` field. Its atomic clauses bind every controlling cost,
-trigger, condition, threshold and supplied output fact to one exact frozen Oracle
-ability paragraph, with operation and object selectors, occurrence indices, the
-closed color, card-type, token, zone, controller, owner, quantity and timing
-vocabulary, and the complete indices of the capability prerequisites the clause
-discharges. A projection is present only when the typed, source-bound and
-completeness gates passed; its presence still does not mean a draft pool
-satisfies those conditions, and no relationship prerequisite is a scoring input.
-Incomplete or unsupported prerequisites produce no projection unless the participant declares
-the gap as a retained qualification; prerequisites that contradict their source evidence produce
-a rejected diagnostic instead. Stored projections repeat that semantic validation of their clauses,
-and readers re-check them against the frozen card sources and pins. Relationship duplicate identity
-is direction-sensitive: identical directed capabilities deduplicate, while a reversed direction or a
-different capability of the same cards stays a distinct relationship. A relationship without the field
-remains loadable and serializes without the new key, so existing artifacts and enhanced profiles keep
-working; a present but invalid projection is rejected rather than dropped.
-
-Each projection participant may carry an optional `qualifications` array. Each qualification keeps
-four keys: the closed `kind` (`cost`, `choice`, `condition`, `mode`, `party`, `quantity`, `timing`),
-the participant's own frozen `evidence` paragraph, and the exact printed phrase retained through
-`selector`/`occurrence`. A qualification carries no model prose, so consumers render the printed
-requirement rather than advice. `prerequisite_projection.outcome` is `decoded` only when neither
-participant declares a qualification; `qualified` means at least one stated requirement is retained
-unproven — draft potential, not current game state, and never a claim that a pool satisfies it.
-Declared qualifications close `incomplete` verdicts while contradictions are never closed, and a
-participant with no decoded clause is admissible only when it declares one. The key is absent when
-empty, so it changes no profile schema version (still 3, with 1–3 supported for reading) and a present
-but invalid qualification is rejected rather than dropped.
-
-The offline compiler emits projections from translated prerequisites only. A prerequisite that binds
-to a typed clause is emitted as that clause; a prerequisite that cannot bind is retained verbatim as
-a qualification when its cited statement occurs exactly once inside the participant's own frozen
-evidence paragraph, with its closed kind mapping to the qualification kind: cost to `cost`, trigger
-to `timing`, condition to `condition`, threshold to `quantity`. A prerequisite that yields neither
-leaves the participant unbound and the relationship unprojected. Every stored relationship gets one
-deterministic conversion outcome with a source-linked reason, in stored order, returned by
-`compile_confirmed_relationship_projections` and reported by `compile_profile_enhancement` alongside
-the block. `decoded` means the projection carries no retained qualification, `qualified` means it
-carries at least one, and both report the reason `projected`. `missing_evidence` means a participant
-capability fact is unusable or names the wrong role, reported as `source_capability_fact_unusable` or
-`target_capability_fact_unusable`, or a participant card is missing, unknown, or unpinned, reported
-as `participant_card_unpinned`. `contradiction` means the enabler consumes a zone the payoff counts,
-either because its own stated source zone differs from its destination or because a prerequisite
-states a source zone and no destination, unless another capability of the same enabler card face
-refills that zone from the library or hand, and is reported as
-`zone_supply_contradiction:<zone>[,<zone>]`. `unsupported` means
-a non-local finding id, reported as `not_a_local_pair`; an unlinked mechanism; an unbound participant
-clause, reported as `source_clause_unbound` or `target_clause_unbound`; or a compiled projection
-rejected by its own re-validation, reported as `publish_validation_rejected:<ExceptionName>`.
-`generate-profile` records the conversions in the generation report under `relationship_conversions`,
-present only when non-empty, so the report accounts for every stored relationship without carrying
-clause text.
-Relationship validation now uses the pinned `draftomen-relationship-validation-v2`
-request and response contract, while guide and card extraction stay on their
-existing version, so retained v1 relationship results remain readable but are not
-reused for v2 requests.
-
-The optional `role_profile` object carries compiled per-card semantic roles. It
-uses the existing semantic-role vocabulary and assignment types, and declares
-`schema_version`, `role_schema_version`, `classifier_version`, and `cards`.
-Generated profiles compile the local classifier, and an enhanced generation
-additionally merges the roles declared by every confirmed relationship that
-carries a projection matching the declared compatibility rules. A merged
-`confirmed-enrichment` assignment records the relationship's finding identity
-as evidence and the artifact's review confidence, and never replaces an
-existing assignment for the same role; the runtime resolver therefore reads
-both the classifier's assignments and the confirmed ones.
-Unknown optional fields are ignored so producers can add fields without making
-older readers unsafe. Required fields, field types, finite numeric values,
-color-pair coverage where supplied, role assignments, maturity evidence
-invariants, and all version values are validated. Serialization sorts keys and
-records, so equivalent profiles have stable bytes. The domain graph consists of
-frozen dataclasses and tuples; parsed JSON is not retained as mutable
-dictionaries or lists.
+Legacy `semantic-only` profiles are not scoreable. If a profile candidate has
+no usable empirical evidence, scoring follows the ordinary profile fallback
+path instead.
 
 ## Remote manifest schema version 1
 
@@ -2012,25 +1664,30 @@ fields:
 Each `artifacts` item has exactly these fields:
 
 - `set_code` and `format`: non-empty, case-folded safe path components.
-- `set_profile_schema_version`: the artifact's actual supported set-profile
-  schema (`1`, `2`, or `3`). It must match the downloaded profile.
+- `set_profile_schema_version`: the profile's supported schema version
+  (`1`, `2`, `3`, or `4`). It must match the downloaded profile.
 - `profile_version`: a non-empty producer version.
 - `generated_at`: a timezone-aware ISO-8601 timestamp.
 - `url`: an absolute HTTPS URL for the compressed profile artifact.
 - `gzip_bytes` and `profile_bytes`: positive integer compressed and
   decompressed sizes.
-- `gzip_sha256` and `profile_sha256`: 64-hex-character SHA-256 digests of
-  the exact compressed and decompressed bytes.
-- `maturity`: `mature`, `early`, `semantic-only`, or `metadata-only`;
-  `generic` is never a downloadable manifest artifact.
+- `gzip_sha256` and `profile_sha256`: 64-hex-character SHA-256 digests of the
+  exact compressed and decompressed bytes.
+- `maturity`: `mature`, `early`, or `metadata-only` for schema 4; older
+  schema-1 through schema-3 entries may also contain the historical
+  `semantic-only` value. Such entries remain readable as history, but are not
+  scoreable. `generic` is never a downloadable manifest artifact.
 
-Unknown fields, duplicate set/format identities, future schema versions,
-invalid timestamps, unsafe path components, bad sizes/digests, and non-HTTPS
-URLs are rejected. Manifest and profile serialization is canonical (sorted
-keys and records with a final newline), so equivalent values have stable
-bytes. `ProfileManifest.from_json()` and `load_profile_manifest()` perform
-strict validation; `ProfileManifest.select(set_code=..., event_format=...)`
-only returns an exact normalized identity.
+Schema-4 manifest artifacts reject `semantic-only` maturity. Older manifest
+entries retain their accepted historical value but cannot make a
+`semantic-only` profile usable for scoring. Unknown fields, duplicate
+set/format identities, future schema versions, invalid timestamps, unsafe path
+components, bad sizes or digests, and non-HTTPS URLs are rejected. Manifest and
+profile serialization is canonical (sorted keys and records with a final
+newline), so equivalent values have stable bytes. `ProfileManifest.from_json()`
+and `load_profile_manifest()` validate the manifest;
+`ProfileManifest.select(set_code=..., event_format=...)` returns only an exact
+normalized identity.
 
 ## Lifecycle, cache, and refresh
 
@@ -2157,13 +1814,13 @@ ratings error and queues that set's forced hosted-profile refresh.
 Repeated forced requests coalesce for the same active lifecycle. TUI and Qt emit
 their existing actions; plain-watch adds no command UI.
 
-For ordinary candidate loading, `safe_load_set_profile(...)` never raises for
+For ordinary candidate loading, `safe_load_set_profile(...)` does not raise for
 missing, corrupt, future-schema, malformed, or wrong-target candidates. Its
-deterministic fallback hierarchy is mature, then early, semantic-only, and
-metadata-only, then a supplied `last_valid_profile` whose set and format match,
-and finally a zero-confidence generic profile for exactly the requested target.
-The fallback hierarchy's generic result is never exposed to scoring:
-`load_scoring_profile()` returns `None`.
+fallback order is mature, early, metadata-only, a matching `last_valid_profile`,
+and finally a zero-confidence generic profile for the requested target.
+Historical `semantic-only` candidates are not scoreable and do not outrank
+metadata-only or a matching last-valid profile. `load_scoring_profile()` turns
+the generic result into `None`.
 
 `ProfileClient.load_cached()` first uses a valid non-generic flat profile. If
 that destination is missing, corrupt, future-schema, wrong-target, or generic,
@@ -2278,21 +1935,18 @@ refresh workers before releasing them, so an in-flight result cannot publish
 late state. This is logical stale-result rejection only; it does not promise
 to cancel worker threads, network requests, or cache writes already underway.
 
-## Semantic-role compatibility
+## Local roles and augmented artifacts
 
-Compiled role data is authoritative only when its declared role schema and
-classifier version match the installed `ROLE_SCHEMA_VERSION` and
-`CLASSIFIER_VERSION`. `SetProfile.resolve_roles()` passes the compiled object
-unchanged to `RoleClassifier.resolve`, which performs the compatibility check
-and falls back to local classification. An incompatible profile therefore falls
-back wholly to the local classifier; roles are never merged across versions.
-Missing empirical sections do not remove a valid semantic role profile.
+SetProfiles supply empirical card ratings and pair evidence. They do not supply
+stored per-card semantic role assignments to scoring. The local role classifier
+derives card roles from loaded card data independently of SetProfile contents;
+`PairProfile.role_targets` remain empirical deck-structure evidence. Standalone
+serialized `RoleProfile` classifier artifacts are not embedded in or consumed
+by SetProfile scoring; see [semantic roles](semantic-roles.md).
 
-Resolution precedence inside one compatible profile is unchanged: a compiled
-entry for a card wins over the classifier, and a card the profile does not
-cover falls back to local classification. Confirmed-projection roles compiled
-into a generated profile are ordinary compiled assignments, so they take that
-same precedence and are subject to the same version check.
+The independent Augmented Intelligence path loads its own `AugmentedArtifact`
+separately and applies its output after Basic DO. It does not add semantic fields
+to a SetProfile or change the Basic DO score.
 
 ## Deliberate exclusions
 

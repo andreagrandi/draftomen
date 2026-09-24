@@ -1654,7 +1654,7 @@ from draftomen import __version__
 from draftomen.carddb import CardDatabase
 from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_gui import _fixed_font_family
-from draftomen.semantic_roles import classify_cards, compile_role_profile
+from draftomen.semantic_roles import classify_cards
 from draftomen.session import LiveSession
 from draftomen.set_profile import (
     AggregateEvidence,
@@ -1662,7 +1662,8 @@ from draftomen.set_profile import (
     PairProfile,
     ProfileMaturity,
     RateEstimate,
-    load_set_profile,
+    SetProfile,
+    SourceMetadata,
 )
 
 
@@ -1687,22 +1688,19 @@ lci_database = CardDatabase.from_json(
         ).read_text(encoding="utf-8")
     )
 )
-semantic_seed = load_set_profile(
-    project_root / "tests" / "fixtures" / "set-profiles" / "semantic-only.json",
-    expected_set_code="TST",
-    expected_format="QuickDraft",
-)
-lci_role_profile = compile_role_profile(
-    set_code="LCI",
-    results=classify_cards(lci_database.cards.values()),
-)
-semantic_profile = replace(
-    semantic_seed,
+no_evidence_profile = SetProfile(
     set_code="lci",
-    schema_version=2,
-    role_profile=lci_role_profile,
+    event_format="quickdraft",
+    profile_version="lci-no-evidence",
+    generated_at="2026-09-10T00:00:00+00:00",
+    source=SourceMetadata(provider="fixture"),
+    maturity=ProfileMaturity.METADATA_ONLY,
+    samples=None,
+    confidence=0.76,
     pairs=(PairProfile(pair="UB"),),
+    schema_version=4,
 )
+lci_classifications = classify_cards(lci_database.cards.values())
 
 
 def rate(*, value, authority):
@@ -1734,7 +1732,7 @@ card_keys = (
 
 def empirical_profile(*, card_authority, pair_authority):
     return replace(
-        semantic_profile,
+        no_evidence_profile,
         maturity=ProfileMaturity.EARLY,
         card_ratings=(
             CardRating(
@@ -1768,11 +1766,8 @@ mixed_profile = empirical_profile(
     card_authority=exact_authority,
     pair_authority=fallback_authority,
 )
-assert lci_role_profile.cards
-unavailable_profile = replace(
-    fallback_profile,
-    role_profile=replace(lci_role_profile, cards=()),
-)
+assert any(result.assignments for result in lci_classifications)
+unavailable_profile = no_evidence_profile
 
 event_name = "QuickDraft_LCI_20260910"
 payload = {
@@ -1815,11 +1810,11 @@ QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
 cases = (
     (
-        "semantic-only",
-        semantic_profile,
-        "semantic-only",
+        "unavailable",
+        unavailable_profile,
+        "unavailable",
         [],
-        "semantic-only",
+        "unavailable",
     ),
     (
         "exact",
@@ -1841,13 +1836,6 @@ cases = (
         "fallback",
         ["premierdraft", "quickdraft"],
         "PremierDraft fallback",
-    ),
-    (
-        "unavailable",
-        unavailable_profile,
-        "unavailable",
-        [],
-        "unavailable",
     ),
     (
         "disabled",
@@ -1988,8 +1976,6 @@ for case_name, case_profile, expected_status, expected_sources, message_marker i
             if case_name == "fallback":
                 continue
 
-            if case_name == "semantic-only":
-                assert "fallback" not in published["message"]
         finally:
             if provider is not None:
                 provider.shutdown()
@@ -2328,6 +2314,7 @@ from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_gui import _fixed_font_family
 from draftomen.session import LiveSession, LiveSessionCommand, RequestBuild
 from draftomen.set_profile import (
+    AggregateEvidence,
     CardRating,
     RateEstimate,
     dump_set_profile,
@@ -2428,11 +2415,7 @@ mature_profile = load_set_profile(
 msh_profile = replace(
     mature_profile,
     set_code="MSH",
-    role_profile=(
-        replace(mature_profile.role_profile, set_code="MSH")
-        if mature_profile.role_profile is not None
-        else None
-    ),
+    schema_version=4,
     card_ratings=(
         CardRating(
             card_key="arena_id:105009",
@@ -2442,6 +2425,11 @@ msh_profile = replace(
                 samples=2_000,
                 prior_value=0.50,
                 source="17lands",
+                aggregate_evidence=AggregateEvidence(
+                    source_format=QUICK_DRAFT_FORMAT,
+                    fallback_reason=None,
+                    confidence=1.0,
+                ),
             ),
             average_last_seen_at=1.2,
         ),
@@ -2453,6 +2441,11 @@ msh_profile = replace(
                 samples=2_000,
                 prior_value=0.50,
                 source="17lands",
+                aggregate_evidence=AggregateEvidence(
+                    source_format=QUICK_DRAFT_FORMAT,
+                    fallback_reason=None,
+                    confidence=1.0,
+                ),
             ),
             average_last_seen_at=2.1,
         ),

@@ -1,9 +1,10 @@
 """Offline-first remote set-profile manifest and cache client.
 
-The client stores only canonical, uncompressed :class:`SetProfile` JSON in the
-same flat cache used by ``set_profile_path``.  Network failures are deliberately
-contained at the refresh boundary: callers always receive the last validated
-profile or the generic profile fallback.
+The client stores validated uncompressed profile JSON in the same flat cache
+used by ``set_profile_path``.  Legacy schema-1–3 payloads retain their original
+bytes even when the model ignores retired fields.  Network failures are
+deliberately contained at the refresh boundary: callers always receive the last
+validated profile or the generic profile fallback.
 """
 
 from __future__ import annotations
@@ -221,7 +222,7 @@ class ProfileClient:
         destination = self.profile_path(normalized_set, normalized_format)
         diagnostics: list[str] = []
 
-        profile = _load_local_profile(destination, normalized_set, normalized_format)
+        profile, _, _ = _load_local_profile_with_bytes(destination, normalized_set, normalized_format)
         if profile is not None and profile.maturity is not ProfileMaturity.GENERIC:
             return SetProfileLoadResult(
                 profile=profile,
@@ -236,21 +237,23 @@ class ProfileClient:
         # recheck of the destination.  Writes remain at set_profile_path's flat
         # location, so there is one authoritative cache for future readers.
         for legacy in _historical_profile_paths(self.app_dir, normalized_set, normalized_format, destination):
-            profile = _load_local_profile(legacy, normalized_set, normalized_format)
+            profile, raw_bytes, _ = _load_local_profile_with_bytes(legacy, normalized_set, normalized_format)
             if profile is None or profile.maturity is ProfileMaturity.GENERIC:
                 if legacy.exists():
                     diagnostics.append("rejected-legacy:generic" if profile is not None else "rejected-legacy")
                 continue
             try:
                 with _ProfileLock(destination):
-                    current = _load_local_profile(destination, normalized_set, normalized_format)
+                    current, _, _ = _load_local_profile_with_bytes(destination, normalized_set, normalized_format)
                     if current is not None and current.maturity is not ProfileMaturity.GENERIC:
                         return SetProfileLoadResult(
                             profile=current,
                             source=f"local-{current.maturity.value}",
                             diagnostics=tuple(diagnostics),
                         )
-                    _atomic_write_bytes(destination, profile.to_bytes())
+                    if raw_bytes is None:  # pragma: no cover - valid profiles always have source bytes
+                        raise OSError("validated historical profile has no source bytes")
+                    _atomic_write_bytes(destination, raw_bytes)
             except OSError as error:
                 diagnostics.append(f"legacy-migration:{type(error).__name__}")
                 return SetProfileLoadResult(
@@ -308,6 +311,13 @@ class ProfileClient:
         normalized_format = _safe_component(event_format, "format")
         cached_result = self.load_cached(normalized_set, normalized_format)
         cached_profile = cached_result.profile
+        cached_disk_profile, _, cached_profile_bytes = _load_local_profile_with_bytes(
+            self.profile_path(normalized_set, normalized_format),
+            normalized_set,
+            normalized_format,
+        )
+        if cached_disk_profile != cached_profile:
+            cached_profile_bytes = None
         diagnostics = list(cached_result.diagnostics)
         selected_policy = self.network_policy if network_policy is None else network_policy
         selected_policy = _network_policy(selected_policy)
@@ -363,6 +373,14 @@ class ProfileClient:
             if artifact is None:
                 diagnostics.append("manifest:no-requested-artifact")
                 return ProfileRefreshResult(cached_profile, ProfileRefreshOutcome.MISSING, tuple(diagnostics), manifest)
+            if artifact.maturity is ProfileMaturity.SEMANTIC_ONLY:
+                diagnostics.append("artifact:retired-semantic-only")
+                return ProfileRefreshResult(
+                    cached_profile,
+                    ProfileRefreshOutcome.ARTIFACT_INVALID,
+                    tuple(diagnostics),
+                    manifest,
+                )
             try:
                 _validate_url(artifact.url, origin=_url_origin(self.manifest_url))
             except ProfileClientError as error:
@@ -373,9 +391,9 @@ class ProfileClient:
                     tuple(diagnostics),
                     manifest,
                 )
-            if _same_profile_identity(cached_profile, artifact):
+            if _same_profile_identity(cached_profile, artifact, raw_profile_bytes=cached_profile_bytes):
                 return ProfileRefreshResult(cached_profile, ProfileRefreshOutcome.UNCHANGED, tuple(diagnostics), manifest)
-            relation = _artifact_relation(cached_profile, artifact)
+            relation = _artifact_relation(cached_profile, artifact, raw_profile_bytes=cached_profile_bytes)
             if relation != "newer":
                 diagnostics.append(f"artifact:{relation}")
                 return ProfileRefreshResult(cached_profile, ProfileRefreshOutcome.STALE_MANIFEST, tuple(diagnostics), manifest)
@@ -421,8 +439,13 @@ class ProfileClient:
             with _ProfileLock(destination):
                 # A concurrent updater may have committed while this artifact was
                 # downloading.  Always compare the fresh destination under lock.
-                current = _load_local_profile(destination, normalized_set, normalized_format) or cached_profile
-                relation = _artifact_relation(current, artifact)
+                current, _, current_bytes = _load_local_profile_with_bytes(
+                    destination,
+                    normalized_set,
+                    normalized_format,
+                )
+                current = current or cached_profile
+                relation = _artifact_relation(current, artifact, raw_profile_bytes=current_bytes)
                 if relation == "unchanged":
                     return ProfileRefreshResult(current, ProfileRefreshOutcome.UNCHANGED, tuple(diagnostics), manifest)
                 if relation != "newer":
@@ -559,11 +582,13 @@ class ProfileClient:
                 value = json.loads(raw_bytes.decode("utf-8"))
                 if not isinstance(value, Mapping):
                     raise SetProfileSchemaError("profile JSON must be an object")
+                if _canonical_json_bytes(value) != raw_bytes:
+                    raise ProfileClientError("profile-not-canonical")
                 profile = SetProfile.from_json(value)
+            except ProfileClientError:
+                raise
             except (UnicodeError, json.JSONDecodeError, RecursionError, SetProfileError, TypeError, ValueError) as error:
                 raise ProfileClientError("profile-invalid") from error
-            if profile.to_bytes() != raw_bytes:
-                raise ProfileClientError("profile-not-canonical")
             _validate_profile_metadata(profile, artifact)
             _unlink(compressed_path)
             compressed_path = None
@@ -823,28 +848,38 @@ def _maturity_rank(maturity: ProfileMaturity) -> int:
     return {
         ProfileMaturity.MATURE: 0,
         ProfileMaturity.EARLY: 1,
-        ProfileMaturity.SEMANTIC_ONLY: 2,
         ProfileMaturity.METADATA_ONLY: 3,
         ProfileMaturity.GENERIC: 4,
     }[maturity]
 
 
-def _same_profile_identity(profile: SetProfile, artifact: ProfileManifestArtifact) -> bool:
-    if profile.maturity is ProfileMaturity.GENERIC:
+def _same_profile_identity(
+    profile: SetProfile,
+    artifact: ProfileManifestArtifact,
+    *,
+    raw_profile_bytes: bytes | None = None,
+) -> bool:
+    if profile.maturity is ProfileMaturity.GENERIC or artifact.maturity is ProfileMaturity.SEMANTIC_ONLY:
         return False
+    profile_bytes = profile.to_bytes() if raw_profile_bytes is None else raw_profile_bytes
     return (
         profile.set_code == artifact.set_code
         and profile.event_format == artifact.format
         and profile.profile_version == artifact.profile_version
         and _profile_time(profile) == _aware_datetime(artifact.generated_at, "artifact generated_at")
         and profile.maturity is artifact.maturity
-        and len(profile.to_bytes()) == artifact.profile_bytes
-        and hashlib.sha256(profile.to_bytes()).hexdigest() == artifact.profile_sha256
+        and len(profile_bytes) == artifact.profile_bytes
+        and hashlib.sha256(profile_bytes).hexdigest() == artifact.profile_sha256
     )
 
 
-def _artifact_relation(profile: SetProfile, artifact: ProfileManifestArtifact) -> str:
-    if _same_profile_identity(profile, artifact):
+def _artifact_relation(
+    profile: SetProfile,
+    artifact: ProfileManifestArtifact,
+    *,
+    raw_profile_bytes: bytes | None = None,
+) -> str:
+    if _same_profile_identity(profile, artifact, raw_profile_bytes=raw_profile_bytes):
         return "unchanged"
     if profile.maturity is not ProfileMaturity.GENERIC:
         artifact_time = _aware_datetime(artifact.generated_at, "artifact generated_at")
@@ -905,11 +940,26 @@ def _load_bundled_profile(path: Path) -> tuple[SetProfile | None, str | None]:
 
 
 def _load_local_profile(path: Path, set_code: str, event_format: str) -> SetProfile | None:
+    return _load_local_profile_with_bytes(path, set_code, event_format)[0]
+
+
+def _load_local_profile_with_bytes(
+    path: Path,
+    set_code: str,
+    event_format: str,
+) -> tuple[SetProfile | None, bytes | None, bytes | None]:
     try:
-        profile = load_set_profile(path, expected_set_code=set_code, expected_format=event_format)
-    except (OSError, SetProfileError, TypeError, ValueError):
-        return None
-    return profile if profile.maturity is not ProfileMaturity.GENERIC else profile
+        raw_bytes = path.read_bytes()
+        value = json.loads(raw_bytes.decode("utf-8"))
+        if not isinstance(value, Mapping):
+            raise SetProfileSchemaError("Set profile JSON must be an object.")
+        profile = SetProfile.from_json(value)
+        if profile.set_code != set_code or profile.event_format != event_format:
+            raise SetProfileSchemaError("Profile identity does not match the requested set and format.")
+        identity_bytes = raw_bytes if _canonical_json_bytes(value) == raw_bytes else None
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError, SetProfileError, TypeError, ValueError):
+        return None, None, None
+    return profile, raw_bytes, identity_bytes
 
 
 def _historical_profile_paths(app_dir: Path, set_code: str, event_format: str, destination: Path) -> tuple[Path, ...]:
