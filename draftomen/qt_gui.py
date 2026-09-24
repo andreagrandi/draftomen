@@ -46,10 +46,11 @@ from draftomen.test_draft import (
     DEFAULT_TEST_DRAFT_SERVER_URL,
     DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
     TestDraftRuntime,
+    TestDraftSet,
     create_test_draft_runtime,
     default_test_draft_bulk_file,
     default_test_draft_checkout_dir,
-    supported_test_draft_set_codes,
+    supported_test_draft_sets,
 )
 from draftomen.profile_client import (
     BUNDLED_PROFILE_BYTES,
@@ -437,7 +438,7 @@ def _sync_mocked_draft_capability(
 
 class _GuiTestDraftFactory:
     """Create simulated draft runtimes from pinned developer sources.
-    Supported sets intersect the checkout with locally cached card data.
+    Supported sets come from the checkout and download card data on request.
     """
 
     def __init__(
@@ -470,12 +471,17 @@ class _GuiTestDraftFactory:
             else augmented_model_client
         )
 
-    def supported_set_codes(self) -> tuple[str, ...]:
-        """List the sets the checkout and the local cache both provide."""
-        return supported_test_draft_set_codes(
+    def supported_sets(self) -> tuple[TestDraftSet, ...]:
+        """List the checkout's sets and whether each has cached card data."""
+        return supported_test_draft_sets(
             draftmancer_dir=self._draftmancer_dir,
-            draftomen_set_codes=cached_card_data_set_codes(app_dir=self._app_dir),
+            cached_set_codes=cached_card_data_set_codes(app_dir=self._app_dir),
         )
+
+    def download_card_data(self, *, set_code: str) -> None:
+        """Download and validate one set's hosted card-data artifact into the cache."""
+
+        CardDataClient(app_dir=self._app_dir).load(set_code, allow_network=True)
 
     def bulk_file_missing(self) -> bool:
         """Report whether the resolved Scryfall bulk source still needs a download."""

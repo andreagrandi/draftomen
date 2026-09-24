@@ -104,6 +104,7 @@ from draftomen.test_draft import (
     TestDraftInspection,
     TestDraftOfferIdentity,
     TestDraftRuntime,
+    TestDraftSet,
     create_test_draft_runtime,
 )
 
@@ -2749,7 +2750,7 @@ _DISABLED_TEST_DRAFT_STATE: dict[str, object] = {
     "phase": "idle",
     "mode": None,
     "set_code": None,
-    "supported_set_codes": [],
+    "supported_sets": [],
     "default_set_code": None,
     "pending": False,
     "offer_generation": 0,
@@ -2757,8 +2758,23 @@ _DISABLED_TEST_DRAFT_STATE: dict[str, object] = {
     "bulk_file_missing": False,
     "bulk_file_downloading": False,
     "bulk_file_download_percent": None,
+    "card_data_downloading": False,
 }
 _SIMULATED_POOL_TOTAL_CARDS = 7
+
+
+def _expected_sets(*codes: str) -> list[dict[str, object]]:
+    """Return the published set options the recording factory reports."""
+    return [
+        {"code": code, "name": code.upper(), "card_data_cached": True}
+        for code in codes
+    ]
+
+
+def _published_set_codes(*, state: dict[str, object]) -> list[str]:
+    """Return the codes of the published Mocked Draft set options."""
+    test_draft = cast(dict[str, list[dict[str, str]]], state["test_draft"])
+    return [item["code"] for item in test_draft["supported_sets"]]
 
 
 def _test_draft_offer(
@@ -2947,8 +2963,16 @@ class _RecordingTestDraftFactory:
         download_error: Exception | None = None,
         download_blocker: threading.Event | None = None,
         download_progress: tuple[int, int | None] | None = None,
+        uncached_set_codes: tuple[str, ...] = (),
+        card_data_error: Exception | None = None,
+        card_data_blocker: threading.Event | None = None,
     ) -> None:
         self.set_codes = set_codes
+        self.uncached_set_codes = set(uncached_set_codes)
+        self.card_data_error = card_data_error
+        self.card_data_blocker = card_data_blocker
+        self.card_data_calls: list[str] = []
+        self.card_data_thread_ids: list[int] = []
         self.runtime = runtime
         self.runtime_factory = runtime_factory
         self.create_error = create_error
@@ -2971,12 +2995,29 @@ class _RecordingTestDraftFactory:
         self.download_thread_ids: list[int] = []
         self.publishers: list[SnapshotPublisher] = []
 
-    def supported_set_codes(self) -> tuple[str, ...]:
+    def supported_sets(self) -> tuple[TestDraftSet, ...]:
         self.supported_calls += 1
         self.supported_thread_ids.append(threading.get_ident())
         if self.supported_error is not None:
             raise self.supported_error
-        return self.set_codes
+        return tuple(
+            TestDraftSet(
+                code=code,
+                name=code.upper(),
+                card_data_cached=code not in self.uncached_set_codes,
+            )
+            for code in self.set_codes
+        )
+
+    def download_card_data(self, *, set_code: str) -> None:
+        """Record one card-data download and mark the set cached on success."""
+        self.card_data_calls.append(set_code)
+        self.card_data_thread_ids.append(threading.get_ident())
+        if self.card_data_blocker is not None:
+            self.card_data_blocker.wait(timeout=3.0)
+        if self.card_data_error is not None:
+            raise self.card_data_error
+        self.uncached_set_codes.discard(set_code)
 
     def bulk_file_missing(self) -> bool:
         """Report the configured Scryfall bulk-file availability."""
@@ -3192,7 +3233,7 @@ def test_live_adapter_publishes_test_draft_support_and_default_set(
     try:
         _process_until(
             application=qcore_application,
-            predicate=lambda: adapter.state["test_draft"]["supported_set_codes"]
+            predicate=lambda: _published_set_codes(state=adapter.state)
             == ["hob", "lci"],
             description="the published Test Draft capability",
         )
@@ -3223,7 +3264,7 @@ def test_live_adapter_publishes_test_draft_support_and_default_set(
             == "hob",
             description="the preferred default Test Draft set",
         )
-        assert preferred_adapter.state["test_draft"]["supported_set_codes"] == [
+        assert _published_set_codes(state=preferred_adapter.state) == [
             "lci",
             "hob",
         ]
@@ -3247,7 +3288,7 @@ def test_live_adapter_publishes_test_draft_support_and_default_set(
         )
         failing_arena = failing_arenas[0]
         assert failing_adapter.state["test_draft"]["enabled"] is True
-        assert failing_adapter.state["test_draft"]["supported_set_codes"] == []
+        assert failing_adapter.state["test_draft"]["supported_sets"] == []
         assert failing_adapter.state["test_draft"]["default_set_code"] is None
         assert failing_adapter.state["test_draft"]["active"] is False
         polls_before_failure = len(failing_arena.poll_thread_ids)
@@ -3496,8 +3537,7 @@ def test_live_adapter_start_failure_keeps_arena_authoritative(
     try:
         _process_until(
             application=qcore_application,
-            predicate=lambda: adapter.state["test_draft"]["supported_set_codes"]
-            == ["hob"],
+            predicate=lambda: _published_set_codes(state=adapter.state) == ["hob"],
             description="the published Test Draft capability",
         )
         adapter.startTestDraft("manual", "hob")
@@ -3572,7 +3612,7 @@ def test_live_adapter_installs_mocked_draft_factory_without_restart(
             predicate=lambda: adapter.state["test_draft"]["enabled"] is True,
             description="the installed Mocked Draft capability",
         )
-        assert adapter.state["test_draft"]["supported_set_codes"] == ["lci", "hob"]
+        assert _published_set_codes(state=adapter.state) == ["lci", "hob"]
         assert adapter.state["test_draft"]["default_set_code"] == "hob"
         assert adapter.state["test_draft"]["phase"] == "idle"
         assert adapter.state["test_draft"]["active"] is False
@@ -4364,7 +4404,7 @@ def test_live_adapter_leaves_test_draft_and_restores_arena_state(
             "phase": "idle",
             "mode": None,
             "set_code": None,
-            "supported_set_codes": ["hob"],
+            "supported_sets": _expected_sets("hob"),
             "default_set_code": "hob",
             "pending": False,
             "offer_generation": 0,
@@ -4372,6 +4412,7 @@ def test_live_adapter_leaves_test_draft_and_restores_arena_state(
             "bulk_file_missing": False,
             "bulk_file_downloading": False,
             "bulk_file_download_percent": None,
+            "card_data_downloading": False,
         }
         # The published state is Arena state again, not the simulated draft.
         assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
@@ -4638,7 +4679,7 @@ def test_live_adapter_drops_a_start_that_a_pending_leave_owns(
             "phase": "idle",
             "mode": None,
             "set_code": None,
-            "supported_set_codes": ["hob"],
+            "supported_sets": _expected_sets("hob"),
             "default_set_code": "hob",
             "pending": False,
             "offer_generation": 0,
@@ -4646,6 +4687,7 @@ def test_live_adapter_drops_a_start_that_a_pending_leave_owns(
             "bulk_file_missing": False,
             "bulk_file_downloading": False,
             "bulk_file_download_percent": None,
+            "card_data_downloading": False,
         }
         assert adapter.state["errors"] == []
         assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
@@ -5348,7 +5390,7 @@ def test_live_adapter_downloads_the_missing_test_draft_bulk_file_off_the_gui_thr
             "phase": "idle",
             "mode": None,
             "set_code": None,
-            "supported_set_codes": ["hob", "msh"],
+            "supported_sets": _expected_sets("hob", "msh"),
             "default_set_code": "hob",
             "pending": False,
             "offer_generation": 0,
@@ -5356,6 +5398,7 @@ def test_live_adapter_downloads_the_missing_test_draft_bulk_file_off_the_gui_thr
             "bulk_file_missing": False,
             "bulk_file_downloading": False,
             "bulk_file_download_percent": None,
+            "card_data_downloading": False,
         }
         assert factory.create_calls == []
     finally:
@@ -5424,6 +5467,129 @@ def test_live_adapter_reports_a_test_draft_bulk_download_failure(
             description="the retried Mocked Draft bulk download",
         )
         assert adapter.state["test_draft"]["phase"] == "failed"
+        assert factory.create_calls == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_downloads_missing_set_card_data_off_the_gui_thread(
+    qcore_application: QCoreApplication,
+) -> None:
+    """A validated card-data download marks the set cached without a restart."""
+    gui_thread_id = threading.get_ident()
+    blocker = threading.Event()
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob", "woe"),
+        uncached_set_codes=("woe",),
+        card_data_blocker=blocker,
+    )
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        return cast(LiveSession, _FakeSession(publish=publish))
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _published_set_codes(state=adapter.state)
+            == ["hob", "woe"],
+            description="the published Mocked Draft sets",
+        )
+        assert adapter.state["test_draft"]["supported_sets"][1] == {
+            "code": "woe",
+            "name": "WOE",
+            "card_data_cached": False,
+        }
+
+        adapter.downloadTestDraftCardData("WOE")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["card_data_downloading"]
+            is True,
+            description="the reported card-data download",
+        )
+        assert adapter.state["test_draft"]["pending"] is True
+        blocker.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["card_data_downloading"]
+            is False,
+            description="the completed card-data download",
+        )
+        assert adapter.state["test_draft"]["supported_sets"] == _expected_sets(
+            "hob", "woe"
+        )
+        assert adapter.state["test_draft"]["phase"] == "idle"
+        assert adapter.state["test_draft"]["error"] is None
+        assert adapter.state["test_draft"]["pending"] is False
+        assert factory.card_data_calls == ["woe"]
+        assert all(
+            thread_id != gui_thread_id for thread_id in factory.card_data_thread_ids
+        )
+        assert factory.create_calls == []
+    finally:
+        blocker.set()
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_reports_an_unavailable_set_card_data_download(
+    qcore_application: QCoreApplication,
+) -> None:
+    """A failed card-data download names the set and leaves it uncached."""
+    factory = _RecordingTestDraftFactory(
+        set_codes=("hob", "mat"),
+        uncached_set_codes=("mat",),
+        card_data_error=RuntimeError("Hosted card-data request returned HTTP status 404."),
+    )
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        return cast(LiveSession, _FakeSession(publish=publish))
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _published_set_codes(state=adapter.state)
+            == ["hob", "mat"],
+            description="the published Mocked Draft sets",
+        )
+        adapter.downloadTestDraftCardData("mat")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
+            description="the reported card-data download failure",
+        )
+        assert adapter.state["test_draft"]["error"] == (
+            "Card data for MAT (MAT) could not be downloaded: "
+            "Hosted card-data request returned HTTP status 404."
+        )
+        assert adapter.state["test_draft"]["supported_sets"][1][
+            "card_data_cached"
+        ] is False
+        assert adapter.state["test_draft"]["card_data_downloading"] is False
+        assert adapter.state["test_draft"]["pending"] is False
+
+        # A code outside the published list never reaches the factory.
+        adapter.downloadTestDraftCardData("zzz")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["error"]
+            == "Unsupported Mocked Draft set: zzz",
+            description="the rejected unsupported set",
+        )
+        assert factory.card_data_calls == ["mat"]
         assert factory.create_calls == []
     finally:
         adapter.shutdown()

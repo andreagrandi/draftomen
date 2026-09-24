@@ -23,7 +23,7 @@ from draftomen.augmented_model_client import (
     AUGMENTED_OBJECTS_BASE_URL,
     AugmentedModelClient,
 )
-from draftomen.card_data_client import card_data_cache_path
+from draftomen.card_data_client import CardDataClient, card_data_cache_path
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.session import AugmentationStatus, ChangeAugmentation
 from draftomen.set_card_data import SetCardData
@@ -53,6 +53,7 @@ from draftomen.qt_mock import MockSessionAdapter
 from draftomen.set_profile import load_set_profile
 from draftomen.test_draft import (
     DEFAULT_TEST_DRAFT_SERVER_URL,
+    TestDraftSet,
     default_test_draft_bulk_file,
     default_test_draft_checkout_dir,
 )
@@ -812,8 +813,9 @@ def test_gui_mocked_draft_hob_offer_loads_validated_augmented_model(
         runtime.close()
 
 
-def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
+def test_gui_test_draft_supported_sets_list_checkout_sets_with_cached_card_data(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app_dir = tmp_path / "app"
     card_data_path = app_dir / "card-data" / "hob.json.gz"
@@ -822,7 +824,17 @@ def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
     checkout = tmp_path / "Draftmancer"
     constants_path = checkout / "src" / "data" / "constants.json"
     constants_path.parent.mkdir(parents=True, exist_ok=True)
-    constants_path.write_text('{"MTGASets": ["HOB", "XYZ"]}', encoding="utf-8")
+    constants_path.write_text('{"MTGASets": ["HOB", "WOE"]}', encoding="utf-8")
+    (checkout / "src" / "data" / "SetsInfos.json").write_text(
+        '{"hob": {"fullName": "The Hobbit"}, "woe": {"fullName": "Wilds of Eldraine"}}',
+        encoding="utf-8",
+    )
+    loads: list[tuple[Path | None, str, bool]] = []
+
+    def load(self: CardDataClient, set_code: str, *, allow_network: bool) -> None:
+        loads.append((self.app_dir, set_code, allow_network))
+
+    monkeypatch.setattr(CardDataClient, "load", load)
 
     provider = _build_provider(
         args=_parser().parse_args(
@@ -846,7 +858,14 @@ def test_gui_test_draft_supported_sets_intersect_checkout_and_cached_card_data(
     factory = provider._test_draft_factory  # type: ignore[attr-defined]
 
     assert factory is not None
-    assert factory.supported_set_codes() == ("hob",)
+    assert factory.supported_sets() == (
+        TestDraftSet(code="hob", name="The Hobbit", card_data_cached=True),
+        TestDraftSet(code="woe", name="Wilds of Eldraine", card_data_cached=False),
+    )
+
+    factory.download_card_data(set_code="woe")
+
+    assert loads == [(app_dir, "woe", True)]
 
 
 def test_gui_mocked_draft_bulk_file_state_and_download_target(
@@ -8978,7 +8997,10 @@ application = QGuiApplication([])
 provider = StubTestDraftProvider(
     test_draft={
         "enabled": True,
-        "supported_set_codes": ["hob", "msh"],
+        "supported_sets": [
+            {"code": "msh", "name": "Marvel Super Heroes", "card_data_cached": True},
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True},
+        ],
         "default_set_code": "hob",
     }
 )
@@ -9023,9 +9045,12 @@ application.processEvents()
 assert dialog.property("visible") is True
 assert dialog.property("modal") is True
 assert selector.property("count") == 2
-assert list(selector.property("model")) == ["HOB", "MSH"]
-assert selector.property("displayText") == "HOB"
-assert selector.property("currentIndex") == 0
+assert list(selector.property("model")) == [
+    "Marvel Super Heroes (MSH)",
+    "The Hobbit (HOB)",
+]
+assert selector.property("displayText") == "The Hobbit (HOB)"
+assert selector.property("currentIndex") == 1
 assert manual_button.property("checked") is True
 assert auto_button.property("checked") is False
 assert dialog.property("selectedMode") == "manual"
@@ -9122,7 +9147,9 @@ provider = StubTestDraftProvider(
         "set_code": "hob",
         "offer_generation": 3,
         "pending": False,
-        "supported_set_codes": ["hob"],
+        "supported_sets": [
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+        ],
     }
 )
 preference_dir = TemporaryDirectory()
@@ -9245,7 +9272,9 @@ provider = StubTestDraftProvider(
         "set_code": "hob",
         "offer_generation": 3,
         "pending": True,
-        "supported_set_codes": ["hob"],
+        "supported_sets": [
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+        ],
     }
 )
 preference_dir = TemporaryDirectory()
@@ -9305,7 +9334,7 @@ provider.publish_test_draft(
     active=True,
     mode="manual",
     set_code="hob",
-    supported_set_codes=["hob"],
+    supported_sets=[{"code": "hob", "name": "The Hobbit", "card_data_cached": True}],
 )
 application.processEvents()
 error_label = root.findChild(QObject, "testDraftError")
@@ -9404,7 +9433,9 @@ provider = StubTestDraftProvider(
         "set_code": "hob",
         "offer_generation": 1,
         "pending": False,
-        "supported_set_codes": ["hob"],
+        "supported_sets": [
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+        ],
     }
 )
 preference_dir = TemporaryDirectory()
@@ -9488,7 +9519,9 @@ provider = StubTestDraftProvider(
         "mode": None,
         "phase": "failed",
         "set_code": "hob",
-        "supported_set_codes": ["hob"],
+        "supported_sets": [
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+        ],
         "error": "Mocked Draft needs Node.js: no 'node' executable is on PATH.",
     }
 )
@@ -9527,6 +9560,169 @@ assert message.property("text") == (
     completed = _run_qml_probe(probe)
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_test_draft_dialog_downloads_card_data_for_an_uncached_set_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str]] = []
+        self.card_data_calls: list[str] = []
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+    @Slot(str)
+    def downloadTestDraftCardData(self, set_code: str) -> None:
+        self.card_data_calls.append(set_code)
+
+
+def sets(*, woe_cached: bool) -> list[dict]:
+    return [
+        {"code": "afr", "name": "Adventures in the Forgotten Realms", "card_data_cached": False},
+        {"code": "hob", "name": "The Hobbit", "card_data_cached": True},
+        {"code": "woe", "name": "Wilds of Eldraine", "card_data_cached": woe_cached},
+    ]
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={"enabled": True, "supported_sets": [], "default_set_code": None}
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+test_draft_button = root.findChild(QObject, "testDraftButton")
+test_draft_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+
+dialog = root.findChild(QObject, "testDraftDialog")
+selector = root.findChild(QObject, "testDraftSetSelector")
+message = root.findChild(QObject, "testDraftMessage")
+progress = root.findChild(QObject, "testDraftCardDataProgress")
+download_button = root.findChild(QObject, "testDraftCardDataDownloadButton")
+start_button = root.findChild(QObject, "testDraftStartButton")
+assert dialog is not None and dialog.property("visible") is True
+assert selector is not None and message is not None and progress is not None
+assert download_button is not None and start_button is not None
+
+# The live worker publishes the sets after the dialog exists, and the rebuilt
+# model must still show the default set rather than the first entry.
+provider.publish_test_draft(supported_sets=sets(woe_cached=False), default_set_code="hob")
+application.processEvents()
+assert list(selector.property("model")) == [
+    "Adventures in the Forgotten Realms (AFR)",
+    "The Hobbit (HOB)",
+    "Wilds of Eldraine (WOE)",
+]
+assert selector.property("displayText") == "The Hobbit (HOB)"
+assert download_button.isVisible() is False
+assert start_button.property("enabled") is True
+
+selector.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Down)
+application.processEvents()
+assert selector.property("displayText") == "Wilds of Eldraine (WOE)"
+assert message.property("text") == (
+    "Card data for Wilds of Eldraine (WOE) is not downloaded yet. "
+    "Download it to start."
+)
+assert download_button.isVisible() is True
+assert download_button.property("enabled") is True
+assert start_button.property("enabled") is False
+
+download_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.card_data_calls == ["woe"]
+
+provider.publish_test_draft(card_data_downloading=True, pending=True)
+application.processEvents()
+assert message.property("text") == "Downloading card data for Wilds of Eldraine (WOE)…"
+assert progress.isVisible() is True
+assert download_button.property("enabled") is False
+assert start_button.property("enabled") is False
+
+FAILURE = (
+    "Card data for Wilds of Eldraine (WOE) could not be downloaded: "
+    "Hosted card-data request returned HTTP status 404."
+)
+provider.publish_test_draft(
+    card_data_downloading=False, pending=False, phase="failed", error=FAILURE
+)
+application.processEvents()
+assert message.property("text") == FAILURE
+assert progress.isVisible() is False
+assert download_button.isVisible() is True
+assert start_button.property("enabled") is False
+start_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.start_calls == []
+
+provider.publish_test_draft(
+    phase="idle", error=None, supported_sets=sets(woe_cached=True)
+)
+application.processEvents()
+assert selector.property("displayText") == "Wilds of Eldraine (WOE)"
+assert download_button.isVisible() is False
+assert message.property("text") == "Choose a set and mode, then start."
+assert start_button.property("enabled") is True
+start_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+assert provider.start_calls == [("manual", "woe")]
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
 
 
 def test_qml_test_draft_dialog_offers_the_bulk_download_and_ready_state_offscreen() -> None:
@@ -9593,7 +9789,9 @@ application = QGuiApplication([])
 provider = StubTestDraftProvider(
     test_draft={
         "enabled": True,
-        "supported_set_codes": ["hob"],
+        "supported_sets": [
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+        ],
         "default_set_code": "hob",
         "bulk_file_missing": True,
     }
@@ -9672,14 +9870,20 @@ provider.publish_test_draft(
     bulk_file_download_percent=None,
     pending=False,
     bulk_file_missing=False,
-    supported_set_codes=["hob", "msh"],
+    supported_sets=[
+        {"code": "msh", "name": "Marvel Super Heroes", "card_data_cached": True},
+        {"code": "hob", "name": "The Hobbit", "card_data_cached": True},
+    ],
 )
 application.processEvents()
 assert progress.isVisible() is False
 assert download_button.isVisible() is False
 assert message.property("text") == "Choose a set and mode, then start."
 assert selector.property("count") == 2
-assert list(selector.property("model")) == ["HOB", "MSH"]
+assert list(selector.property("model")) == [
+    "Marvel Super Heroes (MSH)",
+    "The Hobbit (HOB)",
+]
 """
     completed = _run_qml_probe(probe)
 
@@ -9735,7 +9939,9 @@ application = QGuiApplication([])
 provider = StubTestDraftProvider(
     test_draft={
         "enabled": True,
-        "supported_set_codes": ["hob"],
+        "supported_sets": [
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+        ],
         "default_set_code": "hob",
     }
 )
@@ -9787,7 +9993,7 @@ assert download_button.isVisible() is True
 assert download_button.property("enabled") is True
 assert progress.isVisible() is False
 assert selector.property("count") == 1
-assert list(selector.property("model")) == ["HOB"]
+assert list(selector.property("model")) == ["The Hobbit (HOB)"]
 
 download_button.forceActiveFocus()
 QTest.keyClick(root, Qt.Key_Space)
