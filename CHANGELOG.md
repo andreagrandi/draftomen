@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Label the desktop card-detail score "Augmented DO Score" when a validated
+  per-set model adjusted it, in both wide and narrow layouts and in the
+  accessible description. Scores keep the plain "DO Score" label when the
+  switch is off or the set has no model. (#656)
 - Remove the unused role-profile compile, load, dump, and rebuild helpers and
   the `CompiledRoleProfile` type. `resolve_card_roles` and
   `RoleClassifier.resolve` no longer take a `profile` argument and always use

@@ -7384,7 +7384,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from PySide6.QtCore import QObject, QUrl
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtGui import QAccessible, QColor, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -7400,6 +7400,12 @@ application = QGuiApplication([])
 
 session = MockLiveSession(scenario="ready")
 provider = MockSessionAdapter(session=session)
+
+
+def accessible_description(item):
+    accessible = QAccessible.queryAccessibleInterface(item)
+    assert accessible is not None
+    return accessible.text(QAccessible.Text.Description)
 
 
 def publish_recommendations(*, cards, selected_grp_id) -> None:
@@ -7506,9 +7512,16 @@ with TemporaryDirectory() as preferences_dir:
     assert basic_label.property("text") == "Basic DO"
     assert adjustment_label.isVisible()
     assert adjustment_label.property("text") == "Adjustment"
+    total_label = preview.findChild(QObject, "cardPreviewDoScoreLabel")
+    assert total_label is not None
+    assert total_label.isVisible()
+    assert total_label.property("text") == "Augmented DO Score"
     assert contains_subsequence(
         visible_texts(scores),
-        ["Basic DO", "72", "Adjustment", "+4", "DO Score", "76"],
+        ["Basic DO", "72", "Adjustment", "+4", "Augmented DO Score", "76"],
+    )
+    assert accessible_description(preview) == (
+        "Basic DO Score 72, augmented adjustment +4, Augmented DO Score 76"
     )
 
     publish_recommendations(
@@ -7523,6 +7536,34 @@ with TemporaryDirectory() as preferences_dir:
     assert adjustment.property("text") == "-6"
     assert QColor(adjustment.property("color")) == QColor("#e7c993")
     assert total.property("text") == "64"
+    assert total_label.property("text") == "Augmented DO Score"
+
+    root.resize(760, 900)
+    narrow_preview = root.findChild(QObject, "narrowLiveCardPreview")
+    assert narrow_preview is not None
+    wait_until(narrow_preview.isVisible, "the narrow card preview")
+    narrow_label = narrow_preview.findChild(QObject, "cardPreviewDoScoreLabel")
+    narrow_total = narrow_preview.findChild(QObject, "cardPreviewDoScore")
+    assert narrow_label is not None
+    assert narrow_total is not None
+    assert narrow_label.isVisible()
+    assert narrow_label.property("text") == "Augmented DO Score"
+    assert narrow_total.property("text") == "64"
+    assert accessible_description(narrow_preview) == (
+        "Basic DO Score 70, augmented adjustment -6, Augmented DO Score 64"
+    )
+
+    plain_second = replace(second, basic_score=None, augmentation_delta=None)
+    publish_recommendations(
+        cards=(first, plain_second), selected_grp_id=plain_second.card.grp_id
+    )
+    wait_until(
+        lambda: narrow_label.property("text") == "DO Score",
+        "the plain DO label after augmentation stops",
+    )
+    assert narrow_total.isVisible()
+    assert narrow_total.property("text") == "64"
+    assert accessible_description(narrow_preview) == ""
 
     preferences.shutdown()
     del root
@@ -7651,6 +7692,7 @@ with TemporaryDirectory() as preferences_dir:
     assert texts[:2] == ["DO Score", expected_total]
     assert "Basic DO" not in texts
     assert "Adjustment" not in texts
+    assert "Augmented DO Score" not in texts
 
     preferences.shutdown()
     del root
