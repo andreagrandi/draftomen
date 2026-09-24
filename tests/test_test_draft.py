@@ -66,11 +66,13 @@ from draftomen.test_draft import (
     TestDraftOfferIdentity,
     TestDraftRunResult,
     TestDraftRuntime,
+    TestDraftSet,
     create_test_draft_runtime,
     default_test_draft_bulk_file,
     default_test_draft_checkout_dir,
     run_test_draft_auto,
     supported_test_draft_set_codes,
+    supported_test_draft_sets,
 )
 
 from tests.augmented_artifacts import fixed_delta_artifact
@@ -1360,6 +1362,50 @@ def test_supported_test_draft_set_codes_includes_hob_only_when_both_sources_adve
 
     assert malformed.value.stage == "startup"
     assert isinstance(malformed.value.__cause__, DraftmancerAdapterError)
+
+
+def test_supported_test_draft_sets_list_every_checkout_set_by_full_name(
+    tmp_path: Path,
+) -> None:
+    checkout = _draftmancer_checkout(root=tmp_path, mtga_sets=["WOE", "hob", "LCI", "TST"])
+    (checkout / "src" / "data" / "SetsInfos.json").write_text(
+        json.dumps(
+            {
+                "woe": {"fullName": "Wilds of Eldraine"},
+                "hob": {"fullName": "The Hobbit"},
+                "lci": {"fullName": "The Lost Caverns of Ixalan"},
+                "tst": {"fullName": "  "},
+                "unused": "not an object",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Uncached sets are listed too, and a set without a usable name keeps its code.
+    assert supported_test_draft_sets(
+        draftmancer_dir=checkout,
+        cached_set_codes=("HOB", "lci", "omen-only"),
+    ) == (
+        TestDraftSet(code="hob", name="The Hobbit", card_data_cached=True),
+        TestDraftSet(code="lci", name="The Lost Caverns of Ixalan", card_data_cached=True),
+        TestDraftSet(code="tst", name="TST", card_data_cached=False),
+        TestDraftSet(code="woe", name="Wilds of Eldraine", card_data_cached=False),
+    )
+
+
+def test_supported_test_draft_sets_fail_closed_on_missing_or_malformed_metadata(
+    tmp_path: Path,
+) -> None:
+    missing = _draftmancer_checkout(root=tmp_path / "missing", mtga_sets=["HOB"])
+    with pytest.raises(TestDraftError, match="missing Draftmancer set metadata file"):
+        supported_test_draft_sets(draftmancer_dir=missing, cached_set_codes=())
+
+    malformed = _draftmancer_checkout(root=tmp_path / "malformed", mtga_sets=["HOB"])
+    (malformed / "src" / "data" / "SetsInfos.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(TestDraftError, match="SetsInfos.json must contain an object") as error:
+        supported_test_draft_sets(draftmancer_dir=malformed, cached_set_codes=())
+
+    assert error.value.stage == "startup"
 
 
 def test_reusable_test_draft_runtime_matches_headless_auto_contract(

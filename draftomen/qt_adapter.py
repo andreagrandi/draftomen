@@ -70,6 +70,7 @@ from draftomen.test_draft import (
     TestDraftError,
     TestDraftOfferIdentity,
     TestDraftRuntime,
+    TestDraftSet,
     default_test_draft_bulk_file,
     default_test_draft_checkout_dir,
 )
@@ -92,7 +93,7 @@ class TestDraftSessionState:
     phase: TestDraftPhase = "idle"
     mode: TestDraftMode | None = None
     set_code: str | None = None
-    supported_set_codes: tuple[str, ...] = ()
+    supported_sets: tuple[TestDraftSet, ...] = ()
     default_set_code: str | None = None
     pending: bool = False
     offer_generation: int = 0
@@ -100,12 +101,16 @@ class TestDraftSessionState:
     bulk_file_missing: bool = False
     bulk_file_downloading: bool = False
     bulk_file_download_percent: int | None = None
+    card_data_downloading: bool = False
 
 
 class TestDraftFactory(Protocol):
-    """Serve simulated drafts and their sources, create their runtimes, and report the supported set codes."""
+    """Serve simulated drafts and their sources, create their runtimes, and report the supported sets."""
 
-    def supported_set_codes(self) -> tuple[str, ...]:
+    def supported_sets(self) -> tuple[TestDraftSet, ...]:
+        ...
+
+    def download_card_data(self, *, set_code: str) -> None:
         ...
 
     def bulk_file_missing(self) -> bool:
@@ -762,6 +767,10 @@ class SessionAdapter(QObject):
     def downloadTestDraftBulkFile(self) -> None:
         return
 
+    @Slot(str)
+    def downloadTestDraftCardData(self, set_code: str) -> None:
+        del set_code
+
     def setTestDraftFactory(self, test_draft_factory: TestDraftFactory | None) -> None:
         """Ignore a Mocked Draft factory change for frontends without the capability."""
 
@@ -949,12 +958,13 @@ class _LiveSessionWorker(QObject):
         self._test_draft_leaving = False
         self._test_draft_phase: TestDraftPhase = "idle"
         self._test_draft_error: str | None = None
-        self._test_draft_supported_set_codes: tuple[str, ...] = ()
+        self._test_draft_supported_sets: tuple[TestDraftSet, ...] = ()
         self._test_draft_default_set_code: str | None = None
         self._test_draft_bulk_file_missing = False
         self._test_draft_bulk_downloading = False
         self._test_draft_bulk_download_percent: int | None = None
         self._test_draft_bulk_download_completed = 0
+        self._test_draft_card_data_downloading = False
         self._authoritative_source: TestDraftSource = "arena"
         self._source_generation = 0
         self._runtime_generation = 0
@@ -1405,7 +1415,7 @@ class _LiveSessionWorker(QObject):
                 phase=self._test_draft_phase,
                 mode=self._test_draft_mode,
                 set_code=self._test_draft_set_code,
-                supported_set_codes=self._test_draft_supported_set_codes,
+                supported_sets=self._test_draft_supported_sets,
                 default_set_code=self._test_draft_default_set_code,
                 pending=self._test_draft_pending,
                 offer_generation=self._test_draft_offer_generation,
@@ -1413,6 +1423,7 @@ class _LiveSessionWorker(QObject):
                 bulk_file_missing=self._test_draft_bulk_file_missing,
                 bulk_file_downloading=self._test_draft_bulk_downloading,
                 bulk_file_download_percent=self._test_draft_bulk_download_percent,
+                card_data_downloading=self._test_draft_card_data_downloading,
             )
         )
 
@@ -1547,6 +1558,57 @@ class _LiveSessionWorker(QObject):
             self._test_draft_pending = False
             self._test_draft_bulk_downloading = False
             self._test_draft_bulk_download_percent = None
+            if not self._test_draft_interrupted():
+                self._refresh_test_draft_capability()
+            self._publish_test_draft_state()
+
+    @Slot(str)
+    def download_test_draft_card_data(self, set_code: str) -> None:
+        """Download one supported set's card data off the GUI thread."""
+
+        factory = self._test_draft_factory
+        if (
+            factory is None
+            or self._stop_requested
+            or self._test_draft_leaving
+            or self._test_draft_pending
+            or self._test_draft_runtime is not None
+        ):
+            return
+        option = next(
+            (
+                item
+                for item in self._test_draft_supported_sets
+                if item.code == set_code.strip().casefold()
+            ),
+            None,
+        )
+        if option is None:
+            self._test_draft_phase = "failed"
+            self._test_draft_error = f"Unsupported Mocked Draft set: {set_code}"
+            self._publish_test_draft_state()
+            return
+        self._test_draft_pending = True
+        self._test_draft_phase = "idle"
+        self._test_draft_error = None
+        self._test_draft_card_data_downloading = True
+        self._publish_test_draft_state()
+        try:
+            factory.download_card_data(set_code=option.code)
+        except Exception as error:
+            if self._test_draft_interrupted():
+                return
+            self._test_draft_phase = "failed"
+            self._test_draft_error = (
+                f"Card data for {option.name} ({option.code.upper()}) "
+                f"could not be downloaded: {error}"
+            )
+        else:
+            self._test_draft_phase = "idle"
+            self._test_draft_error = None
+        finally:
+            self._test_draft_pending = False
+            self._test_draft_card_data_downloading = False
             if not self._test_draft_interrupted():
                 self._refresh_test_draft_capability()
             self._publish_test_draft_state()
@@ -1686,22 +1748,23 @@ class _LiveSessionWorker(QObject):
         self._test_draft_leaving = False
 
     def _refresh_test_draft_capability(self) -> None:
-        """Publish the installed factory's supported set codes and default set."""
+        """Publish the installed factory's supported sets and default set."""
 
         factory = self._test_draft_factory
-        self._test_draft_supported_set_codes = ()
+        self._test_draft_supported_sets = ()
         self._test_draft_default_set_code = None
         self._test_draft_bulk_file_missing = False
         if factory is None:
             return
         try:
-            supported_codes = factory.supported_set_codes()
+            supported_sets = factory.supported_sets()
             bulk_file_missing = factory.bulk_file_missing()
         except Exception as error:
             self._test_draft_error = str(error)
             return
-        self._test_draft_supported_set_codes = supported_codes
+        self._test_draft_supported_sets = supported_sets
         self._test_draft_bulk_file_missing = bulk_file_missing
+        supported_codes = tuple(item.code for item in supported_sets)
         default_code = DEFAULT_TEST_DRAFT_SET_CODE.casefold()
         if default_code in supported_codes:
             self._test_draft_default_set_code = default_code
@@ -1800,6 +1863,7 @@ class LiveSessionAdapter(SessionAdapter):
     _testDraftPickRequested = Signal(int, int)
     _testDraftLeaveRequested = Signal()
     _testDraftDownloadRequested = Signal()
+    _testDraftCardDataDownloadRequested = Signal(str)
     _testDraftFactoryChanged = Signal(object)
 
     def __init__(
@@ -1862,6 +1926,10 @@ class LiveSessionAdapter(SessionAdapter):
         )
         self._testDraftDownloadRequested.connect(
             worker.download_test_draft_bulk_file,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._testDraftCardDataDownloadRequested.connect(
+            worker.download_test_draft_card_data,
             Qt.ConnectionType.QueuedConnection,
         )
         self._testDraftFactoryChanged.connect(
@@ -1933,6 +2001,12 @@ class LiveSessionAdapter(SessionAdapter):
         if self._test_draft_state.get("enabled") is not True or self._worker is None:
             return
         self._testDraftDownloadRequested.emit()
+
+    @Slot(str)
+    def downloadTestDraftCardData(self, set_code: str) -> None:
+        if self._test_draft_state.get("enabled") is not True or self._worker is None:
+            return
+        self._testDraftCardDataDownloadRequested.emit(set_code)
 
     def setTestDraftFactory(self, test_draft_factory: TestDraftFactory | None) -> None:
         """Install or clear the developer Mocked Draft capability at runtime."""

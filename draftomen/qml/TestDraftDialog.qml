@@ -23,10 +23,36 @@ Dialog {
         const value = root.testDraft ? root.testDraft.bulk_file_download_percent : null
         return value === null || value === undefined ? -1 : Math.round(Number(value))
     }
-    readonly property var supportedSetCodes: root.testDraft && root.testDraft.supported_set_codes
-        ? root.testDraft.supported_set_codes : []
-    readonly property string selectedSetCode: root.supportedSetCodes.length > 0
-        ? String(root.supportedSetCodes[Math.max(0, setSelector.currentIndex)]) : ""
+    readonly property bool cardDataDownloading: root.testDraft !== null
+        && root.testDraft.card_data_downloading === true
+    readonly property var supportedSets: root.testDraft && root.testDraft.supported_sets
+        ? root.testDraft.supported_sets : []
+    property string chosenSetCode: ""
+    readonly property int selectedSetIndex: {
+        const sets = root.supportedSets
+        if (sets.length === 0)
+            return -1
+        const testDraft = root.testDraft
+        const defaultCode = testDraft && testDraft.default_set_code
+            ? String(testDraft.default_set_code).toLowerCase() : ""
+        let defaultIndex = 0
+        for (let index = 0; index < sets.length; index++) {
+            const code = String(sets[index].code).toLowerCase()
+            if (code === root.chosenSetCode)
+                return index
+            if (code === defaultCode)
+                defaultIndex = index
+        }
+        return defaultIndex
+    }
+    readonly property var selectedSet: root.selectedSetIndex >= 0
+        ? root.supportedSets[root.selectedSetIndex] : null
+    readonly property string selectedSetCode: root.selectedSet
+        ? String(root.selectedSet.code) : ""
+    readonly property string selectedSetLabel: root.selectedSet
+        ? String(root.selectedSet.name) + " (" + root.selectedSetCode.toUpperCase() + ")" : ""
+    readonly property bool selectedSetReady: root.selectedSet !== null
+        && root.selectedSet.card_data_cached === true
 
     ButtonGroup {
         id: testDraftModeGroup
@@ -98,21 +124,17 @@ Dialog {
             objectName: "testDraftSetSelector"
             Layout.fillWidth: true
             enabled: !root.active && !root.pending
-            model: root.supportedSetCodes.map(function(code) {
-                return String(code).toUpperCase()
+            model: root.supportedSets.map(function(set) {
+                return String(set.name) + " (" + String(set.code).toUpperCase() + ")"
             })
-            currentIndex: {
-                const codes = root.supportedSetCodes
-                if (codes.length === 0)
-                    return -1
-                const testDraft = root.testDraft
-                const defaultCode = testDraft && testDraft.default_set_code
-                    ? String(testDraft.default_set_code).toLowerCase() : ""
-                for (let index = 0; index < codes.length; index++) {
-                    if (String(codes[index]).toLowerCase() === defaultCode)
-                        return index
-                }
-                return 0
+            currentIndex: root.selectedSetIndex
+            // Each published state rebuilds the model, and ComboBox then resets
+            // currentIndex to 0, so restore the selected set once the reset lands.
+            onModelChanged: Qt.callLater(function() {
+                setSelector.currentIndex = root.selectedSetIndex
+            })
+            onActivated: function(index) {
+                root.chosenSetCode = String(root.supportedSets[index].code).toLowerCase()
             }
             Accessible.name: "Mocked Draft set"
             Accessible.description: "Choose the simulated draft set."
@@ -165,6 +187,14 @@ Dialog {
             Accessible.name: "Scryfall card data download progress"
         }
 
+        ProgressBar {
+            objectName: "testDraftCardDataProgress"
+            Layout.fillWidth: true
+            visible: root.cardDataDownloading
+            indeterminate: true
+            Accessible.name: "Set card data download progress"
+        }
+
         Label {
             objectName: "testDraftMessage"
             Layout.fillWidth: true
@@ -176,6 +206,8 @@ Dialog {
                         ? "Downloading Scryfall card data… " + root.bulkDownloadPercent + "%"
                         : "Downloading Scryfall card data…"
                 }
+                if (root.cardDataDownloading)
+                    return "Downloading card data for " + root.selectedSetLabel + "…"
                 if (root.phase === "starting")
                     return "Starting the simulated draft…"
                 if (root.phase === "drafting" && root.active) {
@@ -188,6 +220,9 @@ Dialog {
                 if (root.bulkFileMissing)
                     return "The Scryfall card data Mocked Draft needs is missing. "
                         + "Download it to continue."
+                if (root.selectedSet !== null && !root.selectedSetReady)
+                    return "Card data for " + root.selectedSetLabel
+                        + " is not downloaded yet. Download it to start."
                 return "Choose a set and mode, then start."
             }
             color: root.error.length > 0 ? Theme.error : Theme.text
@@ -210,6 +245,22 @@ Dialog {
                 + "the configured Mocked Draft bulk file location."
             onClicked: sessionProvider.downloadTestDraftBulkFile()
         }
+
+        DimensionalButton {
+            objectName: "testDraftCardDataDownloadButton"
+            Layout.fillWidth: true
+            text: "Download set card data"
+            accented: false
+            visible: root.selectedSet !== null && !root.selectedSetReady && !root.active
+            enabled: !root.pending
+            activeFocusOnTab: true
+            focusPolicy: Qt.StrongFocus
+            Accessible.role: Accessible.Button
+            Accessible.name: "Download card data for " + root.selectedSetLabel
+            Accessible.description: "Download and validate the Draft Omen card data "
+                + "this set needs before a Mocked Draft can start."
+            onClicked: sessionProvider.downloadTestDraftCardData(root.selectedSetCode)
+        }
     }
 
     footer: DialogButtonBox {
@@ -226,7 +277,7 @@ Dialog {
             text: "Start"
             accented: true
             visible: !root.active
-            enabled: !root.pending && root.supportedSetCodes.length > 0
+            enabled: !root.pending && root.selectedSetReady
             implicitWidth: 120
             activeFocusOnTab: true
             focusPolicy: Qt.StrongFocus

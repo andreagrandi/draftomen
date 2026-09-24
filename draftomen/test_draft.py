@@ -121,6 +121,19 @@ class TestDraftStep:
 
 
 @dataclass(frozen=True, slots=True)
+class TestDraftSet:
+    """Describe one Draftmancer-supported set offered for a simulated draft.
+    The cached flag reports whether local card data already exists.
+    """
+
+    __test__ = False
+
+    code: str
+    name: str
+    card_data_cached: bool
+
+
+@dataclass(frozen=True, slots=True)
 class TestDraftRunResult:
     """Expose one automatic run's steps, completion, and build snapshot.
     The build snapshot is the published result of the normal build request.
@@ -646,6 +659,33 @@ def supported_test_draft_set_codes(
         ) from error
 
 
+def supported_test_draft_sets(
+    *,
+    draftmancer_dir: Path,
+    cached_set_codes: Iterable[str],
+) -> tuple[TestDraftSet, ...]:
+    """List every set the pinned simulator supports, ordered by full name.
+    Sets missing from Draftmancer's set metadata fall back to their code.
+    """
+
+    draftmancer_codes = _load_supported_set_codes(draftmancer_dir=draftmancer_dir)
+    codes = supported_test_draft_set_codes(
+        draftmancer_dir=draftmancer_dir,
+        draftomen_set_codes=draftmancer_codes,
+    )
+    names = _load_set_names(draftmancer_dir=draftmancer_dir)
+    cached = {code.casefold() for code in cached_set_codes}
+    sets = (
+        TestDraftSet(
+            code=code,
+            name=names.get(code, code.upper()),
+            card_data_cached=code in cached,
+        )
+        for code in codes
+    )
+    return tuple(sorted(sets, key=lambda item: (item.name.casefold(), item.code)))
+
+
 def create_test_draft_runtime(
     *,
     draftmancer_dir: Path,
@@ -911,6 +951,39 @@ def _load_supported_set_codes(*, draftmancer_dir: Path) -> tuple[str, ...]:
             stage="startup",
         )
     return tuple(draftmancer_codes)
+
+
+def _load_set_names(*, draftmancer_dir: Path) -> dict[str, str]:
+    """Read full set names from the pinned simulator's SetsInfos metadata.
+    Entries without a usable name are skipped so callers can fall back.
+    """
+
+    sets_infos_path = draftmancer_dir / "src" / "data" / "SetsInfos.json"
+    if not sets_infos_path.is_file():
+        raise TestDraftError(
+            f"missing Draftmancer set metadata file: {sets_infos_path}",
+            stage="startup",
+        )
+    try:
+        payload = json.loads(sets_infos_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise TestDraftError(
+            f"could not parse Draftmancer set metadata file {sets_infos_path}: {error}",
+            stage="startup",
+        ) from error
+    if not isinstance(payload, dict):
+        raise TestDraftError(
+            "Draftmancer SetsInfos.json must contain an object",
+            stage="startup",
+        )
+    names: dict[str, str] = {}
+    for code, info in payload.items():
+        if not isinstance(code, str) or not isinstance(info, dict):
+            continue
+        name = info.get("fullName")
+        if isinstance(name, str) and name.strip():
+            names[code.casefold()] = name.strip()
+    return names
 
 
 def _load_canonical_grp_ids_by_scryfall_id(

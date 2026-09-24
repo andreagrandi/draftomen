@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- List every Draftmancer-supported set in the Mocked Draft picker by full name
+  and code, such as "The Hobbit (HOB)", in alphabetical name order. A set
+  without cached card data shows a "Download set card data" button, and Start
+  stays disabled until a validated download completes. A failed download shows
+  the set and the reason, and Start stays disabled. (#657)
 - Label the desktop card-detail score "Augmented DO Score" when a validated
   per-set model adjusted it, in both wide and narrow layouts and in the
   accessible description. Scores keep the plain "DO Score" label when the
