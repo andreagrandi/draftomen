@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Remove the narrative score paragraph from the desktop Live Draft card
+  details in wide and compact layouts. The card image and the structured
+  score, win rate, grade, ALSA, and fit fields stay. (#654)
 - List every Draftmancer-supported set in the Mocked Draft picker by full name
   and code, such as "The Hobbit (HOB)", in alphabetical name order. A set
   without cached card data shows a "Download set card data" button, and Start

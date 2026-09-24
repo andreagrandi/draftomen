@@ -2711,13 +2711,8 @@ try:
         ),
         "the selected production recommendation",
     )
-    first_recommendation = selected_recommendation(provider.state)
-    assert first_recommendation["explanation"]
-    wait_until(
-        lambda: live_explanation.property("text")
-            == first_recommendation["explanation"],
-        "the visible initial recommendation rationale",
-    )
+    assert live_explanation.isVisible() is False
+    assert live_explanation.property("text") == ""
     wait_until(
         lambda: provider.state["card_image"]["phase"] == "ready"
         and live_preview.property("imageCurrent") is True
@@ -2739,12 +2734,6 @@ try:
         for card in provider.state["recommendations"]["cards"]
         if card["card"]["grp_id"] != first_recommendation_grp_id
     )
-    next_recommendation = next(
-        card
-        for card in provider.state["recommendations"]["cards"]
-        if card["card"]["grp_id"] == next_recommendation_grp_id
-    )
-    assert next_recommendation["explanation"]
     provider.chooseRecommendation(next_recommendation_grp_id)
     wait_until(
         lambda: provider.state["card_image"]["grp_id"] == next_recommendation_grp_id
@@ -2753,11 +2742,11 @@ try:
             == next_recommendation_grp_id
         and live_preview.property("imageCurrent") is True
         and live_image.isVisible()
-        and live_explanation.property("text")
-            == next_recommendation["explanation"]
         and image_source(live_image) != first_recommendation_source,
-        "the visible changed recommendation image and rationale",
+        "the visible changed recommendation image",
     )
+    assert live_explanation.isVisible() is False
+    assert live_explanation.property("text") == ""
     next_recommendation_source = image_source(live_image)
     assert next_recommendation_source
     assert recording_session.build_requests == []
@@ -3230,6 +3219,9 @@ def check_mode(*, detailed, width, height, expected, stress):
         "the preview mode layout",
     )
     assert explanation.property("text") == expected, (detailed, width, height)
+    assert explanation.isVisible() is not detailed, (detailed, width, height)
+    if detailed:
+        return
     assert_contained(preview, details, explanation)
     if not detailed:
         assert details.property("activeFocusOnTab") is False
@@ -3305,10 +3297,8 @@ try:
             == initial_recommendation["card"]["grp_id"]
     )
     initial_concise = initial_immutable.concise_explanation
-    initial_detailed = initial_immutable.explanation
     assert initial_concise
-    assert initial_detailed
-    assert initial_concise != initial_detailed
+    assert initial_immutable.explanation
     wait_until(
         lambda: explanation.property("text") == initial_concise,
         "the compact production explanation",
@@ -3324,7 +3314,7 @@ try:
         detailed=True,
         width=360,
         height=600,
-        expected=initial_detailed,
+        expected="",
         stress=False,
     )
     check_mode(
@@ -3338,14 +3328,14 @@ try:
         detailed=True,
         width=550,
         height=600,
-        expected=initial_detailed,
+        expected="",
         stress=False,
     )
     check_mode(
         detailed=True,
         width=550,
         height=430,
-        expected=initial_detailed,
+        expected="",
         stress=False,
     )
 
@@ -3373,9 +3363,12 @@ try:
     wait_until(
         lambda: provider.state["recommendations"]["selected_grp_id"]
             == replacement.card.grp_id
-        and explanation.property("text") == replacement_detailed,
-        "the retained detailed replacement explanation",
+        and preview.property("recommendation")["card"]["grp_id"]
+            == replacement.card.grp_id,
+        "the replacement recommendation in detailed mode",
     )
+    assert explanation.property("text") == ""
+    assert explanation.isVisible() is False
     preview.setProperty("detailedIntel", False)
     application.processEvents()
     assert explanation.property("text") == replacement_concise, (
@@ -3384,10 +3377,8 @@ try:
     )
     preview.setProperty("detailedIntel", True)
     application.processEvents()
-    assert explanation.property("text") == replacement_detailed, (
-        explanation.property("text"),
-        replacement_detailed,
-    )
+    assert explanation.property("text") == ""
+    assert explanation.isVisible() is False
 
     other_recommendation = next(
         recommendation
@@ -3399,11 +3390,10 @@ try:
         lambda: provider.state["recommendations"]["selected_grp_id"]
             == other_recommendation.card.grp_id
         and preview.property("recommendation")["card"]["grp_id"]
-            == other_recommendation.card.grp_id
-        and explanation.property("text")
-            == other_recommendation.explanation,
-        "the selected recommendation identity and detailed explanation",
+            == other_recommendation.card.grp_id,
+        "the selected recommendation identity in detailed mode",
     )
+    assert explanation.property("text") == ""
     preview.setProperty("detailedIntel", False)
     application.processEvents()
     assert explanation.property("text") == other_recommendation.concise_explanation
@@ -3448,19 +3438,10 @@ try:
         * 14
         + "\\n\\nCompact final sentence."
     )
-    detailed_long = (
-        "Detailed paragraph one uses ordinary words and enough content to wrap "
-        "across several lines. It also includes literal <b>literal</b> & "
-        "punctuation. " * 24
-        + "\\n\\nDetailed paragraph two keeps the explanation genuinely long "
-        "so the existing Flickable must scroll rather than truncate it. "
-        * 24
-        + "\\n\\nDetailed final sentence."
-    )
     stress_recommendation = replace(
         initial_immutable,
         concise_explanation=compact_long,
-        explanation=detailed_long,
+        explanation=compact_long,
     )
     stress_snapshot = replace(
         recording_session.snapshot,
@@ -3482,17 +3463,17 @@ try:
     )
     for detailed, width, height, expected in (
         (False, 360, 600, compact_long),
-        (True, 360, 600, detailed_long),
+        (True, 360, 600, ""),
         (False, 550, 600, compact_long),
-        (True, 550, 600, detailed_long),
-        (True, 550, 430, detailed_long),
+        (True, 550, 600, ""),
+        (True, 550, 430, ""),
     ):
         check_mode(
             detailed=detailed,
             width=width,
             height=height,
             expected=expected,
-            stress=True,
+            stress=not detailed,
         )
 
     host.setProperty("useOverride", True)
@@ -5265,7 +5246,8 @@ assert wide_preview.mapToItem(root.contentItem(), QPointF(0, wide_preview.height
 assert wide_preview.property("imageFrameHeight") > 0
 assert wide_preview.findChild(QObject, "cardPreviewFacts") is not None
 assert wide_preview.findChild(QObject, "cardPreviewScores") is not None
-assert wide_preview.findChild(QObject, "cardPreviewExplanation") is not None
+wide_explanation = wide_preview.findChild(QObject, "cardPreviewExplanation")
+assert wide_explanation is not None and not wide_explanation.isVisible()
 wide_frame = find_visual_item(wide_preview, "cardPreviewImageFrame")
 wide_details = find_visual_item(wide_preview, "cardPreviewDetails")
 assert wide_frame is not None and wide_frame.isVisible()
@@ -7930,12 +7912,10 @@ with TemporaryDirectory() as preferences_dir:
         explanation = preview.findChild(QObject, "cardPreviewExplanation")
         scores = preview.findChild(QObject, "cardPreviewScores")
         total_score = preview.findChild(QObject, "cardPreviewDoScore")
-        assert explanation is not None and explanation.isVisible()
+        assert explanation is not None and not explanation.isVisible()
         assert scores is not None and scores.isVisible()
         assert total_score is not None and total_score.isVisible()
-        assert explanation.property("text") == (
-            selected_recommendation.explanation or "Explanation unavailable."
-        )
+        assert explanation.property("text") == ""
         assert total_score.property("text") == str(selected_recommendation.score)
         preview_accessibility = accessible_output(preview)
         assert preview_accessibility[0] == (
