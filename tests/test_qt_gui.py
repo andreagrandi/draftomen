@@ -768,7 +768,6 @@ def test_gui_mocked_draft_hob_offer_loads_validated_augmented_model(
         publisher=lambda snapshot: None,
         splash_enabled=True,
         contextual_adjustments_enabled=True,
-        ai_enhanced_suggestions_enabled=True,
     )
     try:
         inspection = runtime.controller.start()

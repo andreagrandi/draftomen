@@ -512,7 +512,6 @@ class _GuiTestDraftFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
-        ai_enhanced_suggestions_enabled: bool,
     ) -> TestDraftRuntime:
         """Create one isolated simulated draft with the shared preferences."""
         return create_test_draft_runtime(
@@ -527,7 +526,6 @@ class _GuiTestDraftFactory:
             snapshot_publisher=publisher,
             splash_enabled=splash_enabled,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
-            ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
             simulation_app_dir=self._simulation_app_dir,
             augmented_model_client=self._augmented_model_client,
             card_image_service=CardImageService(

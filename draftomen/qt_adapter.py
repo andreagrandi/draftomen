@@ -46,7 +46,6 @@ from draftomen.session import (
     AugmentedModelRequest,
     CardImageFetchResult,
     CardImageRequest,
-    ChangeAiEnhancedSuggestions,
     ChangeAugmentation,
     ChangeContextualScoring,
     ChangeRanking,
@@ -131,7 +130,6 @@ class TestDraftFactory(Protocol):
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
-        ai_enhanced_suggestions_enabled: bool,
     ) -> TestDraftRuntime:
         ...
 
@@ -710,10 +708,6 @@ class SessionAdapter(QObject):
         self._dispatch(command=ChangeContextualScoring(enabled=enabled))
 
     @Slot(bool)
-    def setAiEnhancedSuggestionsEnabled(self, enabled: bool) -> None:
-        self._dispatch(command=ChangeAiEnhancedSuggestions(enabled=enabled))
-
-    @Slot(bool)
     def setAugmentedIntelligenceEnabled(self, enabled: bool) -> None:
         self._dispatch(command=ChangeAugmentation(enabled=enabled))
 
@@ -966,8 +960,6 @@ class _LiveSessionWorker(QObject):
         self._runtime_generation = 0
         self._splash_enabled = True
         self._contextual_adjustments_enabled = True
-        self._ai_enhanced_suggestions_enabled = True
-        self._arena_ai_enabled = True
 
     def _arena_snapshot_publisher(self, snapshot: LiveSessionSnapshot) -> None:
         if self._authoritative_source != "arena":
@@ -1117,8 +1109,6 @@ class _LiveSessionWorker(QObject):
             self._contextual_adjustments_enabled = (
                 initial_snapshot.contextual_adjustments_enabled
             )
-            self._ai_enhanced_suggestions_enabled = True
-            self._arena_ai_enabled = True
             self._start_image_worker()
             self._start_profile_worker()
             self._start_augmented_model_worker()
@@ -1173,12 +1163,6 @@ class _LiveSessionWorker(QObject):
                 self._splash_enabled = command.enabled
             elif isinstance(command, ChangeContextualScoring):
                 self._contextual_adjustments_enabled = command.enabled
-            elif isinstance(command, ChangeAiEnhancedSuggestions):
-                self._ai_enhanced_suggestions_enabled = command.enabled
-            if self._authoritative_source == "arena" and isinstance(
-                command, ChangeAiEnhancedSuggestions
-            ):
-                self._arena_ai_enabled = command.enabled
             if isinstance(command, ChangeContextualScoring):
                 return
             self._request_one_card_image()
@@ -1478,7 +1462,6 @@ class _LiveSessionWorker(QObject):
                 ),
                 splash_enabled=self._splash_enabled,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
-                ai_enhanced_suggestions_enabled=self._ai_enhanced_suggestions_enabled,
             )
             if self._stop_requested or self._test_draft_leaving:
                 runtime.close()
@@ -1767,13 +1750,6 @@ class _LiveSessionWorker(QObject):
                     enabled=self._contextual_adjustments_enabled
                 )
             )
-        if self._arena_ai_enabled != self._ai_enhanced_suggestions_enabled:
-            session.dispatch(
-                command=ChangeAiEnhancedSuggestions(
-                    enabled=self._ai_enhanced_suggestions_enabled
-                )
-            )
-            self._arena_ai_enabled = self._ai_enhanced_suggestions_enabled
 
     @Slot()
     def stop(self) -> None:

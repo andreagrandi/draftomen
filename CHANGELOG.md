@@ -6,6 +6,9 @@
 - Remove retired relationship controls and advice from desktop Settings, status,
   recommendations, and card detail. Keep contextual scoring, Augmented
   Intelligence, and Mocked Draft. (#674)
+- Remove the retired AI-enhanced-suggestions preference from the Qt adapter
+  and desktop Test Draft factory. Keep the shared session command and
+  non-desktop runtime option. (#675)
 - Stop emitting legacy relationship fields in audit and backtest output while
   preserving reads of existing audit and draft-history records. (#669)
 - Preserve source-supplied ALSA in generated HOB profiles so recommendation

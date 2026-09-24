@@ -1519,7 +1519,6 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
         adapter.changeRanking("win_rate")
         adapter.setSplashEnabled(False)
         adapter.setContextualScoringEnabled(False)
-        adapter.setAiEnhancedSuggestionsEnabled(False)
         adapter.requestRatings()
         adapter.requestBuild("BG")
         build_grp_id = adapter.state["build"]["spells"][0]["card"]["grp_id"]
@@ -1529,7 +1528,7 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
         adapter.retryError("missing-error")
         _process_until(
             application=qcore_application,
-            predicate=lambda: len(session.commands) == 12,
+            predicate=lambda: len(session.commands) == 11,
             description="all queued live session commands",
         )
         assert [type(command) for command in session.commands] == [
@@ -1538,7 +1537,6 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
             ChangeRanking,
             ChangeSplashPreference,
             ChangeContextualScoring,
-            ChangeAiEnhancedSuggestions,
             RequestRatingsDownload,
             RequestBuild,
             FocusBuildCard,
@@ -1546,7 +1544,6 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
             DismissError,
             RetryError,
         ]
-        assert session.commands[5] == ChangeAiEnhancedSuggestions(enabled=False)
         assert session.dispatch_thread_ids
         assert all(thread_id != gui_thread_id for thread_id in session.dispatch_thread_ids)
     finally:
@@ -3051,7 +3048,6 @@ class _RecordingTestDraftFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
-        ai_enhanced_suggestions_enabled: bool,
     ) -> object:
         self.create_calls.append(
             {
@@ -3060,9 +3056,6 @@ class _RecordingTestDraftFactory:
                 "splash_enabled": splash_enabled,
                 "contextual_adjustments_enabled": (
                     contextual_adjustments_enabled
-                ),
-                "ai_enhanced_suggestions_enabled": (
-                    ai_enhanced_suggestions_enabled
                 ),
             }
         )
@@ -3077,9 +3070,6 @@ class _RecordingTestDraftFactory:
                 publisher=publisher,
                 splash_enabled=splash_enabled,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
-                ai_enhanced_suggestions_enabled=(
-                    ai_enhanced_suggestions_enabled
-                ),
             )
         if self.runtime is None:
             raise AssertionError("the test-draft factory has no runtime.")
@@ -3872,7 +3862,6 @@ class _RealTestDraftRuntimeFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
-        ai_enhanced_suggestions_enabled: bool,
     ) -> _CountingTestDraftRuntime:
         """Build one runtime that publishes through the worker's publisher."""
 
@@ -3896,7 +3885,6 @@ class _RealTestDraftRuntimeFactory:
             snapshot_publisher=recording_publisher,
             splash_enabled=splash_enabled,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
-            ai_enhanced_suggestions_enabled=ai_enhanced_suggestions_enabled,
             simulation_app_dir=simulation_app_dir,
             socket_client=self._socket,
             augmented_model_client=self._augmented_model_client,
@@ -4530,16 +4518,18 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
     try:
         adapter.setSplashEnabled(False)
         adapter.setContextualScoringEnabled(False)
-        adapter.setAiEnhancedSuggestionsEnabled(False)
         _process_until(
             application=qcore_application,
             predicate=lambda: arena.commands
             == [
                 ChangeSplashPreference(enabled=False),
                 ChangeContextualScoring(enabled=False),
-                ChangeAiEnhancedSuggestions(enabled=False),
             ],
             description="the Arena preference commands",
+        )
+        assert not any(
+            isinstance(command, ChangeAiEnhancedSuggestions)
+            for command in arena.commands
         )
         assert arena.snapshot.recommendations.splash_enabled is False
         assert arena.snapshot.contextual_adjustments_enabled is False
@@ -4555,8 +4545,8 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
             "set_code": "hob",
             "splash_enabled": False,
             "contextual_adjustments_enabled": False,
-            "ai_enhanced_suggestions_enabled": False,
         }
+        assert "ai_enhanced_suggestions_enabled" not in factory.create_calls[0]
         assert adapter.state["recommendations"]["splash_enabled"] is False
         assert adapter.state["contextual_adjustments_enabled"] is False
 
@@ -4593,11 +4583,10 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
             for command in arena.commands
             if isinstance(command, ChangeContextualScoring)
         ] == [ChangeContextualScoring(enabled=False)]
-        assert [
-            command
+        assert not any(
+            isinstance(command, ChangeAiEnhancedSuggestions)
             for command in arena.commands
-            if isinstance(command, ChangeAiEnhancedSuggestions)
-        ] == [ChangeAiEnhancedSuggestions(enabled=False)]
+        )
         assert source.close_calls == 1
     finally:
         adapter.shutdown()
@@ -4609,7 +4598,7 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
 # behavior the review could only infer from the surrounding mechanism:
 #   F2  a processed Leave owns the worker, so a queued Start is dropped
 #   F1  a superseded runtime's publisher cannot change published state
-#   F3  contextual and AI choices made during a Test Draft replay onto Arena
+#   F3  a contextual choice made during a Test Draft replays onto Arena
 #   F4  the GUI thread keeps ticking while a queued pick is blocked
 # --------------------------------------------------------------------------
 
@@ -4803,7 +4792,7 @@ def test_live_adapter_ignores_publications_from_a_superseded_test_draft_runtime(
         adapter.wait_for_shutdown()
 
 
-def test_live_adapter_replays_contextual_and_ai_preferences_on_leave(
+def test_live_adapter_replays_contextual_preference_on_leave(
     qcore_application: QCoreApplication,
 ) -> None:
     arenas: list[_FakeSession] = []
@@ -4842,15 +4831,17 @@ def test_live_adapter_replays_contextual_and_ai_preferences_on_leave(
         assert adapter.state["contextual_adjustments_enabled"] is True
 
         adapter.setContextualScoringEnabled(False)
-        adapter.setAiEnhancedSuggestionsEnabled(False)
         _process_until(
             application=qcore_application,
             predicate=lambda: simulated_session.commands
             == [
                 ChangeContextualScoring(enabled=False),
-                ChangeAiEnhancedSuggestions(enabled=False),
             ],
-            description="the preference commands inside the simulated draft",
+            description="the contextual preference inside the simulated draft",
+        )
+        assert not any(
+            isinstance(command, ChangeAiEnhancedSuggestions)
+            for command in simulated_session.commands
         )
         assert arena.commands == []
 
@@ -4858,21 +4849,19 @@ def test_live_adapter_replays_contextual_and_ai_preferences_on_leave(
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
-            and len(arena.commands) == 3
+            and len(arena.commands) == 2
             and [
                 command
                 for command in arena.commands
-                if isinstance(
-                    command,
-                    (ChangeContextualScoring, ChangeAiEnhancedSuggestions),
-                )
+                if isinstance(command, ChangeContextualScoring)
             ]
-            == [
-                ChangeContextualScoring(enabled=False),
-                ChangeAiEnhancedSuggestions(enabled=False),
-            ]
+            == [ChangeContextualScoring(enabled=False)]
             and ChangeAugmentation(enabled=False) in arena.commands,
             description="the replayed Arena preferences",
+        )
+        assert not any(
+            isinstance(command, ChangeAiEnhancedSuggestions)
+            for command in arena.commands
         )
         assert adapter.state["test_draft"]["active"] is False
         assert adapter.state["contextual_adjustments_enabled"] is False
