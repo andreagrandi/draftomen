@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Preserve source-supplied ALSA in generated HOB profiles so recommendation
+  rows and selected-card details can show it. Keep missing values unavailable.
+  (#653)
 - Remove rating attribution from shared recommendation comparisons while
   keeping other selected factor explanations intact. (#652)
 - Keep the desktop Augmented Intelligence choice on across restarts and

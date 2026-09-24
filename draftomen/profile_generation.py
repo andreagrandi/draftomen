@@ -529,6 +529,7 @@ class _Deck:
 class _CardObservation:
     grp_id: int
     raw_value: float | None
+    average_last_seen_at: float | None
     successes: int
     samples: int
 
@@ -1153,6 +1154,7 @@ def _validated_card_observations(
         valid[map_grp_id] = _CardObservation(
             grp_id=map_grp_id,
             raw_value=raw_value,
+            average_last_seen_at=stats.average_last_seen_at,
             successes=successes,
             samples=games,
         )
@@ -1736,7 +1738,13 @@ def _card_ratings(
             source=_CARD_RATE_SOURCE,
             aggregate_evidence=authority,
         )
-        result.append(CardRating(card_key=key, gih_win_rate=estimate))
+        result.append(
+            CardRating(
+                card_key=key,
+                gih_win_rate=estimate,
+                average_last_seen_at=chosen.average_last_seen_at,
+            )
+        )
     return tuple(result)
 
 

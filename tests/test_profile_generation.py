@@ -800,7 +800,17 @@ def test_profile_gzip_is_compact_deterministic_and_strictly_loadable() -> None:
     assert result.report.gzip_sha256 == hashlib.sha256(compressed).hexdigest()
 
 
-def test_generated_card_ratings_never_include_alsa() -> None:
+def test_generated_card_ratings_preserve_source_alsa_and_missing_value() -> None:
+    ratings = _format_ratings("QuickDraft")
+    ratings = replace(
+        ratings,
+        card_ratings={
+            grp_id: replace(stats, average_last_seen_at=None)
+            if grp_id == 2
+            else stats
+            for grp_id, stats in ratings.card_ratings.items()
+        },
+    )
     result = generate_set_profile(
         set_code="TST",
         event_format="QuickDraft",
@@ -808,14 +818,69 @@ def test_generated_card_ratings_never_include_alsa() -> None:
         card_database=_database(),
         source_manifest=PublicDumpManifest(sources=(_source("no-data.csv"),)),
         generated_at=GENERATED_AT,
-        ratings=_ratings(),
+        ratings=ratings,
         config=_config(),
     )
 
-    assert result.profile.card_ratings
-    assert result.profile.card_ratings[0].average_last_seen_at is None
-    assert "average_last_seen_at" not in result.profile.to_bytes().decode()
+    profile = result.profile
+    support = next(
+        card for card in profile.card_ratings if card.card_key == "oracle_id:support-id"
+    )
+    removal = next(
+        card for card in profile.card_ratings if card.card_key == "oracle_id:removal-id"
+    )
+    serialized = json.loads(profile.to_bytes())
+    serialized_ratings = {
+        card["card_key"]: card for card in serialized["card_ratings"]
+    }
+    restored = SetProfile.from_json(serialized)
+    restored_ratings = {card.card_key: card for card in restored.card_ratings}
 
+    assert support.average_last_seen_at == 3.5
+    assert removal.average_last_seen_at is None
+    assert serialized_ratings["oracle_id:support-id"]["average_last_seen_at"] == 3.5
+    assert "average_last_seen_at" not in serialized_ratings["oracle_id:removal-id"]
+    assert restored_ratings["oracle_id:support-id"].average_last_seen_at == 3.5
+    assert restored_ratings["oracle_id:removal-id"].average_last_seen_at is None
+
+
+def test_aggregate_card_alsa_uses_chosen_source() -> None:
+    exact = _format_ratings("QuickDraft", card1_games=0)
+    premier = _format_ratings("PremierDraft")
+    premier = replace(
+        premier,
+        card_ratings={
+            **premier.card_ratings,
+            1: replace(
+                premier.card_ratings[1],
+                average_last_seen_at=4.25,
+            ),
+        },
+    )
+    result = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage="early",
+        card_database=_database(),
+        source_manifest=PublicDumpManifest(sources=(_source("no-data.csv"),)),
+        generated_at=GENERATED_AT,
+        ratings=exact,
+        fallback_ratings=(premier,),
+        config=_config(),
+    )
+
+    card = next(
+        card for card in result.profile.card_ratings if card.card_key == "oracle_id:support-id"
+    )
+    serialized_ratings = {
+        rating["card_key"]: rating
+        for rating in json.loads(result.profile.to_bytes())["card_ratings"]
+    }
+
+    assert card.average_last_seen_at == 4.25
+    assert card.gih_win_rate.aggregate_evidence is not None
+    assert card.gih_win_rate.aggregate_evidence.source_format == "premierdraft"
+    assert serialized_ratings["oracle_id:support-id"]["average_last_seen_at"] == 4.25
 
 def test_report_pins_canonical_rating_and_requested_card_inputs() -> None:
     kwargs = dict(
