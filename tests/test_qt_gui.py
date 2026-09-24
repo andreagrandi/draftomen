@@ -2352,6 +2352,15 @@ def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
             return found
     return None
 
+def visible_texts(item: QQuickItem) -> list[str]:
+    values = []
+    text = item.property("text")
+    if item.isVisible() and isinstance(text, str) and text:
+        values.append(text)
+    for child in item.childItems():
+        values.extend(visible_texts(child))
+    return values
+
 def selected_recommendation(state):
     recommendations = state["recommendations"]
     selected_grp_id = recommendations["selected_grp_id"]
@@ -2601,16 +2610,10 @@ try:
     )
     assert first_comparison_summary == expected_comparison_summary
     assert "mainly from" not in first_comparison_summary
-    comparison = root.findChild(QObject, "recommendationComparisonSummary")
-    confidence = root.findChild(QObject, "recommendationConfidenceSummary")
-    live_view = root.findChild(QObject, "liveDraftView")
-    ranking = root.findChild(QObject, "rankingSelector")
-    assert (
-        comparison is not None
-        and confidence is not None
-        and live_view is not None
-        and ranking is not None
-    )
+    assert root.findChild(QObject, "recommendationComparisonSummary") is None
+    live_view = find_visual_item(root.contentItem(), "liveDraftView")
+    ranking = find_visual_item(root.contentItem(), "rankingSelector")
+    assert live_view is not None and ranking is not None
     wait_until(
         lambda: provider.state["recommendations"]["comparison_summary"]
         == first_comparison_summary,
@@ -2620,42 +2623,23 @@ try:
         expected_comparison_summary
     )
     assert "mainly from" not in provider.state["recommendations"]["comparison_summary"]
-    assert comparison.isVisible()
-    assert comparison.property("text") == expected_comparison_summary
-    assert "mainly from" not in comparison.property("text")
+    status_message = provider.state["status"]["message"]
+    assert status_message.startswith("Pack ")
+    assert ", pick 6" in status_message
+    draft = provider.state["draft"]
+    expected_heading = (
+        f"Pack {draft['pack_number'] + 1} · Pick {draft['pick_number'] + 1}"
+    )
 
-    def assert_comparison_layout(*, width: int, height: int) -> None:
+    def assert_redundant_header_lines_absent(*, width: int, height: int) -> None:
         root.resize(width, height)
         application.processEvents()
-        assert comparison.isVisible()
-        assert comparison.property("text") == first_comparison_summary
-        assert comparison.width() > 0
-        assert comparison.height() > 0
-        assert float(comparison.property("implicitHeight")) <= (
-            comparison.height() + 1
-        )
-        assert float(comparison.property("paintedHeight")) <= (
-            comparison.height() + 1
-        )
-        comparison_top_left = comparison.mapToScene(QPointF(0, 0))
-        comparison_bottom_right = comparison.mapToScene(
-            QPointF(comparison.width(), comparison.height())
-        )
-        live_top_left = live_view.mapToScene(QPointF(0, 0))
-        live_bottom_right = live_view.mapToScene(
-            QPointF(live_view.width(), live_view.height())
-        )
-        ranking_top_left = ranking.mapToScene(QPointF(0, 0))
-        assert comparison_top_left.x() >= live_top_left.x() - 1
-        assert comparison_top_left.y() >= live_top_left.y() - 1
-        assert comparison_bottom_right.x() <= live_bottom_right.x() + 1
-        assert comparison_bottom_right.y() <= live_bottom_right.y() + 1
-        assert comparison_bottom_right.x() <= ranking_top_left.x() + 1
-        if confidence.isVisible():
-            confidence_bottom_right = confidence.mapToScene(
-                QPointF(confidence.width(), confidence.height())
-            )
-            assert comparison_top_left.y() >= confidence_bottom_right.y() - 1
+        texts = visible_texts(live_view)
+        assert expected_heading in texts
+        assert first_comparison_summary not in texts
+        assert status_message not in texts
+        assert not any("DO recommendation" in text for text in texts)
+        assert ranking.isVisible()
 
     for ranking_mode in ("win_rate", "alsa", "mv"):
         provider.changeRanking(ranking_mode)
@@ -2667,7 +2651,6 @@ try:
         assert provider.state["recommendations"]["comparison_summary"] == (
             first_comparison_summary
         )
-        assert comparison.property("text") == first_comparison_summary
 
     for recommendation in provider.state["recommendations"]["cards"][:2]:
         grp_id = recommendation["card"]["grp_id"]
@@ -2676,7 +2659,6 @@ try:
             lambda: provider.state["recommendations"]["selected_grp_id"] == grp_id,
             "the focused production recommendation",
         )
-        assert comparison.property("text") == first_comparison_summary
         assert provider.state["recommendations"]["comparison_summary"] == (
             first_comparison_summary
         )
@@ -2690,9 +2672,9 @@ try:
     )
 
 
-    assert_comparison_layout(width=1440, height=900)
-    assert_comparison_layout(width=760, height=900)
-    assert_comparison_layout(width=680, height=640)
+    assert_redundant_header_lines_absent(width=1440, height=900)
+    assert_redundant_header_lines_absent(width=760, height=900)
+    assert_redundant_header_lines_absent(width=680, height=640)
 
 
     root.resize(760, 900)
@@ -2841,33 +2823,8 @@ try:
         == second_comparison_summary,
         "the subsequent production recommendation comparison",
     )
-    assert comparison.isVisible()
-    assert comparison.property("text") == second_comparison_summary
-
-    single_card_recommendations = replace(
-        second_snapshot.recommendations,
-        cards=second_snapshot.recommendations.cards[:1],
-        comparison_summary=None,
-    )
-    recording_session._publish(
-        replace(
-            second_snapshot,
-            recommendations=single_card_recommendations,
-        )
-    )
-    wait_until(
-        lambda: provider.state["recommendations"]["comparison_summary"] is None,
-        "the cleared single-card production comparison",
-    )
-    assert comparison.isVisible() is False
-    recording_session._publish(second_snapshot)
-    wait_until(
-        lambda: provider.state["recommendations"]["comparison_summary"]
-        == second_comparison_summary,
-        "the restored subsequent production comparison",
-    )
-    assert comparison.isVisible()
-    assert comparison.property("text") == second_comparison_summary
+    application.processEvents()
+    assert second_comparison_summary not in visible_texts(live_view)
 
     with log_path.open(mode="a", encoding="utf-8") as log_file:
         log_file.writelines(fixture_log_lines[49:])
@@ -6173,6 +6130,16 @@ def assert_visible_active_focus(item: QQuickItem) -> None:
     assert bottom_right.y() <= root.height()
 
 
+def visible_texts(item: QQuickItem) -> list[str]:
+    values = []
+    text = item.property("text")
+    if item.isVisible() and isinstance(text, str) and text:
+        values.append(text)
+    for child in item.childItems():
+        values.extend(visible_texts(child))
+    return values
+
+
 def assert_visual_item_inside(parent: QQuickItem, child: QQuickItem) -> None:
     parent_top_left = parent.mapToScene(QPointF(0, 0))
     parent_bottom_right = parent.mapToScene(QPointF(parent.width(), parent.height()))
@@ -6316,24 +6283,24 @@ assert narrow_filter is not None and narrow_filter.isVisible()
 assert narrow_live_preview is not None and narrow_live_preview.isVisible()
 assert narrow_live_pool is not None and narrow_live_pool.isVisible() is False
 assert narrow_row is not None and narrow_row.height() >= 100
-comparison = root.findChild(QObject, "recommendationComparisonSummary")
-assert comparison is not None
-state_before_markup = dict(provider.state)
-recommendations_with_markup = dict(state_before_markup["recommendations"])
-markup_summary = (
-    "DO recommendation: <b>Alpha & Beta</b> ranks ahead of <i>Gamma</i> "
-    "because this deliberately long plain-text comparison wraps without markup."
+assert root.findChild(QObject, "recommendationComparisonSummary") is None
+state_before_headline = dict(provider.state)
+recommendations_with_headline = dict(state_before_headline["recommendations"])
+headline_summary = "DO recommendation: Alpha ranks ahead of Beta."
+recommendations_with_headline["comparison_summary"] = headline_summary
+state_with_headline = dict(state_before_headline)
+state_with_headline["recommendations"] = recommendations_with_headline
+state_with_headline["status"] = dict(
+    state_before_headline["status"], message="Pack 1, pick 6."
 )
-recommendations_with_markup["comparison_summary"] = markup_summary
-state_with_markup = dict(state_before_markup)
-state_with_markup["recommendations"] = recommendations_with_markup
-provider._replace_state(state=state_with_markup)
+provider._replace_state(state=state_with_headline)
 application.processEvents()
-assert comparison.isVisible()
-assert comparison.property("text") == markup_summary
-assert comparison.width() > 0
-assert float(comparison.property("paintedHeight")) <= comparison.height() + 1
-provider._replace_state(state=state_before_markup)
+narrow_live_view = find_visual_item(root.contentItem(), "liveDraftView")
+assert narrow_live_view is not None
+narrow_live_texts = visible_texts(narrow_live_view)
+assert headline_summary not in narrow_live_texts
+assert "Pack 1, pick 6." not in narrow_live_texts
+provider._replace_state(state=state_before_headline)
 application.processEvents()
 
 assert narrow_row.width() == narrow_controls.width()

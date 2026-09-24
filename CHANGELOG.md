@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Remove the "DO recommendation" comparison sentence and the repeated
+  "Pack 1, pick 6." status line from the desktop Live Draft header in wide
+  and narrow layouts. The pack heading, ranked cards, and controls stay. (#655)
 - Remove the narrative score paragraph from the desktop Live Draft card
   details in wide and compact layouts. The card image and the structured
   score, win rate, grade, ALSA, and fit fields stay. (#654)
