@@ -452,7 +452,7 @@ def _likely_projection(
         (
             card,
             quantity,
-            resolve_card_roles(card, profile=None),
+            resolve_card_roles(card),
         )
         for card, quantity in _cards_for_pool(
             pool_grp_ids=pool_grp_ids,
@@ -762,7 +762,7 @@ def _evaluate(
         (
             card,
             quantity,
-            resolve_card_roles(card, profile=None),
+            resolve_card_roles(card),
         )
         for card, quantity in cards
     )

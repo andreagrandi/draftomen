@@ -56,8 +56,6 @@ from draftomen.set_profile import (
     SourceMetadata,
 )
 from draftomen.semantic_roles import (
-    CompiledRoleProfile,
-    ProfileCard,
     Role,
     RoleAssignment,
     resolve_card_roles,
@@ -390,21 +388,18 @@ def test_contextual_rationale_keeps_material_term_order_and_evidence() -> None:
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=7),
-            profile=None,
         ).assignments
     }
     pool_roles = {
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=1),
-            profile=None,
         ).assignments
     }
     draw_enabler_roles = {
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=2),
-            profile=None,
         ).assignments
     }
     assert Role.GO_WIDE_PAYOFF in candidate_roles
@@ -657,7 +652,6 @@ def test_contextual_reasons_require_more_than_one_hundredth_point(
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=7),
-            profile=None,
         ).assignments
     }
     assert Role.DRAW in local_roles
@@ -3692,14 +3686,12 @@ def test_early_quality_dominates_a_small_contextual_role_bonus() -> None:
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=7),
-            profile=None,
         ).assignments
     }
     pool_roles = {
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=1),
-            profile=None,
         ).assignments
     }
     assert Role.DRAW in candidate_roles
@@ -3735,7 +3727,6 @@ def test_legacy_role_profile_cannot_change_basic_do_or_contextual_output() -> No
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=7),
-            profile=None,
         ).assignments
     }
     assert forged_roles != local_roles
@@ -3743,15 +3734,20 @@ def test_legacy_role_profile_cannot_change_basic_do_or_contextual_output() -> No
     assert Role.SACRIFICE_OUTLET not in local_roles
 
     forged_payload = clean_profile.to_json()
-    forged_payload["role_profile"] = CompiledRoleProfile(
-        set_code="TST",
-        cards=(
-            ProfileCard(
-                key="arena_id:7",
-                assignments=forged_assignments,
-            ),
-        ),
-    ).to_json()
+    forged_payload["role_profile"] = {
+        "cards": [
+            {
+                "card_name": None,
+                "key": "arena_id:7",
+                "roles": [assignment.to_json() for assignment in forged_assignments],
+            }
+        ],
+        "classifier_version": "1.5",
+        "profile_schema_version": 2,
+        "role_schema_version": 6,
+        "schema_version": 2,
+        "set_code": "tst",
+    }
     forged_payload["schema_version"] = 3
     forged_payload["enhancement_status"] = "not-enhanced"
     forged_profile = SetProfile.from_json(forged_payload)
@@ -3808,14 +3804,12 @@ def test_local_role_package_adds_value_without_forcing_the_card() -> None:
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=1),
-            profile=None,
         ).assignments
     }
     payoff_roles = {
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=2),
-            profile=None,
         ).assignments
     }
     assert Role.TOKEN_MAKER in enabler_roles
@@ -4049,14 +4043,12 @@ def test_detailed_rationale_explains_base_rating_and_material_role_gap() -> None
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=7),
-            profile=None,
         ).assignments
     }
     pool_roles = {
         assignment.role
         for assignment in resolve_card_roles(
             database.lookup(grp_id=1),
-            profile=None,
         ).assignments
     }
     assert Role.DRAW in candidate_roles
