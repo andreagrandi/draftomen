@@ -485,18 +485,15 @@ Rectangle {
                     }
                 }
 
+                // Detailed intel already shows every score as a structured
+                // field, so the narrative paragraph only repeats them.
                 Label {
                     objectName: "cardPreviewExplanation"
+                    visible: !root.detailedIntel
                     Layout.fillWidth: true
-                    text: {
-                        if (!root.recommendation)
-                            return ""
-                        if (root.detailedIntel) {
-                            return root.recommendation.explanation
-                                || "Explanation unavailable."
-                        }
-                        return root.recommendation.concise_explanation || ""
-                    }
+                    text: root.recommendation && !root.detailedIntel
+                        ? root.recommendation.concise_explanation || ""
+                        : ""
                     textFormat: Text.PlainText
                     color: Theme.textMuted
                     font.pixelSize: Theme.textPixelSize(12)
