@@ -47,7 +47,6 @@ from draftomen.session import (
     CardView,
     ChangeRanking,
     DataLoadPhase,
-    EnhancementAvailabilityStatus,
     LiveSessionSnapshot,
     OperationKind,
     SetCardDataLoader,
@@ -76,7 +75,6 @@ from draftomen.tui import (
     _format_splash_details,
     _format_tui_card_view,
 )
-from tests.test_pickengine import _relationship_database
 
 FIXTURE_LOG_PATH = Path(__file__).parent / "fixtures" / "quick-draft-msh-player.log"
 FIXTURE_ACCOUNT_ID = "FIXTURECLIENTID1234567890"
@@ -198,152 +196,6 @@ async def _assert_tui_pre_draft_readiness_uses_cached_profile_snapshot(
         assert snapshot.ratings.phase is DataLoadPhase.READY
         assert snapshot.ratings.set_code == "MSH"
         assert readiness.display
-
-
-def test_tui_renders_and_toggles_enhancement_availability(tmp_path: Path) -> None:
-    asyncio.run(
-        _assert_tui_renders_and_toggles_enhancement_availability(tmp_path=tmp_path)
-    )
-
-
-async def _assert_tui_renders_and_toggles_enhancement_availability(
-    tmp_path: Path,
-) -> None:
-    _write_enhanced_relationship_profile(tmp_path=tmp_path)
-    app = _tui_app(tmp_path=tmp_path, card_database=_relationship_database())
-    off_copy = (
-        "AI-enhanced suggestions unavailable in production for TST: "
-        "legacy relationship scoring is disabled."
-    )
-
-    async with app.run_test(size=(120, 24)) as pilot:
-        app.process_lines(
-            lines=[line.replace("MSH", "TST") for line in _first_pack_lines()]
-        )
-        await pilot.pause()
-        await _await_enhancement_status(
-            app=app,
-            pilot=pilot,
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-        )
-
-        assert off_copy in _status_text(app=app)
-        footer_key = await _await_enhancement_footer_key(
-            app=app,
-            pilot=pilot,
-            disabled=True,
-        )
-        assert footer_key.description == "AI enhance"
-
-        await pilot.press("e")
-        await _await_enhancement_status(
-            app=app,
-            pilot=pilot,
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-        )
-        disabled_state = app.session.snapshot.enhancement_availability
-        assert disabled_state.status is EnhancementAvailabilityStatus.POLICY_DISABLED
-        assert not disabled_state.enabled
-        assert off_copy in _status_text(app=app)
-        assert (
-            await _await_enhancement_footer_key(
-                app=app,
-                pilot=pilot,
-                disabled=True,
-            )
-        ).description == "AI enhance"
-
-        await pilot.press("e")
-        await _await_enhancement_status(
-            app=app,
-            pilot=pilot,
-            status=EnhancementAvailabilityStatus.POLICY_DISABLED,
-        )
-        restored_state = app.session.snapshot.enhancement_availability
-        assert not restored_state.enabled
-        assert off_copy in _status_text(app=app)
-
-@pytest.mark.parametrize(
-    ("scenario", "expected_status", "expected_message"),
-    [
-        (
-            "not-enhanced",
-            EnhancementAvailabilityStatus.NOT_ENHANCED,
-            "AI-enhanced suggestions unavailable for TST: profile is not AI-enhanced.",
-        ),
-        (
-            "incompatible",
-            EnhancementAvailabilityStatus.INCOMPATIBLE,
-            "AI-enhanced suggestions unavailable for TST: "
-            "profile enhancement is invalid or incompatible.",
-        ),
-        (
-            "no-active-profile",
-            EnhancementAvailabilityStatus.UNAVAILABLE,
-            "AI-enhanced suggestions unavailable for TST: no usable set profile.",
-        ),
-    ],
-)
-def test_tui_disables_enhancement_command_when_unavailable(
-    tmp_path: Path,
-    scenario: str,
-    expected_status: EnhancementAvailabilityStatus,
-    expected_message: str,
-) -> None:
-    asyncio.run(
-        _assert_tui_disables_enhancement_command_when_unavailable(
-            tmp_path=tmp_path,
-            scenario=scenario,
-            expected_status=expected_status,
-            expected_message=expected_message,
-        )
-    )
-
-
-async def _assert_tui_disables_enhancement_command_when_unavailable(
-    *,
-    tmp_path: Path,
-    scenario: str,
-    expected_status: EnhancementAvailabilityStatus,
-    expected_message: str,
-) -> None:
-    if scenario != "no-active-profile":
-        profile = _relationship_enhanced_profile()
-        if scenario == "not-enhanced":
-            profile = replace(profile, enhancement=None)
-        dump_set_profile(
-            profile,
-            set_profile_path(
-                set_code="TST",
-                event_format=QUICK_DRAFT_FORMAT,
-                app_dir=tmp_path / "app",
-            ),
-        )
-    app = _tui_app(tmp_path=tmp_path)
-
-    async with app.run_test(size=(120, 24)) as pilot:
-        app.process_lines(
-            lines=[line.replace("MSH", "TST") for line in _first_pack_lines()]
-        )
-        await _await_enhancement_status(
-            app=app,
-            pilot=pilot,
-            status=expected_status,
-        )
-
-        assert expected_message in _status_text(app=app)
-        assert "AI enhancement: On" not in _status_text(app=app)
-        await _await_enhancement_footer_key(
-            app=app,
-            pilot=pilot,
-            disabled=True,
-        )
-
-        snapshot_before = app.session.snapshot
-        await pilot.press("e")
-        await pilot.pause()
-        assert app.session.snapshot is snapshot_before
-        assert expected_message in _status_text(app=app)
 
 
 def test_tui_profile_refresh_propagates_force_and_completes_through_session(
@@ -905,6 +757,18 @@ async def _assert_fixture_stream_updates_pack_panel(tmp_path: Path) -> None:
         assert "Data: neutral prior" in status
         assert "deterministic fallback" in status
         assert "Card data from 17Lands (17lands.com)" in status
+        assert "AI enhancement" not in status
+        assert "AI-enhanced suggestions" not in status
+        assert not any(
+            key.description == "AI enhance"
+            for key in app.query_one(Footer).query(FooterKey)
+        )
+        _, rationale = _assert_focused_pack_rationale(
+            app=app,
+            snapshot=snapshot,
+        )
+        assert rationale is not None
+        assert rationale in _focused_card_text(app=app)
 
 
 def test_tui_account_indicator_uses_login_display_name_without_auth_screen_name(
@@ -3866,61 +3730,3 @@ def _card_rating(
         average_last_seen_at=alsa,
     )
 
-
-def _relationship_enhanced_profile() -> SetProfile:
-    """Build the compatible enhanced relationship fixture profile."""
-
-    from tests.test_pickengine import (
-        _relationship_profile,
-        _token_sacrifice_relationship,
-    )
-
-    return _relationship_profile(relationships=(_token_sacrifice_relationship(),))
-
-
-def _write_enhanced_relationship_profile(*, tmp_path: Path) -> None:
-    dump_set_profile(
-        _relationship_enhanced_profile(),
-        set_profile_path(
-            set_code="TST",
-            event_format=QUICK_DRAFT_FORMAT,
-            app_dir=tmp_path / "app",
-        ),
-    )
-
-def _find_enhancement_footer_key(*, app: DraftomenTuiApp) -> FooterKey | None:
-    footer = app.query_one(Footer)
-    for key_widget in footer.query(FooterKey):
-        if key_widget.action == "toggle_ai_enhanced_suggestions":
-            return key_widget
-    return None
-
-
-async def _await_enhancement_footer_key(
-    *,
-    app: DraftomenTuiApp,
-    pilot: Pilot,
-    disabled: bool,
-) -> FooterKey:
-    for _ in range(40):
-        await pilot.pause(0.05)
-        key_widget = _find_enhancement_footer_key(app=app)
-        if key_widget is not None and key_widget.has_class("-disabled") is disabled:
-            return key_widget
-    raise AssertionError(
-        "The AI enhance footer key never rendered "
-        + ("disabled." if disabled else "enabled.")
-    )
-
-
-async def _await_enhancement_status(
-    *,
-    app: DraftomenTuiApp,
-    pilot: Pilot,
-    status: EnhancementAvailabilityStatus,
-) -> None:
-    for _ in range(40):
-        await pilot.pause(0.05)
-        if app.session.snapshot.enhancement_availability.status is status:
-            return
-    raise AssertionError(f"The session never published status {status.value}.")

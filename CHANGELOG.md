@@ -11,6 +11,8 @@
   non-desktop runtime option. (#675)
 - Stop emitting legacy relationship fields in audit and backtest output while
   preserving reads of existing audit and draft-history records. (#669)
+- Remove legacy AI-enhancement controls and status from Textual and plain
+  watch while preserving ordinary recommendations. (#671)
 - Preserve source-supplied ALSA in generated HOB profiles so recommendation
   rows and selected-card details can show it. Keep missing values unavailable.
   (#653)

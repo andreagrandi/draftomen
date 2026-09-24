@@ -32,7 +32,6 @@ from draftomen.replay import (
 )
 from draftomen.session import (
     DataLoadPhase,
-    EnhancementAvailabilityStatus,
     LiveSession,
     LiveSessionEvent,
     OperationKind,
@@ -80,7 +79,6 @@ class PlainLogWatcher:
             )
         )
         self._closed = False
-        self._last_enhancement_status: str | None = None
         self._last_profile_status: str | None = None
         self._selected_card_data = set_card_data_loader is not None
         self._last_card_data_status: str | None = None
@@ -258,13 +256,6 @@ class PlainLogWatcher:
             output_lines.append(profile_status)
             self._last_profile_status = profile_status
 
-        enhancement_status = self._enhancement_status_text()
-        if (
-            enhancement_status is not None
-            and enhancement_status != self._last_enhancement_status
-        ):
-            output_lines.append(enhancement_status)
-        self._last_enhancement_status = enhancement_status
         return _join_output_lines(lines=output_lines)
 
     def _card_data_status_text(self) -> str | None:
@@ -285,17 +276,6 @@ class PlainLogWatcher:
             status += f" ({state.refresh_outcome})"
         return f"Status: {status}"
 
-    def _enhancement_status_text(self) -> str | None:
-        state = self.session.snapshot.enhancement_availability
-        if state.set_code is None:
-            return None
-        if state.status is EnhancementAvailabilityStatus.AVAILABLE:
-            return (
-                f"Status: AI enhancement: On for {state.set_code} — "
-                "profile-backed, prepared offline; no live AI"
-            )
-        return f"Status: {state.message}"
-
     def _presentation_card_database(self) -> CardDatabase:
         """Return the session's currently selected database for rendering."""
 
@@ -303,7 +283,6 @@ class PlainLogWatcher:
         if database is None:
             raise RuntimeError("Card metadata is not ready.")
         return database
-
 
     def _format_event(self, *, published: LiveSessionEvent) -> list[str]:
         event = published.event

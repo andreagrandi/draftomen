@@ -75,12 +75,10 @@ from draftomen.session import (
     BacktestResult,
     BuildResult,
     CardView,
-    ChangeAiEnhancedSuggestions,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
     DataLoadPhase,
-    EnhancementAvailabilityStatus,
     LiveSession,
     LiveSessionCommand,
     LiveSessionEvent,
@@ -593,7 +591,6 @@ class DraftomenTuiApp(App[None]):
         Binding("p", "rebuild_with_pair_override", "Pair", show=True),
         Binding("m", "toggle_mana_icons", "Mana", show=True),
         Binding("d", "download_ratings", "Data", show=True),
-        Binding("e", "toggle_ai_enhanced_suggestions", "AI enhance", show=True),
         Binding("r", "retry_card_data", "Retry card data", show=True),
         Binding("up", "navigate_previous_card", "Previous", show=False, priority=True),
         Binding("left", "navigate_previous_card", "Previous", show=False, priority=True),
@@ -915,39 +912,6 @@ class DraftomenTuiApp(App[None]):
             self._refresh_build_text_from_result()
 
         self._render_all()
-
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Gate the enhancement toggle on the shared immutable availability.
-        Returning None keeps the footer control visible but disabled and
-        prevents dispatch for non-enhanced active sets.
-        """
-
-        if action != "toggle_ai_enhanced_suggestions":
-            return True
-        status = self.session.snapshot.enhancement_availability.status
-        if status in (
-            EnhancementAvailabilityStatus.AVAILABLE,
-            EnhancementAvailabilityStatus.DISABLED,
-        ):
-            return True
-        return None
-
-    def action_toggle_ai_enhanced_suggestions(self) -> None:
-        """Dispatch the shared preference toggle for an enhanced active set.
-        The immutable session publication is the only rerender trigger.
-        """
-
-        state = self.session.snapshot.enhancement_availability
-        if state.status not in (
-            EnhancementAvailabilityStatus.AVAILABLE,
-            EnhancementAvailabilityStatus.DISABLED,
-        ):
-            return
-        self._dispatch_session_command_worker(
-            ChangeAiEnhancedSuggestions(
-                enabled=state.status is EnhancementAvailabilityStatus.DISABLED,
-            ),
-        )
 
     def action_download_ratings(self) -> None:
         """Offer or retry a hosted profile refresh for the active draft set."""
@@ -1302,8 +1266,6 @@ class DraftomenTuiApp(App[None]):
                 )
             except Exception:  # pragma: no cover - app may be shutting down.
                 pass
-            return
-        if isinstance(command, ChangeAiEnhancedSuggestions):
             return
         try:
             self.call_from_thread(self._schedule_profile_refresh)
@@ -2665,7 +2627,6 @@ class DraftomenTuiApp(App[None]):
         if confidence_label is not None:
             segments.append(f"Confidence: {confidence_label}")
         segments.append(self._splash_status_label())
-        segments.append(self._enhancement_status_label())
         icon_label = "on" if self.mana_icons_enabled else "off"
         segments.append(f"Mana icons: {icon_label}")
         if self.visibility_preferences.attribution:
@@ -2702,19 +2663,6 @@ class DraftomenTuiApp(App[None]):
     def _splash_status_label(self) -> str:
         enabled_label = "On" if self.visibility_preferences.splash_enabled else "Off"
         return f"Splash: {enabled_label}"
-
-    def _enhancement_status_label(self) -> str:
-        """Render the shared enhancement availability beside the splash status.
-        Copy is fixed for available and disabled states; other states publish
-        the session's own message so the active set stays visible.
-        """
-
-        state = self.session.snapshot.enhancement_availability
-        if state.status is EnhancementAvailabilityStatus.AVAILABLE:
-            return "AI enhancement: On — profile-backed, prepared offline; no live AI"
-        if state.status is EnhancementAvailabilityStatus.DISABLED:
-            return "AI enhancement: Off — profile-backed, prepared offline; no live AI"
-        return state.message
 
     def _column_keys_for_width(self) -> tuple[str, ...]:
         show_secondary = (
