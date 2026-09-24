@@ -283,22 +283,19 @@ No relationship is silently removed because it cannot be projected.
 
 Because the artifact is compiled into a schema-3 profile, the generated profile
 carries a role profile at `early` and `mature` even when the artifact supplies
-no draft dump: the compiled roles of every confirmed relationship that carries
-a projection matching the declared enabler-to-payoff rules are merged into the
-generated role profile, so participants the local classifier misses still
-resolve. Existing classifier assignments keep their confidence, parameters,
-provenance, and evidence. A relationship that still has no projection contributes
-no additional role or typed relationship support. `metadata` still omits the
-role profile. The runtime compatibility gate is unchanged and still requires
-a source-compatible projected relationship; preserving a relationship alone
-does not make it usable for scoring.
+no draft dump. Compiled roles from confirmed relationships with projections
+matching the declared enabler-to-payoff rules are merged into the role profile,
+so participants the local classifier misses can still resolve. Existing
+classifier assignments keep their confidence, parameters, provenance, and
+evidence. `metadata` still omits the role profile. Compiled profile roles can
+still affect ordinary contextual scoring, but stored relationship records no
+longer trigger typed relationship scoring, pool-ledger support records, or
+relationship advice.
 
 The command writes only below the fresh `$SMOKE` directory. It does not
 overwrite the saved confirmation, install a user profile, or publish a website
 manifest. Verify the generated profile through `load_scoring_profile` and a
-`LiveSession` before installing it; the required availability state is
-`available`. A profile can retain every confirmed relationship while only a
-subset has sufficiently complete evidence for typed scoring.
+`LiveSession` before installing it.
 Use the updated Draft Omen checkout or build for this verification. Generating
 a profile does not update an already-installed native application.
 
@@ -310,10 +307,8 @@ and no model call. It is the recovery path for already-paid work. It selects the
 newest confirmed artifact for the requested set unless `--artifact` pins an
 exact digest or `--run` restricts the search to one run directory. The
 generation stage is explicit and defaults to `metadata`: metadata recovery keeps
-its display-only purpose, while the runtime AI-enhanced suggestions gate needs a
-role-bearing `early` or `mature` stage, because it accepts a profile only when
-that profile carries both a compiled role profile and a compatible projected
-relationship.
+its display-only purpose, while an `early` or `mature` recovery can publish
+compiled profile roles that affect ordinary contextual scoring.
 
 ```sh
 uv run draftomen-tui republish-enrichment HOB \

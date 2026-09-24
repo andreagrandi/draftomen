@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Remove typed relationship scoring, pool-ledger support, and advice. Keep
+  schema-3 profile reading, compiled-role contextual scoring, generic synergy,
+  and existing audit and draft-history readers. (#673)
 - Retire relationship availability, advice, and preference state from shared
   and mocked sessions, test-draft APIs, and CLI output. Keep Basic DO scoring
   and contextual evidence. (#672)

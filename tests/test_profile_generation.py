@@ -13,7 +13,6 @@ import pytest
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DeckBuilderConfig
 from draftomen.pickengine import PickEngine
-from draftomen.pool_ledger import relationship_enhancement_is_compatible
 from draftomen.profile_enhancement import ProfileEnhancementError
 from draftomen.profile_generation import (
     ProfileEnhancementProvenance,
@@ -2609,8 +2608,7 @@ def test_typed_enrichment_set_and_card_data_mismatches_are_rejected() -> None:
 def test_confirmed_projection_roles_missing_from_the_classifier_survive_generated_profile_loading(
     tmp_path: Path,
 ) -> None:
-    # Production card data carries the canonical lowercase set code, and the runtime
-    # gate compares every card's set code with the casefolded profile set code.
+    # Keep the fixture card data on its canonical lowercase set code.
     database = CardDatabase(
         cards={
             card_id: replace(card, set_code="tst")
@@ -2662,10 +2660,6 @@ def test_confirmed_projection_roles_missing_from_the_classifier_survive_generate
     dump_set_profile(profile, path)
     loaded = load_set_profile(path, expected_set_code="TST", expected_format="QuickDraft")
     assert_merged_roles(loaded)
-    assert (
-        relationship_enhancement_is_compatible(set_profile=loaded, card_database=database)
-        is True
-    )
 
 
 def test_unprojected_relationship_adds_no_enrichment_roles() -> None:

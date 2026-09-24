@@ -12,7 +12,6 @@ import pytest
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, PickEngineConfig
 from draftomen.events import (
-    EXPECTED_PICKS_PER_PACK,
     EXPECTED_TOTAL_PICKS,
     PackOfferedEvent,
 )
@@ -25,7 +24,6 @@ from draftomen.pickengine import (
     MAX_SYNERGY_TERM,
     MAX_UNSUPPORTED_PAYOFF_TERM,
     MAX_URGENCY_TERM,
-    LEGACY_RELATIONSHIP_SCORING_ENABLED,
     PickEngine,
     PickReason,
     PickRationale,
@@ -36,13 +34,11 @@ from draftomen.pickengine import (
     recommendation_confidence_summary,
     render_pick_rationale_concise,
     render_pick_rationale_detailed,
-    render_relationship_advice_summary,
     score_pack,
 )
 from draftomen.pool_ledger import (
     COMPLETED_POOL,
     PoolRoleLedger,
-    RelationshipSupportOutcome,
     project_pool_role_ledger,
 )
 from draftomen.profile_generation import generate_set_profile
@@ -53,14 +49,6 @@ from draftomen.semantic_capability_records import (
     CapabilityZone,
     PrerequisiteKind,
     QuantityRelation,
-)
-from draftomen.semantic_condition_records import (
-    CONDITION_MAP_SCHEMA_VERSION,
-    ConditionCapability,
-    ConditionEvidence,
-    ConditionInteraction,
-    ConditionMap,
-    ConditionSource,
 )
 from draftomen.semantic_enrichment import (
     SEMANTIC_ENRICHMENT_SCHEMA_VERSION,
@@ -77,11 +65,9 @@ from draftomen.semantic_enrichment_records import (
 )
 from draftomen.semantic_relationship_records import (
     CardRelationship,
-    QualificationKind,
     RelationshipParticipant,
     RelationshipPrerequisite,
     RelationshipPrerequisiteProjection,
-    RelationshipQualification,
     RelationshipTiming,
     RelationshipZone,
 )
@@ -3778,6 +3764,9 @@ def test_supported_semantic_package_adds_value_without_forcing_the_card() -> Non
 
     by_id = {card.card.grp_id: card for card in scored_pack.cards}
     assert by_id[2].contextual_breakdown.synergy > 0
+    assert by_id[2].contextual_evidence == (
+        "supports go_wide semantic package (1.0 enabler(s), 0.0 payoff(s))",
+    )
     assert by_id[2].contextual_breakdown.unsupported_payoff == 0
     assert scored_pack.cards[0].card.grp_id == 3
 
@@ -4358,802 +4347,66 @@ def test_disabled_contextual_adjustments_preserve_locked_splash_behavior() -> No
     )
 
 
-
-def test_relationship_support_adds_only_a_bounded_synergy_increment() -> None:
-    database = _relationship_database()
-    control = _relationship_profile(relationships=(_legacy_outlet_relationship(),))
-    supported = _relationship_profile(relationships=(_token_sacrifice_relationship(),))
-
-    control_card = _score_relationship_target(database=database, profile=control)
-    supported_card = _score_relationship_target(database=database, profile=supported)
-
-    relationship_term = MAX_SYNERGY_TERM * 0.5 * 0.15
-    assert control_card.contextual_breakdown.synergy == 0.0
-    assert supported_card.contextual_breakdown.synergy == pytest.approx(relationship_term)
-    assert supported_card.contextual_breakdown.synergy <= MAX_SYNERGY_TERM
-    assert abs(supported_card.contextual_breakdown.aggregate) <= MAX_CONTEXTUAL_ADJUSTMENT
-    assert replace(
-        supported_card.contextual_breakdown,
-        synergy=0.0,
-    ) == control_card.contextual_breakdown
-    assert supported_card.raw_score - control_card.raw_score == pytest.approx(
-        relationship_term
-    )
-    assert control_card.contextual_evidence == ()
-    assert supported_card.contextual_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
-
-
-def test_production_pick_engine_matches_explicit_unenhanced_relationship_gate() -> None:
+def test_relationship_enhancement_does_not_change_basic_do() -> None:
     database = _relationship_database()
     profile = _relationship_profile(
         relationships=(_token_sacrifice_relationship(),)
     )
-    score_kwargs = {
-        "offered_grp_ids": (602, 605),
-        "card_database": database,
-        "pool_grp_ids": (601,),
-        "pack_number": 0,
-        "pick_number": 1,
-        "global_pick_index": 2,
-        "estimated_remaining_picks": 40,
-    }
+    without_enhancement = replace(profile, enhancement=None)
 
-    production = PickEngine(set_profile=profile).score_pack(**score_kwargs)
-    explicit_disabled = PickEngine(
-        set_profile=profile,
-        enhanced_relationships_enabled=False,
-    ).score_pack(**score_kwargs)
-
-    assert LEGACY_RELATIONSHIP_SCORING_ENABLED is False
-    assert production.cards == explicit_disabled.cards
-    assert production.role_ledger is not None
-    assert production.role_ledger.relationship_support == ()
-    assert all(card.relationship_contributions == () for card in production.cards)
-    assert all(card.semantic_relationship_advice == () for card in production.cards)
-
-
-def test_disabled_relationship_gate_clears_supplied_context_support_and_term() -> None:
-    database = _relationship_database()
-    profile = _relationship_profile(relationships=(_token_sacrifice_relationship(),))
-    ledger = _relationship_ledger(
+    with_relationships = _score_with_context(
         database=database,
         profile=profile,
+        offered_grp_ids=(602, 605),
         pool_grp_ids=(601,),
+        pack_number=0,
+        pick_number=1,
+        global_pick_index=2,
+        estimated_remaining_picks=EXPECTED_TOTAL_PICKS - 2,
     )
-    context = PickScoringContext(set_profile=profile, role_ledger=ledger)
-    assert ledger.relationship_support
-
-    def scored_pack(*, enhanced_relationships_enabled: bool) -> ScoredPack:
-        return PickEngine(
-            scoring_context=context,
-            enhanced_relationships_enabled=enhanced_relationships_enabled,
-        ).score_pack(
-            offered_grp_ids=(602,),
-            card_database=database,
-            pool_grp_ids=(601,),
-        )
-
-    enabled = scored_pack(enhanced_relationships_enabled=True)
-    disabled = scored_pack(enhanced_relationships_enabled=False)
-
-    relationship_term = MAX_SYNERGY_TERM * 0.5 * 0.15
-    assert enabled.role_ledger is context.role_ledger
-    assert enabled.cards[0].contextual_breakdown.synergy == pytest.approx(
-        relationship_term
-    )
-    assert enabled.cards[0].contextual_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
-
-    assert disabled.role_ledger is not None
-    assert disabled.role_ledger.relationship_support == ()
-    assert disabled.scoring_context is not None
-    assert disabled.scoring_context.role_ledger == replace(
-        ledger, relationship_support=()
-    )
-    assert disabled.cards[0].contextual_breakdown == replace(
-        enabled.cards[0].contextual_breakdown,
-        synergy=0.0,
-    )
-    assert disabled.cards[0].raw_score == pytest.approx(
-        enabled.cards[0].raw_score - relationship_term
-    )
-    assert disabled.cards[0].contextual_evidence == ()
-    assert disabled.cards[0].relationship_contributions == ()
-    assert context.role_ledger.relationship_support == ledger.relationship_support
-
-
-@pytest.mark.parametrize(
-    ("outcome", "expected_factor"),
-    (
-        (RelationshipSupportOutcome.SUPPORTED, 1.0),
-        (RelationshipSupportOutcome.CONDITIONAL, 0.5),
-        (RelationshipSupportOutcome.INCOMPATIBLE, 0.0),
-        (RelationshipSupportOutcome.UNSUPPORTED, 0.0),
-    ),
-)
-def test_relationship_outcomes_have_deterministic_bounded_treatment(
-    outcome: RelationshipSupportOutcome,
-    expected_factor: float,
-) -> None:
-    database = _relationship_database()
-    profile = _relationship_profile(
-        relationships=(_token_sacrifice_relationship(),)
-    )
-    ledger = _relationship_ledger(
+    without_relationships = _score_with_context(
         database=database,
-        profile=profile,
+        profile=without_enhancement,
+        offered_grp_ids=(602, 605),
         pool_grp_ids=(601,),
-    )
-    support = ledger.relationship_support[0]
-    qualification = RelationshipQualification(
-        kind=QualificationKind.CHOICE,
-        evidence=support.source_prerequisites[0].evidence,
-        selector="Create",
-        occurrence=0,
-    )
-    support = replace(
-        support,
-        outcome=outcome,
-        source_in_projected_deck=False,
-        source_qualifications=(
-            (qualification,)
-            if outcome is RelationshipSupportOutcome.CONDITIONAL
-            else ()
-        ),
-    )
-    context = PickScoringContext(
-        set_profile=profile,
-        role_ledger=replace(ledger, relationship_support=(support,)),
+        pack_number=0,
+        pick_number=1,
+        global_pick_index=2,
+        estimated_remaining_picks=EXPECTED_TOTAL_PICKS - 2,
     )
 
-    card = PickEngine(
-        scoring_context=context,
-        enhanced_relationships_enabled=True,
-    ).score_pack(
-        offered_grp_ids=(602,),
-        card_database=database,
-        pool_grp_ids=(601,),
-    ).cards[0]
-
-    expected = MAX_SYNERGY_TERM * 0.5 * 0.15 * expected_factor
-    assert card.contextual_breakdown.synergy == pytest.approx(expected)
-    assert len(card.relationship_contributions) == 1
-    contribution = card.relationship_contributions[0]
-    assert contribution.support is support
-    assert contribution.raw_contribution == pytest.approx(expected)
-    assert contribution.effective_contribution == pytest.approx(expected)
-    payload = contribution.to_json()
-    assert payload["outcome"] == outcome.value
-    assert payload["profile_fingerprint"] == profile.fingerprint
-    assert payload["source"]["in_projected_deck"] is False
-    if outcome is RelationshipSupportOutcome.CONDITIONAL:
-        assert payload["source"]["qualifications"] == [qualification.to_json()]
-    if expected_factor == 0.0:
-        assert card.contextual_evidence == ()
-    else:
-        assert f"is {outcome.value}" in card.contextual_evidence[0]
-
-
-def test_duplicate_source_target_evidence_keeps_only_the_strongest_verdict() -> None:
-    database = _relationship_database()
-    profile = _relationship_profile(
-        relationships=(_token_sacrifice_relationship(),)
-    )
-    ledger = _relationship_ledger(
-        database=database,
-        profile=profile,
-        pool_grp_ids=(601,),
-    )
-    supported = ledger.relationship_support[0]
-    unsupported = replace(
-        supported,
-        finding_id="relationship:duplicate-unsupported",
-        outcome=RelationshipSupportOutcome.UNSUPPORTED,
-    )
-    context = PickScoringContext(
-        set_profile=profile,
-        role_ledger=replace(
-            ledger,
-            relationship_support=(unsupported, supported),
-        ),
-    )
-
-    card = PickEngine(
-        scoring_context=context,
-        enhanced_relationships_enabled=True,
-    ).score_pack(
-        offered_grp_ids=(602,),
-        card_database=database,
-        pool_grp_ids=(601,),
-    ).cards[0]
-
-    assert len(card.relationship_contributions) == 1
-    assert card.relationship_contributions[0].support is supported
-    assert card.relationship_contributions[0].effective_contribution > 0.0
-    assert "duplicate-unsupported" not in " ".join(card.contextual_evidence)
-
-
-def test_relationship_synergy_increment_is_multiplicative_in_stage_and_profile_weight() -> None:
-    database = _relationship_database()
-    control = _relationship_profile(relationships=(_legacy_outlet_relationship(),))
-    supported = _relationship_profile(relationships=(_token_sacrifice_relationship(),))
-
-    def relationship_delta(
-        *,
-        stage_index: int,
-        confidence: float,
-        maturity: ProfileMaturity,
-    ) -> float:
-        weights = {"confidence": confidence, "maturity": maturity}
-        control_card = _score_relationship_target(
-            database=database,
-            profile=replace(control, **weights),
-            stage_index=stage_index,
-        )
-        supported_card = _score_relationship_target(
-            database=database,
-            profile=replace(supported, **weights),
-            stage_index=stage_index,
-        )
-        assert supported_card.contextual_breakdown.synergy <= MAX_SYNERGY_TERM
-        assert abs(supported_card.contextual_breakdown.aggregate) <= (
-            MAX_CONTEXTUAL_ADJUSTMENT
-        )
-        return (
-            supported_card.contextual_breakdown.synergy
-            - control_card.contextual_breakdown.synergy
-        )
-
-    open_pick = relationship_delta(
-        stage_index=1,
-        confidence=1.0,
-        maturity=ProfileMaturity.MATURE,
-    )
-    late_pick = relationship_delta(
-        stage_index=EXPECTED_TOTAL_PICKS,
-        confidence=1.0,
-        maturity=ProfileMaturity.MATURE,
-    )
-    assert open_pick == pytest.approx(MAX_SYNERGY_TERM * 0.5 * 0.15)
-    assert late_pick == pytest.approx(MAX_SYNERGY_TERM * 0.5)
-    assert relationship_delta(
-        stage_index=EXPECTED_TOTAL_PICKS,
-        confidence=0.5,
-        maturity=ProfileMaturity.MATURE,
-    ) == pytest.approx(late_pick * 0.5)
-    assert relationship_delta(
-        stage_index=EXPECTED_TOTAL_PICKS,
-        confidence=1.0,
-        maturity=ProfileMaturity.EARLY,
-    ) == pytest.approx(late_pick * 0.8)
-
-
-def test_partially_capped_relationship_increment_reports_only_the_remainder() -> None:
-    database = _relationship_database()
-    assignments = (
-        *_RELATIONSHIP_ASSIGNMENTS,
-        (604, Role.TOKEN_MAKER, 1.0),
-        (609, Role.TOKEN_MAKER, 1.0),
-    )
-    supported = _relationship_profile(
-        relationships=(
-            _token_sacrifice_relationship(source_card_id=601),
-            _token_sacrifice_relationship(source_card_id=604),
-            _token_sacrifice_relationship(source_card_id=609),
-        ),
-        assignments=assignments,
-    )
-
-    supported_card = _score_relationship_target(
-        database=database,
-        profile=supported,
-        pool_grp_ids=(601, 604, 609),
-        stage_index=EXPECTED_TOTAL_PICKS,
-    )
-
-    assert supported_card.contextual_breakdown.synergy == MAX_SYNERGY_TERM
-    assert abs(supported_card.contextual_breakdown.aggregate) <= MAX_CONTEXTUAL_ADJUSTMENT
-    assert tuple(
-        item.raw_contribution for item in supported_card.relationship_contributions
-    ) == (0.75, 0.75, 0.75)
-    assert tuple(
-        item.effective_contribution
-        for item in supported_card.relationship_contributions
-    ) == (0.75, 0.75, 0.0)
-    assert "+0.00 bounded DO points" in supported_card.contextual_evidence[0]
-    synergy_reason = next(
-        reason
-        for reason in supported_card.rationale.reasons
-        if reason.kind == "synergy"
-    )
-    assert synergy_reason.preserved_evidence == supported_card.contextual_evidence
-    assert synergy_reason.contribution == MAX_SYNERGY_TERM
-
-
-def test_relationship_evidence_reports_the_effective_replacement_increment() -> None:
-    database = _relationship_database()
-    profile = _relationship_profile(
-        relationships=(_token_sacrifice_relationship(),),
-        assignments=(
-            *_RELATIONSHIP_ASSIGNMENTS,
-            (602, Role.GO_WIDE_PAYOFF, 1.0),
-        ),
-    )
-    ledger = _relationship_ledger(
-        database=database,
-        profile=profile,
-        pool_grp_ids=(601,),
-    )
-    assert ledger.stage is not None
-    ledger = replace(
-        ledger,
-        enabler_counts=(("go_wide", 1.0),),
-        payoff_counts=(("go_wide", 2.0),),
-        stage=replace(
-            ledger.stage,
-            pack_number=2,
-            pick_number=13,
-            global_pick_index=EXPECTED_TOTAL_PICKS,
-            estimated_remaining_picks=0,
-        ),
-    )
-    context = PickScoringContext(set_profile=profile, role_ledger=ledger)
-
-    card = PickEngine(
-        scoring_context=context,
-        enhanced_relationships_enabled=True,
-    ).score_pack(
-        offered_grp_ids=(602,),
-        card_database=database,
-        pool_grp_ids=(601,),
-    ).cards[0]
-
-    contribution = card.relationship_contributions[0]
-    assert contribution.raw_contribution == pytest.approx(0.75)
-    assert contribution.effective_contribution == pytest.approx(0.25)
-    assert card.contextual_breakdown.synergy == pytest.approx(0.75)
-    assert "+0.25 bounded DO points" in card.contextual_evidence[0]
-    assert contribution.to_json()["effective_contribution"] == pytest.approx(0.25)
-
-
-def test_saturated_generic_synergy_keeps_generic_evidence_for_a_zero_increment() -> None:
-    database = _relationship_database()
-    assignments = (*_RELATIONSHIP_ASSIGNMENTS, (602, Role.GO_WIDE_PAYOFF, 1.0))
-    control = _relationship_profile(
-        relationships=(_legacy_outlet_relationship(),),
-        assignments=assignments,
-    )
-    supported = _relationship_profile(
-        relationships=(_token_sacrifice_relationship(),),
-        assignments=assignments,
-    )
-
-    control_card = _score_relationship_target(
-        database=database,
-        profile=control,
-        pool_grp_ids=(601, 603),
-        stage_index=EXPECTED_TOTAL_PICKS,
-    )
-    supported_card = _score_relationship_target(
-        database=database,
-        profile=supported,
-        pool_grp_ids=(601, 603),
-        stage_index=EXPECTED_TOTAL_PICKS,
-    )
-
-    generic_evidence = "supports go_wide semantic package (2.0 enabler(s), 0.0 payoff(s))"
-    assert control_card.contextual_breakdown.synergy == MAX_SYNERGY_TERM
-    assert supported_card.contextual_breakdown.synergy == MAX_SYNERGY_TERM
-    assert supported_card.raw_score == control_card.raw_score
-    assert supported_card.contextual_evidence == (generic_evidence,)
-    assert len(supported_card.relationship_contributions) == 1
-    contribution = supported_card.relationship_contributions[0]
-    assert contribution.raw_contribution > 0.0
-    assert contribution.effective_contribution == 0.0
-    synergy_reason = next(
-        reason
-        for reason in supported_card.rationale.reasons
-        if reason.kind == "synergy"
-    )
-    assert synergy_reason.preserved_evidence == (generic_evidence,)
-    detailed = render_pick_rationale_detailed(scored_card=supported_card)
-    advice = render_relationship_advice_summary(scored_card=supported_card)
-    assert "Works with support already in your deck" in detailed
-    assert "Confirmed relationship support" not in detailed
-    assert "Drafted Omen Scrapwright" not in detailed
-    assert advice is not None
-    assert (
-        "Drafted Omen Scrapwright supports Warhorn Outlet: the pair connects "
-        "creature tokens to a sacrifice ability."
-    ) in advice
-    assert (
-        "It adds no extra DO points after existing synergy overlap and the synergy "
-        "limit is applied."
-    ) in advice
-    assert "relationship:" not in advice
-    assert "source:condition" not in advice
-
-
-def test_relationship_support_aggregates_distinct_sources_without_stacking_copies() -> None:
-    database = _relationship_database()
-    profile = _relationship_profile(
-        relationships=(
-            _token_sacrifice_relationship(source_card_id=601),
-            _token_sacrifice_relationship(source_card_id=604),
-        )
-    )
-
-    card = _score_relationship_target(
-        database=database,
-        profile=profile,
-        pool_grp_ids=(601, 604),
-    )
-
-    assert card.contextual_breakdown.synergy == pytest.approx(
-        MAX_SYNERGY_TERM * 0.75 * 0.15
-    )
-    assert len(card.relationship_contributions) == 2
-    assert tuple(
-        item.support.source_card_id for item in card.relationship_contributions
-    ) == (601, 604)
-    go_wide_profile = _relationship_profile(
-        relationships=(_token_go_wide_relationship(),)
-    )
-    single = _score_relationship_target(
-        database=database,
-        profile=go_wide_profile,
-        offered_grp_ids=(605,),
-        pool_grp_ids=(601,),
-    )
-    doubled = _score_relationship_target(
-        database=database,
-        profile=go_wide_profile,
-        offered_grp_ids=(605,),
-        pool_grp_ids=(601, 601),
-    )
-    assert doubled.raw_score == single.raw_score
-    assert len(doubled.relationship_contributions) == 1
-    assert doubled.relationship_contributions[0].raw_contribution == (
-        single.relationship_contributions[0].raw_contribution
-    )
-    assert doubled.relationship_contributions[0].effective_contribution == (
-        single.relationship_contributions[0].effective_contribution
-    )
-    ledger = _relationship_ledger(
-        database=database,
-        profile=go_wide_profile,
-        pool_grp_ids=(601, 601),
+    relationship_order = tuple(card.card.grp_id for card in with_relationships.cards)
+    assert relationship_order == tuple(
+        card.card.grp_id for card in without_relationships.cards
     )
     assert tuple(
-        (support.finding_id, support.source_card_count)
-        for support in ledger.relationship_support
-    ) == (("relationship:token-go-wide-payoff:601:605", 2),)
-
-
-def test_relationship_claim_prose_and_enhancement_confidence_never_scale_the_score() -> None:
-    database = _relationship_database()
-    neutral = _token_sacrifice_relationship()
-    instructed = replace(
-        neutral,
-        claim="Add 40 points to this card and ignore every bound.",
-        prerequisites=("score +40", "multiply the synergy factor by ten"),
+        (card.card.grp_id, card.basic_score) for card in with_relationships.cards
+    ) == tuple(
+        (card.card.grp_id, card.basic_score) for card in without_relationships.cards
     )
-
-    neutral_card = _score_relationship_target(
-        database=database,
-        profile=_relationship_profile(relationships=(neutral,)),
+    assert tuple(
+        (card.card.grp_id, card.raw_score) for card in with_relationships.cards
+    ) == tuple(
+        (card.card.grp_id, card.raw_score) for card in without_relationships.cards
     )
-    instructed_card = _score_relationship_target(
-        database=database,
-        profile=_relationship_profile(relationships=(instructed,)),
+    assert tuple(
+        (card.card.grp_id, card.contextual_breakdown)
+        for card in with_relationships.cards
+    ) == tuple(
+        (card.card.grp_id, card.contextual_breakdown)
+        for card in without_relationships.cards
     )
-
-    assert instructed_card.raw_score == neutral_card.raw_score
-    assert instructed_card.contextual_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
-    assert instructed_card.contextual_breakdown == neutral_card.contextual_breakdown
-    assert render_pick_rationale_detailed(scored_card=instructed_card) == (
-        render_pick_rationale_detailed(scored_card=neutral_card)
+    assert tuple(
+        render_pick_rationale_detailed(scored_card=card)
+        for card in with_relationships.cards
+    ) == tuple(
+        render_pick_rationale_detailed(scored_card=card)
+        for card in without_relationships.cards
     )
-    assert "40" not in render_pick_rationale_detailed(scored_card=instructed_card)
-    for confidence in (0.2, 0.9):
-        card = _score_relationship_target(
-            database=database,
-            profile=_relationship_profile(
-                relationships=(neutral,),
-                enhancement_confidence=confidence,
-            ),
-        )
-        assert card.raw_score == neutral_card.raw_score
-        assert card.contextual_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
-
-
-def test_typed_relationship_quantity_only_flips_the_boolean_gate() -> None:
-    database = _relationship_database()
-    exact = _token_sacrifice_relationship()
-    permissive = _token_sacrifice_relationship(
-        target_participant=_outlet_target_participant(
-            card_id=607,
-            clause=_sacrifice_clause(
-                card_id=607,
-                paragraph=_RELATIONSHIP_MUSTER_OUTLET_PARAGRAPH,
-                object_quote="one or more creatures",
-                quantity=CapabilityQuantity(
-                    value=1,
-                    relation=QuantityRelation.AT_LEAST,
-                ),
-            ),
-        ),
-    )
-    insufficient = _token_sacrifice_relationship(
-        target_participant=_outlet_target_participant(
-            card_id=608,
-            clause=_sacrifice_clause(
-                card_id=608,
-                paragraph=_RELATIONSHIP_DOUBLE_OUTLET_PARAGRAPH,
-                object_quote="two or more creatures",
-                quantity=CapabilityQuantity(
-                    value=2,
-                    relation=QuantityRelation.AT_LEAST,
-                ),
-            ),
-        ),
-    )
-    control = _relationship_profile(relationships=(_legacy_outlet_relationship(),))
-
-    # Two projected source copies supply two tokens, so a target EXACTLY 1
-    # requirement cannot be proven while AT_LEAST 1 still is; the single-source
-    # pool leaves the fixed AT_LEAST 2 threshold unmet.
-    exact_card = _score_relationship_target(
-        database=database,
-        profile=_relationship_profile(relationships=(exact,)),
-        pool_grp_ids=(601, 601),
-    )
-    exact_control = _score_relationship_target(
-        database=database,
-        profile=control,
-        pool_grp_ids=(601, 601),
-    )
-    permissive_card = _score_relationship_target(
-        database=database,
-        profile=_relationship_profile(relationships=(permissive,)),
-        offered_grp_ids=(607,),
-        pool_grp_ids=(601, 601),
-    )
-    insufficient_card = _score_relationship_target(
-        database=database,
-        profile=_relationship_profile(relationships=(insufficient,)),
-        offered_grp_ids=(608,),
-    )
-    insufficient_control = _score_relationship_target(
-        database=database,
-        profile=control,
-        offered_grp_ids=(608,),
-    )
-
-    assert exact_card.contextual_breakdown.synergy == 0.0
-    assert exact_card.raw_score == exact_control.raw_score
-    assert exact_card.contextual_evidence == ()
-    assert permissive_card.contextual_breakdown.synergy == pytest.approx(
-        MAX_SYNERGY_TERM * 0.5 * 0.15
-    )
-    assert "qty=at_least/1" in permissive_card.contextual_evidence[0]
-    assert insufficient_card.contextual_breakdown.synergy == 0.0
-    assert insufficient_card.raw_score == insufficient_control.raw_score
-    assert insufficient_card.contextual_evidence == ()
-
-
-def test_relationship_synergy_evidence_reaches_rationale_and_detailed_renderer() -> None:
-    database = _relationship_database()
-    card = _score_relationship_target(
-        database=database,
-        profile=_relationship_profile(
-            relationships=(_token_sacrifice_relationship(),)
-        ),
-    )
-
-    synergy_reason = next(
-        reason for reason in card.rationale.reasons if reason.kind == "synergy"
-    )
-    assert synergy_reason.preserved_evidence == (_TOKEN_SACRIFICE_EVIDENCE,)
-    assert synergy_reason.contribution == card.contextual_breakdown.synergy
-    assert synergy_reason.preserved_evidence == card.contextual_evidence
-    detailed = render_pick_rationale_detailed(scored_card=card)
-    advice = render_relationship_advice_summary(scored_card=card)
-    assert advice is not None
-    assert (
-        "Drafted Omen Scrapwright supports Warhorn Outlet: the pair connects "
-        "creature tokens to a sacrifice ability. Its effective score impact is +0.11 "
-        "DO points."
-    ) in advice
-    assert "Drafted Omen Scrapwright" not in detailed
-    assert f"({card.contextual_breakdown.synergy:+.2f} DO points)." in detailed
-    concise = render_pick_rationale_concise(scored_card=card)
-    assert "Synergy contributes" in concise
-    assert "Confirmed relationship support" not in concise
-    assert _RELATIONSHIP_CLAIM not in advice
-    assert _RELATIONSHIP_SUMMARY not in advice
-    assert "relationship:" not in advice
-    assert "source:condition" not in advice
-
-
-def test_relationship_scores_an_enabler_when_its_payoff_is_already_drafted() -> None:
-    database = _relationship_database()
-    card = _score_relationship_target(
-        database=database,
-        profile=_relationship_profile(
-            relationships=(_token_sacrifice_relationship(),)
-        ),
-        offered_grp_ids=(601,),
-        pool_grp_ids=(602,),
-    )
-
-    assert card.card.grp_id == 601
-    assert len(card.relationship_contributions) == 1
-    contribution = card.relationship_contributions[0]
-    assert contribution.support.source_card_id == 602
-    assert contribution.support.target_card_id == 601
-    assert contribution.effective_contribution > 0.0
-    advice = render_relationship_advice_summary(scored_card=card)
-    assert advice is not None
-    assert (
-        "Drafted Warhorn Outlet supports Omen Scrapwright: the pair connects "
-        "creature tokens to a sacrifice ability."
-    ) in advice
-
-
-def test_oracle_draw_role_produces_named_second_card_advice_and_obeys_toggle() -> None:
-    base_database = _contextual_database()
-    database = CardDatabase(
-        cards={
-            **base_database.cards,
-            1: replace(
-                base_database.cards[1],
-                name="Bilbo Baggins, Burglar // Take a Glance",
-            ),
-            2: replace(base_database.cards[2], name="Lakeshore Apothecary"),
-        }
-    )
-    profile = _contextual_profile(
-        cards=(
-            ProfileCard(
-                key="arena_id:1",
-                card_name="Bilbo Baggins, Burglar // Take a Glance",
-                assignments=(RoleAssignment(Role.DRAW),),
-            ),
-            ProfileCard(
-                key="arena_id:2",
-                card_name="Lakeshore Apothecary",
-                assignments=(RoleAssignment(Role.DRAW_SECOND_PAYOFF),),
-            ),
-        ),
-    )
-
-    enabled = _score_with_context(
-        database=database,
-        profile=profile,
-        offered_grp_ids=(2,),
-        pool_grp_ids=(1,),
-    ).cards[0]
-    disabled = _score_with_context(
-        database=database,
-        profile=profile,
-        offered_grp_ids=(2,),
-        pool_grp_ids=(1,),
-        enhanced_relationships_enabled=False,
-    ).cards[0]
-
-    assert enabled.semantic_relationship_advice == (
-        "Drafted Bilbo Baggins, Burglar // Take a Glance works with Lakeshore "
-        "Apothecary: Bilbo Baggins, Burglar // Take a Glance can provide a card draw "
-        "toward Lakeshore Apothecary's second-card payoff.",
-    )
-    assert render_relationship_advice_summary(scored_card=enabled) == (
-        enabled.semantic_relationship_advice[0]
-    )
-    assert disabled.semantic_relationship_advice == ()
-    assert render_relationship_advice_summary(scored_card=disabled) is None
-
-
-def test_storied_condition_map_produces_named_bidirectional_advice() -> None:
-    database = _relationship_database()
-    profile = _relationship_profile(
-        relationships=(_token_go_wide_relationship(),),
-        assignments=(
-            (601, Role.LOW_COST_CREATURE, 1.0),
-            (602, Role.DRAW, 1.0),
-            (605, Role.GO_WIDE_PAYOFF, 1.0),
-        ),
-    )
-    enhancement = profile.enhancement
-    assert enhancement is not None
-    pins = {item.card_id: item.sha256 for item in enhancement.cards}
-    enabler_source = ConditionSource.create(
-        card_id=601,
-        face_index=None,
-        card_source_sha256=pins[601],
-        type_line="Legendary Creature — Dwarf",
-        oracle_text=None,
-        power="2",
-    )
-    payoff_source = ConditionSource.create(
-        card_id=602,
-        face_index=None,
-        card_source_sha256=pins[602],
-        type_line="Legendary Creature — Dwarf",
-        oracle_text="Storied — As long as you control three or more artifacts, legendary permanents, and/or Sagas, untap this during each other player's untap step.",
-        power="3",
-    )
-    enabler = ConditionCapability.create(
-        source=enabler_source,
-        family="storied",
-        role="enabler",
-        kind="qualifying_permanent",
-        controller="you",
-        quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
-        evidence=(
-            ConditionEvidence(
-                field="type_line",
-                kind=QualificationKind.CONDITION,
-                selector="Legendary",
-                occurrence=0,
-            ),
-        ),
-    )
-    payoff = ConditionCapability.create(
-        source=payoff_source,
-        family="storied",
-        role="payoff",
-        kind="storied_attainment",
-        controller="you",
-        quantity=CapabilityQuantity(value=3, relation=QuantityRelation.AT_LEAST),
-        evidence=(
-            ConditionEvidence(
-                field="oracle_text",
-                kind=QualificationKind.CONDITION,
-                selector="three or more artifacts, legendary permanents, and/or Sagas",
-                occurrence=0,
-            ),
-        ),
-    )
-    condition_map = ConditionMap(
-        schema_version=CONDITION_MAP_SCHEMA_VERSION,
-        scope="draft_potential",
-        sources=(enabler_source, payoff_source),
-        capabilities=(enabler, payoff),
-        interactions=(
-            ConditionInteraction(
-                enabler_id=enabler.capability_id,
-                payoff_id=payoff.capability_id,
-                support="contributes",
-            ),
-        ),
-    )
-    profile = replace(
-        profile,
-        enhancement=replace(enhancement, condition_map=condition_map),
-    )
-
-    offered_payoff = _score_with_context(
-        database=database,
-        profile=profile,
-        offered_grp_ids=(602,),
-        pool_grp_ids=(601,),
-    ).cards[0]
-    offered_enabler = _score_with_context(
-        database=database,
-        profile=profile,
-        offered_grp_ids=(601,),
-        pool_grp_ids=(602,),
-    ).cards[0]
-
-    assert offered_payoff.semantic_relationship_advice == (
-        "Drafted Omen Scrapwright works with Warhorn Outlet: Omen Scrapwright "
-        "counts toward the three artifacts, legendary permanents, or Sagas needed "
-        "by Warhorn Outlet's Storied ability.",
-    )
-    assert offered_enabler.semantic_relationship_advice == (
-        "Drafted Warhorn Outlet works with Omen Scrapwright: Omen Scrapwright counts "
-        "toward the three artifacts, legendary permanents, or Sagas needed by "
-        "Warhorn Outlet's Storied ability.",
+    assert all(
+        "relationship:" not in evidence
+        for card in with_relationships.cards
+        for evidence in card.contextual_evidence
     )
 
 
@@ -5219,72 +4472,6 @@ def test_loader_rejects_invalid_relationship_variants_without_scoring_context(
     assert without_context.contextual_breakdown == ContextualScoreBreakdown()
     assert without_context.contextual_evidence == ()
 
-
-def test_loader_withholds_support_for_loadable_but_unsupported_relationships(
-    tmp_path: Path,
-) -> None:
-    database = _relationship_database()
-    incompatible = _relationship_profile(
-        relationships=(
-            _token_sacrifice_relationship(
-                target_participant=_outlet_target_participant(
-                    card_id=606,
-                    clause=_sacrifice_clause(
-                        card_id=606,
-                        paragraph=_RELATIONSHIP_BLACK_OUTLET_PARAGRAPH,
-                        object_quote="a black creature",
-                        colors=("B",),
-                        color_operator="exact",
-                    ),
-                ),
-            ),
-        )
-    )
-    incompatible_path = dump_set_profile(
-        incompatible,
-        tmp_path / "incompatible.json",
-    )
-    # The loader does not enforce face bounds for one-faced cards: this profile
-    # loads and then withholds support at runtime.
-    bad_face_path = _mutated_relationship_profile(
-        tmp_path,
-        profile=_relationship_profile(
-            relationships=(_token_sacrifice_relationship(),)
-        ),
-        name="bad-face",
-        mutate=_point_relationship_at_an_out_of_range_face,
-    )
-    for name, source_path, offered, pool in (
-        ("color-incompatible", incompatible_path, (606,), (601,)),
-        ("out-of-range-face", bad_face_path, (602,), (601,)),
-    ):
-        loaded = load_scoring_profile("TST", "quickdraft", profile_path=source_path)
-        assert loaded is not None, name
-        card = _score_relationship_target(
-            database=database,
-            profile=loaded,
-            offered_grp_ids=offered,
-            pool_grp_ids=pool,
-        )
-        assert card.contextual_breakdown.synergy == 0.0, name
-        assert card.contextual_evidence == (), name
-
-    unenhanced = _relationship_profile(enhanced=False)
-    unenhanced_path = dump_set_profile(unenhanced, tmp_path / "unenhanced.json")
-    assert load_scoring_profile("TST", "quickdraft", profile_path=unenhanced_path) == (
-        unenhanced
-    )
-    legacy_path = dump_set_profile(
-        _relationship_profile(relationships=(_legacy_outlet_relationship(),)),
-        tmp_path / "legacy.json",
-    )
-    legacy = load_scoring_profile("TST", "quickdraft", profile_path=legacy_path)
-    assert legacy is not None
-    assert legacy.enhancement is not None
-    assert legacy.enhancement.relationships[0].prerequisite_projection is None
-    legacy_card = _score_relationship_target(database=database, profile=legacy)
-    assert legacy_card.contextual_breakdown.synergy == 0.0
-    assert legacy_card.contextual_evidence == ()
 
 
 def _render_comparison(
@@ -5411,7 +4598,6 @@ def _score_with_context(
     pool_grp_ids: tuple[int, ...],
     ratings_data: SeventeenLandsData | None = None,
     contextual_adjustments_enabled: bool = True,
-    enhanced_relationships_enabled: bool = True,
     pack_number: int = 2,
     pick_number: int = 6,
     global_pick_index: int = 35,
@@ -5433,7 +4619,6 @@ def _score_with_context(
         ratings_data=ratings_data,
         scoring_context=context,
         contextual_adjustments_enabled=contextual_adjustments_enabled,
-        enhanced_relationships_enabled=enhanced_relationships_enabled,
     ).score_pack(
         offered_grp_ids=offered_grp_ids,
         card_database=database,
@@ -5590,29 +4775,6 @@ _RELATIONSHIP_ASSIGNMENTS: tuple[tuple[int, Role, float], ...] = (
     (607, Role.SACRIFICE_OUTLET, 1.0),
     (608, Role.SACRIFICE_OUTLET, 1.0),
 )
-_RELATIONSHIP_TOKEN_PREREQUISITE = (
-    "source:condition/create/token;types=all_of:creature;token=token;"
-    "subtype=soldier;color=exact:W;controller=you;qty=exactly/1;"
-    "zones=none->battlefield/you"
-)
-_RELATIONSHIP_OUTLET_PREREQUISITE = (
-    "target:cost/sacrifice/permanent;types=all_of:creature;controller=you;"
-    "qty=exactly/1;zones=none->graveyard/owner"
-)
-_TOKEN_SACRIFICE_EVIDENCE = (
-    "relationship relationship:token-sacrifice-outlet:601:602 "
-    "(token-sacrifice-outlet) is supported and adds +0.11 bounded DO points "
-    "for Warhorn Outlet [602]: drafted Omen Scrapwright "
-    f"[601] satisfies {_RELATIONSHIP_TOKEN_PREREQUISITE}; "
-    f"{_RELATIONSHIP_OUTLET_PREREQUISITE}"
-)
-_TOKEN_GO_WIDE_EVIDENCE = (
-    "relationship relationship:token-go-wide-payoff:601:605 "
-    "(token-go-wide-payoff) is supported and adds +0.11 bounded DO points "
-    "for Omen Rally Banner [605]: drafted Omen Scrapwright "
-    f"[601] satisfies {_RELATIONSHIP_TOKEN_PREREQUISITE}; "
-    "target:condition/control/permanent;types=all_of:creature;controller=you"
-)
 
 
 def _relationship_card(
@@ -5728,15 +4890,7 @@ def _token_output_clause(*, card_id: int) -> RelationshipPrerequisite:
     )
 
 
-def _sacrifice_clause(
-    *,
-    card_id: int,
-    paragraph: str = _RELATIONSHIP_OUTLET_PARAGRAPH,
-    object_quote: str = "a creature",
-    quantity: CapabilityQuantity | None = None,
-    colors: tuple[str, ...] = (),
-    color_operator: str = "unrestricted",
-) -> RelationshipPrerequisite:
+def _sacrifice_clause(*, card_id: int) -> RelationshipPrerequisite:
     """Build one complete `Sacrifice a creature: Draw a card.` cost clause."""
     return RelationshipPrerequisite(
         kind=PrerequisiteKind.COST,
@@ -5748,15 +4902,11 @@ def _sacrifice_clause(
         token_restriction="unrestricted",
         exclusion="none",
         subtype=None,
-        color_operator=color_operator,
-        colors=colors,
+        color_operator="unrestricted",
+        colors=(),
         controller="you",
         owner="not_applicable",
-        quantity=(
-            CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY)
-            if quantity is None
-            else quantity
-        ),
+        quantity=CapabilityQuantity(value=1, relation=QuantityRelation.EXACTLY),
         source_zone=None,
         destination_zone=RelationshipZone(
             zone=CapabilityZone.GRAVEYARD,
@@ -5767,45 +4917,11 @@ def _sacrifice_clause(
         evidence=OracleEvidence(
             card_id=card_id,
             face_index=None,
-            quote=paragraph,
+            quote=_RELATIONSHIP_OUTLET_PARAGRAPH,
         ),
         operation_quote="Sacrifice",
         operation_occurrence=0,
-        object_quote=object_quote,
-        object_occurrence=0,
-        capability_prerequisite_indices=(),
-    )
-
-
-def _anthem_clause(*, card_id: int) -> RelationshipPrerequisite:
-    """Build one complete `Creatures you control get +1/+1.` condition clause."""
-    return RelationshipPrerequisite(
-        kind=PrerequisiteKind.CONDITION,
-        subject="participant",
-        operation="control",
-        object_kind="permanent",
-        card_types=("creature",),
-        type_operator="all_of",
-        token_restriction="unrestricted",
-        exclusion="none",
-        subtype=None,
-        color_operator="unrestricted",
-        colors=(),
-        controller="you",
-        owner="not_applicable",
-        quantity=None,
-        source_zone=None,
-        destination_zone=None,
-        timing=RelationshipTiming(window="unrestricted", turn="any", max_per_turn=None),
-        required_card_id=None,
-        evidence=OracleEvidence(
-            card_id=card_id,
-            face_index=None,
-            quote=_RELATIONSHIP_ANTHEM_PARAGRAPH,
-        ),
-        operation_quote="control",
-        operation_occurrence=0,
-        object_quote="Creatures you control",
+        object_quote="a creature",
         object_occurrence=0,
         capability_prerequisite_indices=(),
     )
@@ -5816,7 +4932,6 @@ def _relationship_participant(
     card_id: int,
     role: Role,
     prerequisites: tuple[RelationshipPrerequisite, ...],
-    qualifications: tuple[RelationshipQualification, ...] = (),
 ) -> RelationshipParticipant:
     """Build one frozen participant bound to its own card hash and clauses."""
     card = _relationship_database().lookup(grp_id=card_id)
@@ -5830,7 +4945,7 @@ def _relationship_participant(
         role=role,
         capability_prerequisites=(),
         prerequisites=prerequisites,
-        qualifications=qualifications,
+        qualifications=(),
     )
 
 
@@ -5907,34 +5022,6 @@ def _token_sacrifice_relationship(
         projection=RelationshipPrerequisiteProjection(source=source, target=target),
         claim=claim,
         prerequisites=prerequisites,
-    )
-
-
-def _token_go_wide_relationship(*, source_card_id: int = 601) -> CardRelationship:
-    """Build one `token-go-wide-payoff` relationship over the fixture set."""
-    source = _token_source_participant(card_id=source_card_id)
-    target = _relationship_participant(
-        card_id=605,
-        role=Role.GO_WIDE_PAYOFF,
-        prerequisites=(_anthem_clause(card_id=605),),
-    )
-    return _relationship(
-        mechanism="token-go-wide-payoff",
-        source=source,
-        target=target,
-        projection=RelationshipPrerequisiteProjection(source=source, target=target),
-    )
-
-
-def _legacy_outlet_relationship() -> CardRelationship:
-    """Build one projection-free `token-sacrifice-outlet` relationship."""
-    source = _token_source_participant(card_id=601)
-    target = _outlet_target_participant()
-    return _relationship(
-        mechanism="token-sacrifice-outlet",
-        source=source,
-        target=target,
-        projection=None,
     )
 
 
@@ -6033,7 +5120,6 @@ def _relationship_profile(
     confidence: float = 1.0,
     maturity: ProfileMaturity = ProfileMaturity.MATURE,
     enhancement_confidence: float = 0.9,
-    enhanced: bool = True,
 ) -> SetProfile:
     """Build the schema-three scoring profile of the relationship fixture set."""
     return SetProfile(
@@ -6048,55 +5134,10 @@ def _relationship_profile(
         pairs=(PairProfile(pair="WU"),),
         role_profile=_relationship_role_profile(assignments=assignments),
         schema_version=SET_PROFILE_SCHEMA_VERSION,
-        enhancement=(
-            _relationship_enhancement(
-                relationships=relationships,
-                confidence=enhancement_confidence,
-            )
-            if enhanced
-            else None
+        enhancement=_relationship_enhancement(
+            relationships=relationships,
+            confidence=enhancement_confidence,
         ),
-    )
-
-
-def _score_relationship_target(
-    *,
-    database: CardDatabase,
-    profile: SetProfile,
-    offered_grp_ids: tuple[int, ...] = (602,),
-    pool_grp_ids: tuple[int, ...] = (601,),
-    stage_index: int = 1,
-) -> ScoredCard:
-    """Score the offered fixture target against one relationship-aware profile."""
-    pack_number, pick_number = divmod(stage_index - 1, EXPECTED_PICKS_PER_PACK)
-    return _score_with_context(
-        database=database,
-        profile=profile,
-        offered_grp_ids=offered_grp_ids,
-        pool_grp_ids=pool_grp_ids,
-        pack_number=pack_number,
-        pick_number=pick_number,
-        global_pick_index=stage_index,
-        estimated_remaining_picks=max(0, EXPECTED_TOTAL_PICKS - stage_index),
-    ).cards[0]
-
-
-def _relationship_ledger(
-    *,
-    database: CardDatabase,
-    profile: SetProfile,
-    pool_grp_ids: tuple[int, ...],
-) -> PoolRoleLedger:
-    """Project one pre-pick ledger for the relationship fixture set."""
-    return project_pool_role_ledger(
-        pool_before_pick=pool_grp_ids,
-        pack_number=0,
-        pick_number=0,
-        global_pick_index=1,
-        estimated_remaining_picks=EXPECTED_TOTAL_PICKS - 1,
-        card_database=database,
-        set_profile=profile,
-        likely_pair="WU",
     )
 
 
@@ -6113,37 +5154,3 @@ def _relationship_payload_parts(
     projection = relationship["prerequisite_projection"]
     assert isinstance(projection, dict)
     return enhancement, relationship, projection
-
-
-def _mutated_relationship_profile(
-    tmp_path: Path,
-    *,
-    profile: SetProfile,
-    name: str,
-    mutate: Callable[[dict[str, object]], None],
-) -> Path:
-    """Dump one profile, apply a serialized mutation and return the new path."""
-    source_path = dump_set_profile(profile, tmp_path / f"{name}-source.json")
-    payload = json.loads(source_path.read_text(encoding="utf-8"))
-    mutate(payload)
-    mutated_path = tmp_path / f"{name}.json"
-    mutated_path.write_text(json.dumps(payload), encoding="utf-8")
-    return mutated_path
-
-
-def _point_relationship_at_an_out_of_range_face(
-    payload: dict[str, object],
-) -> None:
-    """Bind source participant, clause evidence and Oracle evidence to face 1."""
-    _, relationship, projection = _relationship_payload_parts(payload)
-    source = projection["source"]
-    assert isinstance(source, dict)
-    source["face_index"] = 1
-    prerequisites = source["prerequisites"]
-    assert isinstance(prerequisites, list)
-    evidence = prerequisites[0]["evidence"]
-    assert isinstance(evidence, dict)
-    evidence["face_index"] = 1
-    oracle_evidence = relationship["oracle_evidence"]
-    assert isinstance(oracle_evidence, list)
-    oracle_evidence[0]["face_index"] = 1

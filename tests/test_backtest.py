@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 import tempfile
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -17,14 +15,15 @@ from draftomen.backtest import (
     generate_backtest_report,
     load_persisted_backtest_state,
 )
-from draftomen.events import EXPECTED_PICKS_PER_PACK
+from draftomen.events import EXPECTED_PICKS_PER_PACK, EXPECTED_TOTAL_PICKS
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cli import main
+from draftomen.ranking import rank_scored_cards
+from draftomen.set_card_data import SetCardData
 from draftomen.pickengine import (
-    MAX_CONTEXTUAL_ADJUSTMENT,
-    MAX_SYNERGY_TERM,
     ContextualScoreBreakdown,
     PickEngine,
+    ScoredCard,
 )
 from draftomen.pool import DraftPick, DraftState, draft_state_path, save_draft_state
 from draftomen.semantic_roles import (
@@ -539,9 +538,6 @@ def test_backtest_cli_loads_state_profile_once_and_passes_it_to_report(
 
     def record_generate(**kwargs: object):
         observed["set_profile"] = kwargs["set_profile"]
-        observed["enhanced_relationships_enabled"] = kwargs[
-            "enhanced_relationships_enabled"
-        ]
         return real_generate(**kwargs)
 
     monkeypatch.setattr(cli_module, "load_scoring_profile", record_load)
@@ -565,7 +561,6 @@ def test_backtest_cli_loads_state_profile_once_and_passes_it_to_report(
     assert exit_code == 0
     assert profile_calls == [(state.set_code, QUICK_DRAFT_FORMAT, app_dir)]
     assert observed["set_profile"] == profile
-    assert observed["enhanced_relationships_enabled"] is False
     assert "Draft Omen backtest" in captured.out
     assert captured.err == ""
 
@@ -640,36 +635,15 @@ def _scryfall_row(*, grp_id: int, name: str, colors: list[str]) -> dict[str, obj
 
 
 _HOB_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_HOB_CARD_ARTIFACT_PATH = (
+    _HOB_REPOSITORY_ROOT / "website" / "public" / "card-data" / "hob.json.gz"
+)
 _HOB_PROFILE_FIXTURE_PATH = (
     _HOB_REPOSITORY_ROOT / "tests" / "fixtures" / "hob-relationship-scoring-profile.json"
 )
 _HOB_STATE_FIXTURE_PATH = (
     _HOB_REPOSITORY_ROOT / "tests" / "fixtures" / "hob-relationship-scoring-state.json"
 )
-
-
-def _load_hob_smoke_module():
-    """Load the offline HOB smoke wrapper once for its calibration constants."""
-    module_path = _HOB_REPOSITORY_ROOT / "scripts" / "hob_relationship_scoring_smoke.py"
-    spec = importlib.util.spec_from_file_location(
-        "hob_relationship_scoring_smoke", module_path
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-_HOB_SMOKE = _load_hob_smoke_module()
-_HOB_CARD_ARTIFACT_SHA256 = _HOB_SMOKE.CARD_ARTIFACT_SHA256
-_HOB_R1_FINDING_ID = _HOB_SMOKE.R1_FINDING_ID
-_HOB_R6_FINDING_ID = _HOB_SMOKE.R6_FINDING_ID
-_HOB_R1_MECHANISM = _HOB_SMOKE.R1_MECHANISM
-_HOB_R6_MECHANISM = _HOB_SMOKE.R6_MECHANISM
-_HOB_R1_RAW_SCORE_DELTA = _HOB_SMOKE.R1_RAW_SCORE_DELTA
-_HOB_R6_RAW_SCORE_DELTA = _HOB_SMOKE.R6_RAW_SCORE_DELTA
-# The saved offers, pools, and choices stay hardcoded as an independent fixture check.
 _HOB_EXPECTED_OFFERS = (
     (103382, 103526, 103525),
     (103531, 103526, 103525),
@@ -695,9 +669,12 @@ _CONTEXTUAL_PICK_REASON_KINDS = frozenset(
 )
 
 
-def _hob_relationship_fixtures() -> tuple[CardDatabase, SetProfile, DraftState]:
-    """Load the tracked HOB relationship calibration fixtures once."""
-    _artifact_path, _artifact_digest, card_database = _HOB_SMOKE._load_card_database()
+def _hob_fixtures() -> tuple[CardDatabase, SetProfile, DraftState]:
+    """Load the tracked HOB artifact, profile, and saved-draft fixtures."""
+    card_database = SetCardData.from_gzip_bytes(
+        _HOB_CARD_ARTIFACT_PATH.read_bytes(),
+        expected_set_code="hob",
+    ).to_card_database()
     profile = load_set_profile(
         _HOB_PROFILE_FIXTURE_PATH,
         expected_set_code="hob",
@@ -709,259 +686,128 @@ def _hob_relationship_fixtures() -> tuple[CardDatabase, SetProfile, DraftState]:
     return card_database, profile, state
 
 
-def _hob_project_row(row) -> dict[str, object]:
-    """Project one backtest row into the compared control shape."""
-    recommended = row.recommended
-    assert recommended is not None
-    return {
-        "recommended_grp_id": recommended.card.grp_id,
-        "raw_score": recommended.raw_score,
-        "score": recommended.score,
-        "contextual_breakdown": recommended.contextual_breakdown.to_json(),
-        "contextual_evidence": list(row.contextual_evidence),
-        "rationale_reasons": [
-            reason.to_json() for reason in recommended.rationale.reasons
-        ],
-        "relationship_support": [
-            support.to_json() for support in row.role_ledger.relationship_support
-        ],
-        "relationship_contributions": [
-            contribution.to_json()
-            for contribution in recommended.relationship_contributions
-        ],
-    }
+def _score_hob_pick(
+    *, engine: PickEngine, card_database: CardDatabase, pick: DraftPick
+) -> tuple[ScoredCard, ...]:
+    assert pick.offered_grp_ids is not None
+    assert pick.pool_before_pick is not None
+    global_pick_index = (
+        pick.pack_number * EXPECTED_PICKS_PER_PACK + pick.pick_number + 1
+    )
+    scored_pack = engine.score_pack(
+        offered_grp_ids=pick.offered_grp_ids,
+        card_database=card_database,
+        pool_grp_ids=pick.pool_before_pick,
+        pick_index=global_pick_index,
+        pack_number=pick.pack_number,
+        pick_number=pick.pick_number,
+        global_pick_index=global_pick_index,
+        estimated_remaining_picks=max(0, EXPECTED_TOTAL_PICKS - global_pick_index),
+    )
+    return rank_scored_cards(cards=scored_pack.cards, ranking_mode="score")
 
 
-def _hob_report_projections(report) -> list[dict[str, object]]:
-    return [_hob_project_row(row) for row in report.rows]
-
-
-def test_hob_default_gate_matches_enhancement_removed_profile() -> None:
-    database, profile, state = _hob_relationship_fixtures()
+def test_hob_enhancement_does_not_change_basic_do_backtest() -> None:
+    database, profile, state = _hob_fixtures()
     unenhanced_profile = replace(profile, enhancement=None)
-    enhanced_default = generate_backtest_report(
+    enhanced_engine = PickEngine(set_profile=profile)
+    unenhanced_engine = PickEngine(set_profile=unenhanced_profile)
+    enhanced_report = generate_backtest_report(
         state=state,
         card_database=database,
         set_profile=profile,
     )
-    unenhanced_default = generate_backtest_report(
+    unenhanced_report = generate_backtest_report(
         state=state,
         card_database=database,
         set_profile=unenhanced_profile,
     )
+    supplied_engine_report = generate_backtest_report(
+        state=state,
+        card_database=database,
+        set_profile=profile,
+        pick_engine=enhanced_engine,
+    )
 
+    assert profile.schema_version == 3
     assert profile.enhancement is not None
     assert unenhanced_profile.enhancement is None
-    assert len(enhanced_default.rows) == len(_HOB_EXPECTED_RECOMMENDATIONS)
-    assert len(unenhanced_default.rows) == len(_HOB_EXPECTED_RECOMMENDATIONS)
-    for index, (enhanced_row, unenhanced_row) in enumerate(
-        zip(enhanced_default.rows, unenhanced_default.rows, strict=True)
+    assert len(state.picks) == len(_HOB_EXPECTED_RECOMMENDATIONS)
+    assert len(enhanced_report.rows) == len(state.picks)
+    assert len(unenhanced_report.rows) == len(state.picks)
+    assert len(supplied_engine_report.rows) == len(state.picks)
+
+    for index, (pick, enhanced_row, unenhanced_row, supplied_row) in enumerate(
+        zip(
+            state.picks,
+            enhanced_report.rows,
+            unenhanced_report.rows,
+            supplied_engine_report.rows,
+            strict=True,
+        )
     ):
-        pick = state.picks[index]
         assert pick.offered_grp_ids == _HOB_EXPECTED_OFFERS[index]
         assert pick.pool_before_pick == _HOB_EXPECTED_POOLS[index]
-        enhanced_recommendation = enhanced_row.recommended
-        unenhanced_recommendation = unenhanced_row.recommended
-        assert enhanced_recommendation is not None
-        assert unenhanced_recommendation is not None
-        assert enhanced_recommendation.card.grp_id == (
-            unenhanced_recommendation.card.grp_id
+
+        enhanced_cards = _score_hob_pick(
+            engine=enhanced_engine,
+            card_database=database,
+            pick=pick,
         )
-        assert enhanced_recommendation.card.grp_id == (
+        unenhanced_cards = _score_hob_pick(
+            engine=unenhanced_engine,
+            card_database=database,
+            pick=pick,
+        )
+        enhanced_order = tuple(
+            (card.card.grp_id, card.basic_score, card.raw_score)
+            for card in enhanced_cards
+        )
+        unenhanced_order = tuple(
+            (card.card.grp_id, card.basic_score, card.raw_score)
+            for card in unenhanced_cards
+        )
+        assert enhanced_order == unenhanced_order
+        assert tuple(
+            (card.contextual_breakdown, card.contextual_evidence)
+            for card in enhanced_cards
+        ) == tuple(
+            (card.contextual_breakdown, card.contextual_evidence)
+            for card in unenhanced_cards
+        )
+        assert enhanced_cards[0].card.grp_id == (
             _HOB_EXPECTED_RECOMMENDATIONS[index]
         )
-        assert enhanced_recommendation.raw_score == pytest.approx(
-            unenhanced_recommendation.raw_score,
-            abs=1e-12,
-        )
-        assert enhanced_row.role_ledger.relationship_support == ()
-        assert unenhanced_row.role_ledger.relationship_support == ()
 
-    supported_row = enhanced_default.rows[1]
-    unenhanced_supported_row = unenhanced_default.rows[1]
-    assert supported_row.contextual_evidence
-    assert supported_row.contextual_evidence == (
-        unenhanced_supported_row.contextual_evidence
-    )
-    assert _HOB_R1_FINDING_ID not in "\n".join(supported_row.contextual_evidence)
-    assert _HOB_R1_MECHANISM not in "\n".join(supported_row.contextual_evidence)
+        for row in (enhanced_row, unenhanced_row, supplied_row):
+            recommended = row.recommended
+            assert recommended is not None
+            assert recommended.card.grp_id == enhanced_cards[0].card.grp_id
+            assert recommended.basic_score == enhanced_cards[0].basic_score
+            assert recommended.raw_score == enhanced_cards[0].raw_score
+            assert recommended.contextual_breakdown == (
+                enhanced_cards[0].contextual_breakdown
+            )
+            assert recommended.contextual_evidence == (
+                enhanced_cards[0].contextual_evidence
+            )
+            assert row.contextual_evidence == enhanced_cards[0].contextual_evidence
+
+    assert enhanced_engine.set_profile is profile
 
 
-def test_hob_relationship_scoring_controls_are_deterministic_and_profile_isolated() -> None:
-    database, profile, state = _hob_relationship_fixtures()
-    removed_profile = replace(profile, enhancement=None)
-
-    enhanced_first = generate_backtest_report(
+def test_hob_contextual_adjustments_can_be_disabled() -> None:
+    database, profile, state = _hob_fixtures()
+    enabled = generate_backtest_report(
         state=state,
         card_database=database,
         set_profile=profile,
-        enhanced_relationships_enabled=True,
-    )
-    enhanced_second = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        enhanced_relationships_enabled=True,
-    )
-    removed_first = generate_backtest_report(
-        state=state, card_database=database, set_profile=removed_profile
-    )
-    removed_second = generate_backtest_report(
-        state=state, card_database=database, set_profile=removed_profile
-    )
-
-    assert _hob_report_projections(enhanced_first) == _hob_report_projections(
-        enhanced_second
-    )
-    assert _hob_report_projections(removed_first) == _hob_report_projections(
-        removed_second
-    )
-    assert profile.enhancement is not None
-    assert removed_profile.enhancement is None
-    expected_removed_json = profile.to_json()
-    del expected_removed_json["enhancement"]
-    expected_removed_json["enhancement_status"] = "not-enhanced"
-    assert removed_profile.to_json() == expected_removed_json
-
-    for index, row in enumerate(enhanced_first.rows):
-        pick = state.picks[index]
-        assert (row.pack_number, row.pick_number) == (pick.pack_number, pick.pick_number)
-        assert pick.offered_grp_ids == _HOB_EXPECTED_OFFERS[index]
-        assert pick.pool_before_pick == _HOB_EXPECTED_POOLS[index]
-
-
-def test_hob_relationship_scoring_exact_reviewed_deltas_and_evidence() -> None:
-    database, profile, state = _hob_relationship_fixtures()
-    enhanced = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        enhanced_relationships_enabled=True,
-    )
-    removed = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=replace(profile, enhancement=None),
-    )
-
-    r1_enhanced, r1_removed = enhanced.rows[1].recommended, removed.rows[1].recommended
-    assert r1_enhanced.card.grp_id == 103526
-    assert r1_removed.card.grp_id == 103526
-    assert round(r1_enhanced.contextual_breakdown.synergy, 6) - round(
-        r1_removed.contextual_breakdown.synergy, 6
-    ) == pytest.approx(_HOB_R1_RAW_SCORE_DELTA, abs=1e-9)
-    assert round(r1_enhanced.raw_score, 6) - round(r1_removed.raw_score, 6) == pytest.approx(
-        _HOB_R1_RAW_SCORE_DELTA, abs=1e-9
-    )
-    r1_supports = enhanced.rows[1].role_ledger.relationship_support
-    assert [support.finding_id for support in r1_supports] == [_HOB_R1_FINDING_ID]
-    assert r1_supports[0].mechanism == _HOB_R1_MECHANISM
-    assert r1_supports[0].source_card_id == 103382
-    assert r1_supports[0].target_card_id == 103526
-    assert len(r1_enhanced.relationship_contributions) == 1
-    r1_contribution = r1_enhanced.relationship_contributions[0]
-    assert r1_contribution.support.finding_id == _HOB_R1_FINDING_ID
-    assert r1_contribution.support.mechanism == _HOB_R1_MECHANISM
-    assert r1_contribution.raw_contribution > 0.0
-    assert r1_contribution.effective_contribution == 0.0
-
-    r6_enhanced, r6_removed = enhanced.rows[2].recommended, removed.rows[2].recommended
-    assert r6_enhanced.card.grp_id == 103458
-    assert r6_removed.card.grp_id == 103458
-    assert round(r6_enhanced.contextual_breakdown.synergy, 6) - round(
-        r6_removed.contextual_breakdown.synergy, 6
-    ) == pytest.approx(_HOB_R6_RAW_SCORE_DELTA, abs=1e-9)
-    assert round(r6_enhanced.raw_score, 6) - round(r6_removed.raw_score, 6) == pytest.approx(
-        _HOB_R6_RAW_SCORE_DELTA, abs=1e-9
-    )
-    r6_supports = tuple(
-        support
-        for support in enhanced.rows[2].role_ledger.relationship_support
-        if support.target_card_id == 103458
-    )
-    assert [support.finding_id for support in r6_supports] == [_HOB_R6_FINDING_ID]
-    assert r6_supports[0].mechanism == _HOB_R6_MECHANISM
-    assert r6_supports[0].source_card_id == 103531
-    r6_evidence = "\n".join(enhanced.rows[2].contextual_evidence)
-    assert _HOB_R6_FINDING_ID in r6_evidence
-    assert _HOB_R6_MECHANISM in r6_evidence
-    assert "Chief Warg's Company [103531]" in r6_evidence
-    assert r6_enhanced.relationship_contributions[0].effective_contribution == (
-        pytest.approx(_HOB_R6_RAW_SCORE_DELTA)
-    )
-
-
-def test_hob_relationship_scoring_unsupported_and_saturated_rows() -> None:
-    database, profile, state = _hob_relationship_fixtures()
-    enhanced = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        enhanced_relationships_enabled=True,
-    )
-    removed = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=replace(profile, enhancement=None),
-    )
-
-    unsupported_enhanced = enhanced.rows[0].recommended
-    unsupported_removed = removed.rows[0].recommended
-    assert unsupported_enhanced.card.grp_id == 103526
-    assert unsupported_removed.card.grp_id == 103526
-    assert enhanced.rows[0].role_ledger.relationship_support == ()
-    assert unsupported_enhanced.contextual_breakdown.synergy == 0.0
-    assert unsupported_removed.contextual_breakdown.synergy == 0.0
-    assert (
-        unsupported_enhanced.raw_score - unsupported_removed.raw_score == 0.0
-    )
-
-    saturated_enhanced = enhanced.rows[3].recommended
-    saturated_removed = removed.rows[3].recommended
-    assert saturated_enhanced.card.grp_id == 103526
-    assert saturated_removed.card.grp_id == 103526
-    assert saturated_enhanced.contextual_breakdown.synergy == MAX_SYNERGY_TERM
-    assert saturated_removed.contextual_breakdown.synergy == MAX_SYNERGY_TERM
-    assert (
-        saturated_enhanced.raw_score - saturated_removed.raw_score == 0.0
-    )
-    for row in enhanced.rows:
-        assert row.recommended is not None
-        assert abs(row.recommended.contextual_breakdown.aggregate) <= (
-            MAX_CONTEXTUAL_ADJUSTMENT
-        )
-    saturation_supports = enhanced.rows[3].role_ledger.relationship_support
-    assert len(saturation_supports) == 1
-    assert saturation_supports[0].finding_id == _HOB_R1_FINDING_ID
-    assert saturation_supports[0].target_card_id == 103526
-    assert saturation_supports[0].target_card_id == saturated_enhanced.card.grp_id
-    assert len(saturated_enhanced.relationship_contributions) == 1
-    assert saturated_enhanced.relationship_contributions[0].effective_contribution == 0.0
-    saturated_reasons = saturated_enhanced.rationale.reasons
-    assert not any(
-        _HOB_R1_FINDING_ID in (reason.evidence or "") for reason in saturated_reasons
-    )
-    synergy_evidence = [
-        reason.evidence or "" for reason in saturated_reasons if reason.kind == "synergy"
-    ]
-    assert len(synergy_evidence) == 1
-    assert "semantic package" in synergy_evidence[0]
-
-
-def test_hob_relationship_scoring_context_disabled_controls() -> None:
-    database, profile, state = _hob_relationship_fixtures()
-    enhanced = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        enhanced_relationships_enabled=True,
     )
     disabled = generate_backtest_report(
         state=state,
         card_database=database,
         set_profile=profile,
         contextual_adjustments_enabled=False,
-        enhanced_relationships_enabled=True,
     )
 
     for index, row in enumerate(disabled.rows):
@@ -974,105 +820,11 @@ def test_hob_relationship_scoring_context_disabled_controls() -> None:
         disabled_kinds = {reason.kind for reason in recommended.rationale.reasons}
         assert disabled_kinds.isdisjoint(_CONTEXTUAL_PICK_REASON_KINDS)
         assert recommended.rating.metadata.source == "profile"
-    assert disabled.rows[1].role_ledger.relationship_support
-    assert enhanced.rows[1].contextual_evidence
+    assert enabled.rows[1].contextual_evidence
 
 
-def test_hob_relationship_scoring_gate_empties_ledger_support_and_terms() -> None:
-    database, profile, state = _hob_relationship_fixtures()
-    enhanced = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        enhanced_relationships_enabled=True,
-    )
-    gated = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        enhanced_relationships_enabled=False,
-    )
-
-    assert all(
-        row.role_ledger.relationship_support == () for row in gated.rows
-    )
-    assert enhanced.rows[1].role_ledger.relationship_support
-    assert enhanced.rows[1].recommended.contextual_breakdown == (
-        gated.rows[1].recommended.contextual_breakdown
-    )
-    assert enhanced.rows[1].recommended.relationship_contributions
-    assert gated.rows[1].recommended.relationship_contributions == ()
-    for index in (2,):
-        enhanced_recommended = enhanced.rows[index].recommended
-        gated_recommended = gated.rows[index].recommended
-        assert enhanced_recommended is not None
-        assert gated_recommended is not None
-        assert (
-            gated_recommended.contextual_breakdown.synergy
-            < enhanced_recommended.contextual_breakdown.synergy
-        )
-    assert gated.rows[1].contextual_evidence
-    context_disabled = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        contextual_adjustments_enabled=False,
-        enhanced_relationships_enabled=True,
-    )
-    assert context_disabled.rows[1].role_ledger.relationship_support
-
-
-def test_hob_relationship_scoring_gate_overrides_a_supplied_default_engine() -> None:
-    database, profile, state = _hob_relationship_fixtures()
-    supplied_engine = PickEngine(
-        set_profile=profile,
-        enhanced_relationships_enabled=True,
-    )
-    enhanced = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        enhanced_relationships_enabled=True,
-    )
-    gated = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        pick_engine=supplied_engine,
-        enhanced_relationships_enabled=False,
-    )
-    constructed_gated = generate_backtest_report(
-        state=state,
-        card_database=database,
-        set_profile=profile,
-        enhanced_relationships_enabled=False,
-    )
-
-    assert supplied_engine.enhanced_relationships_enabled is True
-    assert supplied_engine.set_profile is profile
-    assert all(row.role_ledger.relationship_support == () for row in gated.rows)
-    assert enhanced.rows[1].role_ledger.relationship_support
-    assert _hob_report_projections(gated) == _hob_report_projections(constructed_gated)
-    assert enhanced.rows[1].recommended.contextual_breakdown == (
-        gated.rows[1].recommended.contextual_breakdown
-    )
-    assert enhanced.rows[1].recommended.relationship_contributions
-    assert gated.rows[1].recommended.relationship_contributions == ()
-    for index in (2,):
-        gated_recommended = gated.rows[index].recommended
-        enhanced_recommended = enhanced.rows[index].recommended
-        assert gated_recommended is not None
-        assert enhanced_recommended is not None
-        assert (
-            gated_recommended.contextual_breakdown.synergy
-            < enhanced_recommended.contextual_breakdown.synergy
-        )
-    assert _HOB_R1_FINDING_ID not in "\n".join(gated.rows[1].contextual_evidence)
-    assert supplied_engine.enhanced_relationships_enabled is True
-
-
-def test_hob_relationship_scoring_persists_state_bytes() -> None:
-    database, profile, state = _hob_relationship_fixtures()
+def test_hob_backtest_does_not_mutate_state_bytes() -> None:
+    database, profile, state = _hob_fixtures()
     with tempfile.TemporaryDirectory() as temp_dir:
         app_dir = Path(temp_dir)
         persisted_path = save_draft_state(state=state, app_dir=app_dir)
@@ -1082,7 +834,6 @@ def test_hob_relationship_scoring_persists_state_bytes() -> None:
             state=state,
             card_database=database,
             set_profile=profile,
-            enhanced_relationships_enabled=True,
         )
         generate_backtest_report(
             state=state,
@@ -1094,7 +845,6 @@ def test_hob_relationship_scoring_persists_state_bytes() -> None:
             card_database=database,
             set_profile=profile,
             contextual_adjustments_enabled=False,
-            enhanced_relationships_enabled=True,
         )
 
         assert persisted_path.read_bytes() == persisted_bytes
@@ -1104,117 +854,3 @@ def test_hob_relationship_scoring_persists_state_bytes() -> None:
             draft_id=state.draft_id,
         )
         assert reloaded.to_json() == state.to_json()
-
-
-def test_hob_relationship_scoring_smoke_main_reports_contract(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module = _HOB_SMOKE
-    assert module.main() == 0
-    report = json.loads(capsys.readouterr().out)
-
-    assert report["profile"]["version"] == "hob-relationship-scoring-1"
-    assert report["profile"]["enhancement_status"] == "enhanced"
-    assert report["profile"]["set_code"] == "hob"
-    assert report["card_artifact"]["sha256"] == _HOB_CARD_ARTIFACT_SHA256
-    assert report["caps"] == {
-        "max_synergy_term": 1.5,
-        "max_contextual_adjustment": 6.0,
-    }
-
-    factors = report["relationship_support_factors"]
-    assert len(factors) == 9
-    assert [factor["mechanism"] for factor in factors] == sorted(
-        factor["mechanism"] for factor in factors
-    )
-    assert all(factor["factor"] == 0.5 for factor in factors)
-    observed = {
-        factor["mechanism"]
-        for factor in factors
-        if factor["evidence"] == "hob-observed"
-    }
-    assert observed == {_HOB_R1_MECHANISM, _HOB_R6_MECHANISM}
-    assert report["relationship_outcome_factors"] == [
-        {"outcome": "conditional", "factor": 0.5},
-        {"outcome": "incompatible", "factor": 0.0},
-        {"outcome": "supported", "factor": 1.0},
-        {"outcome": "unsupported", "factor": 0.0},
-    ]
-
-    assert [row["row"] for row in report["rows"]] == [
-        "unsupported",
-        "r1",
-        "r6",
-        "saturation",
-    ]
-    for index, row in enumerate(report["rows"]):
-        assert row["offered_grp_ids"] == list(_HOB_EXPECTED_OFFERS[index])
-        assert row["pool_before_pick"] == list(_HOB_EXPECTED_POOLS[index])
-        assert set(row["controls"]) == {
-            "enhanced",
-            "enhancement_removed",
-            "context_disabled",
-        }
-    deltas = {row["row"]: row["deltas"]["raw_score"] for row in report["rows"]}
-    assert deltas["r1"] == pytest.approx(_HOB_R1_RAW_SCORE_DELTA, abs=1e-9)
-    assert deltas["r6"] == pytest.approx(_HOB_R6_RAW_SCORE_DELTA, abs=1e-9)
-    assert deltas["unsupported"] == 0.0
-    assert deltas["saturation"] == 0.0
-
-    support_ids = {
-        support["finding_id"]
-        for row in report["rows"]
-        for support in row["relationship_support"]
-    }
-    assert {_HOB_R1_FINDING_ID, _HOB_R6_FINDING_ID} <= support_ids
-
-    projection_notes = report["relationship_projection_notes"]
-    assert isinstance(projection_notes, list)
-    assert [entry["finding_id"] for entry in projection_notes] == [_HOB_R1_FINDING_ID]
-    projection_note = projection_notes[0]["note"]
-    assert isinstance(projection_note, str)
-    assert projection_note.strip()
-
-    report_text = json.dumps(report)
-    for forbidden_key in (
-        "prompt",
-        "response",
-        "claim",
-        "guide",
-        "oracle_text",
-        "input_tokens",
-        "output_tokens",
-        "cost_usd",
-        "provider",
-        "model",
-    ):
-        assert f'"{forbidden_key}"' not in report_text
-    for oracle_quote in (
-        "Whenever Fíli or another nontoken Dwarf you control enters",
-        "Other creatures you control get +1/+1",
-        "At the beginning of your upkeep, create a 2/2 green Wolf creature token",
-        "you may sacrifice another creature",
-    ):
-        assert oracle_quote not in report_text
-
-    monkeypatch.setattr(module, "CARD_ARTIFACT_SHA256", "0" * 64)
-    assert module.main() == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err.startswith("HOB relationship scoring smoke failed: ")
-
-
-def test_hob_relationship_scoring_smoke_rejects_structurally_invalid_state(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    malformed_state_path = tmp_path / "malformed-hob-state.json"
-    malformed_state_path.write_text(
-        json.dumps({"schema_version": 1, "picks": []}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(_HOB_SMOKE, "STATE_RELATIVE_PATH", malformed_state_path)
-
-    assert _HOB_SMOKE.main() == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err.startswith("HOB relationship scoring smoke failed: ")

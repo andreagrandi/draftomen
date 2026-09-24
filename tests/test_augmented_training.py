@@ -649,7 +649,7 @@ def test_basic_array_scores_match_real_pick_engine_results() -> None:
         card_database=database,
         set_profile=profile,
     )
-    engine = PickEngine(set_profile=profile, enhanced_relationships_enabled=False)
+    engine = PickEngine(set_profile=profile)
 
     assert scores.integer_scores.shape == (len(rows), len(data.card_names))
     for position, row_value in enumerate(rows):

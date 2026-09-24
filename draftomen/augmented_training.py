@@ -705,10 +705,7 @@ def _build_array_basic_scores(
 ) -> _BasicArrayScores:
     global _BASIC_SCORE_WORKER_STATE
 
-    engine = PickEngine(
-        set_profile=set_profile,
-        enhanced_relationships_enabled=False,
-    )
+    engine = PickEngine(set_profile=set_profile)
     score_shape = (len(rows), len(data.card_names))
     integer_scores = np.zeros(score_shape, dtype=np.uint8)
     tie_order = np.full(

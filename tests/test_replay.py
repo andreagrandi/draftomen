@@ -33,6 +33,7 @@ from draftomen.replay import (
     render_replay_events,
     replay_log_file,
 )
+from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import SetProfile, dump_set_profile, set_profile_path
 from draftomen.seventeen import (
     PREMIER_DRAFT_FORMAT,
@@ -51,6 +52,20 @@ SCRYFALL_BULK_SAMPLE_PATH = (
 )
 GOLDEN_REPLAY_PATH = (
     Path(__file__).parent / "golden" / "quick-draft-msh-player.replay.txt"
+)
+
+HOB_PROFILE_PATH = (
+    Path(__file__).parent / "fixtures" / "hob-relationship-scoring-profile.json"
+)
+HOB_STATE_PATH = (
+    Path(__file__).parent / "fixtures" / "hob-relationship-scoring-state.json"
+)
+HOB_CARD_ARTIFACT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "website"
+    / "public"
+    / "card-data"
+    / "hob.json.gz"
 )
 
 
@@ -468,6 +483,73 @@ def test_replay_profile_loader_is_skipped_for_explicit_profile() -> None:
     )
 
     assert calls == []
+
+
+def test_hob_enhancement_does_not_change_replay_output() -> None:
+    profile = SetProfile.from_json(
+        json.loads(HOB_PROFILE_PATH.read_text(encoding="utf-8"))
+    )
+    assert profile.enhancement is not None
+    state = json.loads(HOB_STATE_PATH.read_text(encoding="utf-8"))
+    first_pick = state["picks"][0]
+    pool_before_pick = tuple(first_pick["pool_before_pick"])
+    account_id = state["account_id"]
+    event_name = state["event_name"]
+    set_code = state["set_code"].upper()
+    pack_number = first_pick["pack_number"]
+    offered_grp_ids = tuple(first_pick["offered_grp_ids"])
+    assert pack_number == 0
+    assert first_pick["pick_number"] == 4
+    assert len(pool_before_pick) == 4
+    events = (
+        DraftStartedEvent(
+            event_name=event_name,
+            set_code=set_code,
+            course_id=state["course_id"],
+            account_id=account_id,
+        ),
+        *(
+            PickMadeEvent(
+                event_name=event_name,
+                set_code=set_code,
+                pack_number=pack_number,
+                pick_number=pick_number,
+                chosen_grp_id=grp_id,
+                account_id=account_id,
+            )
+            for pick_number, grp_id in enumerate(pool_before_pick)
+        ),
+        PackOfferedEvent(
+            event_name=event_name,
+            set_code=set_code,
+            pack_number=pack_number,
+            pick_number=first_pick["pick_number"],
+            offered_grp_ids=offered_grp_ids,
+            pool_grp_ids=pool_before_pick,
+            account_id=account_id,
+        ),
+    )
+    card_database = SetCardData.from_gzip_bytes(
+        HOB_CARD_ARTIFACT_PATH.read_bytes(),
+        expected_set_code="hob",
+    ).to_card_database()
+
+    enhanced_output = render_replay_events(
+        events=events,
+        card_database=card_database,
+        set_profile=profile,
+        splash_enabled=False,
+    )
+    removed_output = render_replay_events(
+        events=events,
+        card_database=card_database,
+        set_profile=replace(profile, enhancement=None),
+        splash_enabled=False,
+    )
+
+    assert enhanced_output == removed_output
+    assert "relationship advice" not in enhanced_output.casefold()
+    assert "confirmed relationship support" not in enhanced_output.casefold()
 
 
 def _replay_context_events() -> tuple[

@@ -15,7 +15,6 @@ from draftomen.events import (
     EXPECTED_TOTAL_PICKS,
 )
 from draftomen.pickengine import (
-    LEGACY_RELATIONSHIP_SCORING_ENABLED,
     PickEngine,
     PickScoringContext,
     ScoredCard,
@@ -143,7 +142,6 @@ def generate_backtest_report(
     ranking_mode: str = DEFAULT_RANKING_MODE,
     splash_enabled: bool = True,
     contextual_adjustments_enabled: bool = True,
-    enhanced_relationships_enabled: bool = LEGACY_RELATIONSHIP_SCORING_ENABLED,
     set_profile: SetProfile | None = None,
 ) -> BacktestReport:
     """Score each saved pick from the persisted pre-pick state.
@@ -155,7 +153,6 @@ def generate_backtest_report(
         ratings_data=ratings_data,
         splash_enabled=splash_enabled,
         contextual_adjustments_enabled=contextual_adjustments_enabled,
-        enhanced_relationships_enabled=enhanced_relationships_enabled,
         set_profile=set_profile,
     )
     rows = tuple(
@@ -176,35 +173,18 @@ def _backtest_engine(
     ratings_data: SeventeenLandsData | None,
     splash_enabled: bool,
     contextual_adjustments_enabled: bool,
-    enhanced_relationships_enabled: bool,
     set_profile: SetProfile | None,
 ) -> PickEngine:
-    """Return one engine honoring the explicit relationship gate.
+    """Return a supplied engine unchanged, or construct one for this report."""
 
-    An explicit false gate wins over a supplied relationship-capable engine;
-    the caller-owned engine is never mutated, so a gated copy carries its
-    public configuration instead.
-    """
-
-    if pick_engine is None:
-        return PickEngine(
-            ratings_data=ratings_data,
-            splash_enabled=splash_enabled,
-            contextual_adjustments_enabled=contextual_adjustments_enabled,
-            enhanced_relationships_enabled=enhanced_relationships_enabled,
-            set_profile=set_profile,
-        )
-    if not enhanced_relationships_enabled and pick_engine.enhanced_relationships_enabled:
-        return PickEngine(
-            ratings_data=pick_engine.ratings_data,
-            config=pick_engine.config,
-            splash_enabled=pick_engine.splash_enabled,
-            contextual_adjustments_enabled=pick_engine.contextual_adjustments_enabled,
-            enhanced_relationships_enabled=False,
-            set_profile=pick_engine.set_profile,
-            scoring_context=pick_engine.scoring_context,
-        )
-    return pick_engine
+    if pick_engine is not None:
+        return pick_engine
+    return PickEngine(
+        ratings_data=ratings_data,
+        splash_enabled=splash_enabled,
+        contextual_adjustments_enabled=contextual_adjustments_enabled,
+        set_profile=set_profile,
+    )
 
 
 def format_backtest_report(report: BacktestReport) -> str:

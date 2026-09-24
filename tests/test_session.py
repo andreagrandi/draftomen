@@ -1251,7 +1251,6 @@ def test_live_session_direct_ingestion_loads_configured_enhanced_profile(
     _assert_profile_context(scored_pack=scored_pack, profile=profile, event=event)
     assert snapshot.set_profile.phase is DataLoadPhase.READY
     assert snapshot.set_profile.source == "local-mature"
-    assert scored_pack.role_ledger.relationship_support == ()
 
 
 def test_live_session_contextual_mode_controls_startup_and_local_rescore(
@@ -1385,7 +1384,7 @@ def test_live_session_contextual_mode_controls_startup_and_local_rescore(
 
 
 def _relationship_session_profile() -> SetProfile:
-    """Build one compatible enhanced profile over the session fixture cards."""
+    """Build one enhanced schema-three profile over the session fixture cards."""
     from tests.test_pickengine import (
         _relationship_profile,
         _token_sacrifice_relationship,
@@ -1452,7 +1451,7 @@ def test_live_session_rejects_unsupported_command(tmp_path: Path) -> None:
         session.dispatch(command=object())  # type: ignore[arg-type]
 
 
-def test_live_session_enhanced_profile_defaults_to_basic_do_with_contextual_evidence(
+def test_live_session_enhancement_does_not_change_basic_do_with_contextual_evidence(
     tmp_path: Path,
 ) -> None:
     profile = _relationship_session_profile()
@@ -1504,8 +1503,6 @@ def test_live_session_enhanced_profile_defaults_to_basic_do_with_contextual_evid
         (row.card.grp_id, row.raw_score)
         for row in sorted(unenhanced_pack.cards, key=lambda card: card.card.grp_id)
     )
-    assert enhanced_pack.role_ledger.relationship_support == ()
-    assert unenhanced_pack.role_ledger.relationship_support == ()
     package_payoff = next(
         row for row in enhanced_pack.cards if row.card.grp_id == 605
     )
@@ -1522,7 +1519,123 @@ def test_live_session_enhanced_profile_defaults_to_basic_do_with_contextual_evid
     )
 
 
-def test_live_session_default_gated_saved_draft_backtest_keeps_contextual_evidence(
+def test_live_session_hob_enhancement_does_not_change_basic_do(
+    tmp_path: Path,
+) -> None:
+    profile = load_set_profile(
+        PROJECT_ROOT
+        / "tests"
+        / "fixtures"
+        / "hob-relationship-scoring-profile.json",
+        expected_set_code="HOB",
+        expected_format=QUICK_DRAFT_FORMAT,
+    )
+    assert profile.enhancement is not None
+    state = DraftState.from_json(
+        json.loads(
+            (
+                PROJECT_ROOT
+                / "tests"
+                / "fixtures"
+                / "hob-relationship-scoring-state.json"
+            ).read_text(encoding="utf-8")
+        )
+    )
+    card_database = SetCardData.from_gzip_bytes(
+        payload=(
+            PROJECT_ROOT / "website" / "public" / "card-data" / "hob.json.gz"
+        ).read_bytes(),
+        expected_set_code="hob",
+    ).to_card_database()
+    saved_pick = state.picks[1]
+    assert saved_pick.offered_grp_ids is not None
+    assert saved_pick.pool_before_pick is not None
+    assert saved_pick.pack_number == 0
+    assert saved_pick.pick_number == 5
+
+    start_event = DraftStartedEvent(
+        event_name=state.event_name,
+        set_code=state.set_code.upper(),
+        course_id=state.course_id,
+        account_id=state.account_id,
+    )
+    prior_picks = tuple(
+        PickMadeEvent(
+            event_name=state.event_name,
+            set_code=state.set_code.upper(),
+            pack_number=saved_pick.pack_number,
+            pick_number=pick_number,
+            chosen_grp_id=grp_id,
+            account_id=state.account_id,
+        )
+        for pick_number, grp_id in enumerate(saved_pick.pool_before_pick)
+    )
+    offer_event = PackOfferedEvent(
+        event_name=state.event_name,
+        set_code=state.set_code.upper(),
+        pack_number=saved_pick.pack_number,
+        pick_number=saved_pick.pick_number,
+        offered_grp_ids=saved_pick.offered_grp_ids,
+        pool_grp_ids=saved_pick.pool_before_pick,
+        account_id=state.account_id,
+    )
+    events = (start_event, *prior_picks, offer_event)
+    profiles = (profile, replace(profile, enhancement=None))
+    snapshots = []
+    for label, profile_variant in zip(
+        ("enhanced", "enhancement-removed"),
+        profiles,
+        strict=True,
+    ):
+        session = LiveSession(
+            log_path=None,
+            app_dir=tmp_path / label,
+            card_database=card_database,
+            set_profile=profile_variant,
+        )
+        snapshots.append(session.process_events(events=events))
+
+    enhanced_snapshot, removed_snapshot = snapshots
+    enhanced_pack = enhanced_snapshot.current_scored_pack
+    removed_pack = removed_snapshot.current_scored_pack
+    assert enhanced_pack is not None
+    assert removed_pack is not None
+    enhanced_scores = {
+        card.card.grp_id: (
+            card.basic_score,
+            card.raw_score,
+            card.contextual_breakdown,
+            card.contextual_evidence,
+        )
+        for card in enhanced_pack.cards
+    }
+    removed_scores = {
+        card.card.grp_id: (
+            card.basic_score,
+            card.raw_score,
+            card.contextual_breakdown,
+            card.contextual_evidence,
+        )
+        for card in removed_pack.cards
+    }
+    assert set(enhanced_scores) == set(saved_pick.offered_grp_ids)
+    assert enhanced_scores == removed_scores
+    assert tuple(
+        recommendation.card.grp_id
+        for recommendation in enhanced_snapshot.recommendations.cards
+    ) == tuple(
+        recommendation.card.grp_id
+        for recommendation in removed_snapshot.recommendations.cards
+    )
+    assert enhanced_snapshot.recommendations.cards[0].card.grp_id == 103526
+    assert any(
+        "semantic package" in evidence
+        for card in enhanced_pack.cards
+        for evidence in card.contextual_evidence
+    )
+
+
+def test_live_session_saved_draft_backtest_keeps_contextual_evidence(
     tmp_path: Path,
 ) -> None:
     profile = _relationship_session_profile()
@@ -1572,7 +1685,7 @@ def test_live_session_default_gated_saved_draft_backtest_keeps_contextual_eviden
     assert enhanced.rows[2].contextual_evidence
 
 
-def test_live_session_profile_refresh_replacement_keeps_disabled_backtest(
+def test_live_session_profile_refresh_replacement_keeps_backtest(
     tmp_path: Path,
 ) -> None:
     enhanced = _relationship_session_profile()
@@ -1601,7 +1714,6 @@ def test_live_session_profile_refresh_replacement_keeps_disabled_backtest(
         state=None,
     )
     assert session.snapshot.current_scored_pack is not None
-    assert session.snapshot.current_scored_pack.role_ledger.relationship_support == ()
     compared = session.dispatch(
         command=RequestBacktest(account_id="account-1", draft_id="draft-1")
     )
@@ -1626,7 +1738,6 @@ def test_live_session_profile_refresh_replacement_keeps_disabled_backtest(
     assert replacement.progress is None
     assert replacement.set_profile.profile_version == unenhanced.profile_version
     assert replacement.current_scored_pack is not None
-    assert replacement.current_scored_pack.role_ledger.relationship_support == ()
 
 
 def test_live_session_profile_refresh_same_capability_keeps_backtest(
@@ -1674,7 +1785,6 @@ def test_live_session_profile_refresh_same_capability_keeps_backtest(
     assert adopted.set_profile.profile_version == bumped.profile_version
     assert adopted.backtest == compared.backtest
     assert adopted.current_scored_pack is not None
-    assert adopted.current_scored_pack.role_ledger.relationship_support == ()
 
 
 def test_live_session_contextual_mode_toggle_without_pack_publishes_only_mode(

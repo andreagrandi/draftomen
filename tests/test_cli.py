@@ -27,7 +27,6 @@ from draftomen.cli import build_parser, main
 from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
 from draftomen.enrichment_inventory import ARTIFACT_ERROR, PUBLICATION_ERROR
 from draftomen.pool import DraftState, load_draft_state, save_draft_state
-from draftomen.pool_ledger import relationship_enhancement_is_compatible
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_input_acquisition import (
     CardMetadataAdapter,
@@ -4747,14 +4746,6 @@ def test_republish_enrichment_recovers_a_role_bearing_profile(
     assert published_profile["enhancement"]["artifact_sha256"] == artifact_sha256
     assert published_profile["role_profile"]["cards"]
 
-    loaded = SetProfile.from_json(published_profile)
-    assert (
-        relationship_enhancement_is_compatible(
-            set_profile=loaded,
-            card_database=_republish_card_database(),
-        )
-        is True
-    )
 
 
 def test_republish_enrichment_requires_empirical_inputs_for_a_role_bearing_stage(

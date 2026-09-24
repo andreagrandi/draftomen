@@ -478,10 +478,7 @@ def test_audit_omits_legacy_relationship_projections_and_preserves_contextual_ev
     assert relationship.prerequisites == (SENTINEL_LEGACY_PREREQUISITE,)
     assert enhancement.runs[0].provider == SENTINEL_MODEL_RUN
     database = _relationship_card_database()
-    engine = PickEngine(
-        set_profile=profile,
-        enhanced_relationships_enabled=True,
-    )
+    engine = PickEngine(set_profile=profile)
     scored_pack = engine.score_pack(
         offered_grp_ids=(RELATIONSHIP_TARGET_ID,),
         card_database=database,
@@ -493,34 +490,8 @@ def test_audit_omits_legacy_relationship_projections_and_preserves_contextual_ev
         for card in scored_pack.cards
         if card.card.grp_id == RELATIONSHIP_TARGET_ID
     )
-    assert scored_target.contextual_breakdown.synergy > 0.0
-    assert len(scored_target.relationship_contributions) == 1
-    contribution = scored_target.relationship_contributions[0]
-    assert contribution.support.finding_id == RELATIONSHIP_FINDING_ID
-    assert contribution.raw_contribution > 0.0
-    assert contribution.effective_contribution == 0.0
 
-    # The in-memory support remains available, but is no longer serialized.
     assert scored_pack.role_ledger is not None
-    support = scored_pack.role_ledger.relationship_support[0]
-    assert support.outcome.value == "supported"
-    assert support.profile_fingerprint == profile.fingerprint
-    assert support.source_prerequisites
-    assert support.target_prerequisites
-
-    # The same offered target keeps no relationship support once its drafted
-    # source is absent from the pre-pick pool.
-    control_pack = engine.score_pack(
-        offered_grp_ids=(RELATIONSHIP_TARGET_ID,),
-        card_database=database,
-        pick_index=1,
-    )
-    assert control_pack.role_ledger is not None
-    assert control_pack.role_ledger.relationship_support == ()
-    assert all(
-        not item.startswith("relationship ")
-        for item in control_pack.cards[0].contextual_evidence
-    )
 
     store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
     store.record_decision(
@@ -565,7 +536,6 @@ def test_audit_omits_legacy_relationship_projections_and_preserves_contextual_ev
     assert scoring["contextual_breakdown"] == (
         scored_target.contextual_breakdown.to_json()
     )
-    assert scoring["contextual_breakdown"]["synergy"] > 0.0
     assert candidate["concise_explanation"] == render_pick_rationale_concise(
         scored_card=scored_target
     )
@@ -683,6 +653,7 @@ def test_audit_restart_preserves_identity_for_historical_records_without_rationa
         app_dir=tmp_path,
     )
     historical = json.loads(path.read_text(encoding="utf-8"))
+    assert historical["schema_version"] == 1
     for field in ("rationale", "concise_explanation", "explanation"):
         historical["recommendation"].pop(field, None)
         for candidate in historical["candidates"]:

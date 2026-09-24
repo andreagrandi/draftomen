@@ -87,7 +87,6 @@ from draftomen.enrichment_publications import EnrichmentPublicationError
 from draftomen.events import DraftLogParseError
 from draftomen.logfollow import LogFollowError
 from draftomen.paths import UnsupportedPlatformError, app_data_dir, resolve_player_log_path
-from draftomen.pickengine import LEGACY_RELATIONSHIP_SCORING_ENABLED
 from draftomen.pool import DraftPoolError
 from draftomen.ranking import DEFAULT_RANKING_MODE, RANKING_MODES
 from draftomen.refresh_plan import (
@@ -1849,7 +1848,6 @@ def handle_backtest(args: argparse.Namespace) -> int:
             ratings_data=ratings_data,
             ranking_mode=args.ranking,
             splash_enabled=args.splash_enabled,
-            enhanced_relationships_enabled=LEGACY_RELATIONSHIP_SCORING_ENABLED,
             set_profile=set_profile,
         )
     except (

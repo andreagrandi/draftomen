@@ -21,8 +21,6 @@ from draftomen.pool_ledger import (
     PACKAGE_ROLES,
     PoolRoleLedger,
     PRE_PICK_PROJECTION,
-    RelationshipSupport,
-    RelationshipSupportOutcome,
     TargetCoverage,
     project_pool_role_ledger,
 )
@@ -64,7 +62,6 @@ STANDARD_BASIC_LAND_TYPE_LINES = frozenset(
 MAX_ROLE_TERM = 2.5
 MAX_URGENCY_TERM = 3.0
 MAX_SYNERGY_TERM = 1.5
-LEGACY_RELATIONSHIP_SCORING_ENABLED = False
 MAX_REDUNDANCY_TERM = 2.0
 MAX_UNSUPPORTED_PAYOFF_TERM = 2.0
 MAX_FIXING_TERM = 1.5
@@ -80,40 +77,6 @@ PAYOFF_PACKAGES: Mapping[Role, str] = {
     Role.EQUIPMENT_PAYOFF: "equipment",
     Role.POWER_THRESHOLD_PAYOFF: "threshold",
     Role.POWER_N_PAYOFF: "threshold",
-}
-# HOB backtest evidence observes `token-go-wide-payoff` and
-# `token-sacrifice-outlet`; their deterministic same-card token effects justify
-# retaining `0.5`. The other seven mechanisms keep the same conservative uniform
-# factor because #510 has no outcome labels supporting mechanism-specific values.
-_RELATIONSHIP_SUPPORT_FACTORS: Mapping[str, float] = {
-    "discard-recursion-payoff": 0.5,
-    "fodder-dies-payoff": 0.5,
-    "fodder-sacrifice-outlet": 0.5,
-    "loot-recursion-payoff": 0.5,
-    "mill-graveyard-payoff": 0.5,
-    "recursion-graveyard-payoff": 0.5,
-    "token-death-payoff": 0.5,
-    "token-go-wide-payoff": 0.5,
-    "token-sacrifice-outlet": 0.5,
-}
-_RELATIONSHIP_INTERACTION_DESCRIPTIONS: Mapping[str, str] = {
-    "discard-recursion-payoff": "connects discard to a recursion payoff",
-    "fodder-dies-payoff": "connects expendable creatures to a death payoff",
-    "fodder-sacrifice-outlet": "connects expendable creatures to a sacrifice ability",
-    "loot-recursion-payoff": "connects discard from looting to a recursion ability",
-    "mill-graveyard-payoff": "connects self-mill to a graveyard payoff",
-    "recursion-graveyard-payoff": "connects recursion to a graveyard payoff",
-    "token-death-payoff": "connects creature tokens to a death payoff",
-    "token-go-wide-payoff": "connects creature tokens to a go-wide payoff",
-    "token-sacrifice-outlet": "connects creature tokens to a sacrifice ability",
-}
-# Supported clauses keep the calibrated mechanism value. Conditional clauses
-# receive half credit; closed negative verdicts remain auditable but score zero.
-_RELATIONSHIP_OUTCOME_FACTORS: Mapping[RelationshipSupportOutcome, float] = {
-    RelationshipSupportOutcome.SUPPORTED: 1.0,
-    RelationshipSupportOutcome.CONDITIONAL: 0.5,
-    RelationshipSupportOutcome.INCOMPATIBLE: 0.0,
-    RelationshipSupportOutcome.UNSUPPORTED: 0.0,
 }
 _TERM_BOUNDS: Mapping[str, tuple[float, float]] = {
     "role": (0.0, MAX_ROLE_TERM),
@@ -275,45 +238,6 @@ class PickRationale:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class RelationshipScoreContribution:
-    """Retain one relationship verdict and its bounded scoring effect.
-    Zero-effective records remain available for audit and replay.
-    """
-
-    support: RelationshipSupport
-    raw_contribution: float
-    effective_contribution: float
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.support, RelationshipSupport):
-            raise TypeError("Relationship score support must be RelationshipSupport.")
-        for field_name in ("raw_contribution", "effective_contribution"):
-            value = getattr(self, field_name)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-                or not 0.0 <= float(value) <= MAX_SYNERGY_TERM
-            ):
-                raise ValueError(
-                    f"Relationship score {field_name} must be bounded from 0 "
-                    f"to {MAX_SYNERGY_TERM:g}."
-                )
-            object.__setattr__(self, field_name, float(f"{float(value):.6f}"))
-        if self.effective_contribution > self.raw_contribution:
-            raise ValueError(
-                "Relationship effective contribution cannot exceed its raw contribution."
-            )
-
-    def to_json(self) -> dict[str, object]:
-        """Return deterministic relationship and score provenance."""
-
-        return {
-            **self.support.to_json(),
-            "raw_contribution": self.raw_contribution,
-            "effective_contribution": self.effective_contribution,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,25 +482,6 @@ def _normalize_scoring_context(
     return scoring_context
 
 
-def _without_relationship_support(
-    scoring_context: PickScoringContext | None,
-) -> PickScoringContext | None:
-    """Return an equivalent context whose ledger carries no relationship support.
-
-    The supplied context is never mutated; only a disabled relationship gate
-    reaches this normalizer.
-    """
-
-    if scoring_context is None:
-        return None
-    ledger = scoring_context.role_ledger
-    if not ledger.relationship_support:
-        return scoring_context
-    return PickScoringContext(
-        set_profile=scoring_context.set_profile,
-        role_ledger=replace(ledger, relationship_support=()),
-    )
-
 
 def recommendation_confidence_summary(
     *,
@@ -673,73 +578,6 @@ def render_pick_rationale_detailed(
             parts.append(_concise_reason(reason=reason))
     return " ".join(parts)
 
-
-def render_relationship_advice_summary(
-    *,
-    scored_card: ScoredCard,
-) -> str | None:
-    """Render only drafted-card relationship advice for a recommendation.
-    Ordinary rating and contextual rationale stay in the standard explanation.
-    """
-
-    advice = tuple(
-        render_relationship_advice(contribution=contribution)
-        for contribution in scored_card.relationship_contributions
-        if contribution.raw_contribution > 0.0
-    )
-    return " ".join((*advice, *scored_card.semantic_relationship_advice)) or None
-
-
-def render_relationship_advice(
-    *,
-    contribution: RelationshipScoreContribution,
-) -> str:
-    """Render one reviewed relationship result for a drafter.
-    Exact identifiers and clauses remain in structured audit provenance.
-    """
-
-    support = contribution.support
-    interaction = _RELATIONSHIP_INTERACTION_DESCRIPTIONS.get(
-        support.mechanism,
-        "provides support for its drafted-card interaction",
-    )
-    outcome = (
-        "supports"
-        if support.outcome is RelationshipSupportOutcome.SUPPORTED
-        else "can support"
-    )
-    conditions = ""
-    if support.outcome is RelationshipSupportOutcome.CONDITIONAL:
-        qualification_kinds = tuple(
-            dict.fromkeys(
-                qualification.kind.value
-                for qualification in (
-                    *support.source_qualifications,
-                    *support.target_qualifications,
-                )
-            )
-        )
-        condition_label = (
-            "the stated card conditions"
-            if not qualification_kinds
-            else "the stated " + ", ".join(qualification_kinds) + " conditions"
-        )
-        conditions = f" when {condition_label} are met"
-
-    effective = contribution.effective_contribution
-    if effective == 0.0:
-        impact = (
-            "It adds no extra DO points after existing synergy overlap and the "
-            "synergy limit is applied."
-        )
-    elif effective < 0.005:
-        impact = "Its effective score impact is less than +0.01 DO points."
-    else:
-        impact = f"Its effective score impact is +{effective:.2f} DO points."
-    return (
-        f"Drafted {support.source_card_name} {outcome} "
-        f"{support.target_card_name}: the pair {interaction}{conditions}. {impact}"
-    )
 
 
 def _rationale_for_render(*, scored_card: ScoredCard) -> PickRationale:
@@ -936,8 +774,6 @@ class ScoredCard:
     freely_available_basic: bool
     contextual_breakdown: ContextualScoreBreakdown = ContextualScoreBreakdown()
     contextual_evidence: tuple[str, ...] = ()
-    relationship_contributions: tuple[RelationshipScoreContribution, ...] = ()
-    semantic_relationship_advice: tuple[str, ...] = ()
     contextual_pair: str | None = None
     contextual_theme: str | None = None
     contextual_profile_maturity: str | None = None
@@ -998,7 +834,6 @@ class PickEngine:
         config: PickEngineConfig = PICK_ENGINE,
         splash_enabled: bool = SPLASH.enabled_by_default,
         contextual_adjustments_enabled: bool = True,
-        enhanced_relationships_enabled: bool = LEGACY_RELATIONSHIP_SCORING_ENABLED,
         set_profile: SetProfile | None = None,
         scoring_context: PickScoringContext | None = None,
         augmented_artifact: AugmentedArtifact | None = None,
@@ -1008,7 +843,6 @@ class PickEngine:
         self.config = config
         self.splash_enabled = splash_enabled
         self.contextual_adjustments_enabled = contextual_adjustments_enabled
-        self.enhanced_relationships_enabled = enhanced_relationships_enabled
         self.set_profile = _normalize_scoring_profile(set_profile)
         self.scoring_context = scoring_context
         self.augmented_artifact = augmented_artifact
@@ -1098,11 +932,6 @@ class PickEngine:
                 set_profile=active_profile,
                 stage=resolved_stage,
                 likely_pair=commitment.inferred_pair,
-                enhanced_relationships_enabled=self.enhanced_relationships_enabled,
-            )
-        if not self.enhanced_relationships_enabled:
-            active_context = _without_relationship_support(
-                scoring_context=active_context
             )
         if active_context is not None:
             role_ledger = active_context.role_ledger
@@ -1119,7 +948,6 @@ class PickEngine:
                 ratings_data=self.ratings_data,
                 set_profile=active_profile,
                 likely_pair=commitment.inferred_pair,
-                enhanced_relationships_enabled=self.enhanced_relationships_enabled,
             )
         require_material_rate_margin = _is_empirical_profile(
             profile=active_profile,
@@ -1145,7 +973,6 @@ class PickEngine:
                 commitment=commitment,
                 splash_state=splash_state,
                 contextual_adjustments_enabled=self.contextual_adjustments_enabled,
-                enhanced_relationships_enabled=self.enhanced_relationships_enabled,
                 best_on_color_score=best_on_color_score,
                 scoring_context=active_context,
                 augmentation_delta=(
@@ -1271,7 +1098,6 @@ class PickEngine:
         scoring_context: PickScoringContext | None,
         augmentation_delta: float,
         contextual_adjustments_enabled: bool,
-        enhanced_relationships_enabled: bool,
         profile: SetProfile | None,
         normalization: ScoreNormalization,
         profile_lookup: _ProfileRatingLookup,
@@ -1323,21 +1149,13 @@ class PickEngine:
             config=self.config,
         )
         if contextual_adjustments_enabled:
-            (
-                contextual_breakdown,
-                contextual_evidence,
-                relationship_contributions,
-                semantic_relationship_advice,
-            ) = _contextual_score_for_card(
+            contextual_breakdown, contextual_evidence = _contextual_score_for_card(
                 card=card,
                 scoring_context=scoring_context,
-                enhanced_relationships_enabled=enhanced_relationships_enabled,
             )
         else:
             contextual_breakdown = ContextualScoreBreakdown()
             contextual_evidence = ()
-            relationship_contributions = ()
-            semantic_relationship_advice = ()
         contextual_adjustment = contextual_breakdown.aggregate
         raw_score = _clamp(
             value=(base_score * color_factor) + contextual_adjustment,
@@ -1393,8 +1211,6 @@ class PickEngine:
             freely_available_basic=freely_available_basic,
             contextual_breakdown=contextual_breakdown,
             contextual_evidence=contextual_evidence,
-            relationship_contributions=relationship_contributions,
-            semantic_relationship_advice=semantic_relationship_advice,
             contextual_pair=(
                 None
                 if scoring_context is None
@@ -1417,202 +1233,11 @@ def _target_names(assignment: RoleAssignment) -> tuple[str, ...]:
     return (role_name, f"removal:{assignment.removal.kind}")
 
 
-_SEMANTIC_PACKAGE_DESCRIPTIONS: Mapping[str, str] = {
-    "draw": "{enabler} can provide a card draw toward {payoff}'s second-card payoff",
-}
-
-_ADVICE_PACKAGE_ROLES = {
-    "draw": (
-        (
-            Role.DRAW,
-            Role.EXTRA_DRAW_ENABLER,
-            Role.LOOT,
-            Role.RUMMAGE,
-            Role.CANTRIP,
-        ),
-        (Role.DRAW_SECOND_PAYOFF,),
-    ),
-    "typal": PACKAGE_ROLES["typal"],
-}
-_MAX_SEMANTIC_ADVICE_ITEMS = 3
-
-
-def _shared_typal_subtypes(
-    *, enabler: RoleAssignment, payoff: RoleAssignment
-) -> tuple[str, ...]:
-    """Return the named subtypes shared by a typal member and payoff."""
-
-    if enabler.typal_identity is None or payoff.typal_identity is None:
-        return ()
-    member = {
-        item.casefold(): item for item in enabler.typal_identity.subtypes
-    }
-    required = {
-        item.casefold() for item in payoff.typal_identity.subtypes
-    }
-    return tuple(
-        member[item] for item in sorted(member.keys() & required)
-    )
-
-
-def _semantic_package_advice(
-    *,
-    card: CardInfo,
-    assignments: tuple[RoleAssignment, ...],
-    ledger: PoolRoleLedger,
-) -> tuple[str, ...]:
-    """Describe source-backed package interactions with individual drafted cards."""
-
-    explicit_pairs = {
-        frozenset((support.source_card_id, support.target_card_id))
-        for support in ledger.relationship_support
-    }
-    advice: list[str] = []
-    for drafted in ledger.semantic_cards:
-        if drafted.grp_id == card.grp_id:
-            continue
-        if frozenset((drafted.grp_id, card.grp_id)) in explicit_pairs:
-            continue
-        for package, (enabler_roles, payoff_roles) in _ADVICE_PACKAGE_ROLES.items():
-            offered_enablers = tuple(
-                item for item in assignments if item.role in enabler_roles
-            )
-            offered_payoffs = tuple(
-                item for item in assignments if item.role in payoff_roles
-            )
-            drafted_enablers = tuple(
-                item for item in drafted.assignments if item.role in enabler_roles
-            )
-            drafted_payoffs = tuple(
-                item for item in drafted.assignments if item.role in payoff_roles
-            )
-            candidates: tuple[
-                tuple[RoleAssignment, RoleAssignment, str, str], ...
-            ] = ()
-            if (
-                offered_enablers
-                and drafted_payoffs
-            ):
-                candidates = (
-                    (offered_enablers[0], drafted_payoffs[0], card.name, drafted.name),
-                )
-            elif (
-                drafted_enablers
-                and offered_payoffs
-            ):
-                candidates = (
-                    (drafted_enablers[0], offered_payoffs[0], drafted.name, card.name),
-                )
-            for enabler, payoff, enabler_name, payoff_name in candidates:
-                if package == "typal":
-                    subtypes = _shared_typal_subtypes(
-                        enabler=enabler,
-                        payoff=payoff,
-                    )
-                    if not subtypes:
-                        continue
-                    description = (
-                        f"{enabler_name} is {', '.join(subtypes)}, matching the "
-                        f"creature type required by {payoff_name}"
-                    )
-                else:
-                    description = _SEMANTIC_PACKAGE_DESCRIPTIONS[package].format(
-                        enabler=enabler_name,
-                        payoff=payoff_name,
-                    )
-                advice.append(
-                    f"Drafted {drafted.name} works with {card.name}: {description}."
-                )
-    return tuple(dict.fromkeys(advice))
-
-
-def _condition_relationship_advice(
-    *, card: CardInfo, profile: SetProfile, ledger: PoolRoleLedger
-) -> tuple[str, ...]:
-    """Describe published Storied, Landfall, and Ferocious condition edges."""
-
-    enhancement = profile.enhancement
-    condition_map = None if enhancement is None else enhancement.condition_map
-    if condition_map is None:
-        return ()
-    capabilities = {
-        capability.capability_id: capability
-        for capability in condition_map.capabilities
-    }
-    drafted_names = {item.grp_id: item.name for item in ledger.semantic_cards}
-    advice: list[str] = []
-    for interaction in condition_map.interactions:
-        enabler = capabilities[interaction.enabler_id]
-        payoff = capabilities[interaction.payoff_id]
-        if enabler.source_card_id == card.grp_id and payoff.source_card_id in drafted_names:
-            drafted_id = payoff.source_card_id
-            enabler_name = card.name
-            payoff_name = drafted_names[drafted_id]
-        elif payoff.source_card_id == card.grp_id and enabler.source_card_id in drafted_names:
-            drafted_id = enabler.source_card_id
-            enabler_name = drafted_names[drafted_id]
-            payoff_name = card.name
-        else:
-            continue
-        if drafted_id == card.grp_id:
-            continue
-        drafted_name = drafted_names[drafted_id]
-        if enabler.family == "storied":
-            detail = (
-                f"{enabler_name} counts toward the three artifacts, legendary permanents, "
-                f"or Sagas needed by {payoff_name}'s Storied ability"
-            )
-        elif enabler.family == "landfall":
-            detail = f"{enabler_name} helps trigger {payoff_name}'s Landfall ability"
-        else:
-            detail = (
-                f"{enabler_name} can satisfy {payoff_name}'s power-4 Ferocious condition"
-            )
-        advice.append(
-            f"Drafted {drafted_name} works with {card.name}: {detail}."
-        )
-    return tuple(dict.fromkeys(advice))
-
-
-def _semantic_relationship_advice(
-    *,
-    card: CardInfo,
-    assignments: tuple[RoleAssignment, ...],
-    profile: SetProfile,
-    ledger: PoolRoleLedger,
-) -> tuple[str, ...]:
-    """Combine card-role packages and named condition-map interactions."""
-
-    advice = tuple(
-        dict.fromkeys(
-            (
-                *_condition_relationship_advice(
-                    card=card,
-                    profile=profile,
-                    ledger=ledger,
-                ),
-                *_semantic_package_advice(
-                    card=card,
-                    assignments=assignments,
-                    ledger=ledger,
-                ),
-            )
-        )
-    )
-    return advice[:_MAX_SEMANTIC_ADVICE_ITEMS]
-
-
 def _contextual_score_for_card(
     *,
     card: CardInfo,
     scoring_context: PickScoringContext | None,
-    enhanced_relationships_enabled: bool = True,
-) -> tuple[
-    ContextualScoreBreakdown,
-    tuple[str, ...],
-    tuple[RelationshipScoreContribution, ...],
-    tuple[str, ...],
-]:
+) -> tuple[ContextualScoreBreakdown, tuple[str, ...]]:
     """Compute bounded contextual terms from one validated pre-pick context."""
 
     if (
@@ -1620,12 +1245,12 @@ def _contextual_score_for_card(
         or card.unknown
         or _is_freely_available_basic_land(card=card)
     ):
-        return ContextualScoreBreakdown(), (), (), ()
+        return ContextualScoreBreakdown(), ()
 
     profile = scoring_context.set_profile
     ledger = scoring_context.role_ledger
     if ledger.likely_pair is None or ledger.profile_source == "generic":
-        return ContextualScoreBreakdown(), (), (), ()
+        return ContextualScoreBreakdown(), ()
 
     evidence_weight = _profile_evidence_weight(profile=profile)
     stage_scale = _stage_scale(stage=scoring_context.stage)
@@ -1639,16 +1264,7 @@ def _contextual_score_for_card(
         else ()
     )
     if not assignments:
-        advice = (
-            ()
-            if not enhanced_relationships_enabled
-            else _condition_relationship_advice(
-                card=card,
-                profile=profile,
-                ledger=ledger,
-            )[:_MAX_SEMANTIC_ADVICE_ITEMS]
-        )
-        return ContextualScoreBreakdown(), (), (), advice
+        return ContextualScoreBreakdown(), ()
 
     target_map = ledger.target_coverage_map
     role_candidates: list[tuple[float, str, RoleAssignment]] = []
@@ -1720,45 +1336,8 @@ def _contextual_score_for_card(
         stage_scale=stage_scale,
         evidence_weight=evidence_weight,
     )
-    relationship_term, relationship_contributions = (
-        (0.0, ())
-        if not enhanced_relationships_enabled
-        else _relationship_synergy_term(
-            card=card,
-            ledger=ledger,
-            stage_scale=stage_scale,
-            evidence_weight=evidence_weight,
-            generic_synergy_term=generic_synergy_term,
-        )
-    )
-    semantic_relationship_advice = (
-        ()
-        if not enhanced_relationships_enabled
-        else _semantic_relationship_advice(
-            card=card,
-            assignments=assignments,
-            profile=profile,
-            ledger=ledger,
-        )
-    )
-    synergy_term = _bounded_term(
-        value=max(generic_synergy_term, relationship_term),
-        lower=0.0,
-        upper=MAX_SYNERGY_TERM,
-    )
-    relationship_evidence = tuple(
-        _relationship_evidence(contribution=contribution)
-        for contribution in relationship_contributions
-        if contribution.raw_contribution > 0.0
-    )
-    effective_relationship_increment = sum(
-        item.effective_contribution for item in relationship_contributions
-    )
-    synergy_evidence = (
-        (" | ".join(relationship_evidence),)
-        if effective_relationship_increment > 0.0
-        else generic_synergy_evidence
-    )
+    synergy_term = generic_synergy_term
+    synergy_evidence = generic_synergy_evidence
     breakdown = ContextualScoreBreakdown(
         role=role_term,
         urgency=urgency_term,
@@ -1793,12 +1372,7 @@ def _contextual_score_for_card(
         evidence.extend(unsupported_evidence)
     if fixing_term > 0.01:
         evidence.extend(fixing_evidence)
-    return (
-        breakdown,
-        tuple(evidence),
-        relationship_contributions,
-        semantic_relationship_advice,
-    )
+    return breakdown, tuple(evidence)
 
 
 def _profile_evidence_weight(*, profile: SetProfile) -> float:
@@ -1879,93 +1453,6 @@ def _semantic_synergy_term(
     value, evidence = max(candidates, key=lambda item: (item[0], item[1]))
     return _bounded_term(value=value, lower=0.0, upper=MAX_SYNERGY_TERM), (evidence,)
 
-
-def _relationship_synergy_term(
-    *,
-    card: CardInfo,
-    ledger: PoolRoleLedger,
-    stage_scale: float,
-    evidence_weight: float,
-    generic_synergy_term: float,
-) -> tuple[float, tuple[RelationshipScoreContribution, ...]]:
-    """Aggregate distinct relationship findings inside the synergy bound.
-    Specific support replaces overlapping generic package synergy.
-    """
-
-    candidates_by_pair: dict[
-        tuple[int, int],
-        tuple[RelationshipSupport, float],
-    ] = {}
-    for support in ledger.relationship_support:
-        if support.target_card_id != card.grp_id:
-            continue
-        factor = _RELATIONSHIP_SUPPORT_FACTORS.get(support.mechanism)
-        if factor is None:
-            continue
-        identity = (support.source_card_id, support.target_card_id)
-        value = (
-            MAX_SYNERGY_TERM
-            * factor
-            * _RELATIONSHIP_OUTCOME_FACTORS[support.outcome]
-            * min(support.source_role_confidence, support.target_role_confidence)
-            * stage_scale
-            * evidence_weight
-        )
-        candidate = (
-            support,
-            _bounded_term(value=value, lower=0.0, upper=MAX_SYNERGY_TERM),
-        )
-        previous = candidates_by_pair.get(identity)
-        if previous is None or candidate[1] > previous[1]:
-            candidates_by_pair[identity] = candidate
-    candidates = tuple(
-        sorted(
-            candidates_by_pair.values(),
-            key=lambda item: (
-                item[0].mechanism,
-                item[0].finding_id,
-                item[0].source_card_id,
-            ),
-        )
-    )
-    if not candidates:
-        return 0.0, ()
-
-    raw_total = 0.0
-    previous_effective = generic_synergy_term
-    contributions: list[RelationshipScoreContribution] = []
-    for support, raw_contribution in candidates:
-        raw_total = _bounded_term(
-            value=raw_total + raw_contribution,
-            lower=0.0,
-            upper=MAX_SYNERGY_TERM,
-        )
-        current_effective = max(generic_synergy_term, raw_total)
-        contributions.append(
-            RelationshipScoreContribution(
-                support=support,
-                raw_contribution=raw_contribution,
-                effective_contribution=_bounded_term(
-                    value=current_effective - previous_effective,
-                    lower=0.0,
-                    upper=MAX_SYNERGY_TERM,
-                ),
-            )
-        )
-        previous_effective = current_effective
-    return raw_total, tuple(contributions)
-
-
-def _relationship_evidence(*, contribution: RelationshipScoreContribution) -> str:
-    support = contribution.support
-    return (
-        f"relationship {support.finding_id} ({support.mechanism}) "
-        f"is {support.outcome.value} and adds "
-        f"{contribution.effective_contribution:+.2f} bounded DO points "
-        f"for {support.target_card_name} [{support.target_card_id}]: "
-        f"drafted {support.source_card_name} [{support.source_card_id}] "
-        f"satisfies {'; '.join(support.prerequisites)}"
-    )
 
 
 def _redundancy_term(
@@ -2123,7 +1610,6 @@ def score_pack(
     pick_index: int | None = None,
     splash_enabled: bool = SPLASH.enabled_by_default,
     contextual_adjustments_enabled: bool = True,
-    enhanced_relationships_enabled: bool = LEGACY_RELATIONSHIP_SCORING_ENABLED,
     set_profile: SetProfile | None = None,
     scoring_context: PickScoringContext | None = None,
     pack_number: int | None = None,
@@ -2139,7 +1625,6 @@ def score_pack(
         config=config,
         splash_enabled=splash_enabled,
         contextual_adjustments_enabled=contextual_adjustments_enabled,
-        enhanced_relationships_enabled=enhanced_relationships_enabled,
         set_profile=set_profile,
         scoring_context=scoring_context,
     ).score_pack(
@@ -2227,7 +1712,6 @@ def _build_pick_scoring_context(
     set_profile: SetProfile | None,
     likely_pair: str | None,
     stage: LedgerStage,
-    enhanced_relationships_enabled: bool = True,
 ) -> PickScoringContext | None:
     set_profile = _normalize_scoring_profile(set_profile)
     if set_profile is None:
@@ -2242,7 +1726,6 @@ def _build_pick_scoring_context(
         ratings_data=ratings_data,
         set_profile=set_profile,
         likely_pair=likely_pair,
-        enhanced_relationships_enabled=enhanced_relationships_enabled,
     )
     return PickScoringContext(set_profile=set_profile, role_ledger=role_ledger)
 
