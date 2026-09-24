@@ -102,8 +102,7 @@ coalesce, and `watch --plain` has no command UI.
 
 For a terminal workflow, use the stable `draftomen-tui` command. It provides
 watch, replay, build, backtest, benchmark, data-refresh, `export-set-data`,
-local `generate-profile`, `refresh-profile`, `list-enrichment`, and interactive
-`enrich-set` commands:
+local `generate-profile`, and `refresh-profile` commands:
 
 ```bash
 draftomen-tui
@@ -123,29 +122,6 @@ To generate a deterministic set profile from pinned input files, use
 card-database, and output paths. The producer and cache workflow, including
 remote manifest fields, validation, refresh, recovery, and explicit provider
 ingestion, is documented in [set profiles](docs/set-profiles.md).
-
-To review semantic enrichment for a set, run `enrich-set`. It freezes the guide
-and pinned card data under the selected output directory and streams analysis
-progress and findings for review. An explicit `Confirm` saves a standalone
-enrichment artifact. It does not compile the artifact into a SetProfile or
-publish a SetProfile object or manifest. Other responses cancel and retain the
-resumable work:
-
-```bash
-draftomen-tui enrich-set LCI \
-  --guide-url https://draftsim.com/mtg-lci-draft-guide/ \
-  --output-dir "$HOME/.draftomen/set-enrichment"
-```
-
-Use `list-enrichment` to inspect local runs and saved artifacts. It also reads
-retained historical profile-publication records, so older enrichment
-publications remain visible without implying that the current review workflow
-publishes SetProfiles. It reads local files only and makes no network request
-or model call:
-
-```bash
-draftomen-tui list-enrichment --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft"
-```
 
 ### Static set card data
 

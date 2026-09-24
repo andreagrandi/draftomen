@@ -217,15 +217,6 @@ macOS, `shasum -a 256 "$DUMP_FILE"` prints it). Keep the attribution and
 license entries accurate for the source you use; the generator records them
 but does not determine or grant rights.
 
-### Standalone semantic enrichment
-
-`enrich-set` analyzes a set and saves its reviewed
-`SemanticEnrichmentArtifact` in the local enrichment store. Confirm records the
-standalone artifact only. It does not compile the artifact into a SetProfile,
-write a profile object, or change a profile manifest. The artifact remains
-available to local enrichment inventory and review workflows; it is not a
-SetProfile scoring input.
-
 ### Historical HOB coverage audit
 
 The [#587 inventory and capability audit](audits/hob-587-inventory.md),
@@ -233,7 +224,9 @@ The [#587 inventory and capability audit](audits/hob-587-inventory.md),
 and [offline runtime traces and fingerprints](audits/hob-587-traces.md)
 preserve findings from earlier HOB runs. Their compiled projections and
 runtime traces describe those historical artifacts, not current SetProfile
-generation or scoring.
+generation or scoring. The enrichment producer, compiler, and probe scripts
+those audits ran have since been removed, so their reproduction commands no
+longer work.
 
 The audit reconciled 583 capability facts and 685 relationship findings. At
 capture time, the offline compiler produced three projections; #589 later
@@ -252,35 +245,12 @@ and blockers describe that historical plan, not current issue status. The audit
 does not claim current SetProfile publication or a full application draft
 journey.
 
-### Listing local enrichment work
-
-`list-enrichment` reports local runs and saved artifacts with their set, run
-identity, timestamps, review state, relationship and confirmed counts, and
-artifact SHA-256. It also shows any historical profile-publication records
-associated with an artifact. The command reads local files only and makes no
-network request or model call:
-
-```sh
-uv run draftomen-tui list-enrichment --set hob \
-  --store-dir "$HOME/.draftomen/set-enrichment/hob-quickdraft"
-```
-
-`--store-dir` selects the enrichment store; runs from `enrich-set` may be under
-a profile-keyed directory such as
-`$HOME/.draftomen/set-enrichment/hob-quickdraft`. `--set` restricts output to a
-set code. `--profiles-dir` selects the profile tree used to resolve whether a
-historical publication is still referenced; it defaults to
-`website/public/profiles`. Pending and cancelled artifacts remain visible.
-
 ### Historical profile-publication records
 
-The retained
-`website/public/profiles/enrichment-publications.json` file records older
-enrichment-to-profile publications. `list-enrichment` can read those records
-and use the current manifest to label a historical publication as referenced
-or orphaned. Keep the records and old objects unchanged. Schema-4 profile
-generation does not create new enrichment-publication records, and these
-historical records do not make a `semantic-only` profile scoreable.
+`website/public/profiles/enrichment-publications.json` records older
+enrichment-to-profile publications. No command reads or writes it. Profile
+publication and refresh replace any manifest entry with the newly generated
+profile, including entries whose objects carry historical enrichment.
 
 ### Lifecycle stages
 
@@ -430,11 +400,6 @@ remote publication:
    replaces only the supplied identities, keyed by casefolded
    `(set_code, event_format)`, and retains every unrelated entry. It returns
    the original manifest when every supplied artifact already matches.
-
-`enrich-set` Confirm uses the separate standalone enrichment workflow. It saves
-a reviewed `SemanticEnrichmentArtifact` without creating a SetProfile, profile
-object, or manifest entry. Set-profile publication uses the generated profile
-artifacts described above.
 
 ### Hosted publication boundary (current)
 

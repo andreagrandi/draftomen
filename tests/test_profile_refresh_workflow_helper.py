@@ -746,16 +746,13 @@ def test_generate_uses_real_producers_and_preserves_valid_static(
     assert report["static"]["selected"] == [{"set_code": "new", "set_name": "New Set"}]
     assert report["profiles"]["selected"][0]["set_code"] == "new"
     assert report["profiles"]["successful"][0]["event_format"] == "PremierDraft"
-    assert report["profiles"]["enrichment_conflicts"] == []
+    assert "enrichment_conflicts" not in report["profiles"]
     assert old.read_bytes() == old_bytes
     assert old.stat().st_mtime_ns == old_mtime
     assert public_calls == []
     assert (bundle / "generated/website/public/card-data/new.json.gz").is_file()
     assert (bundle / "generated/website/public/profiles/manifest.json").is_file()
-    assert (
-        "### Retained enriched profiles\n\n- None"
-        in (bundle / "summary.md").read_text(encoding="utf-8")
-    )
+    assert "Retained enriched" not in (bundle / "summary.md").read_text(encoding="utf-8")
     assert calls == ["https://www.17lands.com/data/filters"]
     assert json.loads((bundle / "result.json").read_text(encoding="utf-8"))["schema_version"] == 1
 
@@ -1073,8 +1070,6 @@ def test_failed_static_write_keeps_profile_pair_selected_and_evidence(
 
 
 def test_summary_escapes_report_metadata_and_lists_selected_work() -> None:
-    retained_sha256 = "1" * 64
-    rejected_sha256 = "2" * 64
     summary = workflow.render_summary(
         {
             "status": "failed",
@@ -1095,20 +1090,6 @@ def test_summary_escapes_report_metadata_and_lists_selected_work() -> None:
                 ],
                 "successful": [],
                 "manifest_changed": False,
-                "enrichment_conflicts": [
-                    {
-                        "set_code": "new",
-                        "event_format": "quickdraft",
-                        "retained_gzip_sha256": retained_sha256,
-                        "retained_url": (
-                            f"https://www.draftomen.com/profiles/objects/{retained_sha256}.json.gz"
-                        ),
-                        "rejected_gzip_sha256": rejected_sha256,
-                        "rejected_url": (
-                            f"https://www.draftomen.com/profiles/objects/{rejected_sha256}.json.gz"
-                        ),
-                    }
-                ],
             },
             "failures": [
                 {"stage": "profile-execution", "category": "<unsafe>", "set_code": "new"}
@@ -1120,15 +1101,9 @@ def test_summary_escapes_report_metadata_and_lists_selected_work() -> None:
     assert "<unsafe>" not in summary
     assert "Card data from 17Lands" in summary
     assert "new / PremierDraft /" in summary
-    assert "### Retained enriched profiles" in summary
-    assert (
-        f"- new / quickdraft: retained {retained_sha256}, rejected {rejected_sha256}"
-        in summary
-    )
     assert [
         line for line in summary.splitlines() if "QuickDraft" in line
-    ] == ["- new / QuickDraft / &lt;New&gt;: retained\\-enriched"]
-    assert "draftomen.com" not in summary
+    ] == ["- new / QuickDraft / &lt;New&gt;: failed"]
 
 
 def test_cli_rejects_invalid_selector_combinations(tmp_path: Path) -> None:
@@ -1821,7 +1796,7 @@ def test_schema_four_profile_replaces_historical_enriched_manifest_entry(
         {"event_format": "QuickDraft", "set_code": "new", "set_name": "New Set"}
     ]
     assert report["profiles"]["successful"] == report["profiles"]["selected"]
-    assert report["profiles"]["enrichment_conflicts"] == []
+    assert "enrichment_conflicts" not in report["profiles"]
 
     refreshed = load_profile_manifest(profiles / "manifest.json")
     replacement = refreshed.select(set_code="new", event_format="QuickDraft")
