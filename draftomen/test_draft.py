@@ -577,12 +577,14 @@ class TestDraftRuntime:
         session: LiveSession,
         controller: TestDraftController,
         adapter: DraftmancerAdapter,
+        profile_client: ProfileClient,
         simulation_app_dir: Path,
         stack: ExitStack,
     ) -> None:
         self._session = session
         self._controller = controller
         self._adapter = adapter
+        self._profile_client = profile_client
         self._simulation_app_dir = simulation_app_dir
         self._stack = stack
         self._cleanup_lock = Lock()
@@ -599,6 +601,12 @@ class TestDraftRuntime:
         """Return the controller that confirms and advances simulated picks."""
 
         return self._controller
+
+    @property
+    def profile_client(self) -> ProfileClient:
+        """Return the hosted profile client that serves the simulated set."""
+
+        return self._profile_client
 
     @property
     def simulation_app_dir(self) -> Path:
@@ -827,6 +835,7 @@ def create_test_draft_runtime(
         session=session,
         controller=controller,
         adapter=adapter,
+        profile_client=profile_client,
         simulation_app_dir=simulation_dir,
         stack=stack,
     )

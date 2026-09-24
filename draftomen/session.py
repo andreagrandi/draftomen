@@ -3656,13 +3656,15 @@ class LiveSession:
             return self._without_error_id(error_id=error_id)
         if not request.force or phase is not DataLoadPhase.FAILED:
             return self.snapshot.errors
+        reason = (
+            "no hosted profile exists for this set."
+            if outcome == ProfileRefreshOutcome.MISSING.value
+            else "hosted profile refresh failed."
+        )
         error = SessionError(
             error_id=error_id,
             code="ratings_unavailable",
-            message=(
-                f"17Lands ratings failed for {request.set_code}: "
-                "hosted profile refresh failed."
-            ),
+            message=f"17Lands ratings failed for {request.set_code}: {reason}",
             recoverable=True,
             operation=OperationKind.RATINGS,
         )

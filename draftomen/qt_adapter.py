@@ -850,16 +850,12 @@ class _ProfileRefreshWorker(QObject):
 
     resultReady = Signal(object, object, str)
 
-    def __init__(self, *, profile_client: ProfileClient) -> None:
-        super().__init__()
-        self._profile_client = profile_client
-
-    @Slot(object)
-    def refresh(self, request: object) -> None:
+    @Slot(object, object)
+    def refresh(self, profile_client: object, request: object) -> None:
         try:
             if not hasattr(request, "set_code") or not hasattr(request, "event_format"):
                 raise TypeError("Profile refresh worker received an invalid request.")
-            result = self._profile_client.refresh(
+            result = cast(ProfileClient, profile_client).refresh(
                 set_code=request.set_code,
                 event_format=request.event_format,
                 force=request.force,
@@ -903,7 +899,7 @@ class _AugmentedModelWorker(QObject):
 class _LiveSessionWorker(QObject):
     _imageFetchRequested = Signal(object, object)
     _imageScheduleRequested = Signal()
-    _profileRefreshRequested = Signal(object)
+    _profileRefreshRequested = Signal(object, object)
     _augmentedModelRequested = Signal(object)
     snapshotReady = Signal(object)
     testDraftStateReady = Signal(object)
@@ -944,6 +940,7 @@ class _LiveSessionWorker(QObject):
         self._profile_thread: QThread | None = None
         self._profile_worker: _ProfileRefreshWorker | None = None
         self._profile_request_in_flight: ProfileRefreshRequest | None = None
+        self._profile_session: LiveSession | None = None
         self._profile_source_generation = 0
         self._augmented_thread: QThread | None = None
         self._augmented_worker: _AugmentedModelWorker | None = None
@@ -1003,6 +1000,7 @@ class _LiveSessionWorker(QObject):
         self._image_request_kind = None
         self._image_session = None
         self._profile_request_in_flight = None
+        self._profile_session = None
         self._augmented_request_in_flight = None
         if self._timer is not None:
             if source == "arena":
@@ -1061,11 +1059,14 @@ class _LiveSessionWorker(QObject):
     def _start_profile_worker(self) -> None:
         """Start the dedicated worker used for blocking profile refreshes."""
 
-        profile_client = self._profile_client
-        if profile_client is None or self._profile_thread is not None:
+        # Mocked Drafts bring their own profile client, so they need the
+        # worker even when Arena has none.
+        if (
+            self._profile_client is None and self._test_draft_factory is None
+        ) or self._profile_thread is not None:
             return
         thread = QThread(parent=self)
-        profile_worker = _ProfileRefreshWorker(profile_client=profile_client)
+        profile_worker = _ProfileRefreshWorker()
         profile_worker.moveToThread(thread)
         self._profileRefreshRequested.connect(
             profile_worker.refresh,
@@ -1176,8 +1177,7 @@ class _LiveSessionWorker(QObject):
             if isinstance(command, ChangeContextualScoring):
                 return
             self._request_one_card_image()
-            if self._profile_client is not None:
-                self._request_profile_refresh()
+            self._request_profile_refresh()
             self._request_augmented_model()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             self.failed.emit(str(error))
@@ -1195,8 +1195,7 @@ class _LiveSessionWorker(QObject):
             snapshot = self._session.poll_once()
             self._publish_snapshot(snapshot)
             self._request_one_card_image()
-            if self._profile_client is not None:
-                self._request_profile_refresh()
+            self._request_profile_refresh()
             self._request_augmented_model()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             self.failed.emit(str(error))
@@ -1244,11 +1243,11 @@ class _LiveSessionWorker(QObject):
     def _request_profile_refresh(self) -> None:
         """Schedule the one pending profile refresh without blocking polling."""
 
-        session = self._session
+        session = self._active_session()
+        profile_client = self._active_profile_client()
         if (
-            self._authoritative_source != "arena"
-            or session is None
-            or self._profile_client is None
+            session is None
+            or profile_client is None
             or self._stop_requested
             or self._profile_request_in_flight is not None
             or self._profile_thread is None
@@ -1261,8 +1260,16 @@ class _LiveSessionWorker(QObject):
         if request is None:
             return
         self._profile_request_in_flight = request
+        self._profile_session = session
         self._profile_source_generation = self._source_generation
-        self._profileRefreshRequested.emit(request)
+        self._profileRefreshRequested.emit(profile_client, request)
+
+    def _active_profile_client(self) -> ProfileClient | None:
+        """Return the profile client that serves the authoritative session."""
+
+        if self._authoritative_source == "test-draft":
+            return getattr(self._test_draft_runtime, "profile_client", None)
+        return self._profile_client
 
     def _request_augmented_model(self) -> None:
         """Schedule the one pending augmentation model load off the session thread."""
@@ -1363,7 +1370,8 @@ class _LiveSessionWorker(QObject):
         if self._profile_source_generation != self._source_generation:
             return
         self._profile_request_in_flight = None
-        session = self._session
+        session = self._profile_session
+        self._profile_session = None
         if session is None or self._stop_requested:
             return
 
@@ -1719,6 +1727,7 @@ class _LiveSessionWorker(QObject):
         self._close_test_draft_runtime(factory=outgoing)
         self._reset_test_draft_progress()
         self._test_draft_factory = test_draft_factory
+        self._start_profile_worker()
         self._refresh_test_draft_capability()
         self._publish_test_draft_state()
 
@@ -1842,6 +1851,7 @@ class _LiveSessionWorker(QObject):
             self._profile_thread = None
             self._profile_worker = None
         self._profile_request_in_flight = None
+        self._profile_session = None
         augmented_thread = self._augmented_thread
         if augmented_thread is not None:
             augmented_thread.quit()

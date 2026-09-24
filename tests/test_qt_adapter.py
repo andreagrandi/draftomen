@@ -4431,6 +4431,156 @@ def test_live_adapter_leaves_test_draft_and_restores_arena_state(
         adapter.wait_for_shutdown()
 
 
+class _ProfileRefreshTestDraftSession(_FakeTestDraftSession):
+    """Queue a forced profile refresh when the simulated draft asks for ratings."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.profile_request: ProfileRefreshRequest | None = None
+        self.completed_results: list[object] = []
+        self.failed_messages: list[str | None] = []
+
+    def dispatch(self, *, command: LiveSessionCommand) -> LiveSessionSnapshot:
+        if isinstance(command, RequestRatingsDownload):
+            self.profile_request = ProfileRefreshRequest(
+                generation=1,
+                set_code=command.set_code,
+                event_format="QuickDraft",
+                force=True,
+            )
+        return super().dispatch(command=command)
+
+    def profile_refresh_request(self) -> ProfileRefreshRequest | None:
+        return self.profile_request
+
+    def complete_profile_refresh(
+        self,
+        *,
+        request: ProfileRefreshRequest,
+        result: object,
+    ) -> None:
+        assert request == self.profile_request
+        self.completed_results.append(result)
+        self.profile_request = None
+
+    def fail_profile_refresh(
+        self,
+        *,
+        request: ProfileRefreshRequest,
+        error_message: str | None = None,
+    ) -> None:
+        assert request == self.profile_request
+        self.failed_messages.append(error_message)
+        self.profile_request = None
+
+
+class _ProfileRefreshTestDraftRuntime(_FakeTestDraftRuntime):
+    """Expose the simulated runtime's own hosted profile client."""
+
+    def __init__(
+        self,
+        *,
+        session: _FakeTestDraftSession,
+        profile_client: _ProfileRefreshFakeClient,
+    ) -> None:
+        super().__init__(session=session)
+        self.profile_client = profile_client
+
+
+def test_live_adapter_refreshes_mocked_draft_profile_without_touching_arena(
+    qcore_application: QCoreApplication,
+) -> None:
+    arenas: list[_ProfileRefreshFakeSession] = []
+    arena_client = _ProfileRefreshFakeClient(
+        result=ProfileRefreshResult(
+            profile=SetProfile.generic(set_code="OTJ", event_format="QuickDraft"),
+            outcome=ProfileRefreshOutcome.UPDATED,
+            diagnostics=(),
+        )
+    )
+    arena_client.release.set()
+    mocked_result = ProfileRefreshResult(
+        profile=SetProfile.generic(set_code="DFT", event_format="QuickDraft"),
+        outcome=ProfileRefreshOutcome.MISSING,
+        diagnostics=(),
+    )
+    mocked_client = _ProfileRefreshFakeClient(result=mocked_result)
+    mocked_client.release.set()
+    simulated_session = _ProfileRefreshTestDraftSession()
+    runtime = _ProfileRefreshTestDraftRuntime(
+        session=simulated_session,
+        profile_client=mocked_client,
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("dft",), runtime=runtime)
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _ProfileRefreshFakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=60_000,
+        profile_client=cast(ProfileClient, arena_client),
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].completed_results),
+            description="the startup Arena profile refresh",
+        )
+        arena = arenas[0]
+        assert arena_client.calls == [("OTJ", "QuickDraft", False)]
+
+        adapter.startTestDraft("manual", "dft")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["active"] is True,
+            description="the Mocked Draft becoming authoritative",
+        )
+        simulated_set_code = adapter.state["ratings"]["set_code"]
+        adapter.requestRatings()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(simulated_session.completed_results),
+            description="the Mocked Draft profile refresh",
+        )
+        assert mocked_client.calls == [(simulated_set_code, "QuickDraft", True)]
+        assert simulated_session.completed_results == [mocked_result]
+        assert adapter.state["test_draft"]["active"] is True
+        assert arena_client.calls == [("OTJ", "QuickDraft", False)]
+        assert len(arena.completed_results) == 1
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["active"] is False,
+            description="the restored Arena authority",
+        )
+        arena.profile_request = ProfileRefreshRequest(
+            generation=2,
+            set_code="OTJ",
+            event_format="QuickDraft",
+            force=True,
+        )
+        adapter.requestRatings()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(arena.completed_results) == 2,
+            description="the Arena profile refresh after leaving",
+        )
+        assert arena_client.calls == [
+            ("OTJ", "QuickDraft", False),
+            ("OTJ", "QuickDraft", True),
+        ]
+        assert mocked_client.calls == [(simulated_set_code, "QuickDraft", True)]
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
 def test_live_adapter_leave_cancels_blocked_test_draft_and_closes_once(
     qcore_application: QCoreApplication,
     tmp_path: Path,
