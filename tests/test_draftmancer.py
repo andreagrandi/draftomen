@@ -504,6 +504,166 @@ def test_scryfall_identity_mapping_rejects_conflicting_duplicate_prints(
     assert error.value.stage == "startup"
 
 
+def _write_bulk(*, path: Path, records: Iterable[dict[str, object]]) -> Path:
+    path.write_text(
+        "".join(f"{json.dumps(record)}\n" for record in records),
+        encoding="utf-8",
+    )
+    return path
+
+
+_LCI_PLAINS_ORACLE = "plains-oracle"
+_LCI_BULK_RECORDS = (
+    # The Travel Poster basic has no Scryfall arena_id, while Arena has two
+    # Plains printings in the set, which made the old mapping drop it.
+    {"set": "lci", "id": "lci-287", "oracle_id": _LCI_PLAINS_ORACLE, "collector_number": "287"},
+    {"set": "lci", "id": "lci-393", "oracle_id": _LCI_PLAINS_ORACLE, "arena_id": 87455},
+    {"set": "lci", "id": "lci-394", "oracle_id": _LCI_PLAINS_ORACLE, "arena_id": 87454},
+    {"set": "lci", "id": "lci-100", "oracle_id": "cave-oracle", "arena_id": 87300},
+)
+
+
+def test_scryfall_identity_mapping_resolves_lci_travel_poster_basic_in_a_booster(
+    tmp_path: Path,
+) -> None:
+    bulk_path = _write_bulk(path=tmp_path / "default-cards.jsonl", records=_LCI_BULK_RECORDS)
+    grp_ids = (87300, 87454, 87455)
+    mapping = _load_canonical_grp_ids_by_scryfall_id(
+        bulk_path=bulk_path,
+        set_code="lci",
+        card_database=_database(*grp_ids),
+    )
+    config = _config(set_code="lci")
+    state = {
+        "boosterNumber": 0,
+        "pickNumber": 0,
+        "booster": [
+            {"uniqueID": 1, "id": "lci-100", "arena_id": 87300},
+            {
+                "uniqueID": 2,
+                "id": "lci-287",
+                "name": "Plains",
+                "set": "lci",
+                "collector_number": "287",
+            },
+        ],
+    }
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, published = _adapter(
+        socket=socket,
+        config=config,
+        grp_ids=grp_ids,
+        canonical_grp_ids_by_scryfall_id=mapping,
+    )
+
+    adapter.connect_and_start()
+
+    assert mapping["lci-287"] == 87454
+    assert published[1].offered_grp_ids == (87300, 87454)  # type: ignore[union-attr]
+    adapter.close()
+
+
+def test_scryfall_identity_mapping_resolves_reprints_from_other_sets(
+    tmp_path: Path,
+) -> None:
+    bulk_path = _write_bulk(
+        path=tmp_path / "default-cards.jsonl",
+        records=(
+            {"set": "hob", "id": "hob-1", "oracle_id": "oracle-1", "arena_id": 100},
+            {"set": "spg", "id": "spg-1", "oracle_id": "oracle-1", "arena_id": 900},
+            {"set": "spg", "id": "spg-2", "oracle_id": "oracle-unknown", "arena_id": 901},
+        ),
+    )
+
+    mapping = _load_canonical_grp_ids_by_scryfall_id(
+        bulk_path=bulk_path,
+        set_code="hob",
+        card_database=_database(100),
+    )
+
+    assert mapping == {"hob-1": 100, "spg-1": 100}
+
+
+def test_scryfall_identity_mapping_reads_face_oracle_id_for_reversible_cards(
+    tmp_path: Path,
+) -> None:
+    bulk_path = _write_bulk(
+        path=tmp_path / "default-cards.jsonl",
+        records=(
+            {"set": "tdm", "id": "tdm-1", "oracle_id": "oracle-1", "arena_id": 100},
+            {
+                "set": "tdm",
+                "id": "tdm-2",
+                "card_faces": [{"oracle_id": "oracle-1"}, {"oracle_id": "oracle-1"}],
+            },
+            {"set": "other", "id": "other-1", "card_faces": [{}]},
+        ),
+    )
+
+    mapping = _load_canonical_grp_ids_by_scryfall_id(
+        bulk_path=bulk_path,
+        set_code="tdm",
+        card_database=_database(100),
+    )
+
+    assert mapping == {"tdm-1": 100, "tdm-2": 100}
+
+
+def test_unmapped_booster_card_error_names_the_card() -> None:
+    config = _config(set_code="lci")
+    state = {
+        "boosterNumber": 0,
+        "pickNumber": 0,
+        "booster": [
+            {
+                "uniqueID": 1,
+                "id": "lci-287",
+                "name": "Plains",
+                "set": "lci",
+                "collector_number": "287",
+            },
+        ],
+    }
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    with pytest.raises(
+        DraftmancerAdapterError,
+        match=r"^Draftmancer booster card Plains \(LCI #287\) must have a mapped Scryfall id",
+    ):
+        adapter.connect_and_start()
+    assert not any(isinstance(event, PackOfferedEvent) for event in published)
+
+
+def test_unresolved_booster_card_error_names_the_card() -> None:
+    config = _config()
+    state = {
+        "boosterNumber": 0,
+        "pickNumber": 0,
+        "booster": [
+            {"uniqueID": 1, "arena_id": 100},
+            {
+                "uniqueID": 2,
+                "id": "spg-19",
+                "arena_id": 88912,
+                "name": "Ghostly Prison",
+                "set": "spg",
+                "collector_number": "19",
+            },
+        ],
+    }
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
+
+    with pytest.raises(
+        DraftmancerAdapterError,
+        match=r"^Draftmancer booster contains unresolved Arena ids: "
+        r"88912 Ghostly Prison \(SPG #19\)\.$",
+    ):
+        adapter.connect_and_start()
+    assert not any(isinstance(event, PackOfferedEvent) for event in published)
+
+
 def test_scryfall_identity_mapping_uses_canonical_arena_id_for_each_instance() -> None:
     config = _config()
     state = {
