@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Let Mocked Draft play Draftmancer packs that are not 14 cards. Pack events
+  carry the pack size, and the pick stage, remaining picks, and pool ledger use
+  it, so 15-card sets such as LCI and 13-card sets such as BLB draft all 45 or
+  39 picks and reach a deck build. Arena drafts keep 14-card packs. (#695,
+  #682)
 - Fix Mocked Draft booster cards that failed to map to an Arena card. The
   Scryfall mapping now reads every set in the bulk file, uses the first face's
   oracle id when the card has none, and picks the lowest Arena id when a card

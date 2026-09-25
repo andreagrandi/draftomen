@@ -963,6 +963,7 @@ def test_auto_run_exposes_ordered_inspections_and_the_normal_build(
             offered_grp_ids=offered_grp_ids,
             pool_grp_ids=accepted,
             account_id=_CONTROLLER_ACCOUNT_ID,
+            picks_per_pack=len(offered_grp_ids) + pick_number,
         )
         rows = before.recommendations.cards
         assert tuple(row.rank for row in rows) == tuple(range(1, len(rows) + 1))
@@ -986,6 +987,43 @@ def test_auto_run_exposes_ordered_inspections_and_the_normal_build(
     assert build.domain_spell_selection is not None
     assert build.domain_mana_base is not None
     assert len(_pick_card_calls(socket)) == len(result.steps)
+    controller.close()
+
+
+@pytest.mark.parametrize("pack_size", (13, 15))
+def test_auto_run_completes_a_full_draft_with_non_arena_pack_sizes(
+    tmp_path: Path,
+    pack_size: int,
+) -> None:
+    grp_ids = tuple(range(1000, 1000 + pack_size))
+    states = tuple(
+        _state(
+            pack_number=pack_number,
+            pick_number=pick_number,
+            arena_ids=grp_ids[pick_number:],
+        )
+        for pack_number in range(3)
+        for pick_number in range(pack_size)
+    )
+    socket = _scripted_socket(config=_config(), states=states)
+    session = _draft_session(app_dir=tmp_path / "app", grp_ids=grp_ids)
+    controller = _controller(socket=socket, session=session, grp_ids=grp_ids)
+
+    result = controller.run_auto()
+
+    assert len(result.steps) == 3 * pack_size
+    assert result.completed.status.phase is ApplicationPhase.DRAFT_COMPLETE
+    assert {
+        step.before.snapshot.current_pack_event.picks_per_pack  # type: ignore[union-attr]
+        for step in result.steps
+    } == {pack_size}
+    last_event = result.steps[-1].before.snapshot.current_pack_event
+    assert last_event is not None
+    assert (last_event.pack_number, last_event.pick_number) == (2, pack_size - 1)
+    build = result.build.build
+    assert build is not None
+    assert build.domain_pool is not None
+    assert len(build.domain_pool.pool_grp_ids) == 3 * pack_size
     controller.close()
 
 

@@ -115,6 +115,7 @@ from draftomen.session import (
     RetryError,
     SessionError,
     SetProfileState,
+    _pending_pack_event,
 )
 from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import (
@@ -8449,3 +8450,42 @@ def _draft_state(
         picks=(),
         pool_grp_ids=pool_grp_ids,
     )
+
+
+@pytest.mark.parametrize(
+    ("finished_pack_size", "pending_pack_number", "pending_pick_number", "expected"),
+    ((13, 1, 0, 13), (15, 1, 3, 15), (None, 0, 14, 15), (None, 0, 5, 14)),
+)
+def test_recovered_pending_pack_infers_pack_size_from_saved_picks(
+    finished_pack_size: int | None,
+    pending_pack_number: int,
+    pending_pick_number: int,
+    expected: int,
+) -> None:
+    finished = tuple(
+        DraftPick(pack_number=0, pick_number=pick_number, chosen_grp_id=100)
+        for pick_number in range(finished_pack_size or 0)
+    )
+    pending = DraftPick(
+        pack_number=pending_pack_number,
+        pick_number=pending_pick_number,
+        offered_grp_ids=(100,),
+    )
+    state = DraftState(
+        account_id="account-1",
+        draft_id="draft-1",
+        event_name="QuickDraft_LCI_Draftmancer_session-1",
+        set_code="LCI",
+        course_id=None,
+        started_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        completed_at=None,
+        completed=False,
+        picks=(*finished, pending),
+        pool_grp_ids=tuple(100 for _ in finished),
+    )
+
+    event = _pending_pack_event(state=state)
+
+    assert event is not None
+    assert event.picks_per_pack == expected
