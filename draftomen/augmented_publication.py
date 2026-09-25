@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import gzip
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
 from typing import Any
+import zlib
 
 from draftomen.augmented_artifact import (
     AUGMENTED_ARTIFACT_COMPATIBILITY,
@@ -22,7 +24,11 @@ from draftomen.augmented_manifest import (
     AugmentedManifestEntry,
     dump_augmented_manifest,
 )
-from draftomen.augmented_public_data import acquire_augmented_training_source
+from draftomen.augmented_public_data import (
+    AugmentedPublicDataError,
+    _normalized_set_code,
+    acquire_augmented_training_source,
+)
 from draftomen.augmented_training import (
     AugmentedTrainingResult,
     train_and_gate_augmented_set,
@@ -37,9 +43,14 @@ from draftomen.carddb import (
 from draftomen.draftmancer import _unlisted_card_grp_id
 from draftomen.paths import app_data_dir
 from draftomen.profile_input_cache import ProfileInputCache
+from draftomen.profile_manifest import (
+    ProfileManifest,
+    ProfileManifestError,
+    load_profile_manifest,
+)
 from draftomen.profile_refresh_execution import DEFAULT_PROFILE_REFRESH_CACHE_POLICY
 from draftomen.set_card_data import SetCardData
-from draftomen.set_profile import safe_load_set_profile
+from draftomen.set_profile import ProfileMaturity, SetProfile, SetProfileError
 from draftomen.test_draft import DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE
 
 
@@ -121,6 +132,83 @@ def _with_bonus_sheet_cards(
     return CardDatabase(cards=cards, image_uris_by_name=card_database.image_uris_by_name)
 
 
+def _published_profile_manifest(*, profiles_dir: Path) -> ProfileManifest:
+    try:
+        return load_profile_manifest(profiles_dir / "manifest.json")
+    except ProfileManifestError as error:
+        raise AugmentedPublicationError(
+            "The published profile manifest could not be read."
+        ) from error
+
+
+def _require_rated_published_profile(*, set_code: str, profiles_dir: Path) -> None:
+    """Stop before any download when the set has no published profile with ratings.
+    The exact format is checked again once the dump's format is known.
+    """
+
+    normalized_set = set_code.casefold()
+    manifest = _published_profile_manifest(profiles_dir=profiles_dir)
+    if not any(
+        artifact.set_code == normalized_set
+        and artifact.maturity is not ProfileMaturity.METADATA_ONLY
+        for artifact in manifest.artifacts
+    ):
+        raise AugmentedPublicationError(
+            f"No published {set_code.upper()} profile with card ratings. Publish one "
+            "before training, because the model is calibrated against its ratings."
+        )
+
+
+def _load_published_profile(
+    *,
+    set_code: str,
+    event_format: str,
+    profiles_dir: Path,
+) -> tuple[SetProfile, str]:
+    """Load the set profile the website publishes, with its checksums verified.
+    A missing or ratings-free profile stops the build instead of training on a generic one.
+    """
+
+    label = f"{set_code.upper()} {event_format}"
+    manifest = _published_profile_manifest(profiles_dir=profiles_dir)
+    artifact = manifest.select(set_code=set_code, event_format=event_format)
+    if artifact is None:
+        raise AugmentedPublicationError(
+            f"No published {label} profile. Publish one before training, because "
+            "the model is calibrated against its ratings."
+        )
+    if artifact.maturity is ProfileMaturity.METADATA_ONLY:
+        raise AugmentedPublicationError(
+            f"The published {label} profile has no card ratings."
+        )
+    object_path = profiles_dir / "objects" / f"{artifact.gzip_sha256}.json.gz"
+    try:
+        payload = object_path.read_bytes()
+        raw = gzip.decompress(payload)
+    except (OSError, EOFError, zlib.error) as error:
+        raise AugmentedPublicationError(
+            f"The published {label} profile object could not be read."
+        ) from error
+    if (
+        hashlib.sha256(payload).hexdigest() != artifact.gzip_sha256
+        or hashlib.sha256(raw).hexdigest() != artifact.profile_sha256
+    ):
+        raise AugmentedPublicationError(
+            f"The published {label} profile object does not match its checksum."
+        )
+    try:
+        profile = SetProfile.from_json(json.loads(raw.decode("utf-8")))
+    except (UnicodeError, ValueError, TypeError, SetProfileError) as error:
+        raise AugmentedPublicationError(
+            f"The published {label} profile object is invalid."
+        ) from error
+    if profile.set_code != artifact.set_code or profile.event_format != artifact.event_format:
+        raise AugmentedPublicationError(
+            f"The published {label} profile object names another set or format."
+        )
+    return profile, f"published:{profile.maturity.value}"
+
+
 def build_augmented_set(
     *,
     set_code: str,
@@ -129,9 +217,16 @@ def build_augmented_set(
     cache_dir: Path | None = None,
     timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
     scryfall_bulk_file: Path = DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
+    profiles_dir: Path = Path("website/public/profiles"),
 ) -> AugmentedBuildResult:
     """Acquire, gate, and publish one set's compressed augmented artifact."""
 
+    # The dump download can take many minutes, so check the inputs first.
+    try:
+        _normalized_set_code(set_code)
+    except AugmentedPublicDataError as error:
+        raise AugmentedPublicationError(str(error)) from error
+    _require_rated_published_profile(set_code=set_code, profiles_dir=profiles_dir)
     cache_root = (
         cache_dir
         if cache_dir is not None
@@ -145,6 +240,13 @@ def build_augmented_set(
         ),
         timeout_seconds=timeout_seconds,
     )
+    # Training calibrates corrections to Basic DO, so it must use the ratings
+    # users score with. Stop here, before the long training run, without them.
+    set_profile, profile_source = _load_published_profile(
+        set_code=set_code,
+        event_format=source.event_type,
+        profiles_dir=profiles_dir,
+    )
 
     card_data_path = resolve_set_card_data(
         set_code=set_code,
@@ -155,10 +257,6 @@ def build_augmented_set(
         card_data_path.read_bytes(),
         expected_set_code=set_code.casefold(),
     )
-    profile_result = safe_load_set_profile(
-        set_code=set_code,
-        event_format=source.event_type,
-    )
     card_database = _with_bonus_sheet_cards(
         card_database=card_data.to_card_database(),
         card_names=_dump_card_names(path=Path(source.path)),
@@ -168,13 +266,13 @@ def build_augmented_set(
         set_code=set_code,
         source=source,
         card_database=card_database,
-        set_profile=profile_result.profile,
+        set_profile=set_profile,
     )
     if training.artifact is None:
         return AugmentedBuildResult(
             training=training,
             card_data_path=card_data_path,
-            profile_source=profile_result.source,
+            profile_source=profile_source,
             object_path=None,
             manifest_path=None,
         )
@@ -235,7 +333,7 @@ def build_augmented_set(
     return AugmentedBuildResult(
         training=training,
         card_data_path=card_data_path,
-        profile_source=profile_result.source,
+        profile_source=profile_source,
         object_path=object_path,
         manifest_path=manifest_path,
     )
