@@ -350,6 +350,7 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
 ) -> None:
     from draftomen import augmented_publication
     from tests.augmented_artifacts import augmented_artifact
+    from tests.test_augmented_publication import _SOURCE_URL as events_source_url
     from tests.test_augmented_publication import _install_workflow
 
     monkeypatch.chdir(tmp_path)
@@ -385,6 +386,12 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
     manifest_path = augmented_dir / "manifest.json"
     assert exit_code == 0
     assert captured.out == (
+        "Selecting a public draft dump for TST\n"
+        f"Dataset: PremierDraft dump from {events_source_url}\n"
+        "Loading the published TST PremierDraft profile\n"
+        "Resolving TST card data\n"
+        "Training the augmented model\n"
+        f"Publishing the augmented model to {augmented_dir}\n"
         "Profile source: published:early\n"
         "Basic DO: top_1=0.25 mean_reciprocal_rank=0.5\n"
         "Basic DO + augmented: top_1=0.5 mean_reciprocal_rank=0.75\n"
@@ -407,6 +414,99 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
         Path(f"augmented/objects/{digest}.json.gz"),
         Path("augmented/manifest.json"),
     }
+
+
+class _FakeDumpResponse:
+    def __init__(self, *, payload: bytes, chunk_size: int) -> None:
+        self._stream = BytesIO(payload)
+        self._chunk_size = chunk_size
+        self.headers = {"Content-Length": str(len(payload))}
+
+    def __enter__(self) -> _FakeDumpResponse:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(min(size, self._chunk_size))
+
+
+def test_build_augmented_set_cli_reports_each_stage_and_download_in_few_lines(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import urllib.request
+
+    from draftomen import augmented_publication
+    from tests.test_augmented_publication import _install_workflow
+
+    monkeypatch.chdir(tmp_path)
+    _, card_data_dir, augmented_dir, _ = _install_workflow(monkeypatch, tmp_path)
+    payload = b"x" * 5_000_000
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request, timeout: int) -> _FakeDumpResponse:
+        assert timeout == 19
+        requested_urls.append(request.full_url)
+        return _FakeDumpResponse(payload=payload, chunk_size=50_000)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    installed_acquire = augmented_publication.acquire_augmented_training_source
+
+    def acquire_with_download(*, set_code: str, cache, timeout_seconds: int, adapter):
+        dump_path = tmp_path / "download.csv.gz"
+        adapter.fetch_public_drafts(
+            set_code=set_code,
+            event_format="PremierDraft",
+            path=dump_path,
+            timeout_seconds=timeout_seconds,
+        )
+        assert dump_path.read_bytes() == payload
+        return installed_acquire(
+            set_code=set_code,
+            cache=cache,
+            timeout_seconds=timeout_seconds,
+            adapter=adapter,
+        )
+
+    monkeypatch.setattr(
+        augmented_publication,
+        "acquire_augmented_training_source",
+        acquire_with_download,
+    )
+    actual_build = augmented_publication.build_augmented_set
+    monkeypatch.setattr(
+        augmented_publication,
+        "build_augmented_set",
+        lambda *, set_code: actual_build(
+            set_code=set_code,
+            card_data_dir=card_data_dir,
+            augmented_dir=augmented_dir,
+            cache_dir=tmp_path / "private-cache",
+            timeout_seconds=19,
+        ),
+    )
+
+    exit_code = main(argv=["build-augmented-set", "TST"])
+    lines = capsys.readouterr().out.splitlines()
+
+    assert exit_code == 0
+    assert len(requested_urls) == 1
+    assert lines[1] == f"Downloading {requested_urls[0]}"
+    download_lines = [line for line in lines if line.startswith("Download: ")]
+    assert len(download_lines) == 1
+    assert download_lines[0].startswith("Download: 100% (5.0 MB of 5.0 MB)")
+    for stage in (
+        "Dataset: ",
+        "Loading the published TST PremierDraft profile",
+        "Resolving TST card data",
+        "Training the augmented model",
+        "Publishing the augmented model to ",
+    ):
+        assert any(line.startswith(stage) for line in lines)
+    assert len(lines) <= 20
 
 
 def test_export_set_data_parser_defaults_and_options() -> None:

@@ -42,6 +42,7 @@ from draftomen.carddb import (
 )
 from draftomen.draftmancer import _unlisted_card_grp_id
 from draftomen.paths import app_data_dir
+from draftomen.profile_input_acquisition import SeventeenLandsPublicDraftAdapter
 from draftomen.profile_input_cache import ProfileInputCache
 from draftomen.profile_manifest import (
     ProfileManifest,
@@ -49,8 +50,10 @@ from draftomen.profile_manifest import (
     load_profile_manifest,
 )
 from draftomen.profile_refresh_execution import DEFAULT_PROFILE_REFRESH_CACHE_POLICY
+from draftomen.progress import ProgressReporter
 from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import ProfileMaturity, SetProfile, SetProfileError
+from draftomen.seventeen import download_public_draft_data, public_draft_data_url
 from draftomen.test_draft import DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE
 
 
@@ -67,6 +70,38 @@ class AugmentedBuildResult:
 
 class AugmentedPublicationError(RuntimeError):
     """Report an augmented publication that cannot be trusted or completed."""
+
+
+def _stage(message: str) -> None:
+    print(message, flush=True)
+
+
+def _fetch_public_drafts_with_progress(
+    *,
+    set_code: str,
+    event_format: str,
+    path: Path,
+    timeout_seconds: int,
+) -> None:
+    """Download one public draft dump and report progress in 10% steps."""
+
+    url = public_draft_data_url(set_code=set_code, event_format=event_format)
+    _stage(f"Downloading {url}")
+    reporter: ProgressReporter | None = None
+
+    def report(written: int, total: int | None) -> None:
+        nonlocal reporter
+        if reporter is None:
+            reporter = ProgressReporter(label="Download", total=total, unit="bytes")
+        reporter.update(done=written)
+
+    download_public_draft_data(
+        url=url,
+        path=path,
+        timeout_seconds=timeout_seconds,
+        on_progress=report,
+    )
+    _stage("Checking the downloaded dump's rows")
 
 
 def _dump_card_names(*, path: Path) -> tuple[str, ...]:
@@ -232,6 +267,7 @@ def build_augmented_set(
         if cache_dir is not None
         else app_data_dir() / "profile-input-cache"
     )
+    _stage(f"Selecting a public draft dump for {set_code.upper()}")
     source = acquire_augmented_training_source(
         set_code=set_code,
         cache=ProfileInputCache(
@@ -239,15 +275,22 @@ def build_augmented_set(
             policy=DEFAULT_PROFILE_REFRESH_CACHE_POLICY,
         ),
         timeout_seconds=timeout_seconds,
+        adapter=SeventeenLandsPublicDraftAdapter(
+            fetch_public_drafts=_fetch_public_drafts_with_progress,
+            timeout_seconds=timeout_seconds,
+        ),
     )
+    _stage(f"Dataset: {source.event_type} dump from {source.url}")
     # Training calibrates corrections to Basic DO, so it must use the ratings
     # users score with. Stop here, before the long training run, without them.
+    _stage(f"Loading the published {set_code.upper()} {source.event_type} profile")
     set_profile, profile_source = _load_published_profile(
         set_code=set_code,
         event_format=source.event_type,
         profiles_dir=profiles_dir,
     )
 
+    _stage(f"Resolving {set_code.upper()} card data")
     card_data_path = resolve_set_card_data(
         set_code=set_code,
         output_dir=card_data_dir,
@@ -262,6 +305,7 @@ def build_augmented_set(
         card_names=_dump_card_names(path=Path(source.path)),
         bulk_file=scryfall_bulk_file,
     )
+    _stage("Training the augmented model")
     training = train_and_gate_augmented_set(
         set_code=set_code,
         source=source,
@@ -277,6 +321,7 @@ def build_augmented_set(
             manifest_path=None,
         )
 
+    _stage(f"Publishing the augmented model to {augmented_dir}")
     normalized_set = set_code.casefold()
     raw_bytes = training.artifact.to_bytes()
     gzip_bytes = training.artifact.to_gzip_bytes()

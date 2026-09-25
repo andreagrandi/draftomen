@@ -2129,7 +2129,12 @@ def download_public_draft_data(
     url: str,
     path: Path,
     timeout_seconds: int,
+    on_progress: Callable[[int, int | None], None] | None = None,
 ) -> None:
+    """Stream one public draft dump to disk.
+    on_progress receives the bytes written so far and the declared size, if any.
+    """
+
     request = urllib.request.Request(
         url,
         headers={
@@ -2140,11 +2145,33 @@ def download_public_draft_data(
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             with path.open(mode="wb") as output_file:
-                shutil.copyfileobj(response, output_file)
+                if on_progress is None:
+                    shutil.copyfileobj(response, output_file)
+                else:
+                    _copy_with_progress(
+                        response=response,
+                        output_file=output_file,
+                        on_progress=on_progress,
+                    )
     except urllib.error.URLError as error:
         raise SeventeenLandsError(
             f"Failed to download 17Lands public draft data: {error}"
         ) from error
+
+
+def _copy_with_progress(
+    *,
+    response: Any,
+    output_file: Any,
+    on_progress: Callable[[int, int | None], None],
+) -> None:
+    length = response.headers.get("Content-Length")
+    total = int(length) if length is not None and length.isdigit() else None
+    written = 0
+    while chunk := response.read(1024 * 1024):
+        output_file.write(chunk)
+        written += len(chunk)
+        on_progress(written, total)
 
 
 def _card_name_index(*, card_database: CardDatabase) -> dict[str, CardInfo]:

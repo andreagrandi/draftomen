@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Make `build-augmented-set` report its progress. It prints one line as each
+  stage starts, the dump download at most every 10% and 5 seconds, and how
+  many picks training and evaluation use. Basic DO scoring now reports in 25%
+  steps instead of once per 5,000 picks. (#710)
 - Publish the DFT PremierDraft augmented model. On 889,392 held-out picks it
   raises Basic DO top-1 from 0.520 to 0.562 and mean reciprocal rank from
   0.690 to 0.726.

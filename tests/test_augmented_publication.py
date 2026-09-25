@@ -91,11 +91,15 @@ def _install_workflow(
         report=_training_report() if report is None else report,
     )
 
-    def acquire(*, set_code: str, cache, timeout_seconds: int) -> AugmentedTrainingSource:
+    def acquire(
+        *, set_code: str, cache, timeout_seconds: int, adapter
+    ) -> AugmentedTrainingSource:
         assert events == ["profile-check"]
         assert set_code == "TST"
         assert timeout_seconds == 19
         assert cache.root == cache_dir
+        assert adapter.fetch_public_drafts is publication._fetch_public_drafts_with_progress
+        assert adapter.timeout_seconds == 19
         events.append("acquire")
         cache.root.mkdir(parents=True, exist_ok=True)
         private_dump = cache.root / "draft-data.csv.gz"

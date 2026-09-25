@@ -39,6 +39,7 @@ from draftomen.augmented_training_data import (
 )
 from draftomen.carddb import CardDatabase
 from draftomen.pickengine import PickEngine
+from draftomen.progress import ProgressReporter
 from draftomen.set_profile import SetProfile
 
 
@@ -536,6 +537,11 @@ def _train_array_model(
     stale = 0
     step = 0
     history: list[dict[str, float | int]] = []
+    print(
+        f"Training on {len(train_rows):,} picks, validating on "
+        f"{len(validation_rows):,} and testing on {len(data.split_rows['test']):,}",
+        flush=True,
+    )
     for epoch in range(1, config.epochs + 1):
         started = time.monotonic()
         order = rng.permutation(train_rows)
@@ -746,7 +752,12 @@ def _build_array_basic_scores(
         )
     _BASIC_SCORE_WORKER_STATE = (data, engine, card_database)
     completed = 0
-    started = time.monotonic()
+    progress = ProgressReporter(
+        label="Basic DO scoring",
+        total=len(rows),
+        unit="picks",
+        step=0.25,
+    )
     context = multiprocessing.get_context("fork")
     with context.Pool(processes=worker_count) as pool:
         for offset, chunk_scores in pool.imap_unordered(
@@ -757,11 +768,7 @@ def _build_array_basic_scores(
             integer_scores[offset:end] = chunk_scores.integer_scores
             tie_order[offset:end] = chunk_scores.tie_order
             completed += end - offset
-            print(
-                f"Basic DO evaluated {completed:,}/{len(rows):,} picks in "
-                f"{time.monotonic() - started:.1f} seconds",
-                flush=True,
-            )
+            progress.update(done=completed)
     _BASIC_SCORE_WORKER_STATE = None
     return _BasicArrayScores(
         integer_scores=integer_scores,
@@ -971,7 +978,8 @@ def train_and_gate_augmented_set(
     test_rows = data.split_rows["test"]
     evaluation_rows = np.concatenate((validation_rows, test_rows))
     print(
-        f"Scoring {len(evaluation_rows):,} validation and test picks with Basic DO",
+        f"Evaluating on {len(evaluation_rows):,} validation and test picks "
+        "scored with Basic DO",
         flush=True,
     )
     evaluation_basic = _build_array_basic_scores(
