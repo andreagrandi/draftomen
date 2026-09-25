@@ -102,6 +102,27 @@ Dialog {
         }
     }
 
+    // Set by this dialog's Start button, so reopening the dialog during a draft
+    // to leave it never closes it on its own.
+    property bool startRequested: false
+
+    function closeOnceStarted() {
+        if (!root.startRequested)
+            return
+        if (root.error.length > 0 || root.phase === "failed") {
+            root.startRequested = false
+            return
+        }
+        if (root.active && (root.phase === "drafting" || root.phase === "completed")) {
+            root.startRequested = false
+            root.close()
+        }
+    }
+
+    onActiveChanged: root.closeOnceStarted()
+    onPhaseChanged: root.closeOnceStarted()
+    onErrorChanged: root.closeOnceStarted()
+
     onClosed: {
         const opener = root.returnFocusItem
         root.returnFocusItem = null
@@ -283,9 +304,10 @@ Dialog {
             focusPolicy: Qt.StrongFocus
             Accessible.role: Accessible.Button
             Accessible.name: "Start Mocked Draft"
-            onClicked: sessionProvider.startTestDraft(
-                root.selectedMode, root.selectedSetCode
-            )
+            onClicked: {
+                root.startRequested = true
+                sessionProvider.startTestDraft(root.selectedMode, root.selectedSetCode)
+            }
         }
 
         DimensionalButton {

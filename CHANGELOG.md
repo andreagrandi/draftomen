@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Close the Mocked Draft dialog once the draft started from it is under way,
+  so the live drafting view is visible. A failed start keeps the dialog open
+  with its error, and reopening the dialog during a draft to leave it keeps it
+  open.
 - Let Mocked Draft offer booster cards that the set card data does not list,
   such as SPG, MUL, BIG, and OTP bonus-sheet cards and 32 KTK cards. A card
   maps to another Arena printing of the same card when the set has none, and
