@@ -43,7 +43,17 @@
         "url": "https://www.draftomen.com/card-data/blb.json.gz"
       },
       "name": "Bloomburrow",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "bro": {
       "augmented": null,
@@ -53,7 +63,17 @@
         "url": "https://www.draftomen.com/card-data/bro.json.gz"
       },
       "name": "The Brothers' War",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "dft": {
       "augmented": {
