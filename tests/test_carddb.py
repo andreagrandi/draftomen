@@ -26,12 +26,9 @@ from draftomen.carddb import (
     build_card_database_from_bulk_file,
     build_card_database_from_scryfall_cards,
     download_scryfall_default_cards_bulk_file,
+    augment_card_database_with_arena_data,
     iter_scryfall_default_cards,
-    card_database_cache_path,
     load_card_database,
-    load_or_refresh_card_database,
-    refresh_card_database,
-    save_card_database,
 )
 from draftomen.cli import main
 from draftomen.events import DraftCompletedEvent, PackOfferedEvent, PickMadeEvent, parse_events
@@ -597,10 +594,9 @@ def test_mtgjson_set_metadata_resolves_grp_ids_from_name_seeds() -> None:
     assert forest.produced_mana == ("G",)
 
 
-def test_cached_scryfall_data_is_augmented_with_arena_local_data(
+def test_scryfall_data_is_augmented_with_arena_local_data(
     tmp_path: Path,
 ) -> None:
-    app_dir = tmp_path / "app"
     arena_data_dir = _write_arena_data_dir(directory=tmp_path)
     bulk_path = tmp_path / "stale-scryfall.jsonl"
     bulk_path.write_text(
@@ -609,10 +605,10 @@ def test_cached_scryfall_data_is_augmented_with_arena_local_data(
         '"image_uris":{"normal":"https://cards.example/spider.jpg"}}\n',
         encoding="utf-8",
     )
-    refreshed = refresh_card_database(app_dir=app_dir, bulk_file=bulk_path)
+    scryfall = build_card_database_from_bulk_file(path=bulk_path)
 
-    database = load_or_refresh_card_database(
-        app_dir=app_dir,
+    database = augment_card_database_with_arena_data(
+        scryfall,
         arena_data_dir=arena_data_dir,
     )
 
@@ -621,7 +617,6 @@ def test_cached_scryfall_data_is_augmented_with_arena_local_data(
     assert database.lookup(grp_id=105097).image_uri == "https://cards.example/spider.jpg"
     assert database.lookup(grp_id=105200).name == "Arena Dual"
     assert database.unresolved_grp_ids(grp_ids=(105097, 999999, 105200)) == (999999,)
-    assert database.generated_at == refreshed.generated_at
 
 
 def test_unknown_grp_id_returns_explicit_marker() -> None:
@@ -637,11 +632,10 @@ def test_unknown_grp_id_returns_explicit_marker() -> None:
     assert unknown.types == ("Unknown",)
 
 
-def test_schema_three_cache_migrates_with_explicit_metadata_defaults(
+def test_schema_three_file_migrates_with_explicit_metadata_defaults(
     tmp_path: Path,
 ) -> None:
-    cache_path = card_database_cache_path(app_dir=tmp_path)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path = tmp_path / "cards.json"
     cache_path.write_text(
         json.dumps(
             {
@@ -664,7 +658,7 @@ def test_schema_three_cache_migrates_with_explicit_metadata_defaults(
         encoding="utf-8",
     )
 
-    database = load_card_database(app_dir=tmp_path)
+    database = load_card_database(cache_path=cache_path)
     card = database.lookup(grp_id=42)
     assert card.arena_id == 42
     assert card.oracle_text is None
@@ -674,12 +668,11 @@ def test_schema_three_cache_migrates_with_explicit_metadata_defaults(
     assert database.to_json()["schema_version"] == 5
 
 
-def test_load_or_refresh_schema_three_cache_is_offline(
+def test_resolved_schema_three_cards_skip_mtgjson_download(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cache_path = card_database_cache_path(app_dir=tmp_path)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path = tmp_path / "cards.json"
     cache_path.write_text(
         json.dumps(
             {
@@ -700,15 +693,6 @@ def test_load_or_refresh_schema_three_cache_is_offline(
             }
         ),
         encoding="utf-8",
-    )
-
-    def fail_refresh(**_kwargs: object) -> CardDatabase:
-        pytest.fail("schema-3 cache must load without refresh")
-
-    monkeypatch.setattr("draftomen.carddb.refresh_card_database", fail_refresh)
-    monkeypatch.setattr(
-        "draftomen.carddb.find_default_arena_data_dir",
-        lambda: None,
     )
 
     def fail_mtgjson_download(**_kwargs: object) -> tuple[object, ...]:
@@ -719,7 +703,7 @@ def test_load_or_refresh_schema_three_cache_is_offline(
         fail_mtgjson_download,
     )
 
-    database = load_or_refresh_card_database(app_dir=tmp_path)
+    database = load_card_database(cache_path=cache_path)
 
     assert database.lookup(grp_id=42).source_provenance == ("unknown",)
     augmented = augment_card_database_with_mtgjson_set(
@@ -759,66 +743,6 @@ def test_card_database_serialization_is_deterministic() -> None:
     assert tuple(database.to_json()["image_uris_by_name"]) == ("alpha", "zeta")
 
 
-def test_atomic_cache_failure_preserves_previous_payload(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cache_path = card_database_cache_path(app_dir=tmp_path)
-    save_card_database(CardDatabase(cards={}), cache_path=cache_path)
-    before = cache_path.read_text(encoding="utf-8")
-
-    def fail_replace(*_args: object, **_kwargs: object) -> None:
-        raise OSError("simulated replace failure")
-
-    monkeypatch.setattr("draftomen.carddb.os.replace", fail_replace)
-    with pytest.raises(OSError, match="simulated replace failure"):
-        save_card_database(
-            CardDatabase(cards={1: CardInfo.unknown_card(grp_id=1)}),
-            cache_path=cache_path,
-        )
-
-    assert cache_path.read_text(encoding="utf-8") == before
-    assert tuple(tmp_path.glob(".carddb.json.*")) == ()
-
-
-def test_refresh_writes_cache_and_loads_cached_database_offline(
-    tmp_path: Path,
-) -> None:
-    database = refresh_card_database(
-        app_dir=tmp_path,
-        bulk_file=SCRYFALL_BULK_SAMPLE_PATH,
-    )
-
-    cache_path = card_database_cache_path(app_dir=tmp_path)
-    loaded = load_card_database(app_dir=tmp_path)
-
-    assert cache_path.exists()
-    assert loaded.lookup(grp_id=105097) == database.lookup(grp_id=105097)
-    assert database.generated_at is not None
-    assert database.generated_at.tzinfo is not None
-    assert loaded.generated_at == database.generated_at
-    payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert payload["generated_at"] == database.generated_at.isoformat()
-
-
-def test_cacheable_refresh_replaces_older_persisted_generated_at(tmp_path: Path) -> None:
-    old_generated_at = datetime(2000, 1, 1, tzinfo=UTC)
-    save_card_database(
-        CardDatabase(cards={}, generated_at=old_generated_at),
-        app_dir=tmp_path,
-    )
-
-    refreshed = refresh_card_database(
-        app_dir=tmp_path,
-        bulk_file=SCRYFALL_BULK_SAMPLE_PATH,
-    )
-    loaded = load_card_database(app_dir=tmp_path)
-
-    assert refreshed.generated_at is not None
-    assert refreshed.generated_at > old_generated_at
-    assert loaded.generated_at == refreshed.generated_at
-
-
 @pytest.mark.parametrize("generated_at", [None, "not-a-timestamp"])
 def test_cache_load_treats_missing_or_malformed_generated_at_as_unknown(
     tmp_path: Path,
@@ -830,155 +754,36 @@ def test_cache_load_treats_missing_or_malformed_generated_at_as_unknown(
         payload.pop("generated_at")
     else:
         payload["generated_at"] = generated_at
-    cache_path = card_database_cache_path(app_dir=tmp_path)
+    cache_path = tmp_path / "cards.json"
     cache_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    loaded = load_card_database(app_dir=tmp_path)
+    loaded = load_card_database(cache_path=cache_path)
 
     assert loaded.cards == database.cards
     assert loaded.generated_at is None
 
 
-def test_load_without_cache_raises_actionable_error(tmp_path: Path) -> None:
+def test_load_of_a_missing_file_names_the_path(tmp_path: Path) -> None:
+    missing = tmp_path / "cards.json"
+
     with pytest.raises(CardDatabaseCacheMissingError) as error:
-        load_card_database(app_dir=tmp_path)
+        load_card_database(cache_path=missing)
 
-    assert "Run refresh-data first" in str(error.value)
-
-
-def test_load_or_refresh_rebuilds_schema_2_image_index_cache(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cache_path = card_database_cache_path(app_dir=tmp_path)
-    cache_path.write_text(
-        '{"schema_version":2,"source":"old","generated_at":"old","cards":{},'
-        '"image_uris_by_name":{}}\n',
-        encoding="utf-8",
-    )
-    refreshed = CardDatabase(
-        cards={},
-        image_uris_by_name={"red room recruit": "https://cards.example/red.jpg"},
-    )
-
-    def fake_refresh_card_database(**kwargs: object) -> CardDatabase:
-        return refreshed
-
-    monkeypatch.setattr(
-        "draftomen.carddb.refresh_card_database",
-        fake_refresh_card_database,
-    )
-
-    assert load_or_refresh_card_database(app_dir=tmp_path) is refreshed
+    assert str(missing) in str(error.value)
 
 
-def test_failed_scryfall_refresh_keeps_existing_canonical_cache(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cache_path = card_database_cache_path(app_dir=tmp_path)
-    existing = CardDatabase(
-        cards={},
-        image_uris_by_name={"known card": "https://cards.example/known.jpg"},
-    )
-    save_card_database(existing, cache_path=cache_path)
-
-    cache_before = cache_path.read_text(encoding="utf-8")
-    arena_data_dir = _write_arena_data_dir(directory=tmp_path)
-
-    def failed_download(*, timeout_seconds: int) -> CardDatabase:
-        raise CardDatabaseError("Scryfall is temporarily unavailable.")
-
-    monkeypatch.setattr(
-        "draftomen.carddb.download_scryfall_card_database",
-        failed_download,
-    )
-
-    fallback = refresh_card_database(
-        cache_path=cache_path,
-        arena_data_dir=arena_data_dir,
-    )
-
-    assert fallback.lookup(grp_id=105097).name == "Arena Spider"
-    assert cache_path.read_text(encoding="utf-8") == cache_before
-    assert fallback.generated_at is None
-
-
-def test_load_or_refresh_preserves_runtime_arena_fallback(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    arena_data_dir = _write_arena_data_dir(directory=tmp_path)
-
-    def failed_download(*, timeout_seconds: int) -> CardDatabase:
-        raise CardDatabaseError("Scryfall is temporarily unavailable.")
-
-    monkeypatch.setattr(
-        "draftomen.carddb.download_scryfall_card_database",
-        failed_download,
-    )
-
-    fallback = load_or_refresh_card_database(
-        app_dir=tmp_path / "runtime-app",
-        arena_data_dir=arena_data_dir,
-    )
-
-    assert fallback.lookup(grp_id=105097).name == "Arena Spider"
-    assert not card_database_cache_path(app_dir=tmp_path / "runtime-app").exists()
-    assert fallback.generated_at is None
-
-
-def test_refresh_data_cli_builds_cache_from_vendored_bulk_sample(
+def test_refresh_data_cli_explains_that_card_data_downloads_per_set(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    exit_code = main(
-        argv=[
-            "refresh-data",
-            "--bulk-file",
-            str(SCRYFALL_BULK_SAMPLE_PATH),
-            "--app-dir",
-            str(tmp_path),
-        ]
-    )
+    exit_code = main(argv=["refresh-data", "--app-dir", str(tmp_path)])
 
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "refreshed 137 card records" in captured.out
-    assert str(card_database_cache_path(app_dir=tmp_path)) in captured.out
+    assert "no longer needed" in captured.out
     assert captured.err == ""
-
-
-def test_refresh_data_cli_rejects_uncacheable_arena_fallback(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    fallback = CardDatabase(cards={})
-
-    def arena_fallback(**_kwargs: object) -> tuple[CardDatabase, bool]:
-        return fallback, False
-
-    monkeypatch.setattr(
-        "draftomen.carddb._download_or_arena_card_database",
-        arena_fallback,
-    )
-
-    exit_code = main(
-        argv=[
-            "refresh-data",
-            "--app-dir",
-            str(tmp_path),
-        ]
-    )
-    captured = capsys.readouterr()
-
-    assert exit_code == 1
-    assert captured.out == ""
-    assert "refresh-data failed:" in captured.err
-    assert "cacheable" in captured.err
-    assert not card_database_cache_path(app_dir=tmp_path).exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_scryfall_gzipped_jsonl_bulk_files_are_supported(tmp_path: Path) -> None:

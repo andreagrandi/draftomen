@@ -1,0 +1,779 @@
+Draft Omen replay
+Account: FixturePlayer (FIXTURECLIENTID1234567890)
+Set: MSH
+Event: QuickDraft_MSH_20260702
+Draft: 00000000-0000-4000-8000-000000000004
+Attribution: Card data from 17Lands (17lands.com)
+
+Pack 1 Pick 1
+Status: inferred pair open, commitment 0% (open), pool 0
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                     Colors     Fit    GIH WR   ALSA    MV  Source
+  01     50  Agent of Atlas (grpId 104894)            W          Open        —      —     2  Prior*
+  02     50  Trickster's Stratagem (grpId 104976)     U          Open        —      —     4  Prior*
+  03     50  Savage Land Dinosaur (grpId 105080)      G          Open        —      —     6  Prior*
+  04     50  HYDRA Infiltration (grpId 104995)        B          Open        —      —     4  Prior*
+  05     50  Hawkeye's Bow (grpId 105027)             R          Open        —      —     1  Prior*
+  06     50  HULK SMASH! (grpId 105030)               R          Open        —      —     2  Prior*
+  07     50  Surveillance Room (grpId 105170)         Colorless  Any         —      —     0  Prior*
+  08     50  Take Up the Shield (grpId 104932)        W          Open        —      —     2  Prior*
+  09     50  Agent Maria Hill (grpId 104893)          W          Open        —      —     1  Prior*
+  10     50  White Tiger, Ava Ayala (grpId 105091)    G          Open        —      —     2  Prior*
+  11     50  Shuri, Wakandan Inventor (grpId 104969)  U          Open        —      —     2  Prior*
+  12     50  Ares, God of War (grpId 105097)          BR         Open        —      —     3  Prior*
+  13     50  The Wondrous Wasp (grpId 104979)         U          Open        —      —     2  Prior*
+  14     50  Hell's Kitchen (grpId 105164)            Colorless  Any         —      —     0  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Agent of Atlas receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
+Chosen card: Ares, God of War [BR] (grpId 105097)
+
+Pack 1 Pick 2
+Status: inferred pair BR, commitment 0% (open), pool 1
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                        Colors     Fit    GIH WR   ALSA    MV  Source
+  01     50  Wakandan Drone Flock (grpId 104933)         W          Open        —      —     4  Prior*
+  02     50  Go Nuts! (grpId 105063)                     G          Open        —      —     1  Prior*
+  03     50  Futurist Forge (grpId 104949)               U          Open        —      —     2  Prior*
+  04     50  Blazing Crescendo (grpId 105020)            R          Open        —      —     2  Prior*
+  05     50  Kree Sentinel (grpId 105036)                R          Open        —      —     5  Prior*
+  06     50  Ninja of the Hand (grpId 105003)            B          Open        —      —     3  Prior*
+  07     50  Decoy Ploy (grpId 104989)                   B          Open        —      —     2  Prior*
+  08     50  Frozen in Ice (grpId 104948)                U          Open        —      —     3  Prior*
+  09     50  Super Intelligence (grpId 104971)           U          Open        —      —     1  Prior*
+  10     50  War Machine, Legacy of Iron (grpId 105134)  WR         Open        —      —     3  Prior*
+  11     50  Tigra, Feline Fury (grpId 105086)           G          Open        —      —     2  Prior*
+  12     50  Ronin, Shadow Stalker (grpId 105007)        B          Open        —      —     3  Prior*
+  13     50  Los Diablos Missile Base (grpId 105166)     Colorless  Any         —      —     0  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Wakandan Drone Flock receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
+Chosen card: War Machine, Legacy of Iron [WR] (grpId 105134)
+
+Pack 1 Pick 3
+Status: inferred pair WR, commitment 0% (open), pool 2
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                         Colors     Fit    GIH WR   ALSA    MV  Source
+  01     50  Crowd of True Believers (grpId 104905)       W          Open        —      —     1  Prior*
+  02     50  HYDRA Assault Robot (grpId 105032)           R          Open        —      —     2  Prior*
+  03     50  Ninja of the Hand (grpId 105003)             B          Open        —      —     3  Prior*
+  04     50  Dependable Quinjet (grpId 105142)            Colorless  Any         —      —     3  Prior*
+  05     50  Volcanic Villain (grpId 105054)              R          Open        —      —     3  Prior*
+  06     50  Rapid Rescue (grpId 105076)                  G          Open        —      —     1  Prior*
+  07     50  H.E.R.B.I.E. Scout Unit (grpId 105143)       Colorless  Any         —      —     4  Prior*
+  08     50  Atlantean Cavalry (grpId 104938)             U          Open        —      —     3  Prior*
+  09     50  Iron Man, Master of Machines (grpId 105111)  UR         Open        —      —     4  Prior*
+  10     50  Training Regimen (grpId 105087)              G          Open        —      —     4  Prior*
+  11     50  Swordsman, Sharp Scoundrel (grpId 105011)    B          Open        —      —     2  Prior*
+  12      0  Forest (grpId 105182)                        Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Crowd of True Believers receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
+Chosen card: Ninja of the Hand [B] (grpId 105003)
+
+Pack 1 Pick 4
+Status: inferred pair BR, commitment 0% (open), pool 3
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                           Colors     Fit    GIH WR   ALSA    MV  Source
+  01     50  Kree Commandos (grpId 104911)                  W          Open        —      —     3  Prior*
+  02     50  Lightning Strike (grpId 105037)                R          Open        —      —     2  Prior*
+  03     50  Wakandan Drone Flock (grpId 104933)            W          Open        —      —     4  Prior*
+  04     50  Super Suit (grpId 104972)                      U          Open        —      —     2  Prior*
+  05     50  Crimson Operative (grpId 105021)               R          Open        —      —     4  Prior*
+  06     50  Knight of Wundagore (grpId 105070)             G          Open        —      —     2  Prior*
+  07     50  Thor Odinson (grpId 105130)                    WR         Open        —      —     5  Prior*
+  08     50  Doc Samson, Super Psychiatrist (grpId 105059)  G          Open        —      —     5  Prior*
+  09     50  Quake, Agent of S.H.I.E.L.D. (grpId 104925)    W          Open        —      —     3  Prior*
+  10     50  Super Intelligence (grpId 104971)              U          Open        —      —     1  Prior*
+  11      0  Plains (grpId 105174)                          Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Kree Commandos receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
+Chosen card: Lightning Strike [R] (grpId 105037)
+
+Pack 1 Pick 5
+Status: inferred pair BR, commitment 0% (open), pool 4
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                          Colors     Fit    GIH WR   ALSA    MV  Source
+  01     50  Crimson Operative (grpId 105021)              R          Open        —      —     4  Prior*
+  02     50  Ninja of the Hand (grpId 105003)              B          Open        —      —     3  Prior*
+  03     50  S.H.I.E.L.D. Deployment Drone (grpId 104967)  U          Open        —      —     3  Prior*
+  04     50  Wakandan Royal Guard (grpId 105090)           G          Open        —      —     5  Prior*
+  05     50  Volcanic Villain (grpId 105054)               R          Open        —      —     3  Prior*
+  06     50  Crowd of True Believers (grpId 104905)        W          Open        —      —     1  Prior*
+  07     50  Stolen Stark Tech (grpId 105009)              B          Open        —      —     2  Prior*
+  08     50  Rewrite History (grpId 104965)                U          Open        —      —     3  Prior*
+  09     50  Madame Hydra (grpId 105117)                   BR         Open        —      —     4  Prior*
+  10      0  Mountain (grpId 105180)                       Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Crimson Operative receives 50 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data.
+Chosen card: Madame Hydra [BR] (grpId 105117)
+
+Pack 1 Pick 6
+Status: inferred pair BR, commitment 9% (building), pool 5
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                       Colors     Fit    GIH WR   ALSA    MV  Source
+  01     51  Stolen Stark Tech (grpId 105009)           B          On          —      —     2  Prior*
+  02     51  Machinesmith Automaton (grpId 105039)      R          On          —      —     3  Prior*
+  03     51  Super Speed (grpId 105049)                 R          On          —      —     1  Prior*
+  04     51  Unliving Legionnaire (grpId 105014)        B          On          —      —     4  Prior*
+  05     51  Evil's Thrall (grpId 105023)               R          On          —      —     3  Prior*
+  06     50  Ultron Drone (grpId 105149)                Colorless  Any         —      —     3  Prior*
+  07     49  Super Strength (grpId 105084)              G          Off!        —      —     5  Prior*
+  08     49  Invisible Woman, Sue Storm (grpId 104908)  W          Off!        —      —     5  Prior*
+  09     49  Falcon's Wing Harness (grpId 104947)       U          Off!        —      —     2  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Stolen Stark Tech receives 51 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+0.68 DO points).
+Chosen card: Unliving Legionnaire [B] (grpId 105014)
+
+Pack 1 Pick 7
+Status: inferred pair BR, commitment 18% (building), pool 6
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                       Colors     Fit    GIH WR   ALSA    MV  Source
+  01     51  Hire a Crew (grpId 105029)                 R          On          —      —     3  Prior*
+  02     51  Kingpin's Enforcers (grpId 104997)         B          On          —      —     3  Prior*
+  03     51  Repulsor Blast (grpId 105045)              R          On          —      —     4  Prior*
+  04     51  Jessica Jones, Private Eye (grpId 105034)  R          On          —      —     3  Prior*
+  05     48  Ant-Man's Army (grpId 105056)              G          Off!        —      —     3  Prior*
+  06     48  Atlantis Attacks (grpId 104939)            U          Off!        —      —     7  Prior*
+  07     48  Serpent Specialist (grpId 105081)          G          Off!        —      —     1  Prior*
+  08      0  Swamp (grpId 105178)                       Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Hire a Crew receives 51 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+1.36 DO points).
+Chosen card: Jessica Jones, Private Eye [R] (grpId 105034)
+
+Pack 1 Pick 8
+Status: inferred pair BR, commitment 27% (building), pool 7
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                 Colors     Fit    GIH WR   ALSA    MV  Source
+  01     52  Kingpin's Enforcers (grpId 104997)   B          On          —      —     3  Prior*
+  02     52  K'un-Lun Warrior (grpId 105035)      R          On          —      —     2  Prior*
+  03     52  Photon Blast Barrage (grpId 105042)  R          On          —      —     2  Prior*
+  04     47  Guerrilla Gorilla (grpId 105064)     G          Off!        —      —     2  Prior*
+  05     47  Atlantean Cavalry (grpId 104938)     U          Off!        —      —     3  Prior*
+  06     47  Giant Growth (grpId 105062)          G          Off!        —      —     1  Prior*
+  07      0  Plains (grpId 105173)                Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Kingpin's Enforcers receives 52 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+2.05 DO points).
+Chosen card: Kingpin's Enforcers [B] (grpId 104997)
+
+Pack 1 Pick 9
+Status: inferred pair BR, commitment 36% (building), pool 8
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                     Colors     Fit    GIH WR   ALSA    MV  Source
+  01     53  HYDRA Infiltration (grpId 104995)        B          On          —      —     4  Prior*
+  02     53  Hawkeye's Bow (grpId 105027)             R          On          —      —     1  Prior*
+  03     53  HULK SMASH! (grpId 105030)               R          On          —      —     2  Prior*
+  04     50  Surveillance Room (grpId 105170)         Colorless  Any         —      —     0  Prior*
+  05     45  Take Up the Shield (grpId 104932)        W          Off!        —      —     2  Prior*
+  06     45  Shuri, Wakandan Inventor (grpId 104969)  U          Off!        —      —     2  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Infiltration receives 53 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+2.73 DO points).
+Chosen card: HULK SMASH! [R] (grpId 105030)
+
+Pack 1 Pick 10
+Status: inferred pair BR, commitment 45% (building), pool 9
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                     Colors     Fit    GIH WR   ALSA    MV  Source
+  01     53  Ninja of the Hand (grpId 105003)         B          On          —      —     3  Prior*
+  02     53  Decoy Ploy (grpId 104989)                B          On          —      —     2  Prior*
+  03     50  Los Diablos Missile Base (grpId 105166)  Colorless  Any         —      —     0  Prior*
+  04     44  Super Intelligence (grpId 104971)        U          Off!        —      —     1  Prior*
+  05     44  Tigra, Feline Fury (grpId 105086)        G          Off!        —      —     2  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Ninja of the Hand receives 53 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+3.41 DO points).
+Chosen card: Decoy Ploy [B] (grpId 104989)
+
+Pack 1 Pick 11
+Status: inferred pair BR, commitment 55% (building), pool 10
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                Colors     Fit    GIH WR   ALSA    MV  Source
+  01     54  HYDRA Assault Robot (grpId 105032)  R          On          —      —     2  Prior*
+  02     54  Volcanic Villain (grpId 105054)     R          On          —      —     3  Prior*
+  03     43  Rapid Rescue (grpId 105076)         G          Off!        —      —     1  Prior*
+  04      0  Forest (grpId 105182)               Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Assault Robot receives 54 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+4.09 DO points).
+Chosen card: Volcanic Villain [R] (grpId 105054)
+
+Pack 1 Pick 12
+Status: inferred pair BR, commitment 64% (building), pool 11
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                Colors     Fit    GIH WR   ALSA    MV  Source
+  01     42  Super Suit (grpId 104972)           U          Off!        —      —     2  Prior*
+  02     42  Knight of Wundagore (grpId 105070)  G          Off!        —      —     2  Prior*
+  03      0  Plains (grpId 105174)               Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Super Suit receives 42 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors are a weaker fit for your current deck (-7.95 DO points). Splash fit is being evaluated.
+Chosen card: Knight of Wundagore [G] (grpId 105070)
+
+Pack 1 Pick 13
+Status: inferred pair BR, commitment 73% (building), pool 12
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                             Colors     Fit    GIH WR   ALSA    MV  Source
+  01     55  Volcanic Villain (grpId 105054)  R          On          —      —     3  Prior*
+  02      0  Mountain (grpId 105180)          Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Volcanic Villain receives 55 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+5.45 DO points).
+Chosen card: Volcanic Villain [R] (grpId 105054)
+
+Pack 1 Pick 14
+Status: inferred pair BR, commitment 82% (building), pool 13
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                           Colors     Fit    GIH WR   ALSA    MV  Source
+  01     40  Super Strength (grpId 105084)  G          Off!        —      —     5  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Super Strength receives 40 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors are a weaker fit for your current deck (-10.23 DO points). Splash fit is being evaluated.
+Chosen card: Super Strength [G] (grpId 105084)
+
+Pack 2 Pick 1
+Status: inferred pair BR, commitment 91% (building), pool 14
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                         Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Widow's Bite (grpId 105017)                  B          On          —      —     2  Prior*
+  02     57  Lightning Strike (grpId 105037)              R          On          —      —     2  Prior*
+  03     57  Robot Domination (grpId 105006)              B          On          —      —     4  Prior*
+  04     57  Speedball, New Warrior (grpId 105123)        UR         On          —      —     3  Prior*
+  05     57  Hex Magic (grpId 105028)                     R          On          —      —     3  Prior*
+  06     50  Fisk Tower (grpId 105161)                    Colorless  Any         —      —     0  Prior*
+  07     39  S.H.I.E.L.D. Spy Kit (grpId 104929)          W          Off!        —      —     1  Prior*
+  08     39  Atlantean Cavalry (grpId 104938)             U          Off!        —      —     3  Prior*
+  09     39  Powerful Broker (grpId 105074)               G          Off!        —      —     3  Prior*
+  10     39  Wakandan Royal Guard (grpId 105090)          G          Off!        —      —     5  Prior*
+  11     39  Hero in Training (grpId 104907)              W          Off!        —      —     3  Prior*
+  12     39  Black Panther, Vanguard (grpId 105102)       WG         Off!        —      —     4  Prior*
+  13     39  Hulkling, Burgeoning Bruiser (grpId 105068)  G          Off!        —      —     3  Prior*
+  14     39  Worlds Within Worlds (grpId 105137)          UG         Off!        —      —     7  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Widow's Bite receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+6.82 DO points).
+Chosen card: Lightning Strike [R] (grpId 105037)
+
+Pack 2 Pick 2
+Status: inferred pair BR, commitment 100% (locked), pool 15
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                      Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Hawkeye's Bow (grpId 105027)              R          On          —      —     1  Prior*
+  02     57  Ninja of the Hand (grpId 105003)          B          On          —      —     3  Prior*
+  03     57  Kree Sentinel (grpId 105036)              R          On          —      —     5  Prior*
+  04     57  Klaw, Sonic Subjugator (grpId 104998)     B          On          —      —     3  Prior*
+  05     57  Iron Fist, Living Weapon (grpId 105033)   R          On          —      —     3  Prior*
+  06     50  Surveillance Room (grpId 105170)          Colorless  Any         —      —     0  Prior*
+  07     50  Dependable Quinjet (grpId 105142)         Colorless  Any         —      —     3  Prior*
+  08     50  Avengers Hangar (grpId 105155)            Colorless  Any         —      —     0  Prior*
+  09     38  Serpent Specialist (grpId 105081)         G          Off!        —      —     1  Prior*
+  10     38  Crowd of True Believers (grpId 104905)    W          Off!        —      —     1  Prior*
+  11     38  I Am Iron Man (grpId 104952)              U          Off!        —      —     3  Prior*
+  12     38  Ant-Man's Army (grpId 105056)             G          Off!        —      —     3  Prior*
+  13     38  Spider-Man, To the Rescue (grpId 105124)  WG         Off!        —      —     3  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Hawkeye's Bow receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Klaw, Sonic Subjugator [B] (grpId 104998)
+
+Pack 2 Pick 3
+Status: inferred pair BR, commitment 100% (locked), pool 16
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                       Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Hawkeye's Bow (grpId 105027)               R          On          —      —     1  Prior*
+  02     57  Red Room Recruit (grpId 105005)            B          On          —      —     2  Prior*
+  03     57  Too Evil to Stay Dead (grpId 105013)       B          On          —      —     3  Prior*
+  04     38  Hero in Training (grpId 104907)            W          Off!        —      —     3  Prior*
+  05     38  Kree Commandos (grpId 104911)              W          Off!        —      —     3  Prior*
+  06     38  Hydraulic Helper (grpId 104951)            U          Off!        —      —     2  Prior*
+  07     38  Savage Land Dinosaur (grpId 105080)        G          Off!        —      —     6  Prior*
+  08     38  I Am Iron Man (grpId 104952)               U          Off!        —      —     3  Prior*
+  09     38  Falcon's Wing Harness (grpId 104947)       U          Off!        —      —     2  Prior*
+  10     38  Invisible Woman, Sue Storm (grpId 104908)  W          Off!        —      —     5  Prior*
+  11     38  Hellcat, Undying Vigilante (grpId 105065)  G          Off!        —      —     2  Prior*
+  12      0  Island (grpId 105175)                      Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Hawkeye's Bow receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Red Room Recruit [B] (grpId 105005)
+
+Pack 2 Pick 4
+Status: inferred pair BR, commitment 100% (locked), pool 17
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                           Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Repulsor Blast (grpId 105045)                  R          On          —      —     4  Prior*
+  02     57  Super Speed (grpId 105049)                     R          On          —      —     1  Prior*
+  03     57  Ninja of the Hand (grpId 105003)               B          On          —      —     3  Prior*
+  04     57  Baron Strucker, HYDRA Overlord (grpId 104983)  B          On          —      —     3  Prior*
+  05     50  Birnin Zana Plaza (grpId 105158)               Colorless  Any         —      —     0  Prior*
+  06     38  Giant Growth (grpId 105062)                    G          Off!        —      —     1  Prior*
+  07     38  Wakandan Drone Flock (grpId 104933)            W          Off!        —      —     4  Prior*
+  08     38  Atlantis Attacks (grpId 104939)                U          Off!        —      —     7  Prior*
+  09     38  Call Damage Control (grpId 105057)             G          Off!        —      —     2  Prior*
+  10     38  Quake, Agent of S.H.I.E.L.D. (grpId 104925)    W          Off!        —      —     3  Prior*
+  11     38  Ant-Man, Colony Commander (grpId 105096)       UG         Off!        —      —     3  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Repulsor Blast receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Baron Strucker, HYDRA Overlord [B] (grpId 104983)
+
+Pack 2 Pick 5
+Status: inferred pair BR, commitment 100% (locked), pool 18
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                      Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Widow's Bite (grpId 105017)               B          On          —      —     2  Prior*
+  02     57  Super Speed (grpId 105049)                R          On          —      —     1  Prior*
+  03     50  H.E.R.B.I.E. Scout Unit (grpId 105143)    Colorless  Any         —      —     4  Prior*
+  04     50  Fisk Tower (grpId 105161)                 Colorless  Any         —      —     0  Prior*
+  05     38  Powerful Broker (grpId 105074)            G          Off!        —      —     3  Prior*
+  06     38  Crowd of True Believers (grpId 104905)    W          Off!        —      —     1  Prior*
+  07     38  Guerrilla Gorilla (grpId 105064)          G          Off!        —      —     2  Prior*
+  08     38  Super Suit (grpId 104972)                 U          Off!        —      —     2  Prior*
+  09     38  Attuma, Atlantean Warlord (grpId 104940)  U          Off!        —      —     4  Prior*
+  10     38  Black Panther, Vanguard (grpId 105102)    WG         Off!        —      —     4  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Widow's Bite receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Widow's Bite [B] (grpId 105017)
+
+Pack 2 Pick 6
+Status: inferred pair BR, commitment 100% (locked), pool 19
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                       Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  HYDRA Assault Robot (grpId 105032)         R          On          —      —     2  Prior*
+  02     57  HYDRA Infiltration (grpId 104995)          B          On          —      —     4  Prior*
+  03     57  Ninja of the Hand (grpId 105003)           B          On          —      —     3  Prior*
+  04     57  Ghost, Spectral Saboteur (grpId 105109)    UB         On          —      —     3  Prior*
+  05     50  Asgardian Citadel (grpId 105154)           Colorless  Any         —      —     0  Prior*
+  06     38  Take Up the Shield (grpId 104932)          W          Off!        —      —     2  Prior*
+  07     38  Guerrilla Gorilla (grpId 105064)           G          Off!        —      —     2  Prior*
+  08     38  Savage Land Dinosaur (grpId 105080)        G          Off!        —      —     6  Prior*
+  09     38  Hellcat, Undying Vigilante (grpId 105065)  G          Off!        —      —     2  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Assault Robot receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Ninja of the Hand [B] (grpId 105003)
+
+Pack 2 Pick 7
+Status: inferred pair BR, commitment 100% (locked), pool 20
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                  Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  HYDRA Infiltration (grpId 104995)     B          On          —      —     4  Prior*
+  02     57  Vision of Love (grpId 105053)         R          On          —      —     2  Prior*
+  03     57  Speed, Young Avenger (grpId 105047)   R          On          —      —     2  Prior*
+  04     50  Pym Technologies (grpId 105167)       Colorless  Any         —      —     0  Prior*
+  05     38  Savage Land Dinosaur (grpId 105080)   G          Off!        —      —     6  Prior*
+  06     38  Hydraulic Helper (grpId 104951)       U          Off!        —      —     2  Prior*
+  07     38  Restorative Technique (grpId 105078)  G          Off!        —      —     3  Prior*
+  08     38  Pym Particles (grpId 104964)          U          Off!        —      —     1  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Infiltration receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Speed, Young Avenger [R] (grpId 105047)
+
+Pack 2 Pick 8
+Status: inferred pair BR, commitment 100% (locked), pool 21
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                     Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  HYDRA Troopers (grpId 104996)            B          On          —      —     3  Prior*
+  02     57  Kree Sentinel (grpId 105036)             R          On          —      —     5  Prior*
+  03     57  Death to Our Enemies (grpId 105022)      R          On          —      —     3  Prior*
+  04     50  A.I.M. Synthoids (grpId 105138)          Colorless  Any         —      —     2  Prior*
+  05     38  Powerful Broker (grpId 105074)           G          Off!        —      —     3  Prior*
+  06     38  Echo, Perceptive Prodigy (grpId 104945)  U          Off!        —      —     3  Prior*
+  07      0  Swamp (grpId 105177)                     Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Troopers receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: HYDRA Troopers [B] (grpId 104996)
+
+Pack 2 Pick 9
+Status: inferred pair BR, commitment 100% (locked), pool 22
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                 Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Robot Domination (grpId 105006)      B          On          —      —     4  Prior*
+  02     57  Hex Magic (grpId 105028)             R          On          —      —     3  Prior*
+  03     38  S.H.I.E.L.D. Spy Kit (grpId 104929)  W          Off!        —      —     1  Prior*
+  04     38  Atlantean Cavalry (grpId 104938)     U          Off!        —      —     3  Prior*
+  05     38  Powerful Broker (grpId 105074)       G          Off!        —      —     3  Prior*
+  06     38  Wakandan Royal Guard (grpId 105090)  G          Off!        —      —     5  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Robot Domination receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Robot Domination [B] (grpId 105006)
+
+Pack 2 Pick 10
+Status: inferred pair BR, commitment 100% (locked), pool 23
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                     Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Hawkeye's Bow (grpId 105027)             R          On          —      —     1  Prior*
+  02     57  Ninja of the Hand (grpId 105003)         B          On          —      —     3  Prior*
+  03     57  Iron Fist, Living Weapon (grpId 105033)  R          On          —      —     3  Prior*
+  04     50  Dependable Quinjet (grpId 105142)        Colorless  Any         —      —     3  Prior*
+  05     38  I Am Iron Man (grpId 104952)             U          Off!        —      —     3  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Hawkeye's Bow receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Iron Fist, Living Weapon [R] (grpId 105033)
+
+Pack 2 Pick 11
+Status: inferred pair BR, commitment 100% (locked), pool 24
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                  Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Too Evil to Stay Dead (grpId 105013)  B          On          —      —     3  Prior*
+  02     38  Hydraulic Helper (grpId 104951)       U          Off!        —      —     2  Prior*
+  03     38  I Am Iron Man (grpId 104952)          U          Off!        —      —     3  Prior*
+  04      0  Island (grpId 105175)                 Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Too Evil to Stay Dead receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Too Evil to Stay Dead [B] (grpId 105013)
+
+Pack 2 Pick 12
+Status: inferred pair BR, commitment 100% (locked), pool 25
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                              Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Super Speed (grpId 105049)        R          On          —      —     1  Prior*
+  02     57  Ninja of the Hand (grpId 105003)  B          On          —      —     3  Prior*
+  03     38  Giant Growth (grpId 105062)       G          Off!        —      —     1  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Super Speed receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Ninja of the Hand [B] (grpId 105003)
+
+Pack 2 Pick 13
+Status: inferred pair BR, commitment 100% (locked), pool 26
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                            Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Super Speed (grpId 105049)      R          On          —      —     1  Prior*
+  02     38  Powerful Broker (grpId 105074)  G          Off!        —      —     3  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Super Speed receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Super Speed [R] (grpId 105049)
+
+Pack 2 Pick 14
+Status: inferred pair BR, commitment 100% (locked), pool 27
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  HYDRA Assault Robot (grpId 105032)  R          On          —      —     2  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Assault Robot receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: HYDRA Assault Robot [R] (grpId 105032)
+
+Pack 3 Pick 1
+Status: inferred pair BR, commitment 100% (locked), pool 28
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                       Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Hire a Crew (grpId 105029)                 R          On          —      —     3  Prior*
+  02     57  Cruel Alliance (grpId 104987)              B          On          —      —     3  Prior*
+  03     57  The Masters of Evil (grpId 105000)         B          On          —      —     6  Prior*
+  04     57  Wonder Man, Hollywood Hero (grpId 105055)  R          On          —      —     5  Prior*
+  05     57  Human Torch, Johnny Storm (grpId 105031)   R          On          —      —     3  Prior*
+  06     50  Vibranium Energy Daggers (grpId 105150)    Colorless  Any         —      —     1  Prior*
+  07     50  Los Diablos Missile Base (grpId 105166)    Colorless  Any         —      —     0  Prior*
+  08     38  Hero in Training (grpId 104907)            W          Off!        —      —     3  Prior*
+  09     38  Powerful Broker (grpId 105074)             G          Off!        —      —     3  Prior*
+  10     38  Aerial Doombot (grpId 104936)              U          Off!        —      —     1  Prior*
+  11     38  Take Up the Shield (grpId 104932)          W          Off!        —      —     2  Prior*
+  12     38  Tigra, Feline Fury (grpId 105086)          G          Off!        —      —     2  Prior*
+  13     38  Invisible Woman, Sue Storm (grpId 104908)  W          Off!        —      —     5  Prior*
+  14     38  The Wondrous Wasp (grpId 104979)           U          Off!        —      —     2  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Hire a Crew receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: The Masters of Evil [B] (grpId 105000)
+
+Pack 3 Pick 2
+Status: inferred pair BR, commitment 100% (locked), pool 29
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                            Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  HYDRA Infiltration (grpId 104995)               B          On          —      —     4  Prior*
+  02     57  Lightning Strike (grpId 105037)                 R          On          —      —     2  Prior*
+  03     57  Repulsor Blast (grpId 105045)                   R          On          —      —     4  Prior*
+  04     57  Speedball, New Warrior (grpId 105123)           UR         On          —      —     3  Prior*
+  05     57  Death to Our Enemies (grpId 105022)             R          On          —      —     3  Prior*
+  06     57  Grim Reaper, Lethal Legionnaire (grpId 104993)  B          On          —      —     4  Prior*
+  07     57  Crossbones, Malicious Mercenary (grpId 104986)  B          On          —      —     4  Prior*
+  08     38  Atlantean Cavalry (grpId 104938)                U          Off!        —      —     3  Prior*
+  09     38  Powerful Broker (grpId 105074)                  G          Off!        —      —     3  Prior*
+  10     38  Panther Pounce (grpId 104922)                   W          Off!        —      —     1  Prior*
+  11     38  Agent Maria Hill (grpId 104893)                 W          Off!        —      —     1  Prior*
+  12     38  Scientist Supreme of A.I.M. (grpId 105121)      UB         Off!        —      —     2  Prior*
+  13      0  Mountain (grpId 105179)                         Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Infiltration receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Crossbones, Malicious Mercenary [B] (grpId 104986)
+
+Pack 3 Pick 3
+Status: inferred pair BR, commitment 100% (locked), pool 30
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                         Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Project Deathlok Soldier (grpId 105004)      B          On          —      —     1  Prior*
+  02     57  Crimson Operative (grpId 105021)             R          On          —      —     4  Prior*
+  03     57  Roxxon Brutes (grpId 105008)                 B          On          —      —     5  Prior*
+  04     50  Dependable Quinjet (grpId 105142)            Colorless  Any         —      —     3  Prior*
+  05     50  Hell's Kitchen (grpId 105164)                Colorless  Any         —      —     0  Prior*
+  06     38  Giant-Sized Flying Ant (grpId 104950)        U          Off!        —      —     4  Prior*
+  07     38  Go Nuts! (grpId 105063)                      G          Off!        —      —     1  Prior*
+  08     38  Brave Brawler (grpId 104899)                 W          Off!        —      —     2  Prior*
+  09     38  Atlantis Attacks (grpId 104939)              U          Off!        —      —     7  Prior*
+  10     38  Quake, Agent of S.H.I.E.L.D. (grpId 104925)  W          Off!        —      —     3  Prior*
+  11     38  Rewrite History (grpId 104965)               U          Off!        —      —     3  Prior*
+  12     38  Mister Hyde, Monster Within (grpId 105071)   G          Off!        —      —     3  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Project Deathlok Soldier receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Hell's Kitchen [Colorless] (grpId 105164)
+
+Pack 3 Pick 4
+Status: inferred pair BR, commitment 100% (locked), pool 31
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                          Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Red Room Recruit (grpId 105005)               B          On          —      —     2  Prior*
+  02     57  HYDRA Infiltration (grpId 104995)             B          On          —      —     4  Prior*
+  03     57  Robot Domination (grpId 105006)               B          On          —      —     4  Prior*
+  04     50  Vibranium Energy Daggers (grpId 105150)       Colorless  Any         —      —     1  Prior*
+  05     50  H.E.R.B.I.E. Scout Unit (grpId 105143)        Colorless  Any         —      —     4  Prior*
+  06     50  S.H.I.E.L.D. Helicarrier (grpId 105145)       Colorless  Any         —      —     4  Prior*
+  07     50  Subterranean Cavern (grpId 105169)            Colorless  Any         —      —     0  Prior*
+  08     38  Ant-Man's Army (grpId 105056)                 G          Off!        —      —     3  Prior*
+  09     38  Wakandan Drone Flock (grpId 104933)           W          Off!        —      —     4  Prior*
+  10     38  S.H.I.E.L.D. Deployment Drone (grpId 104967)  U          Off!        —      —     3  Prior*
+  11     38  Ka-Zar of the Savage Land (grpId 105069)      G          Off!        —      —     5  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Red Room Recruit receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Red Room Recruit [B] (grpId 105005)
+
+Pack 3 Pick 5
+Status: inferred pair BR, commitment 100% (locked), pool 32
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                            Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  K'un-Lun Warrior (grpId 105035)                 R          On          —      —     2  Prior*
+  02     57  Madame Hydra (grpId 105117)                     BR         On          —      —     4  Prior*
+  03     50  Stark Industries (grpId 105168)                 Colorless  Any         —      —     0  Prior*
+  04     38  Atlantis Attacks (grpId 104939)                 U          Off!        —      —     7  Prior*
+  05     38  Kree Commandos (grpId 104911)                   W          Off!        —      —     3  Prior*
+  06     38  We Say Thee Nay! (grpId 104977)                 U          Off!        —      —     2  Prior*
+  07     38  Wakandan Royal Guard (grpId 105090)             G          Off!        —      —     5  Prior*
+  08     38  Ant-Man's Army (grpId 105056)                   G          Off!        —      —     3  Prior*
+  09     38  Hulkling, Burgeoning Bruiser (grpId 105068)     G          Off!        —      —     3  Prior*
+  10     38  Mister Fantastic, Reed Richards (grpId 104960)  U          Off!        —      —     4  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: K'un-Lun Warrior receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Madame Hydra [BR] (grpId 105117)
+
+Pack 3 Pick 6
+Status: inferred pair BR, commitment 100% (locked), pool 33
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                           Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Vision of Love (grpId 105053)                  R          On          —      —     2  Prior*
+  02     57  Crimson Operative (grpId 105021)               R          On          —      —     4  Prior*
+  03     38  Ant-Man's Army (grpId 105056)                  G          Off!        —      —     3  Prior*
+  04     38  We Say Thee Nay! (grpId 104977)                U          Off!        —      —     2  Prior*
+  05     38  Tigra, Feline Fury (grpId 105086)              G          Off!        —      —     2  Prior*
+  06     38  Doc Samson, Super Psychiatrist (grpId 105059)  G          Off!        —      —     5  Prior*
+  07     38  Kang, Temporal Tyrant (grpId 105112)           UB         Off!        —      —     4  Prior*
+  08     38  Rewrite History (grpId 104965)                 U          Off!        —      —     3  Prior*
+  09      0  Forest (grpId 105182)                          Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Vision of Love receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Vision of Love [R] (grpId 105053)
+
+Pack 3 Pick 7
+Status: inferred pair BR, commitment 100% (locked), pool 34
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                   Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Machinesmith Automaton (grpId 105039)  R          On          —      —     3  Prior*
+  02     57  Decoy Ploy (grpId 104989)              B          On          —      —     2  Prior*
+  03     57  Death to Our Enemies (grpId 105022)    R          On          —      —     3  Prior*
+  04     50  A.I.M. Synthoids (grpId 105138)        Colorless  Any         —      —     2  Prior*
+  05     50  Pym Technologies (grpId 105167)        Colorless  Any         —      —     0  Prior*
+  06     38  Wakandan Royal Guard (grpId 105090)    G          Off!        —      —     5  Prior*
+  07     38  We Say Thee Nay! (grpId 104977)        U          Off!        —      —     2  Prior*
+  08     38  Kang, Temporal Tyrant (grpId 105112)   UB         Off!        —      —     4  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Machinesmith Automaton receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Decoy Ploy [B] (grpId 104989)
+
+Pack 3 Pick 8
+Status: inferred pair BR, commitment 100% (locked), pool 35
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                      Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  K'un-Lun Warrior (grpId 105035)           R          On          —      —     2  Prior*
+  02     57  Decoy Ploy (grpId 104989)                 B          On          —      —     2  Prior*
+  03     57  Kingpin's Enforcers (grpId 104997)        B          On          —      —     3  Prior*
+  04     57  Crimson Operative (grpId 105021)          R          On          —      —     4  Prior*
+  05     57  Moonstone, Harsh Mistress (grpId 105002)  B          On          —      —     4  Prior*
+  06     50  A.I.M. Labs (grpId 105153)                Colorless  Any         —      —     0  Prior*
+  07     38  Wakandan Royal Guard (grpId 105090)       G          Off!        —      —     5  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: K'un-Lun Warrior receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Moonstone, Harsh Mistress [B] (grpId 105002)
+
+Pack 3 Pick 9
+Status: inferred pair BR, commitment 100% (locked), pool 36
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                       Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Hire a Crew (grpId 105029)                 R          On          —      —     3  Prior*
+  02     57  Human Torch, Johnny Storm (grpId 105031)   R          On          —      —     3  Prior*
+  03     38  Powerful Broker (grpId 105074)             G          Off!        —      —     3  Prior*
+  04     38  Aerial Doombot (grpId 104936)              U          Off!        —      —     1  Prior*
+  05     38  Tigra, Feline Fury (grpId 105086)          G          Off!        —      —     2  Prior*
+  06     38  Invisible Woman, Sue Storm (grpId 104908)  W          Off!        —      —     5  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Hire a Crew receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Human Torch, Johnny Storm [R] (grpId 105031)
+
+Pack 3 Pick 10
+Status: inferred pair BR, commitment 100% (locked), pool 37
+Data source: neutral prior + basic land policy
+Offered cards:
+  #   Score  Card                                 Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  HYDRA Infiltration (grpId 104995)    B          On          —      —     4  Prior*
+  02     57  Death to Our Enemies (grpId 105022)  R          On          —      —     3  Prior*
+  03     38  Atlantean Cavalry (grpId 104938)     U          Off!        —      —     3  Prior*
+  04     38  Powerful Broker (grpId 105074)       G          Off!        —      —     3  Prior*
+  05      0  Mountain (grpId 105179)              Colorless  Any         —      —     0  Basic
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Infiltration receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: HYDRA Infiltration [B] (grpId 104995)
+
+Pack 3 Pick 11
+Status: inferred pair BR, commitment 100% (locked), pool 38
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                     Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  Project Deathlok Soldier (grpId 105004)  B          On          —      —     1  Prior*
+  02     50  Dependable Quinjet (grpId 105142)        Colorless  Any         —      —     3  Prior*
+  03     38  Giant-Sized Flying Ant (grpId 104950)    U          Off!        —      —     4  Prior*
+  04     38  Rewrite History (grpId 104965)           U          Off!        —      —     3  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Project Deathlok Soldier receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: Project Deathlok Soldier [B] (grpId 105004)
+
+Pack 3 Pick 12
+Status: inferred pair BR, commitment 100% (locked), pool 39
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                     Colors     Fit    GIH WR   ALSA    MV  Source
+  01     57  HYDRA Infiltration (grpId 104995)        B          On          —      —     4  Prior*
+  02     50  Vibranium Energy Daggers (grpId 105150)  Colorless  Any         —      —     1  Prior*
+  03     50  S.H.I.E.L.D. Helicarrier (grpId 105145)  Colorless  Any         —      —     4  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: HYDRA Infiltration receives 57 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors fit your current deck (+7.50 DO points).
+Chosen card: HYDRA Infiltration [B] (grpId 104995)
+
+Pack 3 Pick 13
+Status: inferred pair BR, commitment 100% (locked), pool 40
+Data source: neutral prior
+Offered cards:
+  #   Score  Card                                            Colors     Fit    GIH WR   ALSA    MV  Source
+  01     38  Kree Commandos (grpId 104911)                   W          Off!        —      —     3  Prior*
+  02     38  Mister Fantastic, Reed Richards (grpId 104960)  U          Off!        —      —     4  Prior*
+  * Prior uses neutral prior adjusted by ALSA when available.
+Recommendation: Kree Commandos receives 38 DO points. Base rating: 50.00 DO points. Rating evidence: neutral-prior estimate with no GIH data. Its colors are a weaker fit for your current deck (-12.50 DO points). Splash fit is being evaluated.
+Chosen card: Kree Commandos [W] (grpId 104911)
+
+Pack 3 Pick 14
+Status: inferred pair BR, commitment 100% (locked), pool 41
+Data source: basic land policy
+Offered cards:
+  #   Score  Card                   Colors     Fit    GIH WR   ALSA    MV  Source
+  01      0  Forest (grpId 105182)  Colorless  Any         —      —     0  Basic
+Recommendation: Forest is freely available during deck building, so it receives 0 DO points and ranks after draftable cards.
+Chosen card: Forest [Colorless] (grpId 105182)
+
+Draft complete: 42 cards (explicit completion)
+
+Suggested deck
+Set: MSH — Marvel Super Heroes
+Pool: replay 00000000-0000-4000-8000-000000000004
+Pool size: 42 cards
+Account: FIXTURECLIENTID1234567890
+Draft: 00000000-0000-4000-8000-000000000004
+Color pair: WB (automatic; 17Lands WR neutral 50.0%)
+
+Deck summary:
+Deck size: 40 cards (22 spells + 18 lands)
+Average mana value: 3.09
+Mana curve: 0: 0 | 1: 1 | 2: 5 | 3: 9 | 4: 6 | 5: 0 | 6+: 1
+Creatures: 15; Non-creatures: 7; Lands: 18
+Land count: 18 (deck-size fill after spell-count relaxation)
+Mana pips: W 1, B 21
+Sources: W 7, B 11 (floor 7)
+
+Selected spells:
+Creatures:
+- MV 1 | score 50 | Project Deathlok Soldier (B)
+- MV 2 | score 50 | Red Room Recruit (B)
+- MV 2 | score 50 | Red Room Recruit (B)
+- MV 3 | score 50 | Baron Strucker, HYDRA Overlord (B)
+- MV 3 | score 50 | HYDRA Troopers (B)
+- MV 3 | score 50 | Kingpin's Enforcers (B)
+- MV 3 | score 50 | Klaw, Sonic Subjugator (B)
+- MV 3 | score 50 | Kree Commandos (W)
+- MV 3 | score 50 | Ninja of the Hand (B)
+- MV 3 | score 50 | Ninja of the Hand (B)
+- MV 3 | score 50 | Ninja of the Hand (B)
+- MV 4 | score 50 | Crossbones, Malicious Mercenary (B)
+- MV 4 | score 50 | Moonstone, Harsh Mistress (B)
+- MV 4 | score 50 | Unliving Legionnaire (B)
+- MV 6 | score 50 | The Masters of Evil (B)
+Non-creatures:
+- MV 2 | score 50 | Decoy Ploy (B)
+- MV 2 | score 50 | Decoy Ploy (B)
+- MV 2 | score 50 | Widow's Bite (B)
+- MV 3 | score 50 | Too Evil to Stay Dead (B)
+- MV 4 | score 50 | HYDRA Infiltration (B)
+- MV 4 | score 50 | HYDRA Infiltration (B)
+- MV 4 | score 50 | Robot Domination (B)
+Lands:
+Nonbasic lands:
+- none
+Basics:
+- 7 Plains
+- 11 Swamp
+
+Structure checks:
+Eligible spells for WB: 23
+Selected spells: 22/23
+Creature count: 15 (target 14-17)
+Two-drops MV 2: 5 (minimum 5)
+Expensive spells MV >= 6: 1 (soft cap 3)
+Splash: enabled; no eligible A- or better single-pip third-color card in the pool
+Relaxation order: expensive-spell cap -> minimum two-drop quota -> creature ceiling -> creature floor -> eligible-card shortage
+Applied relaxations: eligible-card shortage
+Bench:
+- MV 3 | score 50 | War Machine, Legacy of Iron (WR) (cut: splash cap)
+
+Color-pair reasoning:
+Diagnostic: compares playable-card quality with 17Lands color-pair context; it is not another decklist.
+Chosen pair: WB (automatic, strength 50.00)
+Runner-up: BR (strength 50.00)
+Strength gap: 0.00
+Pair strengths:
+- WB: strength 50.00; top 23 playable quality sum 1150.00; 17Lands WR neutral 50.0%; playables 23
+- BR: strength 50.00; top 23 playable quality sum 1150.00; 17Lands WR neutral 50.0%; playables 37
+- BG: strength 50.00; top 23 playable quality sum 1150.00; 17Lands WR neutral 50.0%; playables 23
+- UB: strength 46.30; top 23 playable quality sum 1050.00; 17Lands WR neutral 50.0%; playables 21
+- RG: strength 35.22; top 23 playable quality sum 750.00; 17Lands WR neutral 50.0%; playables 15
+- WR: strength 33.37; top 23 playable quality sum 700.00; 17Lands WR neutral 50.0%; playables 14
+- UR: strength 31.52; top 23 playable quality sum 650.00; 17Lands WR neutral 50.0%; playables 13
+- WG: strength 14.89; top 23 playable quality sum 200.00; 17Lands WR neutral 50.0%; playables 4
+- WU: strength 11.20; top 23 playable quality sum 100.00; 17Lands WR neutral 50.0%; playables 2
+- UG: strength 11.20; top 23 playable quality sum 100.00; 17Lands WR neutral 50.0%; playables 2
+Card data from 17Lands (17lands.com)

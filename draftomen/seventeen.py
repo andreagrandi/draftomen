@@ -27,7 +27,6 @@ from draftomen.carddb import (
     CardInfo,
     CardMetadataSeed,
     augment_card_database_with_mtgjson_set,
-    save_card_database,
 )
 from draftomen.config import (
     COLOR_PAIRS,
@@ -982,15 +981,11 @@ def _augment_loaded_ratings(
     database: CardDatabase,
     set_code: str,
     ratings_data: SeventeenLandsData,
-    app_dir: PathInput | None,
-    persist_database: bool,
 ) -> SeventeenLandsData:
     augment_card_database_from_ratings(
         database=database,
         set_code=set_code,
         ratings_data=ratings_data,
-        app_dir=app_dir,
-        persist_database=persist_database,
     )
     return ratings_data
 
@@ -999,8 +994,6 @@ def metadata_augmenting_ratings_loader(
     *,
     database: CardDatabase,
     load_ratings: Callable[[str], SeventeenLandsData],
-    app_dir: PathInput | None = None,
-    persist_database: bool = True,
 ) -> Callable[[str], SeventeenLandsData]:
     """Wrap ratings loading with the shared current-set metadata recovery.
     Terminal and desktop frontends must use this same database lifecycle.
@@ -1011,8 +1004,6 @@ def metadata_augmenting_ratings_loader(
             database=database,
             set_code=set_code,
             ratings_data=load_ratings(set_code),
-            app_dir=app_dir,
-            persist_database=persist_database,
         )
 
     return load_and_augment
@@ -1025,8 +1016,6 @@ def metadata_augmenting_ratings_progress_loader(
         [str, DownloadProgressCallback, bool],
         SeventeenLandsData,
     ],
-    app_dir: PathInput | None = None,
-    persist_database: bool = True,
 ) -> Callable[[str, DownloadProgressCallback, bool], SeventeenLandsData]:
     """Wrap progress-aware ratings loading with current-set metadata recovery.
     The returned loader preserves the frontend-neutral progress contract.
@@ -1046,8 +1035,6 @@ def metadata_augmenting_ratings_progress_loader(
                 progress_callback,
                 refresh=refresh,
             ),
-            app_dir=app_dir,
-            persist_database=persist_database,
         )
 
     return load_and_augment
@@ -1058,11 +1045,9 @@ def augment_card_database_from_ratings(
     database: CardDatabase,
     set_code: str,
     ratings_data: SeventeenLandsData,
-    app_dir: PathInput | None = None,
-    persist_database: bool = True,
 ) -> None:
     """Recover current Arena grpIds from ratings and MTGJSON metadata.
-    Successful recovery updates the shared in-memory database and cache.
+    Successful recovery updates the shared in-memory database.
     """
 
     seeds = _metadata_seeds_from_ratings(ratings=ratings_data.ratings.values())
@@ -1082,13 +1067,6 @@ def augment_card_database_from_ratings(
 
     database.cards.clear()
     database.cards.update(augmented.cards)
-    if not persist_database:
-        return
-
-    try:
-        save_card_database(database, app_dir=app_dir)
-    except OSError:
-        return
 
 
 def _metadata_seeds_from_ratings(

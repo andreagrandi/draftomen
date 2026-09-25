@@ -1258,8 +1258,8 @@ def _metadata_missing_message(
         f"({unresolved_percent:.0f}%). "
         f"{detail} "
         "The build cannot be trusted, so no deck was produced. "
-        "Run `draftomen-tui refresh-data` or pass `--bulk-file` with current card data, "
-        "then build again. "
+        "Pass `--bulk-file` with current card data, or check that the set's "
+        "hosted card data covers these cards, then build again. "
         f"Unresolved grpIds: {_format_grp_id_preview(grp_ids=unresolved_grp_ids)}."
     )
 

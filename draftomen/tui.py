@@ -2369,7 +2369,7 @@ class DraftomenTuiApp(App[None]):
             image_panel.update(
                 "Image preview unavailable\n"
                 f"{_format_card_name(card=card)}\n"
-                "Image URL is not in the local Scryfall cache. Run refresh-data."
+                "This card's data has no image URL."
             )
             return
         image_path = self._card_image_paths_by_uri.get(image_uri)

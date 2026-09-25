@@ -28,10 +28,6 @@ from draftomen.carddb import (
     CardDatabaseError,
     HTTP_TIMEOUT_SECONDS,
     build_card_database_from_bulk_file,
-    card_database_cache_path,
-    load_card_database,
-    load_or_refresh_card_database,
-    refresh_card_database,
 )
 from draftomen.card_data_client import CardDataClient, CardDataClientError
 from draftomen.card_data_export import (
@@ -585,21 +581,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     refresh_parser = subparsers.add_parser(
         name="refresh-data",
-        help="Refresh cached Scryfall card metadata.",
+        help="No longer needed: card data downloads per set.",
         description=(
-            "Refresh the local Scryfall grpId card metadata cache, overlaying "
-            "MTG Arena local data when available. The command fails if Scryfall "
-            "cannot produce a cacheable result."
+            "Card metadata now downloads per set when a command needs it, so "
+            "this command only explains that and changes nothing."
         ),
     )
     refresh_parser.add_argument(
         "--bulk-file",
         type=Path,
         default=None,
-        help=(
-            "Build the card metadata cache from a local Scryfall JSONL(.gz) "
-            "file instead of downloading."
-        ),
+        help=argparse.SUPPRESS,
     )
     refresh_parser.add_argument(
         "--app-dir",
@@ -1481,15 +1473,17 @@ def handle_watch(args: argparse.Namespace) -> int:
 
 
 def handle_replay(args: argparse.Namespace) -> int:
-    """Handle deterministic offline replay.
-    Card metadata is loaded only from cache or an explicitly supplied bulk file.
+    """Handle deterministic replay of a captured log.
+    Card metadata comes from the bulk file or the draft set's hosted card data.
     """
 
     try:
-        database = _load_replay_card_database(args=args)
         output = replay_log_file(
             logfile=args.logfile,
-            card_database=database,
+            card_database_loader=lambda set_code: _load_set_card_database(
+                args=args,
+                set_code=set_code,
+            ),
             ratings_loader=lambda set_code: load_cached_17lands_data(
                 set_code=set_code,
                 app_dir=args.app_dir,
@@ -1502,6 +1496,7 @@ def handle_replay(args: argparse.Namespace) -> int:
             splash_enabled=args.splash_enabled,
         )
     except (
+        CardDataClientError,
         CardDatabaseError,
         DeckBuilderError,
         DraftLogParseError,
@@ -1517,15 +1512,15 @@ def handle_replay(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_replay_card_database(*, args: argparse.Namespace) -> CardDatabase:
-    """Load replay card metadata without network access.
-    The vendored bulk path is useful for fixture and CI regression checks.
+def _load_set_card_database(*, args: argparse.Namespace, set_code: str) -> CardDatabase:
+    """Load one set's card metadata from --bulk-file or its hosted card data.
+    Hosted card data is cached per set and checked against the sets manifest.
     """
 
     if args.bulk_file is not None:
         return build_card_database_from_bulk_file(path=args.bulk_file)
 
-    return load_card_database(app_dir=args.app_dir)
+    return CardDataClient(app_dir=args.app_dir).load(set_code, allow_network=True)
 
 
 def handle_build(args: argparse.Namespace) -> int:
@@ -1534,7 +1529,6 @@ def handle_build(args: argparse.Namespace) -> int:
     """
 
     try:
-        database = _load_build_card_database(args=args)
         pool = (
             load_pool_file(path=args.pool, set_code=args.set_code)
             if args.pool is not None
@@ -1544,6 +1538,7 @@ def handle_build(args: argparse.Namespace) -> int:
                 draft_id=args.draft_id,
             )
         )
+        database = _load_set_card_database(args=args, set_code=pool.set_code)
         set_profile = load_scoring_profile(
             set_code=pool.set_code,
             event_format=QUICK_DRAFT_FORMAT,
@@ -1557,8 +1552,6 @@ def handle_build(args: argparse.Namespace) -> int:
             database=database,
             set_code=pool.set_code,
             ratings_data=ratings_data,
-            app_dir=args.app_dir,
-            persist_database=args.bulk_file is None,
         )
         selection, build_sheet = build_deck_from_pool(
             pool=pool,
@@ -1569,6 +1562,7 @@ def handle_build(args: argparse.Namespace) -> int:
             set_profile=set_profile,
         )
     except (
+        CardDataClientError,
         CardDatabaseError,
         DeckBuilderError,
         DraftPoolError,
@@ -1660,17 +1654,6 @@ def _format_test_draft_trace(*, result: TestDraftRunResult) -> str:
     return "".join(f"{line}\n" for line in lines)
 
 
-def _load_build_card_database(*, args: argparse.Namespace) -> CardDatabase:
-    """Load build card metadata, refreshing automatically when missing.
-    Build is user-facing, so it should not require a separate bootstrap command.
-    """
-
-    if args.bulk_file is not None:
-        return build_card_database_from_bulk_file(path=args.bulk_file)
-
-    return load_or_refresh_card_database(app_dir=args.app_dir)
-
-
 def handle_backtest(args: argparse.Namespace) -> int:
     """Handle persisted draft recommendation backtests.
     Missing 17Lands cache falls back to neutral-prior pick scoring.
@@ -1687,7 +1670,7 @@ def handle_backtest(args: argparse.Namespace) -> int:
             event_format=QUICK_DRAFT_FORMAT,
             app_dir=args.app_dir,
         )
-        database = _load_backtest_card_database(args=args)
+        database = _load_set_card_database(args=args, set_code=state.set_code)
         ratings_data = _load_optional_backtest_ratings_data(
             args=args,
             database=database,
@@ -1703,6 +1686,7 @@ def handle_backtest(args: argparse.Namespace) -> int:
         )
     except (
         BacktestError,
+        CardDataClientError,
         CardDatabaseError,
         DraftPoolError,
         SetProfileError,
@@ -1712,17 +1696,6 @@ def handle_backtest(args: argparse.Namespace) -> int:
 
     print(format_backtest_report(report), end="")
     return 0
-
-
-def _load_backtest_card_database(*, args: argparse.Namespace) -> CardDatabase:
-    """Load card metadata for backtest reports.
-    The command is user-facing, so cached metadata may refresh automatically.
-    """
-
-    if args.bulk_file is not None:
-        return build_card_database_from_bulk_file(path=args.bulk_file)
-
-    return load_or_refresh_card_database(app_dir=args.app_dir)
 
 
 def _load_optional_backtest_ratings_data(
@@ -1747,8 +1720,6 @@ def _load_optional_backtest_ratings_data(
         database=database,
         set_code=set_code,
         ratings_data=ratings_data,
-        app_dir=args.app_dir,
-        persist_database=getattr(args, "bulk_file", None) is None,
     )
     return ratings_data
 
@@ -1802,16 +1773,13 @@ def _print_benchmark_progress(message: str) -> None:
 
 
 def _load_benchmark_card_database(*, args: argparse.Namespace) -> CardDatabase:
-    """Load optional card metadata without starting large downloads.
+    """Load optional card metadata for the benchmarked set.
     17Lands ratings provide the names/colors needed by the benchmark.
     """
 
-    if args.bulk_file is not None:
-        return build_card_database_from_bulk_file(path=args.bulk_file)
-
     try:
-        return load_card_database(app_dir=args.app_dir)
-    except CardDatabaseError:
+        return _load_set_card_database(args=args, set_code=args.set_code)
+    except (CardDataClientError, CardDatabaseError):
         return CardDatabase(cards={})
 
 
@@ -1901,20 +1869,15 @@ def handle_corpus_build(args: argparse.Namespace) -> int:
 
 
 def handle_refresh_data(args: argparse.Namespace) -> int:
-    """Build the local Scryfall-backed grpId metadata cache."""
+    """Explain that card metadata now downloads per set.
+    The command stays so existing scripts keep working.
+    """
 
-    try:
-        database = refresh_card_database(
-            app_dir=args.app_dir,
-            bulk_file=args.bulk_file,
-            allow_arena_fallback=False,
-        )
-    except CardDatabaseError as error:
-        print(f"refresh-data failed: {error}", file=sys.stderr)
-        return 1
-
-    cache_path = card_database_cache_path(app_dir=args.app_dir)
-    print(f"refreshed {len(database)} card records at {cache_path}.")
+    del args
+    print(
+        "refresh-data is no longer needed: build, replay and backtest download "
+        "each set's card data when they need it."
+    )
     return 0
 
 
@@ -1924,7 +1887,7 @@ def handle_refresh_structure_targets(args: argparse.Namespace) -> int:
     """
 
     try:
-        database = _load_build_card_database(args=args)
+        database = _load_set_card_database(args=args, set_code=args.set_code)
         targets = refresh_17lands_structure_targets(
             set_code=args.set_code,
             event_format=args.format,
@@ -1933,7 +1896,7 @@ def handle_refresh_structure_targets(args: argparse.Namespace) -> int:
             draft_data_file=args.draft_data_file,
             draft_data_url=args.draft_data_url,
         )
-    except (CardDatabaseError, SeventeenLandsError) as error:
+    except (CardDataClientError, CardDatabaseError, SeventeenLandsError) as error:
         print(f"refresh-structure-targets failed: {error}", file=sys.stderr)
         return 1
 

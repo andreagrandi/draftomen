@@ -37,6 +37,7 @@ from draftomen.seventeen import SEVENTEEN_LANDS_ATTRIBUTION, SeventeenLandsData
 PathInput: TypeAlias = str | PathLike[str]
 RatingsLoader: TypeAlias = Callable[[str], SeventeenLandsData]
 ProfileLoader: TypeAlias = Callable[[str], SetProfile | None]
+CardDatabaseLoader: TypeAlias = Callable[[str], CardDatabase]
 
 
 class ReplayError(RuntimeError):
@@ -61,7 +62,8 @@ class _ReplayHeader:
 def replay_log_file(
     *,
     logfile: PathInput,
-    card_database: CardDatabase,
+    card_database: CardDatabase | None = None,
+    card_database_loader: CardDatabaseLoader | None = None,
     ratings_data: SeventeenLandsData | None = None,
     ratings_loader: RatingsLoader | None = None,
     profile_loader: ProfileLoader | None = None,
@@ -69,7 +71,7 @@ def replay_log_file(
     set_profile: SetProfile | None = None,
 ) -> str:
     """Replay one captured Player.log file into deterministic text.
-    Ratings and profiles are caller-supplied or loaded once from parsed set code.
+    Card data, ratings and profiles are caller-supplied or loaded once from the parsed set code.
     """
 
     path = Path(logfile)
@@ -82,6 +84,7 @@ def replay_log_file(
     return render_replay_events(
         events=events,
         card_database=card_database,
+        card_database_loader=card_database_loader,
         ratings_data=ratings_data,
         ratings_loader=ratings_loader,
         profile_loader=profile_loader,
@@ -93,7 +96,8 @@ def replay_log_file(
 def render_replay_events(
     *,
     events: Iterable[DraftEvent],
-    card_database: CardDatabase,
+    card_database: CardDatabase | None = None,
+    card_database_loader: CardDatabaseLoader | None = None,
     ratings_data: SeventeenLandsData | None = None,
     ratings_loader: RatingsLoader | None = None,
     profile_loader: ProfileLoader | None = None,
@@ -111,6 +115,10 @@ def render_replay_events(
     _validate_events_with_pool(events=event_tuple)
 
     header = _header_from_events(events=event_tuple)
+    if card_database is None:
+        if card_database_loader is None or header.set_code is None:
+            raise ReplayError("Replay needs card data for the draft's set.")
+        card_database = card_database_loader(header.set_code)
     loaded_ratings = _ratings_data_for_replay(
         header=header,
         ratings_data=ratings_data,

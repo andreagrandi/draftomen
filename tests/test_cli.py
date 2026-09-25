@@ -126,7 +126,7 @@ def test_tui_parser_uses_tui_command_name(
         ("test-draft", "headless"),
         ("backtest", "Dry-run"),
         ("benchmark-picks", "Offline benchmark"),
-        ("refresh-data", "Scryfall"),
+        ("refresh-data", "downloads per set"),
         ("refresh-structure-targets", "17Lands"),
         ("refresh-profile-data", "Refresh"),
         ("generate-profile", "Generate"),
@@ -1754,6 +1754,51 @@ def test_build_pool_file_selects_pair_offline(
     assert "Selected spells: 4/23" in captured.out
     assert "Card data from 17Lands" in captured.out
     assert captured.err == ""
+
+
+def test_build_uses_the_pool_sets_card_data_and_never_touches_carddb_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from draftomen.set_card_data import SetCardData
+
+    bulk_database = build_card_database_from_bulk_file(
+        path=_write_build_bulk_file(directory=tmp_path),
+    )
+    app_dir = tmp_path / "app"
+    card_data_path = app_dir / "card-data" / "tst.json.gz"
+    card_data_path.parent.mkdir(parents=True)
+    card_data_path.write_bytes(
+        SetCardData.from_card_database(
+            CardDatabase(
+                cards={
+                    grp_id: replace(card, set_code="TST", arena_id=grp_id)
+                    for grp_id, card in bulk_database.cards.items()
+                },
+                image_uris_by_name=bulk_database.image_uris_by_name,
+            ),
+            set_code="tst",
+            set_name="Test Set",
+        ).to_gzip_bytes()
+    )
+    pool_file = tmp_path / "pool.json"
+    pool_file.write_text(
+        json.dumps({"set_code": "TST", "pool_grp_ids": [1, 2, 3, 4, 5]}),
+        encoding="utf-8",
+    )
+    files_before = sorted(app_dir.rglob("*"))
+
+    exit_code = main(
+        argv=["build", "--pool", str(pool_file), "--app-dir", str(app_dir)]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert "Color pair: WU (automatic" in captured.out
+    assert sorted(app_dir.rglob("*")) == files_before
+    assert list(tmp_path.rglob("carddb.json")) == []
 
 
 def test_build_cli_loads_local_profile_and_passes_it_to_builder(

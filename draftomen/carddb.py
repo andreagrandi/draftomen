@@ -22,11 +22,9 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 from draftomen import __version__
-from draftomen.paths import app_data_dir
 
 PathInput: TypeAlias = str | PathLike[str]
 
-CARD_DATABASE_CACHE_FILENAME = "carddb.json"
 SCRYFALL_BULK_DATA_URL = "https://api.scryfall.com/bulk-data"
 SCRYFALL_DEFAULT_CARDS_TYPE = "default_cards"
 MTGJSON_SET_URL_TEMPLATE = "https://mtgjson.com/api/v5/{set_code}.json"
@@ -144,8 +142,8 @@ class CardDatabaseError(RuntimeError):
 
 
 class CardDatabaseCacheMissingError(CardDatabaseError):
-    """Raised when the card database cache has not been built yet.
-    Run refresh-data once before relying on fully offline lookups.
+    """Raised when a named card database file does not exist.
+    The message names the missing path.
     """
 
 
@@ -440,29 +438,14 @@ def _image_uris_by_name_from_json(*, data: Mapping[str, Any]) -> dict[str, str]:
     return image_uris
 
 
-def card_database_cache_path(*, app_dir: PathInput | None = None) -> Path:
-    """Return the default on-disk card database cache path.
-    The parent directory is not created until a refresh writes the cache.
+def load_card_database(*, cache_path: PathInput) -> CardDatabase:
+    """Load a card database JSON file without making network calls.
+    Callers name the file, such as a profile generation input.
     """
 
-    root = Path(app_data_dir() if app_dir is None else app_dir)
-    return root / CARD_DATABASE_CACHE_FILENAME
-
-
-def load_card_database(
-    *,
-    app_dir: PathInput | None = None,
-    cache_path: PathInput | None = None,
-) -> CardDatabase:
-    """Load the card database cache without making network calls.
-    This is the fully offline path used after refresh-data has run once.
-    """
-
-    path = _cache_path(app_dir=app_dir, cache_path=cache_path)
+    path = Path(cache_path)
     if not path.exists():
-        raise CardDatabaseCacheMissingError(
-            f"Card database cache does not exist at {path}. Run refresh-data first."
-        )
+        raise CardDatabaseCacheMissingError(f"Card database file does not exist at {path}.")
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -473,125 +456,6 @@ def load_card_database(
         raise CardDatabaseError(f"Malformed card database cache {path}: expected object.")
 
     return CardDatabase.from_json(data=data)
-
-
-def save_card_database(
-    database: CardDatabase,
-    *,
-    app_dir: PathInput | None = None,
-    cache_path: PathInput | None = None,
-) -> Path:
-    """Write a card database cache atomically.
-    The destination parent directory is created if needed.
-    """
-
-    path = _cache_path(app_dir=app_dir, cache_path=cache_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (
-        json.dumps(
-            database.to_json(),
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("utf-8")
-    temporary_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            delete=False,
-            dir=path.parent,
-            prefix=f".{path.name}.",
-        ) as temporary_file:
-            temporary_name = temporary_file.name
-            temporary_file.write(payload)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-        os.replace(temporary_name, path)
-        temporary_name = None
-    finally:
-        if temporary_name is not None:
-            Path(temporary_name).unlink(missing_ok=True)
-
-    return path
-
-
-def refresh_card_database(
-    *,
-    app_dir: PathInput | None = None,
-    cache_path: PathInput | None = None,
-    bulk_file: PathInput | None = None,
-    arena_data_dir: PathInput | None = None,
-    allow_arena_fallback: bool = True,
-    timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
-) -> CardDatabase:
-    """Build a grpId map from Scryfall and Arena local data.
-    Successful Scryfall refreshes atomically replace the canonical cache. Runtime
-    callers may use an Arena-only fallback without overwriting it; cache-building
-    callers can reject that non-cacheable result.
-    Passing bulk_file keeps tests and local fixtures completely offline.
-    """
-
-    cacheable = True
-    if bulk_file is None:
-        database, cacheable = _download_or_arena_card_database(
-            arena_data_dir=arena_data_dir,
-            timeout_seconds=timeout_seconds,
-        )
-    else:
-        database = build_card_database_from_bulk_file(path=bulk_file)
-        if arena_data_dir is not None:
-            database = augment_card_database_with_arena_data(
-                database,
-                arena_data_dir=arena_data_dir,
-            )
-
-    if not cacheable and not allow_arena_fallback:
-        raise CardDatabaseError(
-            "Scryfall refresh did not produce a cacheable card metadata result."
-        )
-    if cacheable:
-        database = replace(database, generated_at=datetime.now(tz=UTC))
-        save_card_database(database, app_dir=app_dir, cache_path=cache_path)
-    return database
-
-
-def load_or_refresh_card_database(
-    *,
-    app_dir: PathInput | None = None,
-    cache_path: PathInput | None = None,
-    arena_data_dir: PathInput | None = None,
-    refresh: bool = False,
-    timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
-) -> CardDatabase:
-    """Load cached card data, refreshing only when explicitly requested.
-    A missing cache triggers a runtime refresh, which may use uncached local
-    Arena metadata when Scryfall is unavailable.
-    """
-
-    if refresh:
-        return refresh_card_database(
-            app_dir=app_dir,
-            cache_path=cache_path,
-            arena_data_dir=arena_data_dir,
-            timeout_seconds=timeout_seconds,
-        )
-
-    try:
-        database = load_card_database(app_dir=app_dir, cache_path=cache_path)
-    except (CardDatabaseCacheMissingError, CardDatabaseCacheStaleError):
-        return refresh_card_database(
-            app_dir=app_dir,
-            cache_path=cache_path,
-            arena_data_dir=arena_data_dir,
-            timeout_seconds=timeout_seconds,
-        )
-
-    return augment_card_database_with_arena_data(
-        database,
-        arena_data_dir=arena_data_dir,
-    )
 
 
 def download_scryfall_card_database(
@@ -1308,17 +1172,6 @@ def _normalized_card_name(*, name: str) -> str:
     return " ".join(name.casefold().replace("’", "'").split())
 
 
-def _cache_path(
-    *,
-    app_dir: PathInput | None,
-    cache_path: PathInput | None,
-) -> Path:
-    if cache_path is not None:
-        return Path(cache_path)
-
-    return card_database_cache_path(app_dir=app_dir)
-
-
 def _source_oracle_id(*, card: Mapping[str, Any]) -> str | None:
     """Return an oracle identifier from a supported source card object."""
 
@@ -1708,33 +1561,6 @@ def _card_info_from_arena(
         source_provenance=("arena",),
         power=power,
         toughness=toughness,
-    )
-
-
-def _download_or_arena_card_database(
-    *,
-    arena_data_dir: PathInput | None,
-    timeout_seconds: int,
-) -> tuple[CardDatabase, bool]:
-    """Return the current-run database and whether it is safe to cache canonically."""
-
-    try:
-        database = download_scryfall_card_database(timeout_seconds=timeout_seconds)
-    except CardDatabaseError:
-        arena_database = _load_arena_card_database_if_available(
-            arena_data_dir=arena_data_dir,
-        )
-        if arena_database is None:
-            raise
-
-        return arena_database, False
-
-    return (
-        augment_card_database_with_arena_data(
-            database,
-            arena_data_dir=arena_data_dir,
-        ),
-        True,
     )
 
 

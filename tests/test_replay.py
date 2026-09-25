@@ -12,9 +12,8 @@ from draftomen.carddb import (
     CardDatabase,
     CardInfo,
     build_card_database_from_bulk_file,
-    card_database_cache_path,
-    refresh_card_database,
 )
+from draftomen.card_data_client import CardDataClientError
 from draftomen.cli import main
 from draftomen.events import (
     EXPECTED_PICKS_PER_PACK,
@@ -62,6 +61,32 @@ SCRYFALL_BULK_SAMPLE_PATH = (
 GOLDEN_REPLAY_PATH = (
     Path(__file__).parent / "golden" / "quick-draft-msh-player.replay.txt"
 )
+# A copy of the hosted MSH card data, so the per-set replay path runs offline.
+HOSTED_MSH_CARD_DATA_PATH = Path(__file__).parent / "fixtures" / "card-data-msh.json.gz"
+HOSTED_GOLDEN_REPLAY_PATH = (
+    Path(__file__).parent / "golden" / "quick-draft-msh-player.hosted-card-data.replay.txt"
+)
+
+
+class _BulkFixtureCardDataClient:
+    """Serve the bulk fixture as a set's hosted card data and record each load."""
+
+    loads: list[tuple[Path, str, bool]] = []
+
+    def __init__(self, *, app_dir: Path) -> None:
+        self.app_dir = app_dir
+
+    def load(self, set_code: str, *, allow_network: bool) -> CardDatabase:
+        self.loads.append((Path(self.app_dir), set_code, allow_network))
+        return build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+
+
+@pytest.fixture
+def bulk_fixture_card_data(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, str, bool]]:
+    loads: list[tuple[Path, str, bool]] = []
+    monkeypatch.setattr(_BulkFixtureCardDataClient, "loads", loads)
+    monkeypatch.setattr(cli_module, "CardDataClient", _BulkFixtureCardDataClient)
+    return loads
 
 HOB_PROFILE_PATH = (
     Path(__file__).parent / "fixtures" / "hob-relationship-scoring-profile.json"
@@ -137,12 +162,11 @@ def test_replay_warns_when_card_metadata_is_incomplete(tmp_path: Path) -> None:
     assert "Warning: 14 unresolved card metadata" in output
 
 
-def test_replay_uses_cached_card_database_without_refreshing(
+def test_replay_loads_the_draft_sets_card_data_without_carddb_json(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    bulk_fixture_card_data: list[tuple[Path, str, bool]],
 ) -> None:
-    refresh_card_database(app_dir=tmp_path, bulk_file=SCRYFALL_BULK_SAMPLE_PATH)
-
     exit_code = main(
         argv=[
             "replay",
@@ -157,20 +181,45 @@ def test_replay_uses_cached_card_database_without_refreshing(
     assert exit_code == 0
     assert captured.out == GOLDEN_REPLAY_PATH.read_text(encoding="utf-8")
     assert captured.err == ""
+    assert bulk_fixture_card_data == [(tmp_path, "MSH", True)]
+    assert list(tmp_path.rglob("carddb.json")) == []
 
 
-def test_replay_with_schema_five_incomplete_scryfall_card_stays_offline(
+def test_replay_with_cached_hosted_msh_card_data_matches_its_golden(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    card_data_path = tmp_path / "card-data" / "msh.json.gz"
+    card_data_path.parent.mkdir(parents=True)
+    card_data_path.write_bytes(HOSTED_MSH_CARD_DATA_PATH.read_bytes())
+
+    exit_code = main(argv=["replay", str(FIXTURE_LOG_PATH), "--app-dir", str(tmp_path)])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert captured.out == HOSTED_GOLDEN_REPLAY_PATH.read_text(encoding="utf-8")
+    assert list(tmp_path.rglob("carddb.json")) == []
+
+
+def test_replay_with_incomplete_scryfall_card_does_not_augment_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    bulk_fixture_card_data: list[tuple[Path, str, bool]],
 ) -> None:
-    refresh_card_database(app_dir=tmp_path, bulk_file=SCRYFALL_BULK_SAMPLE_PATH)
-    cache_path = card_database_cache_path(app_dir=tmp_path)
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert cache["schema_version"] == 5
-    cache["cards"]["105097"]["mana_cost"] = None
-    cache["cards"]["105097"]["source_provenance"] = ["scryfall"]
-    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+    database.cards[105097] = replace(
+        database.cards[105097],
+        mana_cost=None,
+        source_provenance=("scryfall",),
+    )
+    monkeypatch.setattr(
+        _BulkFixtureCardDataClient,
+        "load",
+        lambda self, set_code, *, allow_network: database,
+    )
 
     save_17lands_format_data(
         SeventeenLandsFormatData(
@@ -220,9 +269,8 @@ def test_replay_with_schema_five_incomplete_scryfall_card_stays_offline(
 def test_replay_without_ratings_cache_uses_neutral_prior_scores(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    bulk_fixture_card_data: list[tuple[Path, str, bool]],
 ) -> None:
-    refresh_card_database(app_dir=tmp_path, bulk_file=SCRYFALL_BULK_SAMPLE_PATH)
-
     exit_code = main(
         argv=[
             "replay",
@@ -274,10 +322,20 @@ def test_replay_basic_recommendation_keeps_legacy_explanation() -> None:
     )
 
 
-def test_replay_without_card_cache_returns_actionable_error(
+def test_replay_without_card_data_returns_actionable_error(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    class _UnavailableCardDataClient:
+        def __init__(self, *, app_dir: Path) -> None:
+            del app_dir
+
+        def load(self, set_code: str, *, allow_network: bool) -> CardDatabase:
+            raise CardDataClientError(f"Could not fetch card data for set {set_code!r}.")
+
+    monkeypatch.setattr(cli_module, "CardDataClient", _UnavailableCardDataClient)
+
     exit_code = main(
         argv=[
             "replay",
@@ -291,7 +349,7 @@ def test_replay_without_card_cache_returns_actionable_error(
 
     assert exit_code == 1
     assert captured.out == ""
-    assert "Run refresh-data first" in captured.err
+    assert captured.err == "replay failed: Could not fetch card data for set 'MSH'.\n"
 
 
 def test_replay_uses_pre_pick_context_for_recommendation_evidence(

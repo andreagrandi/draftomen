@@ -13,7 +13,6 @@ from draftomen.carddb import (
     CardDatabase,
     CardInfo,
     CardMetadataSeed,
-    card_database_cache_path,
     load_card_database,
 )
 from draftomen.config import COLOR_PAIRS, PICK_ENGINE
@@ -431,8 +430,7 @@ def test_schema_three_ratings_wrapper_skips_mtgjson_download(
         ),
     )
 
-    cache_path = card_database_cache_path(app_dir=tmp_path / "cards")
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path = tmp_path / "cards.json"
     cache_path.write_text(
         json.dumps(
             {
@@ -454,7 +452,7 @@ def test_schema_three_ratings_wrapper_skips_mtgjson_download(
         ),
         encoding="utf-8",
     )
-    database = load_card_database(app_dir=tmp_path / "cards")
+    database = load_card_database(cache_path=cache_path)
 
     def fail_mtgjson_download(**_kwargs: object) -> tuple[object, ...]:
         pytest.fail("resolved schema-3 cards must not download MTGJSON")
@@ -466,8 +464,6 @@ def test_schema_three_ratings_wrapper_skips_mtgjson_download(
     loader = metadata_augmenting_ratings_progress_loader(
         database=database,
         load_ratings=lambda set_code, progress_callback, *, refresh: ratings_data,
-        app_dir=tmp_path / "persist",
-        persist_database=False,
     )
 
     loaded = loader("TST", lambda progress: None, refresh=False)
@@ -476,7 +472,7 @@ def test_schema_three_ratings_wrapper_skips_mtgjson_download(
     assert database.lookup(grp_id=1001).source_provenance == ("unknown",)
 
 
-def test_progress_loader_recovers_and_persists_current_set_card_metadata(
+def test_progress_loader_recovers_current_set_card_metadata_in_memory_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -515,13 +511,12 @@ def test_progress_loader_recovers_and_persists_current_set_card_metadata(
         "draftomen.seventeen.augment_card_database_with_mtgjson_set",
         recover_metadata,
     )
-    app_dir = tmp_path / "app"
+    files_before = sorted(tmp_path.rglob("*"))
     loader = metadata_augmenting_ratings_progress_loader(
         database=database,
         load_ratings=lambda set_code, progress_callback, *, refresh: (
             refresh_values.append(refresh) or ratings_data
         ),
-        app_dir=app_dir,
     )
 
     loaded = loader("TST", lambda progress: None, refresh=True)
@@ -530,10 +525,10 @@ def test_progress_loader_recovers_and_persists_current_set_card_metadata(
     assert refresh_values == [True]
     assert (1001, "Fixture Quick Bomb") in captured_seeds
     assert database.lookup(grp_id=1001) == recovered_card
-    assert load_card_database(app_dir=app_dir).lookup(grp_id=1001) == recovered_card
+    assert sorted(tmp_path.rglob("*")) == files_before
 
 
-def test_ratings_metadata_noop_preserves_cards_without_persisting(
+def test_ratings_metadata_noop_preserves_cards(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -564,7 +559,6 @@ def test_ratings_metadata_noop_preserves_cards_without_persisting(
         ),
     }
     database = CardDatabase(cards=existing_cards.copy())
-    save_calls: list[tuple[object, object]] = []
 
     def return_same_database(
         base: CardDatabase,
@@ -581,20 +575,14 @@ def test_ratings_metadata_noop_preserves_cards_without_persisting(
         "draftomen.seventeen.augment_card_database_with_mtgjson_set",
         return_same_database,
     )
-    monkeypatch.setattr(
-        "draftomen.seventeen.save_card_database",
-        lambda *args, **kwargs: save_calls.append((args, kwargs)),
-    )
 
     augment_card_database_from_ratings(
         database=database,
         set_code="TST",
         ratings_data=ratings_data,
-        app_dir=tmp_path / "app",
     )
 
     assert database.cards == existing_cards
-    assert save_calls == []
 
 
 def test_pair_win_rates_are_available_for_all_ten_pairs(tmp_path: Path) -> None:

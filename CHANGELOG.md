@@ -3,6 +3,13 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Load per-set card data in the CLI `replay`, `build`, `backtest`,
+  `benchmark-picks` and `refresh-structure-targets` commands, the same data
+  the desktop app uses. They no longer read `~/.draftomen/carddb.json`, and
+  ratings metadata recovery no longer writes it. `--bulk-file` still
+  replaces the card data for fixtures and CI. `refresh-data` now only prints
+  that card data downloads per set, and an existing `carddb.json` can be
+  deleted. (#706)
 - Keep pipeline caches out of the user data directory. `build-augmented-set`
   now caches draft dumps in `.draftomen/corpus-cache/profile-input-cache`, and
   `refresh-profile-data` caches 17Lands ratings in
