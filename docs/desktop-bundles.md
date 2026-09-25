@@ -60,7 +60,12 @@ Qt inputs used by the adapter:
   resource, kept at its module-relative destination for `ProfileClient`.
 
 Both specs keep PySide6's default unused QML plugin exclusions explicit:
-`QtCharts`, `QtQuick3D`, `QtSensors`, `QtTest`, and `QtWebEngine`.
+`QtCharts`, `QtQuick3D`, `QtSensors`, and `QtWebEngine`. `QtTest` is not
+excluded because the native smoke driver in `draftomen/qt_gui.py` imports
+`PySide6.QtTest`. `pyside6-deploy` turns each exclusion into a Nuitka
+`--noinclude-dlls` pattern, and on Windows that pattern removes
+`Qt6Test.dll`, so the executable fails to start. On macOS the pattern matches
+nothing because Qt ships as frameworks.
 
 Both specs additionally declare `--include-package=socketio`. The Socket.IO
 transport (`python-socketio[client]`) is a required base dependency, so it is

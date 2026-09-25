@@ -18,7 +18,9 @@ packages = Nuitka==4.1.3
 # also preserves draftomen/assets/ so NavigationRail.qml and AboutDialog.qml can
 # resolve the logo.
 qml_files = draftomen/qml/AboutDialog.qml,draftomen/qml/PrivacyDialog.qml,draftomen/qml/TestDraftDialog.qml,draftomen/qml/AppBar.qml,draftomen/qml/BacktestView.qml,draftomen/qml/BuildView.qml,draftomen/qml/CardPreview.qml,draftomen/qml/DimensionalButton.qml,draftomen/qml/DimensionalComboBox.qml,draftomen/qml/DimensionalSurface.qml,draftomen/qml/DimensionalTabButton.qml,draftomen/qml/LiveDraftView.qml,draftomen/qml/Main.qml,draftomen/qml/NavigationRail.qml,draftomen/qml/PoolSummaryPanel.qml,draftomen/qml/RecentPickThumbnail.qml,draftomen/qml/RecentPicksGallery.qml,draftomen/qml/RecommendationRow.qml,draftomen/qml/SettingsView.qml,draftomen/qml/SettingsSwitch.qml,draftomen/qml/SettingsTextField.qml,draftomen/qml/StateBanner.qml,draftomen/qml/StatusStrip.qml,draftomen/qml/Theme.qml,draftomen/qml/qmldir
-excluded_qml_plugins = QtCharts,QtQuick3D,QtSensors,QtTest,QtWebEngine
+# QtTest stays bundled: the native smoke driver in qt_gui.py imports it, and
+# excluding it strips Qt6Test.dll from the Windows build.
+excluded_qml_plugins = QtCharts,QtQuick3D,QtSensors,QtWebEngine
 modules = Core,Gui,Qml,Quick,QuickControls2
 plugins = imageformats,platforms,platformthemes,styles
 
