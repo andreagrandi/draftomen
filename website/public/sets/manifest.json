@@ -1,0 +1,642 @@
+{
+  "schema_version": 1,
+  "sets": {
+    "afr": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 61560,
+        "sha256": "fac4f6acaef96246bf1c7c490a78369f9df582b81ba824a1893e1b1ab739d987",
+        "url": "https://www.draftomen.com/card-data/afr.json.gz"
+      },
+      "name": "Adventures in the Forgotten Realms",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "akr": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 53283,
+        "sha256": "31e4084dacb1fac0fc78ec3aaa7146a1bdcff3cc093f283ff6894760ae930c10",
+        "url": "https://www.draftomen.com/card-data/akr.json.gz"
+      },
+      "name": "Amonkhet Remastered",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "blb": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 50069,
+        "sha256": "afb88c4fef7c2057c1273a7a35584c0d54fc4bfa1b639379ef03f767f5a90900",
+        "url": "https://www.draftomen.com/card-data/blb.json.gz"
+      },
+      "name": "Bloomburrow",
+      "profiles": {}
+    },
+    "bro": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 50609,
+        "sha256": "5d58c96cd97f1f5a210b2bfe635d465752c39d0119bed2e39afd31dd7bba1ab5",
+        "url": "https://www.draftomen.com/card-data/bro.json.gz"
+      },
+      "name": "The Brothers' War",
+      "profiles": {}
+    },
+    "dft": {
+      "augmented": {
+        "metrics": {
+          "basic_do": {
+            "mean_reciprocal_rank": 0.6897466741647655,
+            "top_1": 0.5197044722686959
+          },
+          "basic_plus_augmented": {
+            "mean_reciprocal_rank": 0.725634554678216,
+            "top_1": 0.5622863709140626
+          },
+          "picks": 889392
+        }
+      },
+      "card_data": {
+        "bytes": 47790,
+        "sha256": "e223e1d10752ecca127c1abafff31fd942c8cd2e6fba4342453cb7f4d0b8dfc3",
+        "url": "https://www.draftomen.com/card-data/dft.json.gz"
+      },
+      "name": "Aetherdrift",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "dmu": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 51795,
+        "sha256": "dc98d501a2bf45efabe3917bd56e0490dcb98e1eeb4c1ae187ebf3ca4626e830",
+        "url": "https://www.draftomen.com/card-data/dmu.json.gz"
+      },
+      "name": "Dominaria United",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "dom": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 44532,
+        "sha256": "105ef4adeedae5f73c63af2a109768f67c31fb7372671554a365ec6f751da3bb",
+        "url": "https://www.draftomen.com/card-data/dom.json.gz"
+      },
+      "name": "Dominaria",
+      "profiles": {}
+    },
+    "dsk": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 51259,
+        "sha256": "9fa0c1c0cf20412bbc1ae4729b91161c50435aea1b31f237316c4331ec628e8e",
+        "url": "https://www.draftomen.com/card-data/dsk.json.gz"
+      },
+      "name": "Duskmourn: House of Horror",
+      "profiles": {}
+    },
+    "ecl": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 49587,
+        "sha256": "87df127d4aba8f165f56bcb2c9b8e5954cf4e7178d614255b08570899c9bc710",
+        "url": "https://www.draftomen.com/card-data/ecl.json.gz"
+      },
+      "name": "Lorwyn Eclipsed",
+      "profiles": {}
+    },
+    "eld": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 51743,
+        "sha256": "599bbf43f1677eb1be7a313278b48e87d75801ea91db2d3707f5a7641e477182",
+        "url": "https://www.draftomen.com/card-data/eld.json.gz"
+      },
+      "name": "Throne of Eldraine",
+      "profiles": {}
+    },
+    "eoe": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 46143,
+        "sha256": "44f89e4a11ddeafa524b742e9cce61eeb9550a85258707b13775e814665e570d",
+        "url": "https://www.draftomen.com/card-data/eoe.json.gz"
+      },
+      "name": "Edge of Eternities",
+      "profiles": {}
+    },
+    "fdn": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 87290,
+        "sha256": "4359507abf32ea9a551c1b94fc4f91d4b7971633a8c5a57a7db9c9bb344cc3c9",
+        "url": "https://www.draftomen.com/card-data/fdn.json.gz"
+      },
+      "name": "Foundations",
+      "profiles": {}
+    },
+    "fin": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 64112,
+        "sha256": "16601c072a5982f6c8ec4ec7864adc3b8c8c6477f430d7a3f0bc96c22f114082",
+        "url": "https://www.draftomen.com/card-data/fin.json.gz"
+      },
+      "name": "Final Fantasy",
+      "profiles": {}
+    },
+    "grn": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 44337,
+        "sha256": "c14dc4181367c89b674d377e65a6e02c00502b92b1cfe223a43683ad84ce0f70",
+        "url": "https://www.draftomen.com/card-data/grn.json.gz"
+      },
+      "name": "Guilds of Ravnica",
+      "profiles": {}
+    },
+    "hbg": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 74967,
+        "sha256": "ae9c06d8aaefc85f8c8f5a52b5eace6b46bc5a5d181f54e7a0bd053abebaf139",
+        "url": "https://www.draftomen.com/card-data/hbg.json.gz"
+      },
+      "name": "Alchemy Horizons: Baldur's Gate",
+      "profiles": {}
+    },
+    "hob": {
+      "augmented": {
+        "metrics": {
+          "basic_do": {
+            "mean_reciprocal_rank": 0.711535463864858,
+            "top_1": 0.5489211877846158
+          },
+          "basic_plus_augmented": {
+            "mean_reciprocal_rank": 0.7474174648111295,
+            "top_1": 0.5922118923952104
+          },
+          "picks": 274932
+        }
+      },
+      "card_data": {
+        "bytes": 38004,
+        "sha256": "8831da97958741163a6d4b93d5068c28a44d8146ed476c9a76618cc91d0ae7b7",
+        "url": "https://www.draftomen.com/card-data/hob.json.gz"
+      },
+      "name": "The Hobbit",
+      "profiles": {
+        "picktwodraft": {
+          "maturity": "early"
+        },
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "iko": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 51846,
+        "sha256": "df80d447283504a9918081bd26a70db2976c37f8480a9136db548b3d01516714",
+        "url": "https://www.draftomen.com/card-data/iko.json.gz"
+      },
+      "name": "Ikoria: Lair of Behemoths",
+      "profiles": {}
+    },
+    "khm": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 65111,
+        "sha256": "87d1ca9c910c789867c9f3e4d95d4f50937a9004fed39b91fd3bbf41d3790500",
+        "url": "https://www.draftomen.com/card-data/khm.json.gz"
+      },
+      "name": "Kaldheim",
+      "profiles": {}
+    },
+    "klr": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 47169,
+        "sha256": "3cc3bc19831933462c07640020042bf100f5ebba0801d6b175100847dfb7384a",
+        "url": "https://www.draftomen.com/card-data/klr.json.gz"
+      },
+      "name": "Kaladesh Remastered",
+      "profiles": {}
+    },
+    "ktk": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 35286,
+        "sha256": "2c498cef820d10d369bce7d1274219c342a72d156efed31e8baed84e2ef89804",
+        "url": "https://www.draftomen.com/card-data/ktk.json.gz"
+      },
+      "name": "Khans of Tarkir",
+      "profiles": {}
+    },
+    "lci": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 57337,
+        "sha256": "7501f0718478073b26a476361e17593f7b01c4229db8a41a901d19f225c0db33",
+        "url": "https://www.draftomen.com/card-data/lci.json.gz"
+      },
+      "name": "The Lost Caverns of Ixalan",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "ltr": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 53179,
+        "sha256": "249da3670560a2189aa312f0f15be2659ade8b891a41c98447206ee8c2dc3c9c",
+        "url": "https://www.draftomen.com/card-data/ltr.json.gz"
+      },
+      "name": "The Lord of the Rings: Tales of Middle-earth",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "m19": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 47783,
+        "sha256": "a958c991ec6edcc6e211f06f1096d54832da32824cb314848e788fb88c28b946",
+        "url": "https://www.draftomen.com/card-data/m19.json.gz"
+      },
+      "name": "Core Set 2019",
+      "profiles": {}
+    },
+    "m20": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 52850,
+        "sha256": "8363864f94ef779b349f363e4dec508b113e5f8eb645170c2a2386bdcfa284af",
+        "url": "https://www.draftomen.com/card-data/m20.json.gz"
+      },
+      "name": "Core Set 2020",
+      "profiles": {}
+    },
+    "m21": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 52316,
+        "sha256": "54065ec5a6cd5c4c1c350602b5fd8c689907a3473b40c5f3fd67f398095b572e",
+        "url": "https://www.draftomen.com/card-data/m21.json.gz"
+      },
+      "name": "Core Set 2021",
+      "profiles": {}
+    },
+    "mh3": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 62642,
+        "sha256": "a3003e0e9a9a6742cf13d4df6e4a3dbe8f1b2f045a9b5683d584890b8ec8b258",
+        "url": "https://www.draftomen.com/card-data/mh3.json.gz"
+      },
+      "name": "Modern Horizons 3",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "mid": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 62302,
+        "sha256": "f3cceafbaf4ee1c73dd7965993de9290f1763e9b59780ba92c0872c955c6ccaa",
+        "url": "https://www.draftomen.com/card-data/mid.json.gz"
+      },
+      "name": "Innistrad: Midnight Hunt",
+      "profiles": {}
+    },
+    "mkm": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 51693,
+        "sha256": "70e5f66df352e4df2dcf886696f8b400f10605e87ee713599608425470fe848e",
+        "url": "https://www.draftomen.com/card-data/mkm.json.gz"
+      },
+      "name": "Murders at Karlov Manor",
+      "profiles": {}
+    },
+    "mom": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 62656,
+        "sha256": "eecb3b2aea7128f8b6971e773ae4eb55586fb369eaacbad010669ab0ce02205e",
+        "url": "https://www.draftomen.com/card-data/mom.json.gz"
+      },
+      "name": "March of the Machine",
+      "profiles": {}
+    },
+    "msh": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 53275,
+        "sha256": "680dcef6fd773ee85a9a2efded32cbece03422c7f345423f787893801e6ecc24",
+        "url": "https://www.draftomen.com/card-data/msh.json.gz"
+      },
+      "name": "Marvel Super Heroes",
+      "profiles": {
+        "picktwodraft": {
+          "maturity": "early"
+        },
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "neo": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 75675,
+        "sha256": "84c5f5756c8b7c3266bf5591703750ad37004f6b1c1842bbc162fb140628c5d7",
+        "url": "https://www.draftomen.com/card-data/neo.json.gz"
+      },
+      "name": "Kamigawa: Neon Dynasty",
+      "profiles": {}
+    },
+    "one": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 48223,
+        "sha256": "a495367a1212b6dbf4624be39204484a9769b550403ee23b6a31385b257fd5d1",
+        "url": "https://www.draftomen.com/card-data/one.json.gz"
+      },
+      "name": "Phyrexia: All Will Be One",
+      "profiles": {}
+    },
+    "otj": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 48973,
+        "sha256": "4f59bafc7295d709d18c17f5bd47757b0a1f37f0159313fe10531ac474da32af",
+        "url": "https://www.draftomen.com/card-data/otj.json.gz"
+      },
+      "name": "Outlaws of Thunder Junction",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "pio": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 72889,
+        "sha256": "5146ebce7ac80b56d738019029ed33a68605f8ef334816fe29ee2cea2e2c9f6d",
+        "url": "https://www.draftomen.com/card-data/pio.json.gz"
+      },
+      "name": "Pioneer Masters",
+      "profiles": {}
+    },
+    "rix": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 33239,
+        "sha256": "d9596fdd6197a5a765da525efddc89b0ca6bc790a443c6a11bc0314364d33307",
+        "url": "https://www.draftomen.com/card-data/rix.json.gz"
+      },
+      "name": "Rivals of Ixalan",
+      "profiles": {}
+    },
+    "rna": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 45074,
+        "sha256": "fcecc0ae079ec88a2748afb16e1f2a377780934a2040d36a46b32ce5a111b59a",
+        "url": "https://www.draftomen.com/card-data/rna.json.gz"
+      },
+      "name": "Ravnica Allegiance",
+      "profiles": {}
+    },
+    "sir": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 51221,
+        "sha256": "9206e8d91c485cdc61799aa4a1115804f5465998cfb784c6b103ca4946763626",
+        "url": "https://www.draftomen.com/card-data/sir.json.gz"
+      },
+      "name": "Shadows over Innistrad Remastered",
+      "profiles": {}
+    },
+    "snc": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 64524,
+        "sha256": "544dd679784c79056270e389f316965013a872be0bc0d1794197c5f7255ff6a0",
+        "url": "https://www.draftomen.com/card-data/snc.json.gz"
+      },
+      "name": "Streets of New Capenna",
+      "profiles": {}
+    },
+    "sos": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 49621,
+        "sha256": "acc0314c064381b24fd2a1ae54b74bfdbd364d542d8b98af0a82cbe72761e320",
+        "url": "https://www.draftomen.com/card-data/sos.json.gz"
+      },
+      "name": "Secrets of Strixhaven",
+      "profiles": {
+        "picktwodraft": {
+          "maturity": "early"
+        },
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "stx": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 53626,
+        "sha256": "ba4998157b57993aabaceb83b7976bd2a44bcb0ac239bf8d82ce987a7f7121c1",
+        "url": "https://www.draftomen.com/card-data/stx.json.gz"
+      },
+      "name": "Strixhaven: School of Mages",
+      "profiles": {}
+    },
+    "tdm": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 49800,
+        "sha256": "7bf24fbd5e2a09b3065fca81237614d000229a9141a621b4efb70a2287aa1b6d",
+        "url": "https://www.draftomen.com/card-data/tdm.json.gz"
+      },
+      "name": "Tarkir: Dragonstorm",
+      "profiles": {}
+    },
+    "thb": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 49221,
+        "sha256": "e5deef40e383edef7bf0c0c777bdc4c138935ec06968653a095e303591040633",
+        "url": "https://www.draftomen.com/card-data/thb.json.gz"
+      },
+      "name": "Theros Beyond Death",
+      "profiles": {}
+    },
+    "tla": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 52449,
+        "sha256": "fbddaffa4cf078fe65b897ca196bcac3a3fdd93e659b096044f80fa850857cc4",
+        "url": "https://www.draftomen.com/card-data/tla.json.gz"
+      },
+      "name": "Avatar: The Last Airbender",
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
+    "tmt": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 35667,
+        "sha256": "2172cb5a37cc41e1c9c0d9d5277d21d84be66482310315c0f6e5395c91661e3b",
+        "url": "https://www.draftomen.com/card-data/tmt.json.gz"
+      },
+      "name": "Teenage Mutant Ninja Turtles",
+      "profiles": {}
+    },
+    "vow": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 66238,
+        "sha256": "b2bb4d7f4a711aa13c84a38ed49a1e4445cc4d808fab608fd8513039d770ddf0",
+        "url": "https://www.draftomen.com/card-data/vow.json.gz"
+      },
+      "name": "Innistrad: Crimson Vow",
+      "profiles": {}
+    },
+    "war": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 45840,
+        "sha256": "6d105315c124b554a8fe745e01eb937d41a99ed2c3e9743d8f945a469d10f296",
+        "url": "https://www.draftomen.com/card-data/war.json.gz"
+      },
+      "name": "War of the Spark",
+      "profiles": {}
+    },
+    "woe": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 54295,
+        "sha256": "b5622e3071d47ee04c61d82f2fef5fa40b5543f8e3bc45026a30f3e5c49ded73",
+        "url": "https://www.draftomen.com/card-data/woe.json.gz"
+      },
+      "name": "Wilds of Eldraine",
+      "profiles": {}
+    },
+    "xln": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 44812,
+        "sha256": "2fa1352880cc2ca504e9e0252976c1415a8c898d344f4e2641582c5e52ff3317",
+        "url": "https://www.draftomen.com/card-data/xln.json.gz"
+      },
+      "name": "Ixalan",
+      "profiles": {}
+    },
+    "znr": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 54178,
+        "sha256": "a2984397f5388c2781da408dca284db452eb081803e2bec0484c5eb601645903",
+        "url": "https://www.draftomen.com/card-data/znr.json.gz"
+      },
+      "name": "Zendikar Rising",
+      "profiles": {}
+    }
+  }
+}

@@ -97,6 +97,7 @@ from draftomen.profile_refresh_execution import (
     execute_profile_refresh_plan,
 )
 from draftomen.replay import ReplayError, replay_log_file
+from draftomen.sets_manifest import SetsManifestError, write_sets_manifest
 from draftomen.seventeen import (
     PREMIER_DRAFT_FORMAT,
     QUICK_DRAFT_FORMAT,
@@ -1271,6 +1272,11 @@ def format_version() -> str:
 
     return f"draftomen-tui {__version__}\n\n{DISCLAIMER}"
 
+def _write_sets_manifest_next_to(*, card_data_dir: Path) -> None:
+    path = write_sets_manifest(public_dir=card_data_dir.parent)
+    print(f"wrote sets manifest -> {path}", flush=True)
+
+
 def handle_export_set_data(args: argparse.Namespace) -> int:
     """Prepare and publish one or all static per-set card-data artifacts."""
 
@@ -1290,6 +1296,7 @@ def handle_export_set_data(args: argparse.Namespace) -> int:
                 f"{candidate.identity.set_name} -> {path}",
                 flush=True,
             )
+            _write_sets_manifest_next_to(card_data_dir=args.output_dir)
             return 0
 
         print(
@@ -1309,10 +1316,13 @@ def handle_export_set_data(args: argparse.Namespace) -> int:
                 f"{candidate.identity.set_name} -> {path}",
                 flush=True,
             )
+        if plan.pending:
+            _write_sets_manifest_next_to(card_data_dir=args.output_dir)
         return 0
     except KeyboardInterrupt:
         return 130
     except (
+        SetsManifestError,
         SetDataExportError,
         CardDatabaseError,
         OSError,

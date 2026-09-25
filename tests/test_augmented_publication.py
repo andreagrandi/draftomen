@@ -28,6 +28,7 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.public_dump import PublicDumpManifest
 from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import SetProfile
+from draftomen.sets_manifest import SetsManifest
 from tests.augmented_artifacts import augmented_artifact
 import tests.test_profile_generation as generation_fixture
 
@@ -280,6 +281,11 @@ def test_publishes_client_readable_object_and_preserves_other_set_idempotently(
     )
     assert validated == artifact
 
+    sets_manifest = SetsManifest.from_bytes((public_dir / "sets" / "manifest.json").read_bytes())
+    published_set = sets_manifest.select(set_code=_SET_CODE)
+    assert published_set is not None
+    assert published_set.augmented == {"metrics": artifact.evaluation.to_json()}
+
     prior_object = augmented_dir / "objects" / f"{other_entry.artifact_sha256}.json.gz"
     assert prior_object.read_bytes() == prior_files[prior_object]
     assert (tmp_path / "private-cache" / "draft-data.csv.gz").exists()
@@ -290,6 +296,7 @@ def test_publishes_client_readable_object_and_preserves_other_set_idempotently(
     }
     assert public_files == {
         f"card-data/{_SET_CODE}.json.gz",
+        "sets/manifest.json",
         "augmented/manifest.json",
         f"augmented/objects/{expected_digest}.json.gz",
         *(f"augmented/objects/{path.name}" for path in prior_files if path.parent.name == "objects"),

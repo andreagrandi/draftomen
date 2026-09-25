@@ -411,6 +411,7 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
         if path.is_file()
     } == {
         Path("card-data/tst.json.gz"),
+        Path("sets/manifest.json"),
         Path(f"augmented/objects/{digest}.json.gz"),
         Path("augmented/manifest.json"),
     }
@@ -749,8 +750,15 @@ def test_export_set_data_single_mode_resolves_selector_and_publishes(
         published.append(candidate)
         return tmp_path / "tst.json.gz"
 
+    manifest_dirs: list[Path] = []
+
+    def fake_write_sets_manifest(*, public_dir: Path) -> Path:
+        manifest_dirs.append(public_dir)
+        return public_dir / "sets" / "manifest.json"
+
     monkeypatch.setattr(cli, "prepare_set_data_export", fake_prepare)
     monkeypatch.setattr(cli, "publish_set_data_export", fake_publish)
+    monkeypatch.setattr(cli, "write_sets_manifest", fake_write_sets_manifest)
 
     assert (
         main(
@@ -774,8 +782,10 @@ def test_export_set_data_single_mode_resolves_selector_and_publishes(
         }
     ]
     assert published == [candidate]
+    assert manifest_dirs == [tmp_path.parent]
     assert capsys.readouterr().out == (
         "wrote TST - Test Set -> " + str(tmp_path / "tst.json.gz") + "\n"
+        "wrote sets manifest -> " + str(tmp_path.parent / "sets" / "manifest.json") + "\n"
     )
 
 
@@ -809,6 +819,11 @@ def test_export_set_data_all_mode_lists_every_pending_set_before_publishing(
         return candidate.target_path  # type: ignore[union-attr]
 
     monkeypatch.setattr(cli, "publish_set_data_export", fake_publish)
+    monkeypatch.setattr(
+        cli,
+        "write_sets_manifest",
+        lambda *, public_dir: public_dir / "sets" / "manifest.json",
+    )
 
     assert main(argv=["export-set-data"]) == 0
 
@@ -822,6 +837,7 @@ def test_export_set_data_all_mode_lists_every_pending_set_before_publishing(
     )
     assert capsys.readouterr().out == (
         "wrote BBB - Beta -> " + str(tmp_path / "bbb.json.gz") + "\n"
+        "wrote sets manifest -> website/public/sets/manifest.json\n"
     )
 
 

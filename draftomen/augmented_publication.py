@@ -53,6 +53,7 @@ from draftomen.profile_refresh_execution import DEFAULT_PROFILE_REFRESH_CACHE_PO
 from draftomen.progress import ProgressReporter
 from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import ProfileMaturity, SetProfile, SetProfileError
+from draftomen.sets_manifest import SetsManifestError, write_sets_manifest
 from draftomen.seventeen import download_public_draft_data, public_draft_data_url
 from draftomen.test_draft import DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE
 
@@ -374,6 +375,12 @@ def build_augmented_set(
 
     if existing_entry != entry:
         dump_augmented_manifest(manifest, manifest_path)
+    try:
+        write_sets_manifest(public_dir=output_dir.parent)
+    except SetsManifestError as error:
+        raise AugmentedPublicationError(
+            f"The sets manifest could not be regenerated: {error}"
+        ) from error
 
     return AugmentedBuildResult(
         training=training,

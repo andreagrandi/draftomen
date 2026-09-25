@@ -33,6 +33,11 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact,
 from draftomen.profile_publication import PROFILE_BASE_URL
 from draftomen.set_card_data import SetCardData, SetCardDataError
 from draftomen.set_profile import SetProfile, SetProfileError
+from draftomen.sets_manifest import (
+    SETS_MANIFEST_RELATIVE_PATH,
+    SetsManifestError,
+    write_sets_manifest,
+)
 
 
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -296,6 +301,13 @@ def _descriptor_kind(relative: Any) -> tuple[str, str | None]:
         return "object", digest_name[:-8]
     _fail("generated asset path is outside the allowlist")
     raise AssertionError("unreachable")
+
+
+def _validate_committed_path(relative: str) -> None:
+    """Accept a generated asset path or the sets manifest derived from them."""
+
+    if relative != (_GENERATED_ROOT / SETS_MANIFEST_RELATIVE_PATH).as_posix():
+        _descriptor_kind(relative)
 
 
 def _assert_no_symlink_components(path: Path, *, stop: Path) -> None:
@@ -720,6 +732,24 @@ def _validate_and_stage(
         if destination.stat().st_mode & 0o111:
             _fail(f"candidate data file is executable: {relative}")
 
+    # The sets manifest is derived from the staged card data and manifests, so
+    # it is regenerated here rather than shipped in the generation bundle.
+    sets_manifest_relative = (_GENERATED_ROOT / SETS_MANIFEST_RELATIVE_PATH).as_posix()
+    sets_manifest_path = repo_root / sets_manifest_relative
+    _assert_no_symlink_components(sets_manifest_path.parent, stop=repo_root)
+    try:
+        previous_sets_manifest = sets_manifest_path.read_bytes()
+    except FileNotFoundError:
+        previous_sets_manifest = None
+    except OSError as error:
+        _fail("existing sets manifest could not be read", error)
+    try:
+        write_sets_manifest(public_dir=repo_root / _GENERATED_ROOT)
+    except (SetsManifestError, OSError) as error:
+        _fail("sets manifest could not be regenerated", error)
+    if sets_manifest_path.read_bytes() != previous_sets_manifest:
+        expected_changes.add(sets_manifest_relative)
+
     changed_paths, clean_after = _git_status_paths(repo_root)
     if changed_paths != expected_changes or clean_after != (not expected_changes):
         _fail("candidate worktree diff does not match declared descriptors")
@@ -886,7 +916,7 @@ def _commit_changed_paths(root: Path, parent: str, commit: str) -> set[str]:
         if len(fields) != 2 or fields[0] not in {"A", "M"}:
             _fail("publication snapshot contains a deletion, rename, or mode change")
         relative = fields[1]
-        _descriptor_kind(relative)
+        _validate_committed_path(relative)
         if relative in paths:
             _fail("publication snapshot contains duplicate paths")
         paths.add(relative)
@@ -1020,7 +1050,7 @@ def _commit_candidate(root: Path, *, paths: set[str]) -> str:
         if len(fields) != 2 or fields[0] not in {"A", "M"}:
             _fail("publication commit contains an invalid file change")
         relative = fields[1]
-        _descriptor_kind(relative)
+        _validate_committed_path(relative)
         staged.add(relative)
         path = root / relative
         _regular_file(path, stop=root, label=f"staged file {relative}")

@@ -13,6 +13,7 @@ import pytest
 
 from draftomen.profile_manifest import ProfileManifest
 from draftomen.set_profile import SetProfile
+from draftomen.sets_manifest import SetsManifest
 from draftomen.seventeen import SeventeenLandsError
 import scripts.profile_refresh_publication as publication
 import scripts.profile_refresh_workflow as workflow
@@ -513,6 +514,23 @@ def test_publish_success_creates_snapshot_pr_and_master_cas(
         ).stdout
         == "retained source change\n"
     )
+    sets_manifest = SetsManifest.from_bytes(
+        subprocess.run(
+            [
+                "git",
+                "--git-dir",
+                str(origin),
+                "show",
+                f"{branch_head}:website/public/sets/manifest.json",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+    )
+    new_set = sets_manifest.select(set_code="new")
+    assert new_set is not None
+    assert new_set.name == "New Set"
+    assert new_set.profiles == {"premierdraft": "early"}
     assert "Validated generated data was merged" in summary.read_text(encoding="utf-8")
 
 

@@ -144,6 +144,17 @@ those network sources for reproducible or offline runs. The all-set command
 validates existing artifacts, publishes pending sets in code order, and can be
 rerun to resume from the first pending set.
 
+### Sets manifest
+
+`website/public/sets/manifest.json`, hosted at
+`https://www.draftomen.com/sets/manifest.json`, lists every set with a
+card-data file. Each entry records the set name, the card-data URL, byte size
+and SHA-256, the published profile formats with their maturity, and the
+augmented model metrics when one exists. `export-set-data`,
+`build-augmented-set` and the Profile Refresh publication regenerate it from
+the files under `website/public`, and a test fails when the committed file
+no longer matches them.
+
 In live mode, Draft Omen detects the set before loading its selected artifact.
 The default cache path is the application-data `card-data/<set-code>.json.gz`
 file (normally `~/.draftomen/card-data/<set-code>.json.gz`); a valid cache is

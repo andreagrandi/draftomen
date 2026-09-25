@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Publish `sets/manifest.json` on the website. It lists every set with card
+  data, and gives each set's name, card-data URL, size and SHA-256, profile
+  formats with their maturity, and augmented model metrics. `export-set-data`,
+  `build-augmented-set` and the Profile Refresh publication regenerate it.
+  (#703)
 - Make `build-augmented-set` report its progress. It prints one line as each
   stage starts, the dump download at most every 10% and 5 seconds, and how
   many picks training and evaluation use. Basic DO scoring now reports in 25%
