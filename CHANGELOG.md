@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Make the GUI replay smoke check wait for a pending hosted profile refresh
+  before it captures. A fast replay finished before the MSH profile download,
+  so the check showed fallback ratings even though the session adopts the
+  profile once it arrives. (#683)
 - Let Mocked Draft play Draftmancer packs that are not 14 cards. Pack events
   carry the pack size, and the pick stage, remaining picks, and pool ledger use
   it, so 15-card sets such as LCI and 13-card sets such as BLB draft all 45 or

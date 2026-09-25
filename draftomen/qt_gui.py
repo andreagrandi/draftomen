@@ -613,6 +613,21 @@ def _finish_smoke_test(
     application.quit()
 
 
+def _draft_complete_capture_ready(
+    *,
+    provider: SessionAdapter,
+    deadline_passed: bool,
+) -> bool:
+    """Return whether the until-complete smoke test can capture the window.
+    A fast replay completes before the hosted profile downloads, so capture waits for that refresh until the deadline.
+    """
+
+    if provider.state.get("status", {}).get("phase") != "draft_complete":
+        return False
+    pending = getattr(provider, "profile_refresh_pending", None)
+    return deadline_passed or not (callable(pending) and pending())
+
+
 def _finish_smoke_test_when_draft_completes(
     *,
     engine: QQmlApplicationEngine,
@@ -631,8 +646,10 @@ def _finish_smoke_test_when_draft_completes(
 
 
     def finish_when_ready() -> None:
-        status = provider.state.get("status", {})
-        if status.get("phase") == "draft_complete":
+        if _draft_complete_capture_ready(
+            provider=provider,
+            deadline_passed=monotonic() >= deadline,
+        ):
             stop_waiting()
             QTimer.singleShot(
                 0,
