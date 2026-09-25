@@ -341,6 +341,7 @@ def test_cold_load_verifies_the_download_against_the_sets_manifest(tmp_path: Pat
     requested: list[str] = []
     client = CardDataClient(
         app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
         opener=_routing_opener(
             {SETS_MANIFEST_URL: _manifest_bytes(("tst", payload)), _CARD_URL: payload},
             requested,
@@ -366,6 +367,7 @@ def test_checksum_mismatch_rejects_the_download_and_keeps_the_cached_file(
     requested: list[str] = []
     client = CardDataClient(
         app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
         opener=_routing_opener(
             {SETS_MANIFEST_URL: _manifest_bytes(("tst", published)), _CARD_URL: tampered},
             requested,
@@ -383,6 +385,7 @@ def test_checksum_mismatch_without_a_cache_raises(tmp_path: Path) -> None:
     payload = _artifact().to_gzip_bytes()
     client = CardDataClient(
         app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
         opener=_routing_opener(
             {
                 SETS_MANIFEST_URL: _manifest_bytes(("tst", payload + b"x")),
@@ -411,7 +414,11 @@ def test_changed_checksum_downloads_once_and_unchanged_checksum_downloads_nothin
         _CARD_URL: new,
     }
 
-    client = CardDataClient(app_dir=tmp_path, opener=_routing_opener(routes, requested))
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener(routes, requested),
+    )
     first = client.load("tst", allow_network=True)
     second = client.load("tst", allow_network=True)
 
@@ -421,7 +428,11 @@ def test_changed_checksum_downloads_once_and_unchanged_checksum_downloads_nothin
     assert destination.read_bytes() == new
 
     requested.clear()
-    fresh_client = CardDataClient(app_dir=tmp_path, opener=_routing_opener(routes, requested))
+    fresh_client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener(routes, requested),
+    )
     assert tuple(fresh_client.load("tst", allow_network=True).cards) == (1, 2)
     assert requested == [SETS_MANIFEST_URL]
 
@@ -435,6 +446,7 @@ def test_cached_set_loads_when_the_network_is_unavailable(tmp_path: Path) -> Non
     offline = OSError("network is unreachable")
     client = CardDataClient(
         app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
         opener=_routing_opener({SETS_MANIFEST_URL: offline, _CARD_URL: offline}, requested),
     )
 
@@ -450,6 +462,7 @@ def test_unreachable_manifest_still_allows_a_cold_download(tmp_path: Path) -> No
     requested: list[str] = []
     client = CardDataClient(
         app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
         opener=_routing_opener(
             {SETS_MANIFEST_URL: OSError("manifest unavailable"), _CARD_URL: payload},
             requested,
