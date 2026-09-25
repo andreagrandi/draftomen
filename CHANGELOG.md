@@ -4,8 +4,9 @@
 
 ## [Unreleased]
 - Add a Sets page to the website at `/sets/`, linked from the navigation. It
-  lists every set in the sets manifest with its card data, profile formats
-  and maturity, and augmented model, and notes that Mocked Draft also needs
+  lists the supported sets, those with card data and 17Lands ratings, and
+  marks the ones with an augmented model. A second list shows the sets that
+  have no 17Lands ratings yet. The page notes that Mocked Draft also needs
   the set in the local Draftmancer checkout. (#707)
 - Load per-set card data in the CLI `replay`, `build`, `backtest`,
   `benchmark-picks` and `refresh-structure-targets` commands, the same data
