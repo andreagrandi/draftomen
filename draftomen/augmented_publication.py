@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+import csv
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import gzip
 import hashlib
 import os
 from pathlib import Path
 import tempfile
+from typing import Any
 
 from draftomen.augmented_artifact import (
     AUGMENTED_ARTIFACT_COMPATIBILITY,
@@ -24,12 +28,19 @@ from draftomen.augmented_training import (
     train_and_gate_augmented_set,
 )
 from draftomen.card_data_export import resolve_set_card_data
-from draftomen.carddb import HTTP_TIMEOUT_SECONDS
+from draftomen.carddb import (
+    HTTP_TIMEOUT_SECONDS,
+    CardDatabase,
+    build_card_database_from_scryfall_cards,
+    iter_scryfall_default_cards,
+)
+from draftomen.draftmancer import _unlisted_card_grp_id
 from draftomen.paths import app_data_dir
 from draftomen.profile_input_cache import ProfileInputCache
 from draftomen.profile_refresh_execution import DEFAULT_PROFILE_REFRESH_CACHE_POLICY
 from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import safe_load_set_profile
+from draftomen.test_draft import DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +58,69 @@ class AugmentedPublicationError(RuntimeError):
     """Report an augmented publication that cannot be trusted or completed."""
 
 
+def _dump_card_names(*, path: Path) -> tuple[str, ...]:
+    """Return the card names in a draft dump's pack columns.
+    Only the header line is read, so a large dump is not decompressed here.
+    """
+
+    try:
+        with path.open(mode="rb") as probe:
+            is_gzip = probe.read(2) == b"\x1f\x8b"
+        opener = gzip.open if is_gzip else open
+        with opener(path, mode="rt", encoding="utf-8", newline="") as handle:
+            header = next(csv.reader(handle))
+    except (OSError, EOFError, StopIteration, UnicodeError) as error:
+        raise AugmentedPublicationError("Draft dump has no readable CSV header.") from error
+    return tuple(
+        value.removeprefix("pack_card_") for value in header if value.startswith("pack_card_")
+    )
+
+
+def _with_bonus_sheet_cards(
+    *,
+    card_database: CardDatabase,
+    card_names: Iterable[str],
+    bulk_file: Path,
+) -> CardDatabase:
+    """Add dump cards that the set card data does not list, such as DFT Special Guests.
+    Their metadata comes from the local Scryfall bulk file, preferring an Arena printing.
+    """
+
+    listed: set[str] = set()
+    for card in card_database.cards.values():
+        listed.add(card.name)
+        listed.update(face.name for face in card.faces if face.name)
+    missing = set(card_names) - listed
+    if not missing:
+        return card_database
+    if not bulk_file.is_file():
+        raise AugmentedPublicationError(
+            f"Set card data does not list {sorted(missing)} and the local Scryfall "
+            f"bulk file {bulk_file} is missing."
+        )
+    rows: dict[str, Mapping[str, Any]] = {}
+    for row in iter_scryfall_default_cards(bulk_file=bulk_file):
+        name = row.get("name")
+        if name not in missing:
+            continue
+        previous = rows.get(name)
+        if previous is None or (
+            previous.get("arena_id") is None and row.get("arena_id") is not None
+        ):
+            rows[name] = row
+    cards = dict(card_database.cards)
+    for _, row in sorted(rows.items()):
+        grp_id = row.get("arena_id")
+        if not isinstance(grp_id, int) or isinstance(grp_id, bool) or grp_id in cards:
+            grp_id = _unlisted_card_grp_id(scryfall_id=str(row.get("id", "")))
+        cards.update(
+            build_card_database_from_scryfall_cards(
+                cards=({**row, "arena_id": grp_id},),
+            ).cards
+        )
+    return CardDatabase(cards=cards, image_uris_by_name=card_database.image_uris_by_name)
+
+
 def build_augmented_set(
     *,
     set_code: str,
@@ -54,6 +128,7 @@ def build_augmented_set(
     augmented_dir: Path = Path("website/public/augmented"),
     cache_dir: Path | None = None,
     timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
+    scryfall_bulk_file: Path = DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE,
 ) -> AugmentedBuildResult:
     """Acquire, gate, and publish one set's compressed augmented artifact."""
 
@@ -84,10 +159,15 @@ def build_augmented_set(
         set_code=set_code,
         event_format=source.event_type,
     )
+    card_database = _with_bonus_sheet_cards(
+        card_database=card_data.to_card_database(),
+        card_names=_dump_card_names(path=Path(source.path)),
+        bulk_file=scryfall_bulk_file,
+    )
     training = train_and_gate_augmented_set(
         set_code=set_code,
         source=source,
-        card_database=card_data.to_card_database(),
+        card_database=card_database,
         set_profile=profile_result.profile,
     )
     if training.artifact is None:

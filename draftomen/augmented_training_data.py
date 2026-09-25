@@ -8,7 +8,7 @@ import hashlib
 import math
 import re
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from os import PathLike
@@ -540,14 +540,38 @@ def card_feature_membership(*, card: CardInfo) -> tuple[int, ...]:
 
 
 def _cards_by_name(*, database: CardDatabase, set_code: str) -> dict[str, CardInfo]:
-    cards: dict[str, CardInfo] = {}
-    for card in database.cards.values():
-        if card.unknown or (card.set_code and card.set_code.upper() != set_code):
+    set_cards = _cards_by_name_from(
+        cards=(
+            card
+            for card in database.cards.values()
+            if not card.set_code or card.set_code.upper() == set_code
+        )
+    )
+    if not set_cards:
+        raise AugmentedTrainingDataError(
+            "Card metadata has no cards for the requested set."
+        )
+    # Bonus-sheet cards such as DFT Special Guests are printed in another set.
+    # They fill only names that the set's own printings do not cover.
+    other_cards = _cards_by_name_from(
+        cards=(
+            card
+            for card in database.cards.values()
+            if card.set_code and card.set_code.upper() != set_code
+        )
+    )
+    return {**other_cards, **set_cards}
+
+
+def _cards_by_name_from(*, cards: Iterable[CardInfo]) -> dict[str, CardInfo]:
+    by_name: dict[str, CardInfo] = {}
+    for card in cards:
+        if card.unknown:
             continue
         names = {card.name}
         names.update(face.name for face in card.faces if face.name)
         for name in names:
-            previous = cards.get(name)
+            previous = by_name.get(name)
             if previous is not None and (
                 _candidate_id(card=previous) != _candidate_id(card=card)
                 or _feature_membership(card=previous) != _feature_membership(card=card)
@@ -555,12 +579,8 @@ def _cards_by_name(*, database: CardDatabase, set_code: str) -> dict[str, CardIn
                 raise AugmentedTrainingDataError(
                     f"Card metadata maps {name!r} to conflicting Oracle cards."
                 )
-            cards[name] = card
-    if not cards:
-        raise AugmentedTrainingDataError(
-            "Card metadata has no cards for the requested set."
-        )
-    return cards
+            by_name[name] = card
+    return by_name
 
 
 def _candidate_id(*, card: CardInfo) -> str:
