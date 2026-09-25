@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+
+## [0.4.0] - 2026-09-25
+
 - Publish an Intel macOS DMG next to the Apple Silicon one. A second macOS
   build job runs on the `macos-15-intel` runner, and each macOS job fails when
   `lipo -archs` reports the wrong architecture for the app executable. The
