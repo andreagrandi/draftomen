@@ -82,6 +82,9 @@ class PackOfferedEvent:
     offered_grp_ids: tuple[int, ...]
     pool_grp_ids: tuple[int, ...]
     account_id: str | None
+    # Arena packs hold 14 picks; Mocked Draft packs from Draftmancer can hold
+    # 13 or 15 depending on the set's booster layout.
+    picks_per_pack: int = EXPECTED_PICKS_PER_PACK
 
 
 @dataclass(frozen=True, slots=True)

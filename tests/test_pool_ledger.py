@@ -10,6 +10,7 @@ from draftomen.pickengine import PickEngine
 from draftomen.pool_ledger import (
     COMPLETED_POOL,
     PRE_PICK_PROJECTION,
+    LedgerStage,
     _likely_projection,
     evaluate_completed_pool_role_ledger,
     project_pool_role_ledger,
@@ -548,3 +549,34 @@ def _land_card(
         produced_mana=produced_mana,
         set_code="TST",
     )
+
+
+@pytest.mark.parametrize(
+    ("picks_per_pack", "pack_number", "pick_number", "global_pick_index"),
+    ((13, 1, 12, 26), (14, 2, 13, 42), (15, 1, 14, 30)),
+)
+def test_ledger_stage_accepts_the_last_pick_of_each_pack_size(
+    picks_per_pack: int,
+    pack_number: int,
+    pick_number: int,
+    global_pick_index: int,
+) -> None:
+    stage = LedgerStage(
+        pack_number=pack_number,
+        pick_number=pick_number,
+        global_pick_index=global_pick_index,
+        estimated_remaining_picks=3 * picks_per_pack - global_pick_index,
+        picks_per_pack=picks_per_pack,
+    )
+
+    assert stage.total_picks == 3 * picks_per_pack
+
+
+def test_ledger_stage_rejects_a_pick_beyond_its_pack_size() -> None:
+    with pytest.raises(ValueError, match="within a 14-pick pack"):
+        LedgerStage(
+            pack_number=0,
+            pick_number=14,
+            global_pick_index=15,
+            estimated_remaining_picks=27,
+        )

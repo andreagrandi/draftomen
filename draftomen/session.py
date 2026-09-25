@@ -40,9 +40,9 @@ from draftomen.deckbuilder import (
     build_deck_from_pool,
 )
 from draftomen.events import (
+    EXPECTED_PACK_COUNT,
     EXPECTED_PICKS_PER_PACK,
     DraftEvent,
-    EXPECTED_TOTAL_PICKS,
     AccountEvent,
     DraftCompletedEvent,
     DraftEvent,
@@ -66,6 +66,7 @@ from draftomen.pickengine import (
 )
 from draftomen.pool import (
     AccountProfile,
+    DraftPick,
     DraftPoolError,
     DraftPoolStore,
     DraftState,
@@ -2358,7 +2359,11 @@ class LiveSession:
             pack_number=event.pack_number,
             pick_number=event.pick_number,
             global_pick_index=global_pick_index,
-            estimated_remaining_picks=max(0, EXPECTED_TOTAL_PICKS - global_pick_index),
+            estimated_remaining_picks=max(
+                0,
+                EXPECTED_PACK_COUNT * event.picks_per_pack - global_pick_index,
+            ),
+            picks_per_pack=event.picks_per_pack,
         )
         self._current_scored_pack = scored_pack
         recommendations = self._recommendation_state(scored_pack=scored_pack)
@@ -4794,11 +4799,27 @@ def _pending_pack_event(*, state: DraftState) -> PackOfferedEvent | None:
         offered_grp_ids=offered_grp_ids,
         pool_grp_ids=pool_grp_ids,
         account_id=state.account_id,
+        picks_per_pack=_recovered_picks_per_pack(state=state, pending_pick=pending_pick),
     )
 
 
+def _recovered_picks_per_pack(*, state: DraftState, pending_pick: DraftPick) -> int:
+    """Infer the pack size of a recovered draft from the picks already saved.
+    A finished earlier pack gives the exact size; otherwise Arena's 14 is the floor.
+    """
+
+    earlier_pick_numbers = tuple(
+        pick.pick_number
+        for pick in state.picks
+        if pick.pack_number < pending_pick.pack_number
+    )
+    if earlier_pick_numbers:
+        return max(earlier_pick_numbers) + 1
+    return max(EXPECTED_PICKS_PER_PACK, pending_pick.pick_number + 1)
+
+
 def _draft_pick_index(*, event: PackOfferedEvent) -> int:
-    return (event.pack_number * EXPECTED_PICKS_PER_PACK) + event.pick_number + 1
+    return (event.pack_number * event.picks_per_pack) + event.pick_number + 1
 
 
 def _card_view(*, card: CardInfo, image_path: str | None = None) -> CardView:

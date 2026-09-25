@@ -14,7 +14,7 @@ from typing import Mapping
 from draftomen.augmented_artifact import AugmentedArtifact, pool_feature_counts
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, PICK_ENGINE, SPLASH, PickEngineConfig
-from draftomen.events import EXPECTED_PICKS_PER_PACK, EXPECTED_TOTAL_PICKS
+from draftomen.events import EXPECTED_PACK_COUNT, EXPECTED_PICKS_PER_PACK
 from draftomen.pool_ledger import (
     FIXING_ROLES,
     LedgerStage,
@@ -863,6 +863,7 @@ class PickEngine:
         global_pick_index: int | None = None,
         estimated_remaining_picks: int | None = None,
         scoring_context: PickScoringContext | None = None,
+        picks_per_pack: int | None = None,
     ) -> ScoredPack:
         """Return offered cards in recommendation order.
 
@@ -894,6 +895,7 @@ class PickEngine:
             global_pick_index=global_pick_index,
             estimated_remaining_picks=estimated_remaining_picks,
             scoring_context=candidate_context,
+            picks_per_pack=picks_per_pack,
         )
         if resolved_stage is not None:
             resolved_pick_index = resolved_stage.global_pick_index
@@ -948,6 +950,7 @@ class PickEngine:
                 ratings_data=self.ratings_data,
                 set_profile=active_profile,
                 likely_pair=commitment.inferred_pair,
+                picks_per_pack=resolved_stage.picks_per_pack,
             )
         require_material_rate_margin = _is_empirical_profile(
             profile=active_profile,
@@ -1353,7 +1356,7 @@ def _contextual_score_for_card(
     if urgency_term > 0.01:
         urgency_label = (
             "late missing-role urgency"
-            if scoring_context.stage.global_pick_index > EXPECTED_TOTAL_PICKS // 2
+            if scoring_context.stage.global_pick_index > scoring_context.stage.total_picks // 2
             else "emerging role urgency"
         )
         evidence.append(f"{urgency_label} {ledger.urgency:.2f}")
@@ -1381,7 +1384,7 @@ def _profile_evidence_weight(*, profile: SetProfile) -> float:
 
 def _stage_scale(*, stage: LedgerStage) -> float:
     progress = _clamp(
-        value=(stage.global_pick_index - 1) / max(1, EXPECTED_TOTAL_PICKS - 1),
+        value=(stage.global_pick_index - 1) / max(1, stage.total_picks - 1),
         lower=0.0,
         upper=1.0,
     )
@@ -1609,6 +1612,7 @@ def score_pack(
     pick_number: int | None = None,
     global_pick_index: int | None = None,
     estimated_remaining_picks: int | None = None,
+    picks_per_pack: int | None = None,
 ) -> ScoredPack:
     """Convenience wrapper for callers that do not keep an engine instance.
     The reusable PickEngine class retains configuration between pack scores.
@@ -1629,6 +1633,7 @@ def score_pack(
         pick_number=pick_number,
         global_pick_index=global_pick_index,
         estimated_remaining_picks=estimated_remaining_picks,
+        picks_per_pack=picks_per_pack,
     )
 
 
@@ -1719,6 +1724,7 @@ def _build_pick_scoring_context(
         ratings_data=ratings_data,
         set_profile=set_profile,
         likely_pair=likely_pair,
+        picks_per_pack=stage.picks_per_pack,
     )
     return PickScoringContext(set_profile=set_profile, role_ledger=role_ledger)
 
@@ -1731,6 +1737,7 @@ def _resolve_pre_pick_stage(
     global_pick_index: int | None,
     estimated_remaining_picks: int | None,
     scoring_context: PickScoringContext | None,
+    picks_per_pack: int | None = None,
 ) -> LedgerStage | None:
     explicit_indices = tuple(
         index
@@ -1770,13 +1777,18 @@ def _resolve_pre_pick_stage(
         global_pick_index,
         estimated_remaining_picks,
     )
+    if picks_per_pack is None:
+        picks_per_pack = EXPECTED_PICKS_PER_PACK
     if all(value is None for value in explicit):
         if pick_index is None:
             return None
-        pack_number = (pick_index - 1) // EXPECTED_PICKS_PER_PACK
-        pick_number = (pick_index - 1) % EXPECTED_PICKS_PER_PACK
+        pack_number = (pick_index - 1) // picks_per_pack
+        pick_number = (pick_index - 1) % picks_per_pack
         global_pick_index = pick_index
-        estimated_remaining_picks = max(0, EXPECTED_TOTAL_PICKS - pick_index)
+        estimated_remaining_picks = max(
+            0,
+            EXPECTED_PACK_COUNT * picks_per_pack - pick_index,
+        )
     elif any(value is None for value in explicit):
         raise ValueError(
             "Ledger scoring requires pack, pick, global index, and remaining "
@@ -1789,6 +1801,7 @@ def _resolve_pre_pick_stage(
         pick_number=pick_number,
         global_pick_index=global_pick_index,
         estimated_remaining_picks=estimated_remaining_picks,
+        picks_per_pack=picks_per_pack,
     )
 
 

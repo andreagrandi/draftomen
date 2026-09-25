@@ -152,6 +152,9 @@ class LedgerStage:
     pick_number: int
     global_pick_index: int
     estimated_remaining_picks: int
+    # Arena packs hold 14 picks; Mocked Draft packs from Draftmancer can hold
+    # 13 or 15 depending on the set's booster layout.
+    picks_per_pack: int = PICKS_PER_PACK
 
     def __post_init__(self) -> None:
         values = (
@@ -159,28 +162,37 @@ class LedgerStage:
             self.pick_number,
             self.global_pick_index,
             self.estimated_remaining_picks,
+            self.picks_per_pack,
         )
         if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
             raise ValueError("Ledger stage coordinates must be integers.")
+        if self.picks_per_pack < 1:
+            raise ValueError("Ledger picks_per_pack must be positive.")
         if not 0 <= self.pack_number < EXPECTED_PACK_COUNT:
             raise ValueError(
                 f"Ledger pack_number must be within {EXPECTED_PACK_COUNT} draft packs."
             )
-        if not 0 <= self.pick_number < PICKS_PER_PACK:
+        if not 0 <= self.pick_number < self.picks_per_pack:
             raise ValueError(
-                f"Ledger pick_number must be within a {PICKS_PER_PACK}-pick pack."
+                f"Ledger pick_number must be within a {self.picks_per_pack}-pick pack."
             )
-        expected_index = self.pack_number * PICKS_PER_PACK + self.pick_number + 1
+        expected_index = self.pack_number * self.picks_per_pack + self.pick_number + 1
         if self.global_pick_index != expected_index:
             raise ValueError(
                 "Ledger global_pick_index does not match pack_number/pick_number."
             )
         if self.estimated_remaining_picks < 0:
             raise ValueError("Ledger estimated_remaining_picks must be non-negative.")
-        if self.estimated_remaining_picks > TOTAL_DRAFT_PICKS:
+        if self.estimated_remaining_picks > self.total_picks:
             raise ValueError(
                 "Ledger estimated_remaining_picks exceeds the draft's total picks."
             )
+
+    @property
+    def total_picks(self) -> int:
+        """Return the number of picks in the whole draft for this pack size."""
+
+        return EXPECTED_PACK_COUNT * self.picks_per_pack
 
     @property
     def pack(self) -> int:
@@ -699,6 +711,7 @@ def project_pool_role_ledger(
     ratings_data: SeventeenLandsData | None = None,
     set_profile: SetProfile | None = None,
     likely_pair: str | None = None,
+    picks_per_pack: int = PICKS_PER_PACK,
 ) -> PoolRoleLedger:
     """Evaluate only an authoritative saved/event pool before the current pick.
     Future offered picks and final-pool state are intentionally not accepted.
@@ -709,6 +722,7 @@ def project_pool_role_ledger(
         pick_number=pick_number,
         global_pick_index=global_pick_index,
         estimated_remaining_picks=estimated_remaining_picks,
+        picks_per_pack=picks_per_pack,
     )
     return _evaluate_pool(
         pool_grp_ids=pool_before_pick,
@@ -953,7 +967,7 @@ def _urgency(*, target_coverage: tuple[TargetCoverage, ...], stage: LedgerStage 
         for item in deficits
     )
     opportunity_pressure = _clamp(
-        1.0 - _ratio(stage.estimated_remaining_picks, TOTAL_DRAFT_PICKS),
+        1.0 - _ratio(stage.estimated_remaining_picks, stage.total_picks),
     )
     return _clamp(deficit_pressure * opportunity_pressure)
 

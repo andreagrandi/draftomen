@@ -822,6 +822,9 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                 offered_grp_ids=tuple(card.arena_id for card in offers.values()),
                 pool_grp_ids=tuple(self._accepted_pool),
                 account_id=self._config.user_id,
+                # Each pick takes one card from the pack, so the offered count
+                # plus the pick number recovers the set's booster size.
+                picks_per_pack=len(offers) + coordinates[1],
             )
         self._emit(event=event)
 

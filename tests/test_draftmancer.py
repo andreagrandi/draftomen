@@ -719,6 +719,7 @@ def test_duplicate_arena_ids_use_unique_instance_index_for_pick() -> None:
         offered_grp_ids=(100, 100),
         pool_grp_ids=(),
         account_id="developer-1",
+        picks_per_pack=2,
     )
     assert published[2] == PickMadeEvent(
         event_name="QuickDraft_HOB_Draftmancer_session-1",
