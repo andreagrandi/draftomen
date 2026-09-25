@@ -6,7 +6,7 @@ aggregate 17Lands format data, and atomically publishes profile objects.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import json
@@ -228,10 +228,23 @@ def prepare_profile_data_refresh(
     fetch_json: FetchJson | None = None,
     filters_url: str = FILTERS_ENDPOINT,
     timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
+    published: Iterable[tuple[str, str]] = (),
+    max_historical_pairs: int | None = None,
 ) -> Plan:
-    """Prepare deterministic pairs from local cards and 17Lands filters."""
+    """Prepare deterministic pairs from local cards and 17Lands filters.
+    Historical plans can skip published pairs and stop at a pair limit.
+    """
 
     normalized_mode = _selection_mode(mode=mode, active=active, historical=historical)
+    if max_historical_pairs is not None and (
+        isinstance(max_historical_pairs, bool)
+        or not isinstance(max_historical_pairs, int)
+        or max_historical_pairs < 1
+    ):
+        raise ProfileDataRefreshError("historical pair limit must be positive")
+    published_identities = frozenset(
+        (set_code.casefold(), event_format.casefold()) for set_code, event_format in published
+    )
     if not isinstance(filters_url, str) or not filters_url.strip():
         raise ProfileDataRefreshError("profile refresh filters URL is invalid")
     fetcher = fetch_json or _default_fetch_json
@@ -281,11 +294,29 @@ def prepare_profile_data_refresh(
                     )
                 )
     selected.sort(key=lambda pair: (pair.set_code, SUPPORTED_FORMATS.index(pair.event_format)))
+    if normalized_mode == "historical":
+        selected = [pair for pair in selected if pair.identity not in published_identities]
+        if max_historical_pairs is not None:
+            selected = _whole_sets_within_limit(pairs=selected, limit=max_historical_pairs)
     return Plan(
         pairs=tuple(selected),
         mode=normalized_mode,
         selector=selector,
     )
+
+
+def _whole_sets_within_limit(*, pairs: list[Pair], limit: int) -> list[Pair]:
+    """Keep whole sets in order while the pair count stays within the limit.
+    Quick Draft reads its set's other formats, so splitting a set costs requests.
+    """
+
+    kept: list[Pair] = []
+    for set_code in sorted({pair.set_code for pair in pairs}):
+        set_pairs = [pair for pair in pairs if pair.set_code == set_code]
+        if kept and len(kept) + len(set_pairs) > limit:
+            break
+        kept.extend(set_pairs)
+    return kept
 
 
 def execute_profile_data_refresh(

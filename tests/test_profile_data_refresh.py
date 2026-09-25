@@ -240,6 +240,117 @@ def test_prepare_supports_active_and_historical_pair_selection(
     assert [(pair.set_code, pair.event_format) for pair in plan.pairs] == expected
 
 
+def test_prepare_historical_skips_pairs_already_published(tmp_path: Path) -> None:
+    card_dir = tmp_path / "card-data"
+    _write_card_artifact(card_dir, set_code="aaa", set_name="Alpha Set")
+    _write_card_artifact(card_dir, set_code="bbb", set_name="Beta Set")
+    plan = refresh.prepare_profile_data_refresh(
+        card_data_dir=card_dir,
+        mode="historical",
+        fetch_json=lambda _url, _timeout: _filters(
+            available={
+                "AAA": ["PremierDraft", "TradDraft"],
+                "BBB": ["PremierDraft"],
+            },
+        ),
+        published=(("aaa", "premierdraft"), ("BBB", "PremierDraft")),
+    )
+
+    assert [(pair.set_code, pair.event_format) for pair in plan.pairs] == [
+        ("aaa", "TradDraft"),
+    ]
+
+
+def test_prepare_historical_keeps_whole_sets_alphabetically_within_pair_limit(
+    tmp_path: Path,
+) -> None:
+    card_dir = tmp_path / "card-data"
+    for set_code in ("eee", "ccc", "aaa", "ddd", "bbb"):
+        _write_card_artifact(card_dir, set_code=set_code, set_name=f"Set {set_code}")
+    plan = refresh.prepare_profile_data_refresh(
+        card_data_dir=card_dir,
+        mode="historical",
+        fetch_json=lambda _url, _timeout: _filters(
+            available={
+                "AAA": ["PremierDraft"],
+                "BBB": ["PremierDraft", "QuickDraft"],
+                "CCC": ["PremierDraft", "TradDraft"],
+                "DDD": ["PremierDraft", "TradDraft", "QuickDraft"],
+                "EEE": ["PremierDraft"],
+            },
+        ),
+        published=(("aaa", "premierdraft"),),
+        max_historical_pairs=6,
+    )
+
+    assert [(pair.set_code, pair.event_format) for pair in plan.pairs] == [
+        ("bbb", "PremierDraft"),
+        ("bbb", "QuickDraft"),
+        ("ccc", "PremierDraft"),
+        ("ccc", "TradDraft"),
+    ]
+
+
+def test_prepare_historical_takes_one_set_larger_than_pair_limit(
+    tmp_path: Path,
+) -> None:
+    card_dir = tmp_path / "card-data"
+    _write_card_artifact(card_dir, set_code="aaa", set_name="Alpha Set")
+    _write_card_artifact(card_dir, set_code="bbb", set_name="Beta Set")
+    plan = refresh.prepare_profile_data_refresh(
+        card_data_dir=card_dir,
+        mode="historical",
+        fetch_json=lambda _url, _timeout: _filters(
+            available={
+                "AAA": ["PremierDraft", "TradDraft", "QuickDraft", "PickTwoDraft"],
+                "BBB": ["PremierDraft"],
+            },
+        ),
+        max_historical_pairs=2,
+    )
+
+    assert [(pair.set_code, pair.event_format) for pair in plan.pairs] == [
+        ("aaa", "PremierDraft"),
+        ("aaa", "TradDraft"),
+        ("aaa", "QuickDraft"),
+        ("aaa", "PickTwoDraft"),
+    ]
+
+
+def test_prepare_active_ignores_published_pairs_and_historical_limit(
+    tmp_path: Path,
+) -> None:
+    card_dir = tmp_path / "card-data"
+    _write_card_artifact(card_dir, set_code="aaa", set_name="Alpha Set")
+    _write_card_artifact(card_dir, set_code="bbb", set_name="Beta Set")
+    plan = refresh.prepare_profile_data_refresh(
+        card_data_dir=card_dir,
+        mode="active",
+        fetch_json=lambda _url, _timeout: _filters(
+            available={"AAA": ["PremierDraft"], "BBB": ["PremierDraft"]},
+            live={"AAA": ["PremierDraft"], "BBB": ["PremierDraft"]},
+        ),
+        published=(("aaa", "premierdraft"),),
+        max_historical_pairs=1,
+    )
+
+    assert [(pair.set_code, pair.event_format) for pair in plan.pairs] == [
+        ("aaa", "PremierDraft"),
+        ("bbb", "PremierDraft"),
+    ]
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, "5"])
+def test_prepare_rejects_invalid_historical_pair_limit(limit: Any, tmp_path: Path) -> None:
+    with pytest.raises(refresh.ProfileDataRefreshError, match="pair limit"):
+        refresh.prepare_profile_data_refresh(
+            card_data_dir=tmp_path,
+            mode="historical",
+            fetch_json=lambda _url, _timeout: _filters(available={}),
+            max_historical_pairs=limit,
+        )
+
+
 def test_prepare_keeps_hob_quickdraft_active_when_another_format_is_live(
     tmp_path: Path,
 ) -> None:
