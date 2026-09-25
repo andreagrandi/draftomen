@@ -446,6 +446,15 @@ def test_default_policy_is_bounded() -> None:
     policy = execution.DEFAULT_PROFILE_REFRESH_CACHE_POLICY
     assert policy.freshness_ttl > timedelta(0)
     assert policy.max_entry_bytes <= policy.max_total_bytes
+
+
+def test_default_policy_fits_the_dft_premier_draft_dump() -> None:
+    policy = execution.DEFAULT_PROFILE_REFRESH_CACHE_POLICY
+    dft_premier_dump_bytes = 205_196_136
+    assert policy.max_entry_bytes >= dft_premier_dump_bytes
+    assert policy.max_total_bytes >= 3 * policy.max_entry_bytes
+
+
 def test_bundle_layout_inputs_and_move_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         execution,

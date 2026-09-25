@@ -57,10 +57,11 @@ from draftomen.seventeen import SeventeenLandsError, SeventeenLandsFormatData
 PROFILE_REFRESH_EXECUTION_SCHEMA_VERSION = 2
 PROFILE_REFRESH_EXECUTOR_VERSION = "2"
 
+# The DFT PremierDraft public draft dump is 205 MB compressed.
 DEFAULT_PROFILE_REFRESH_CACHE_POLICY = ProfileInputCachePolicy(
     freshness_ttl=timedelta(days=7),
-    max_entry_bytes=128 * 1024 * 1024,
-    max_total_bytes=512 * 1024 * 1024,
+    max_entry_bytes=300 * 1024 * 1024,
+    max_total_bytes=1024 * 1024 * 1024,
     max_records=256,
     max_versions_per_source=3,
 )
