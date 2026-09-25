@@ -50,7 +50,6 @@ _REQUIRED_COLUMNS = {
     "pack_number",
     "pick_number",
     "pick",
-    "pick_2",
 }
 
 
@@ -387,7 +386,8 @@ def _scan_drafts(
             problems.add("duplicate_pick")
         picks.add(pick_index)
         state["candidates"] = int(state["candidates"]) + len(offered)
-        if row["pick_2"].strip():
+        # 17Lands added pick_2 for Pick Two Draft; older dumps such as DFT lack it.
+        if (row.get("pick_2") or "").strip():
             problems.add("second_pick")
         if row["pick"] not in offered:
             problems.add("chosen_card_not_offered")

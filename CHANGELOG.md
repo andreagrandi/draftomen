@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Let `build-augmented-set` read 17Lands draft dumps that have no `pick_2`
+  column. 17Lands added that column for Pick Two Draft, so older dumps such
+  as DFT failed with "Draft dump is missing required columns: ['pick_2']".
+  Without the column, no row counts as a second pick.
 - Make the weekly historical profile refresh process at most 6 set and format
   pairs per run, keeping each set whole, and skip pairs that already have a
   published profile. The old run refreshed all 128 historical pairs at once,
