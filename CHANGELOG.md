@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Raise the profile input cache limits to 300 MiB per entry and 1 GiB in
+  total. The DFT PremierDraft public draft dump is 205 MB, so the old 128 MiB
+  limit rejected it and `build-augmented-set DFT` trained on the much smaller
+  TradDraft dump instead.
 - Let `build-augmented-set` read 17Lands draft dumps that have no `pick_2`
   column. 17Lands added that column for Pick Two Draft, so older dumps such
   as DFT failed with "Draft dump is missing required columns: ['pick_2']".
