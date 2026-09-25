@@ -9,6 +9,11 @@
   macOS release assets are now named `unsigned-macos-arm64.dmg` and
   `unsigned-macos-x86_64.dmg`, the checksum file lists both, and the website
   offers both downloads. (#347)
+- Fix the Windows native build, which failed its bundled-profile check since
+  #332. A Windows checkout converted line endings in the HOB profile snapshot
+  and the bundled baseline profile, so their bytes no longer matched the
+  recorded sizes and SHA-256. A new `.gitattributes` turns off line-ending
+  conversion for `profile-snapshots/` and `draftomen/baseline_profiles/`.
 - Add a Sets page to the website at `/sets/`, linked from the navigation. It
   lists the supported sets, those with card data and 17Lands ratings, and
   marks the ones with an augmented model. A second list shows the sets that

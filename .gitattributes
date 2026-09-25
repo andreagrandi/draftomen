@@ -1,0 +1,5 @@
+# Profile snapshots and the bundled baseline profiles are checked by byte
+# length and SHA-256, so checkouts must keep their bytes identical on every
+# platform.
+profile-snapshots/** -text
+draftomen/baseline_profiles/** -text
