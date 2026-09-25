@@ -30,7 +30,6 @@ EXPECTED_EXCLUDED_QML_PLUGINS = {
     "QtCharts",
     "QtQuick3D",
     "QtSensors",
-    "QtTest",
     "QtWebEngine",
 }
 EXPECTED_PRODUCT_NAME = "Draft Omen"
