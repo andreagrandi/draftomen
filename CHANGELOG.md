@@ -3,6 +3,10 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Let `build-augmented-set` train on draft dumps with bonus-sheet cards that
+  the set card data does not list, such as the 10 DFT Special Guests. Their
+  metadata comes from the local Scryfall bulk file, preferring an Arena
+  printing, and the set's own printing wins when both exist. (#715)
 - Raise the profile input cache limits to 300 MiB per entry and 1 GiB in
   total. The DFT PremierDraft public draft dump is 205 MB, so the old 128 MiB
   limit rejected it and `build-augmented-set DFT` trained on the much smaller

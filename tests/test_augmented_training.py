@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import gzip
 import hashlib
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+import draftomen.augmented_publication as augmented_publication
 import draftomen.augmented_training as augmented_training
 from draftomen.augmented_training import (
     AugmentedTrainingError,
@@ -497,16 +499,182 @@ def test_compact_loader_rejects_invalid_draft_timestamp(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("card_set_code", ("TST", None))
-def test_compact_loader_rejects_wrong_or_missing_set_on_referenced_cards(
-    tmp_path: Path, card_set_code: str | None
+def test_loaders_train_a_bonus_sheet_card_printed_in_another_set() -> None:
+    source = _public_dump_source()
+    database = _update_card(
+        _fixture_card_database(), card_name="Blue Trick", set_code="SPG"
+    )
+
+    prepared = prepare_augmented_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+    data = _load_array_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+    expected = _load_array_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=_fixture_card_database(),
+        complete_draft_picks=2,
+    )
+
+    prepared_features = {
+        (row.draft_index, row.pick_index): row.features
+        for row in prepared.iter_rows()
+    }
+    assert len(data.targets) == prepared.report.drafts_accepted * 2
+    assert [tuple(value) for value in data.features] == [
+        prepared_features[(draft_index, pick_index)]
+        for draft_index in range(7)
+        for pick_index in range(2)
+    ]
+    assert data.features.tolist() == expected.features.tolist()
+    assert data.targets.tolist() == expected.targets.tolist()
+
+
+def _database_without_blue_trick() -> CardDatabase:
+    return CardDatabase(
+        cards={
+            grp_id: card
+            for grp_id, card in _fixture_card_database().cards.items()
+            if card.name != "Blue Trick"
+        }
+    )
+
+
+def _write_bulk_file(path: Path, *rows: dict[str, Any]) -> Path:
+    with gzip.open(path, mode="wt", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+    return path
+
+
+def test_bonus_sheet_card_metadata_comes_from_the_scryfall_bulk_file(
+    tmp_path: Path,
+) -> None:
+    source = _public_dump_source()
+    bulk_file = _write_bulk_file(
+        tmp_path / "bulk.jsonl.gz",
+        {"name": "Unrelated Card", "id": "00000000-0000-4000-8000-00000000000a"},
+        {
+            "id": "00000000-0000-4000-8000-00000000000b",
+            "oracle_id": _CARD_B,
+            "name": "Blue Trick",
+            "set": "spg",
+            "collector_number": "7",
+            "rarity": "mythic",
+            "cmc": 3.0,
+            "colors": ["U"],
+            "type_line": "Instant",
+        },
+    )
+    database = augmented_publication._with_bonus_sheet_cards(
+        card_database=_database_without_blue_trick(),
+        card_names=augmented_publication._dump_card_names(path=Path(source.path)),
+        bulk_file=bulk_file,
+    )
+    blue_trick = next(card for card in database.cards.values() if card.name == "Blue Trick")
+
+    data = _load_array_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+    expected = _load_array_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=_fixture_card_database(),
+        complete_draft_picks=2,
+    )
+
+    assert blue_trick.set_code == "spg"
+    assert blue_trick.oracle_id == _CARD_B
+    assert data.features.tolist() == expected.features.tolist()
+    assert data.targets.tolist() == expected.targets.tolist()
+
+
+def test_card_missing_from_set_data_and_bulk_file_is_named_in_the_error(
+    tmp_path: Path,
+) -> None:
+    source = _public_dump_source()
+    bulk_file = _write_bulk_file(
+        tmp_path / "bulk.jsonl.gz",
+        {"name": "Unrelated Card", "id": "00000000-0000-4000-8000-00000000000a"},
+    )
+    database = augmented_publication._with_bonus_sheet_cards(
+        card_database=_database_without_blue_trick(),
+        card_names=augmented_publication._dump_card_names(path=Path(source.path)),
+        bulk_file=bulk_file,
+    )
+
+    with pytest.raises(AugmentedTrainingError, match="'Blue Trick'"):
+        _load_array_training_data(
+            set_code="HOB",
+            source=source,
+            card_database=database,
+            complete_draft_picks=2,
+        )
+
+
+def test_missing_bulk_file_is_named_only_when_a_card_is_unlisted(
+    tmp_path: Path,
+) -> None:
+    source = _public_dump_source()
+    card_names = augmented_publication._dump_card_names(path=Path(source.path))
+    missing_bulk = tmp_path / "missing.jsonl.gz"
+
+    complete = augmented_publication._with_bonus_sheet_cards(
+        card_database=_fixture_card_database(),
+        card_names=card_names,
+        bulk_file=missing_bulk,
+    )
+    with pytest.raises(augmented_publication.AugmentedPublicationError, match="missing"):
+        augmented_publication._with_bonus_sheet_cards(
+            card_database=_database_without_blue_trick(),
+            card_names=card_names,
+            bulk_file=missing_bulk,
+        )
+
+    assert complete.cards == _fixture_card_database().cards
+
+
+def test_set_printing_wins_over_a_bonus_sheet_printing_of_the_same_name() -> None:
+    database = _fixture_card_database()
+    blue_trick = next(card for card in database.cards.values() if card.name == "Blue Trick")
+    cards = dict(database.cards)
+    cards[99] = replace(blue_trick, grp_id=99, set_code="SPG", colors=("B",))
+    data = _load_array_training_data(
+        set_code="HOB",
+        source=_public_dump_source(),
+        card_database=CardDatabase(cards=cards),
+        complete_draft_picks=2,
+    )
+    expected = _load_array_training_data(
+        set_code="HOB",
+        source=_public_dump_source(),
+        card_database=database,
+        complete_draft_picks=2,
+    )
+
+    assert data.features.tolist() == expected.features.tolist()
+
+
+def test_compact_loader_rejects_missing_set_on_referenced_cards(
+    tmp_path: Path,
 ) -> None:
     source = _passing_compact_source(tmp_path=tmp_path)
     database = _update_card(
-        _fixture_card_database(), card_name="Blue Trick", set_code=card_set_code
+        _fixture_card_database(), card_name="Blue Trick", set_code=None
     )
 
-    with pytest.raises(AugmentedTrainingError):
+    with pytest.raises(AugmentedTrainingError, match="no set code"):
         _load_array_training_data(
             set_code="HOB",
             source=source,

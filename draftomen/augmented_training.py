@@ -241,9 +241,9 @@ def _load_array_training_data(
     candidate_ids: list[str] = []
     for name in card_names:
         card = cards_by_name[name]
-        if not card.set_code or card.set_code.upper() != normalized_set:
+        if not card.set_code:
             raise AugmentedTrainingError(
-                f"Card metadata for {name!r} has no matching set code."
+                f"Card metadata for {name!r} has no set code."
             )
         try:
             candidate_ids.append(_candidate_id(card=card))
