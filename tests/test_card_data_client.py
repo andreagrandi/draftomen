@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import gzip
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -24,6 +25,7 @@ from draftomen.card_data_client import (
 )
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.set_card_data import SetCardData
+from draftomen.sets_manifest import SETS_MANIFEST_URL, CardDataRecord, SetEntry, SetsManifest
 
 
 class _Response:
@@ -107,7 +109,11 @@ def test_cold_load_uses_safe_url_headers_timeout_and_atomically_caches(tmp_path:
     url = f"{CARD_DATA_BASE_URL}{code}.json.gz"
     payload = _artifact().to_gzip_bytes()
     calls: list[dict[str, Any]] = []
-    client = CardDataClient(app_dir=tmp_path, opener=_opener(payload, calls, url=url))
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=None,
+        opener=_opener(payload, calls, url=url),
+    )
 
     database = client.load("TST", allow_network=True)
 
@@ -159,6 +165,7 @@ def test_invalid_cache_is_replaced_after_valid_network_refresh(tmp_path: Path) -
 
     loaded = CardDataClient(
         app_dir=tmp_path,
+        sets_manifest_url=None,
         opener=_opener(payload, calls, url=url),
     ).load("TST", allow_network=True)
 
@@ -190,6 +197,7 @@ def test_cross_origin_redirect_is_rejected(tmp_path: Path) -> None:
     calls: list[dict[str, Any]] = []
     client = CardDataClient(
         app_dir=tmp_path,
+        sets_manifest_url=None,
         opener=_opener(_artifact().to_gzip_bytes(), calls, url="https://evil.example/tst.json.gz"),
     )
     with pytest.raises(CardDataClientError, match="origin"):
@@ -269,7 +277,7 @@ def test_same_key_concurrency_fetches_once_and_installs_one_cache(tmp_path: Path
         time.sleep(0.03)
         return _Response(payload, url=request.full_url)
 
-    client = CardDataClient(app_dir=tmp_path, opener=opener)
+    client = CardDataClient(app_dir=tmp_path, sets_manifest_url=None, opener=opener)
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(client.load, "TST", allow_network=True)
         assert gate.wait(timeout=1)
@@ -277,3 +285,176 @@ def test_same_key_concurrency_fetches_once_and_installs_one_cache(tmp_path: Path
         assert first.result().lookup(grp_id=1).name == "Test Card"
         assert second.result().lookup(grp_id=1).name == "Test Card"
     assert len(calls) == 1
+
+
+def _manifest_bytes(*payloads_by_set: tuple[str, bytes]) -> bytes:
+    return SetsManifest(
+        entries=tuple(
+            SetEntry(
+                set_code=set_code,
+                name="Test Set",
+                card_data=CardDataRecord(
+                    url=f"{CARD_DATA_BASE_URL}{set_code}.json.gz",
+                    bytes=len(payload),
+                    sha256=hashlib.sha256(payload).hexdigest(),
+                ),
+                profiles={},
+                augmented=None,
+            )
+            for set_code, payload in payloads_by_set
+        )
+    ).to_bytes()
+
+
+def _routing_opener(
+    routes: dict[str, bytes | Exception], requested: list[str]
+) -> Any:
+    def open_url(request: Any, *, timeout: float) -> _Response:
+        del timeout
+        requested.append(request.full_url)
+        route = routes[request.full_url]
+        if isinstance(route, Exception):
+            raise route
+        return _Response(route, url=request.full_url)
+
+    return open_url
+
+
+def _two_card_artifact() -> SetCardData:
+    return SetCardData.from_card_database(
+        CardDatabase(
+            cards={
+                1: _card(),
+                2: _card(arena_id=2, name="Second Card"),
+            }
+        ),
+        set_code="tst",
+        set_name="Test Set",
+    )
+
+
+_CARD_URL = f"{CARD_DATA_BASE_URL}tst.json.gz"
+
+
+def test_cold_load_verifies_the_download_against_the_sets_manifest(tmp_path: Path) -> None:
+    payload = _artifact().to_gzip_bytes()
+    requested: list[str] = []
+    client = CardDataClient(
+        app_dir=tmp_path,
+        opener=_routing_opener(
+            {SETS_MANIFEST_URL: _manifest_bytes(("tst", payload)), _CARD_URL: payload},
+            requested,
+        ),
+    )
+
+    database = client.load("TST", allow_network=True)
+
+    assert database.lookup(grp_id=1).name == "Test Card"
+    assert requested == [SETS_MANIFEST_URL, _CARD_URL]
+    assert client.cache_path("tst").read_bytes() == payload
+
+
+def test_checksum_mismatch_rejects_the_download_and_keeps_the_cached_file(
+    tmp_path: Path,
+) -> None:
+    cached = _artifact().to_gzip_bytes()
+    published = _two_card_artifact().to_gzip_bytes()
+    tampered = _two_card_artifact().to_gzip_bytes() + b"\x00"
+    destination = card_data_cache_path(set_code="tst", app_dir=tmp_path)
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(cached)
+    requested: list[str] = []
+    client = CardDataClient(
+        app_dir=tmp_path,
+        opener=_routing_opener(
+            {SETS_MANIFEST_URL: _manifest_bytes(("tst", published)), _CARD_URL: tampered},
+            requested,
+        ),
+    )
+
+    database = client.load("tst", allow_network=True)
+
+    assert requested == [SETS_MANIFEST_URL, _CARD_URL]
+    assert tuple(database.cards) == (1,)
+    assert destination.read_bytes() == cached
+
+
+def test_checksum_mismatch_without_a_cache_raises(tmp_path: Path) -> None:
+    payload = _artifact().to_gzip_bytes()
+    client = CardDataClient(
+        app_dir=tmp_path,
+        opener=_routing_opener(
+            {
+                SETS_MANIFEST_URL: _manifest_bytes(("tst", payload + b"x")),
+                _CARD_URL: payload,
+            },
+            [],
+        ),
+    )
+
+    with pytest.raises(CardDataClientError, match="checksum"):
+        client.load("tst", allow_network=True)
+    assert not client.cache_path("tst").exists()
+
+
+def test_changed_checksum_downloads_once_and_unchanged_checksum_downloads_nothing(
+    tmp_path: Path,
+) -> None:
+    old = _artifact().to_gzip_bytes()
+    new = _two_card_artifact().to_gzip_bytes()
+    destination = card_data_cache_path(set_code="tst", app_dir=tmp_path)
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(old)
+    requested: list[str] = []
+    routes: dict[str, bytes | Exception] = {
+        SETS_MANIFEST_URL: _manifest_bytes(("tst", new)),
+        _CARD_URL: new,
+    }
+
+    client = CardDataClient(app_dir=tmp_path, opener=_routing_opener(routes, requested))
+    first = client.load("tst", allow_network=True)
+    second = client.load("tst", allow_network=True)
+
+    assert tuple(first.cards) == (1, 2)
+    assert tuple(second.cards) == (1, 2)
+    assert requested == [SETS_MANIFEST_URL, _CARD_URL]
+    assert destination.read_bytes() == new
+
+    requested.clear()
+    fresh_client = CardDataClient(app_dir=tmp_path, opener=_routing_opener(routes, requested))
+    assert tuple(fresh_client.load("tst", allow_network=True).cards) == (1, 2)
+    assert requested == [SETS_MANIFEST_URL]
+
+
+def test_cached_set_loads_when_the_network_is_unavailable(tmp_path: Path) -> None:
+    payload = _artifact().to_gzip_bytes()
+    destination = card_data_cache_path(set_code="tst", app_dir=tmp_path)
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(payload)
+    requested: list[str] = []
+    offline = OSError("network is unreachable")
+    client = CardDataClient(
+        app_dir=tmp_path,
+        opener=_routing_opener({SETS_MANIFEST_URL: offline, _CARD_URL: offline}, requested),
+    )
+
+    database = client.load("tst", allow_network=True)
+
+    assert database.lookup(grp_id=1).name == "Test Card"
+    assert requested == [SETS_MANIFEST_URL]
+    assert destination.read_bytes() == payload
+
+
+def test_unreachable_manifest_still_allows_a_cold_download(tmp_path: Path) -> None:
+    payload = _artifact().to_gzip_bytes()
+    requested: list[str] = []
+    client = CardDataClient(
+        app_dir=tmp_path,
+        opener=_routing_opener(
+            {SETS_MANIFEST_URL: OSError("manifest unavailable"), _CARD_URL: payload},
+            requested,
+        ),
+    )
+
+    assert client.load("tst", allow_network=True).lookup(grp_id=1).name == "Test Card"
+    assert requested == [SETS_MANIFEST_URL, _CARD_URL]

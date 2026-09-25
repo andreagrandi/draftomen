@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import hashlib
 import math
 import os
 from os import PathLike
@@ -18,6 +19,7 @@ import urllib.request
 from draftomen.carddb import CardDatabase
 from draftomen.paths import app_data_dir
 from draftomen.set_card_data import SetCardData, SetCardDataError
+from draftomen.sets_manifest import SETS_MANIFEST_URL, SetsManifest, SetsManifestError
 
 _DEFAULT_URL_OPENER = urllib.request.urlopen
 
@@ -28,6 +30,7 @@ CARD_DATA_BASE_URL = "https://www.draftomen.com/card-data/"
 CARD_DATA_TIMEOUT_SECONDS = 10.0
 CARD_DATA_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024
 CARD_DATA_MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
+SETS_MANIFEST_MAX_BYTES = 1024 * 1024
 CARD_DATA_USER_AGENT = (
     "draftomen-card-data/1 (+https://github.com/andreagrandi/draftomen)"
 )
@@ -263,13 +266,16 @@ def _atomic_install(destination: Path, payload: bytes) -> None:
 
 
 class CardDataClient:
-    """Load one hosted set artifact with local-first, atomic caching."""
+    """Load one hosted set artifact with local-first, atomic caching.
+    With network allowed, the sets manifest decides whether a cached file is current.
+    """
 
     def __init__(
         self,
         *,
         app_dir: PathInput | None = None,
         base_url: str = CARD_DATA_BASE_URL,
+        sets_manifest_url: str | None = SETS_MANIFEST_URL,
         opener: UrlOpener = urllib.request.urlopen,
         timeout_seconds: float = CARD_DATA_TIMEOUT_SECONDS,
         max_compressed_bytes: int = CARD_DATA_MAX_COMPRESSED_BYTES,
@@ -288,6 +294,12 @@ class CardDataClient:
         )
         self.base_url = self._normalize_base_url(base_url)
         self._origin = _url_origin(self.base_url)
+        self.sets_manifest_url = (
+            None if sets_manifest_url is None else _validate_url(sets_manifest_url)
+        )
+        self._sets_manifest_lock = threading.Lock()
+        self._sets_manifest_fetched = False
+        self._sets_manifest: SetsManifest | None = None
 
     @staticmethod
     def _normalize_base_url(base_url: str) -> str:
@@ -314,24 +326,41 @@ class CardDataClient:
             app_dir=self.app_dir,
         )
         with _CardDataPathLock(destination):
-            cached = self._load_cached(destination, normalized_set_code)
-            if cached is not None:
-                return cached.to_card_database()
+            cached_payload, cached = self._load_cached(destination, normalized_set_code)
             if not allow_network:
+                if cached is not None:
+                    return cached.to_card_database()
                 raise CardDataClientError(
                     f"Card-data cache missing or invalid for set {normalized_set_code!r}; "
                     "network access is disabled."
                 )
+            expected_sha256 = self._published_sha256(normalized_set_code)
+            if cached is not None and (
+                expected_sha256 is None
+                or hashlib.sha256(cached_payload).hexdigest() == expected_sha256
+            ):
+                return cached.to_card_database()
             try:
                 payload = self._fetch(normalized_set_code)
+                if (
+                    expected_sha256 is not None
+                    and hashlib.sha256(payload).hexdigest() != expected_sha256
+                ):
+                    raise CardDataClientError(
+                        f"Hosted card-data artifact for set {normalized_set_code!r} "
+                        "does not match the sets manifest checksum."
+                    )
                 card_data = SetCardData.from_gzip_bytes(
                     payload,
                     max_decompressed_bytes=self.max_decompressed_bytes,
                     expected_set_code=normalized_set_code,
                 )
-            except CardDataClientError:
-                raise
-            except (OSError, SetCardDataError, TypeError, ValueError) as error:
+            except (CardDataClientError, OSError, SetCardDataError, TypeError, ValueError) as error:
+                # A failed update keeps the previous valid cache in use.
+                if cached is not None:
+                    return cached.to_card_database()
+                if isinstance(error, CardDataClientError):
+                    raise
                 raise CardDataClientError(
                     f"Hosted card-data artifact for set {normalized_set_code!r} is invalid."
                 ) from error
@@ -343,23 +372,67 @@ class CardDataClient:
                 ) from error
             return card_data.to_card_database()
 
-    def _load_cached(self, destination: Path, set_code: str) -> SetCardData | None:
+    def _load_cached(
+        self, destination: Path, set_code: str
+    ) -> tuple[bytes, SetCardData | None]:
         try:
             payload = destination.read_bytes()
-            return SetCardData.from_gzip_bytes(
+            return payload, SetCardData.from_gzip_bytes(
                 payload,
                 max_decompressed_bytes=self.max_decompressed_bytes,
                 expected_set_code=set_code,
             )
         except (OSError, SetCardDataError, TypeError, ValueError):
+            return b"", None
+
+    def _published_sha256(self, set_code: str) -> str | None:
+        """Return the set's card-data checksum from the sets manifest.
+        None means the manifest is disabled, unreachable, invalid, or does not list the set.
+        """
+
+        if self.sets_manifest_url is None:
             return None
+        with self._sets_manifest_lock:
+            if not self._sets_manifest_fetched:
+                self._sets_manifest_fetched = True
+                try:
+                    self._sets_manifest = SetsManifest.from_bytes(
+                        self._fetch_url(
+                            self.sets_manifest_url,
+                            origin=_url_origin(self.sets_manifest_url),
+                            limit=SETS_MANIFEST_MAX_BYTES,
+                            label="sets manifest",
+                            accept="application/json",
+                        )
+                    )
+                except (CardDataClientError, SetsManifestError):
+                    self._sets_manifest = None
+        if self._sets_manifest is None:
+            return None
+        entry = self._sets_manifest.select(set_code=set_code)
+        return None if entry is None else entry.card_data.sha256
 
     def _fetch(self, set_code: str) -> bytes:
-        url = f"{self.base_url}{set_code}.json.gz"
-        _validate_url(url, origin=self._origin)
+        return self._fetch_url(
+            f"{self.base_url}{set_code}.json.gz",
+            origin=self._origin,
+            limit=self.max_compressed_bytes,
+            label=f"card-data artifact for set {set_code!r}",
+        )
+
+    def _fetch_url(
+        self,
+        url: str,
+        *,
+        origin: tuple[str, str, int],
+        limit: int,
+        label: str,
+        accept: str = CARD_DATA_ACCEPT,
+    ) -> bytes:
+        _validate_url(url, origin=origin)
         request = urllib.request.Request(
             url,
-            headers={"Accept": CARD_DATA_ACCEPT, "User-Agent": CARD_DATA_USER_AGENT},
+            headers={"Accept": accept, "User-Agent": CARD_DATA_USER_AGENT},
             method="GET",
         )
         try:
@@ -371,30 +444,26 @@ class CardDataClient:
                     opener = urllib.request.urlopen
                 else:
                     opener = urllib.request.build_opener(
-                        _OriginRedirectHandler(self._origin)
+                        _OriginRedirectHandler(origin)
                     ).open
             response = opener(request, timeout=self.timeout_seconds)
         except CardDataClientError:
             raise
         except Exception as error:
-            raise CardDataClientError(
-                f"Could not fetch card-data artifact for set {set_code!r}."
-            ) from error
+            raise CardDataClientError(f"Could not fetch {label}.") from error
         try:
             final_url = _response_url(response) or url
-            _validate_url(final_url, origin=self._origin)
+            _validate_url(final_url, origin=origin)
             status = _response_status(response)
             if status is not None and status != 200:
                 raise CardDataClientError(
                     f"Hosted card-data request returned HTTP status {status}."
                 )
-            return _read_bounded(response, limit=self.max_compressed_bytes)
+            return _read_bounded(response, limit=limit)
         except CardDataClientError:
             raise
         except Exception as error:
-            raise CardDataClientError(
-                f"Could not read card-data artifact for set {set_code!r}."
-            ) from error
+            raise CardDataClientError(f"Could not read {label}.") from error
         finally:
             _close_response(response)
 

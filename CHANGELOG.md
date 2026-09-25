@@ -3,6 +3,11 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Check downloaded card data against the sets manifest. With network access,
+  the card-data client reads `sets/manifest.json` once per client, rejects a
+  download whose SHA-256 differs from the manifest, and downloads again when a
+  cached file no longer matches it. A failed update keeps the valid cached
+  file, and an unreachable manifest leaves cached sets in use. (#704)
 - Publish `sets/manifest.json` on the website. It lists every set with card
   data, and gives each set's name, card-data URL, size and SHA-256, profile
   formats with their maturity, and augmented model metrics. `export-set-data`,
