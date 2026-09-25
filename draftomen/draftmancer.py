@@ -15,7 +15,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import socketio
 
-from draftomen.carddb import CardDatabase
+from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.events import (
     DraftCompletedEvent,
     DraftEvent,
@@ -118,6 +118,7 @@ def _validated_card_identity_map(
     *,
     values: Mapping[str, int] | None,
     card_database: CardDatabase,
+    require_resolved: bool,
 ) -> dict[str, int]:
     if values is None:
         return {}
@@ -136,6 +137,8 @@ def _validated_card_identity_map(
                 "Draftmancer canonical Arena ids must be integers."
             )
         identities[card_id] = grp_id
+    if not require_resolved:
+        return identities
     unresolved = card_database.unresolved_grp_ids(grp_ids=identities.values())
     if unresolved:
         raise DraftmancerAdapterError(
@@ -201,6 +204,7 @@ Socket callbacks only enqueue messages; caller-thread methods own all state muta
         card_database: CardDatabase,
         event_sink: Callable[[DraftEvent], None],
         canonical_grp_ids_by_scryfall_id: Mapping[str, int] | None = None,
+        missing_card_resolver: Callable[..., CardInfo | None] | None = None,
         socket_client: object | None = None,
     ) -> None:
         if not callable(event_sink):
@@ -210,8 +214,10 @@ Socket callbacks only enqueue messages; caller-thread methods own all state muta
         self._canonical_grp_ids_by_scryfall_id = _validated_card_identity_map(
             values=canonical_grp_ids_by_scryfall_id,
             card_database=card_database,
+            require_resolved=missing_card_resolver is None,
         )
         self._event_sink = event_sink
+        self._missing_card_resolver = missing_card_resolver
         self._socket: object | None = socket_client
         self._condition = Condition(RLock())
         self._messages: deque[_RawMessage] = deque()
@@ -858,6 +864,7 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                 )
             offers: dict[int, _OfferedCard] = {}
             labels_by_grp_id: dict[int, str] = {}
+            entries_by_grp_id: dict[int, Mapping[object, object]] = {}
             for index, entry in enumerate(booster):
                 if not isinstance(entry, Mapping):
                     raise DraftmancerAdapterError(
@@ -880,6 +887,13 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                 )
                 if canonical_grp_id is None:
                     arena_id = entry.get("arena_id")
+                    if (
+                        not isinstance(arena_id, int) or isinstance(arena_id, bool)
+                    ) and (
+                        self._missing_card_resolver is not None
+                        and isinstance(scryfall_id, str)
+                    ):
+                        arena_id = _unlisted_card_grp_id(scryfall_id=scryfall_id)
                     if not isinstance(arena_id, int) or isinstance(arena_id, bool):
                         raise DraftmancerAdapterError(
                             f"Draftmancer booster card {_booster_card_label(entry=entry)} "
@@ -894,7 +908,16 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                     canonical_grp_id,
                     _booster_card_label(entry=entry),
                 )
+                entries_by_grp_id.setdefault(canonical_grp_id, entry)
             unresolved = self._card_database.unresolved_grp_ids(grp_ids=labels_by_grp_id)
+            if unresolved and self._missing_card_resolver is not None:
+                self._add_missing_cards(
+                    grp_ids=unresolved,
+                    entries_by_grp_id=entries_by_grp_id,
+                )
+                unresolved = self._card_database.unresolved_grp_ids(
+                    grp_ids=labels_by_grp_id,
+                )
             if unresolved:
                 raise DraftmancerAdapterError(
                     "Draftmancer booster contains unresolved Arena ids: "
@@ -911,6 +934,31 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                 f"Draftmancer draftState validation failed: {_error_text(error)}"
             )
             raise self._fail(failure) from error
+
+    def _add_missing_cards(
+        self,
+        *,
+        grp_ids: tuple[int, ...],
+        entries_by_grp_id: Mapping[int, Mapping[object, object]],
+    ) -> None:
+        """Add unrated metadata for booster cards the set card data does not list.
+        The session shares this database, so it sees the cards before the pack event.
+        """
+
+        resolver = self._missing_card_resolver
+        if resolver is None:
+            return
+        for grp_id in grp_ids:
+            entry = entries_by_grp_id[grp_id]
+            scryfall_id = entry.get("id")
+            card = resolver(
+                grp_id=grp_id,
+                scryfall_id=scryfall_id if isinstance(scryfall_id, str) else None,
+            )
+            if card is None:
+                card = _card_info_from_draftmancer_entry(entry=entry, grp_id=grp_id)
+            if card is not None:
+                self._card_database.cards[grp_id] = card
 
     def _process_end(self, *, payload: object) -> None:
         del payload
@@ -1028,6 +1076,74 @@ def _booster_card_label(*, entry: Mapping[object, object]) -> str:
     if isinstance(scryfall_id, str) and scryfall_id:
         return f"{label} (Scryfall {scryfall_id})"
     return label
+
+
+# Arena grpIds stay far below this base, so synthetic ids for printings that
+# never reached Arena cannot collide with a real card.
+_UNLISTED_CARD_GRP_ID_BASE = 900_000_000
+_SUPERTYPES = frozenset({"Basic", "Legendary", "Snow", "World", "Ongoing"})
+
+
+def _unlisted_card_grp_id(*, scryfall_id: str) -> int:
+    """Derive a stable grpId for a booster printing that has no Arena id anywhere.
+    The same Scryfall printing always maps to the same synthetic id within a draft.
+    """
+
+    digits = "".join(character for character in scryfall_id if character in "0123456789abcdef")
+    return _UNLISTED_CARD_GRP_ID_BASE + int(digits[:7] or "0", 16)
+
+
+def _card_info_from_draftmancer_entry(
+    *,
+    entry: Mapping[object, object],
+    grp_id: int,
+) -> CardInfo | None:
+    """Build unrated card metadata from the fields Draftmancer sends with a booster card.
+    It is the last resort for printings that neither the set data nor Scryfall list on Arena.
+    """
+
+    name = entry.get("name")
+    rarity = entry.get("rarity")
+    if not isinstance(name, str) or not name or not isinstance(rarity, str):
+        return None
+    type_line = entry.get("type")
+    type_words = tuple(type_line.split()) if isinstance(type_line, str) else ()
+    colors = entry.get("colors")
+    subtypes = entry.get("subtypes")
+    cmc = entry.get("cmc")
+    mana_cost = entry.get("mana_cost")
+    oracle_text = entry.get("oracle_text")
+    set_code = entry.get("set")
+    collector_number = entry.get("collector_number")
+    return CardInfo(
+        grp_id=grp_id,
+        name=name,
+        colors=(
+            tuple(color for color in colors if isinstance(color, str))
+            if isinstance(colors, list)
+            else ()
+        ),
+        mana_value=(
+            float(cmc)
+            if isinstance(cmc, (int, float)) and not isinstance(cmc, bool)
+            else None
+        ),
+        rarity=rarity,
+        types=tuple(word for word in type_words if word not in _SUPERTYPES) or ("Unknown",),
+        mana_cost=mana_cost if isinstance(mana_cost, str) and mana_cost else None,
+        oracle_text=oracle_text if isinstance(oracle_text, str) else None,
+        type_line=type_line if isinstance(type_line, str) else None,
+        subtypes=(
+            tuple(subtype for subtype in subtypes if isinstance(subtype, str))
+            if isinstance(subtypes, list)
+            else ()
+        ),
+        set_code=set_code if isinstance(set_code, str) else None,
+        collector_number=(
+            collector_number if isinstance(collector_number, str) else None
+        ),
+        source_provenance=("draftmancer",),
+    )
 
 
 def _non_negative_int(value: object, *, field_name: str) -> int:

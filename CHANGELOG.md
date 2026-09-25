@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Let Mocked Draft offer booster cards that the set card data does not list,
+  such as SPG, MUL, BIG, and OTP bonus-sheet cards and 32 KTK cards. A card
+  maps to another Arena printing of the same card when the set has none, and
+  its metadata comes from the local Scryfall bulk file, or from the card
+  fields Draftmancer sends when the printing never reached Arena. These cards
+  carry no ratings and score the neutral prior. (#696, #697)
 - Make the GUI replay smoke check wait for a pending hosted profile refresh
   before it captures. A fast replay finished before the MSH profile download,
   so the check showed fallback ratings even though the session adopts the
