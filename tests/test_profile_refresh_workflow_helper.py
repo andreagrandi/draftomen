@@ -1246,6 +1246,77 @@ def test_active_historical_modes_reuse_fresh_aggregate_cache(
     assert public_calls == []
 
 
+def test_historical_run_skips_published_and_zero_game_pairs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import draftomen.card_data_export as card_export
+
+    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
+    monkeypatch.setattr(workflow, "_base_bytes", lambda *args, **kwargs: None)
+    root = tmp_path / "checkout"
+    _static(root / "website/public/card-data", set_code="old", set_name="Old Set")
+    inventory, bulk = _source(tmp_path)
+    _manifest(root)
+    card_adapter, fixture_ratings, public_adapter, _, _ = _fixture_adapters()
+
+    def fetch_ratings(*, event_format: str, **kwargs: Any) -> SeventeenLandsFormatData:
+        ratings = fixture_ratings.fetch_ratings(event_format=event_format, **kwargs)
+        if event_format.casefold() != "traddraft":
+            return ratings
+        no_games = RatingSampleCounts(
+            seen=0,
+            picked=0,
+            games_played=0,
+            opening_hand=0,
+            games_in_hand=0,
+        )
+        return replace(
+            ratings,
+            card_ratings={
+                grp_id: replace(row, sample_counts=no_games)
+                for grp_id, row in ratings.card_ratings.items()
+            },
+        )
+
+    def fetch_json(url: str, _timeout: int) -> dict[str, Any]:
+        return {
+            "formats_by_expansion": {
+                "OLD": ["PremierDraft"],
+                "NEW": ["PremierDraft", "TradDraft"],
+            },
+            "live_formats_by_expansion": {},
+        }
+
+    report = workflow.generate_website(
+        base_commit="base",
+        selection_mode="historical",
+        selector=None,
+        repo_root=root,
+        bundle_dir=tmp_path / "bundle",
+        cache_dir=tmp_path / "cache",
+        inventory_file=inventory,
+        bulk_file=bulk,
+        fetch_json=fetch_json,
+        clock=lambda: NOW,
+        card_metadata_adapter=card_adapter,
+        ratings_adapter=SeventeenLandsRatingsAdapter(fetch_ratings=fetch_ratings),
+        public_draft_adapter=public_adapter,
+    )
+
+    assert [
+        (pair["set_code"], pair["event_format"]) for pair in report["profiles"]["selected"]
+    ] == [("new", "PremierDraft"), ("new", "TradDraft")]
+    assert [
+        (pair["set_code"], pair["event_format"]) for pair in report["profiles"]["successful"]
+    ] == [("new", "PremierDraft")]
+    assert report["failures"] == []
+    assert report["status"] == "success"
+    summary = (tmp_path / "bundle" / "summary.md").read_text(encoding="utf-8")
+    assert "- new / PremierDraft / New Set: successful" in summary
+    assert "- new / TradDraft / New Set: skipped" in summary
+
+
 def _git_base_commit(root: Path) -> str:
     subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE)
     subprocess.run(["git", "add", "website"], cwd=root, check=True, stdout=subprocess.PIPE)

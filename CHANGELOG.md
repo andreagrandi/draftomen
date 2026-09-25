@@ -3,6 +3,13 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Make the weekly historical profile refresh process at most 6 set and format
+  pairs per run, keeping each set whole, and skip pairs that already have a
+  published profile. The old run refreshed all 128 historical pairs at once,
+  17Lands stopped answering after about 105 requests, and the run published
+  nothing. A
+  historical pair with no 17Lands games, such as IKO TradDraft, is now listed
+  as skipped and no longer fails the run. (#709)
 - Close the Mocked Draft dialog once the draft started from it is under way,
   so the live drafting view is visible. A failed start keeps the dialog open
   with its error, and reopening the dialog during a draft to leave it keeps it

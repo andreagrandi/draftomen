@@ -79,6 +79,9 @@ FetchJson: TypeAlias = Callable[[str, int], Any]
 Clock: TypeAlias = Callable[[], datetime]
 
 SELECTION_MODES = ("one", "all", "active", "historical")
+# Refreshing every historical set in one run got the runner throttled by 17Lands.
+# Each pair makes two ratings requests, so 6 pairs keep a run near 12 requests.
+HISTORICAL_PAIRS_PER_RUN = 6
 _GENERATED_ROOT = Path("website/public")
 _CARD_DATA_ROOT = _GENERATED_ROOT / "card-data"
 _PROFILES_ROOT = _GENERATED_ROOT / "profiles"
@@ -197,6 +200,16 @@ def render_summary(report: Mapping[str, Any]) -> str:
         _summary_pair_key(item) for item in successful_pairs if isinstance(item, Mapping)
     }
     failures = report.get("failures") if isinstance(report.get("failures"), list) else []
+    failed_pair_keys = {
+        _summary_pair_key(item)
+        for item in failures
+        if isinstance(item, Mapping) and item.get("event_format") is not None
+    }
+    failed_set_codes = {
+        str(item.get("set_code")).casefold()
+        for item in failures
+        if isinstance(item, Mapping) and item.get("event_format") is None
+    }
 
     lines = [
         "# Website generation",
@@ -239,9 +252,17 @@ def render_summary(report: Mapping[str, Any]) -> str:
     if selected_pairs:
         for pair in selected_pairs:
             if isinstance(pair, Mapping):
-                outcome = (
-                    "successful" if _summary_pair_key(pair) in successful_pair_keys else "failed"
-                )
+                key = _summary_pair_key(pair)
+                if key in successful_pair_keys:
+                    outcome = "successful"
+                elif (
+                    key in failed_pair_keys
+                    or key[0] in failed_set_codes
+                    or not profiles.get("planning_complete")
+                ):
+                    outcome = "failed"
+                else:
+                    outcome = "skipped"
                 lines.append(f"- {_pair_label(pair)}: {_safe_summary_text(outcome)}")
     else:
         lines.append("- None")
@@ -289,6 +310,31 @@ def _prepare_planning_view(
         if candidate is None:
             continue
         (planning_dir / f"{identity.set_code}.json.gz").write_bytes(candidate.gzip_bytes)
+
+
+def _has_no_rated_games(result: Any) -> bool:
+    """Return whether 17Lands returned ratings rows without any games.
+    Unavailable ratings are a download failure, not an empty format.
+    """
+
+    if result.selection is None:
+        return False
+    observed = result.selection.observed_availability
+    return observed.ratings_available and observed.rating_samples == 0
+
+
+def _published_pairs(*, profiles_dir: Path) -> tuple[tuple[str, str], ...]:
+    """Return the set and format pairs listed in the published manifest.
+    A missing manifest means nothing has been published yet.
+    """
+
+    manifest_path = profiles_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return ()
+    manifest = load_profile_manifest(manifest_path)
+    return tuple(
+        (artifact.set_code, artifact.event_format) for artifact in manifest.artifacts
+    )
 
 
 def _profile_plan_with_real_paths(plan: ProfilePlan, *, card_data_dir: Path) -> ProfilePlan:
@@ -703,6 +749,12 @@ def generate_website(
                     report["static"]["successful"] = list(static_successes)
 
             try:
+                historical_limits: dict[str, Any] = {}
+                if profile_mode == "historical":
+                    historical_limits = {
+                        "published": _published_pairs(profiles_dir=profiles_dir),
+                        "max_historical_pairs": HISTORICAL_PAIRS_PER_RUN,
+                    }
                 if static_plan is None:
                     planning_source = static_dir
                     profile_plan = prepare_profile_data_refresh(
@@ -711,6 +763,7 @@ def generate_website(
                         mode=profile_mode,
                         fetch_json=fetch_json,
                         filters_url=FILTERS_ENDPOINT,
+                        **historical_limits,
                     )
                 else:
                     with tempfile.TemporaryDirectory(
@@ -728,6 +781,7 @@ def generate_website(
                             mode=profile_mode,
                             fetch_json=fetch_json,
                             filters_url=FILTERS_ENDPOINT,
+                            **historical_limits,
                         )
                         profile_plan = _profile_plan_with_real_paths(
                             planned,
@@ -840,6 +894,10 @@ def generate_website(
                                     event_format=pair.event_format,
                                 )
                             )
+                        elif mode == "historical" and _has_no_rated_games(result):
+                            # 17Lands has no games for this pair, so no run can
+                            # publish it. Leave it out of successes and failures.
+                            pass
                         elif (
                             result.selection is None
                             or result.selection.stage.value not in {"early", "mature"}
