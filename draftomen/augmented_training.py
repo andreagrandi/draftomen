@@ -216,13 +216,16 @@ def _load_array_training_data(
         "pack_number",
         "pick_number",
         "pick",
-        "pick_2",
     ]
     missing_columns = sorted(set(metadata_columns) - set(header))
     if missing_columns:
         raise AugmentedTrainingError(
             f"Draft dump is missing required columns: {missing_columns}."
         )
+    # 17Lands added pick_2 for Pick Two Draft; older dumps such as DFT lack it.
+    has_second_pick_column = "pick_2" in header
+    if has_second_pick_column:
+        metadata_columns.append("pick_2")
     try:
         cards_by_name = _cards_by_name(
             database=card_database,
@@ -311,9 +314,12 @@ def _load_array_training_data(
     pack_values = frame.select(pack_columns).to_numpy().astype(np.uint8, copy=False)
     row_indices = np.arange(len(frame))
     target_offered = pack_values[row_indices, target_indices] > 0
-    no_second_pick = (
-        frame["pick_2"].is_null() | (frame["pick_2"] == "")
-    ).to_numpy()
+    if has_second_pick_column:
+        no_second_pick = (
+            frame["pick_2"].is_null() | (frame["pick_2"] == "")
+        ).to_numpy()
+    else:
+        no_second_pick = np.ones(len(frame), dtype=bool)
     pool_consistent = (
         frame["pool_total"].to_numpy()
         == frame["global_pick"].to_numpy()

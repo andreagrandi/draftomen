@@ -303,6 +303,52 @@ def test_compact_loader_matches_hob_row_oracle_and_keeps_whole_drafts() -> None:
     _assert_ordered_complete_splits(data)
 
 
+def test_loaders_accept_a_dump_without_the_pick_2_column(tmp_path: Path) -> None:
+    original = _public_dump_source()
+    path = tmp_path / "no-pick-2.csv"
+    with (
+        Path(original.path).open(encoding="utf-8", newline="") as input_file,
+        path.open(mode="w", encoding="utf-8", newline="") as output_file,
+    ):
+        reader = csv.DictReader(input_file)
+        assert reader.fieldnames is not None
+        fieldnames = [name for name in reader.fieldnames if name != "pick_2"]
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            if row["draft_id"] == "draft-second-pick":
+                continue
+            del row["pick_2"]
+            writer.writerow(row)
+    source = _source_for_path(path, set_code="HOB")
+    database = _fixture_card_database()
+
+    prepared = prepare_augmented_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+    data = _load_array_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+    expected = _load_array_training_data(
+        set_code="HOB",
+        source=original,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+
+    assert prepared.report.drafts_accepted == 7
+    assert data.drafts_seen == prepared.report.drafts_seen
+    assert len(data.targets) == prepared.report.drafts_accepted * 2
+    assert data.features.tolist() == expected.features.tolist()
+    assert data.targets.tolist() == expected.targets.tolist()
+
+
 def test_compact_loader_reads_gzip_cache_object_with_bin_suffix(
     tmp_path: Path,
 ) -> None:
