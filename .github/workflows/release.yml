@@ -184,11 +184,17 @@ jobs:
             --section "${GITHUB_REF_NAME#v}" \
             --output release-notes.md
 
-      - name: Download macOS native bundle
+      - name: Download macOS arm64 native bundle
         uses: actions/download-artifact@v8
         with:
-          name: draftomen-macos-unsigned-development
-          path: release-assets/macos
+          name: draftomen-macos-arm64-unsigned-development
+          path: release-assets/macos-arm64
+
+      - name: Download macOS x86_64 native bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: draftomen-macos-x86_64-unsigned-development
+          path: release-assets/macos-x86_64
 
       - name: Download Windows native bundle
         uses: actions/download-artifact@v8
@@ -202,19 +208,23 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          macos_name="draftomen-${RELEASE_TAG}-unsigned-macos.dmg"
+          macos_arm64_name="draftomen-${RELEASE_TAG}-unsigned-macos-arm64.dmg"
+          macos_x86_64_name="draftomen-${RELEASE_TAG}-unsigned-macos-x86_64.dmg"
           windows_name="draftomen-${RELEASE_TAG}-unsigned-windows.exe"
           checksums_name="draftomen-${RELEASE_TAG}-unsigned-sha256sums.txt"
 
           mkdir -p release-assets/published
-          mv release-assets/macos/Draftomen-unsigned-macos.dmg \
-            "release-assets/published/${macos_name}"
+          mv release-assets/macos-arm64/Draftomen-unsigned-macos-arm64.dmg \
+            "release-assets/published/${macos_arm64_name}"
+          mv release-assets/macos-x86_64/Draftomen-unsigned-macos-x86_64.dmg \
+            "release-assets/published/${macos_x86_64_name}"
           mv release-assets/windows/Draftomen-unsigned-windows.exe \
             "release-assets/published/${windows_name}"
 
           (
             cd release-assets/published
-            sha256sum "${macos_name}" "${windows_name}" > "${checksums_name}"
+            sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" "${windows_name}" \
+              > "${checksums_name}"
           )
 
       - name: Create or update GitHub Release
@@ -235,7 +245,8 @@ jobs:
               --notes-file release-notes.md
           fi
           gh release upload "${RELEASE_TAG}" \
-            "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-macos.dmg" \
+            "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-macos-arm64.dmg" \
+            "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-macos-x86_64.dmg" \
             "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-windows.exe" \
             "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-sha256sums.txt" \
             --clobber

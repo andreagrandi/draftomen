@@ -107,7 +107,8 @@ if ! printf '%s' "$release_json" | jq -e \
   --arg title "$expected_title" --arg build "$build_id" \
   --arg workflow "$workflow_url" --arg run "$run_id" --arg commit "$head_sha" \
   --arg changes_section "$expected_changes_section" \
-  --arg macos "draftomen-${build_id}-unsigned-macos.dmg" \
+  --arg macos_arm64 "draftomen-${build_id}-unsigned-macos-arm64.dmg" \
+  --arg macos_x86_64 "draftomen-${build_id}-unsigned-macos-x86_64.dmg" \
   --arg windows "draftomen-${build_id}-unsigned-windows.exe" \
   --arg checksums "draftomen-${build_id}-unsigned-sha256sums.txt" \
   '(.tagName == "development") and (.isPrerelease == true) and
@@ -115,7 +116,7 @@ if ! printf '%s' "$release_json" | jq -e \
    ((.body // "") | contains($workflow)) and ((.body // "") | contains($run)) and
    ((.body // "") | contains($commit)) and
    ((.body // "") | contains($changes_section)) and
-   (([.assets[].name] | sort) == ([$macos, $windows, $checksums] | sort)) and
+   (([.assets[].name] | sort) == ([$macos_arm64, $macos_x86_64, $windows, $checksums] | sort)) and
    all(.assets[]; (.size > 0) and ((.url // "") | length > 0))'
 then
   echo "Rolling development release metadata, changelog, or assets failed verification." >&2

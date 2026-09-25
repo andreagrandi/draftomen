@@ -105,15 +105,22 @@ or empty Unreleased section fails the development workflow before publishing.
 The development-release verification must confirm both the metadata and the
 extracted changelog content.
 
-The rolling prerelease contains exactly three unsigned assets for the current
+The rolling prerelease contains exactly four unsigned assets for the current
 build:
 
-- `draftomen-<build-id>-unsigned-macos.dmg`
+- `draftomen-<build-id>-unsigned-macos-arm64.dmg`
+- `draftomen-<build-id>-unsigned-macos-x86_64.dmg`
 - `draftomen-<build-id>-unsigned-windows.exe`
 - `draftomen-<build-id>-unsigned-sha256sums.txt`
 
-The checksum file contains SHA-256 checksums for the macOS and Windows assets.
-The macOS asset is a compressed, read-only DMG with a `Draft Omen` volume
+The checksum file contains SHA-256 checksums for the two DMGs and the Windows
+executable. The `arm64` DMG is built on `macos-latest` and runs on Apple
+Silicon. The `x86_64` DMG is built on `macos-15-intel` and runs on Intel Macs.
+Intel builds continue only while GitHub offers an Intel macOS runner. Each
+build job checks the executable with `lipo -archs` and fails when the
+architecture differs from the one in the asset name. Before this change the
+single macOS asset was named `draftomen-<build-id>-unsigned-macos.dmg`.
+Each macOS asset is a compressed, read-only DMG with a `Draft Omen` volume
 containing the app at its root and an `Applications` symlink to `/Applications`.
 For manual testing, download the Actions artifact ZIP, extract the DMG, attach
 it read-only and without Finder browsing with `hdiutil attach -readonly
@@ -195,9 +202,10 @@ draftomen-tui --version
 QT_QPA_PLATFORM=offscreen draftomen --provider mock --smoke-test
 ```
 The public GitHub Release for `v<version>` must be published with the promoted
-dated changelog body and the two native bundle assets plus checksum file. The
-macOS release asset is
-`draftomen-v<version>-unsigned-macos.dmg`. Download the release asset, open it
+dated changelog body and the three native bundle assets plus checksum file. The
+macOS release assets are `draftomen-v<version>-unsigned-macos-arm64.dmg` and
+`draftomen-v<version>-unsigned-macos-x86_64.dmg`. Download the asset that
+matches the Mac's architecture, open it
 in Finder or attach it read-only and without Finder browsing with
 `hdiutil attach -readonly -nobrowse -mountpoint <temporary-mount> <file>.dmg`,
 and run `tests/bundle_smoke.py` against the mounted app. Use an `EXIT` trap to
