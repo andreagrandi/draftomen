@@ -1371,6 +1371,7 @@ class _StubManualSmokeWindow:
         }
         self.items["liveDraftView"].publish("draftHeading", "Pack 1 · Pick 1")
         self.items["testDraftStartButton"].publish("visible", False)
+        self.items["testDraftDialog"].publish("visible", False)
         self.items["testDraftLeaveButton"].publish("visible", True)
         self.items["testDraftPickButton"].publish("visible", True)
 
@@ -1451,7 +1452,6 @@ def test_test_draft_manual_smoke_driver_confirms_five_picks_and_reports(
         "testDraftButton",
         "testDraftManualModeButton",
         "testDraftStartButton",
-        "testDraftCloseButton",
         "wideRecommendationRow2",
         *["testDraftPickButton"] * TEST_DRAFT_MANUAL_PICK_COUNT,
         "testDraftButton",
@@ -1488,7 +1488,6 @@ def test_test_draft_manual_smoke_driver_falls_back_to_the_narrow_row(
         "testDraftButton",
         "testDraftManualModeButton",
         "testDraftStartButton",
-        "testDraftCloseButton",
         "narrowRecommendationRow2",
         *["testDraftPickButton"] * TEST_DRAFT_MANUAL_PICK_COUNT,
         "testDraftButton",
@@ -1549,7 +1548,6 @@ def test_test_draft_manual_smoke_driver_requires_the_pool_to_grow(
         "testDraftButton",
         "testDraftManualModeButton",
         "testDraftStartButton",
-        "testDraftCloseButton",
         "wideRecommendationRow2",
         "testDraftPickButton",
     ]
@@ -9133,10 +9131,14 @@ assert provider.start_calls == [("manual", "lci")]
 provider.publish_test_draft(pending=True, phase="starting")
 application.processEvents()
 assert selector.property("displayText") == "The Lost Caverns of Ixalan (LCI)"
+assert dialog.property("visible") is True
 provider.publish_test_draft(
     pending=False, active=True, phase="drafting", supported_sets=sets()
 )
 application.processEvents()
+# The draft this dialog started is under way, so the dialog gets out of the
+# way of the live drafting view.
+assert dialog.property("visible") is False
 assert selector.property("displayText") == "The Lost Caverns of Ixalan (LCI)"
 assert selector.property("enabled") is False
 """
@@ -9540,6 +9542,11 @@ assert leave_button is not None
 assert leave_button.property("visible") is True
 assert leave_button.property("enabled") is True
 assert provider.leave_calls == 0
+
+# Reopening the dialog during a draft keeps it open across state updates.
+provider.publish_test_draft(offer_generation=2)
+application.processEvents()
+assert dialog.property("visible") is True
 
 leave_button.forceActiveFocus()
 QTest.keyClick(root, Qt.Key_Space)
@@ -10107,3 +10114,107 @@ def test_until_complete_smoke_waits_for_a_pending_profile_refresh(
     )
 
     assert ready is expected
+
+
+def test_qml_test_draft_dialog_stays_open_when_the_start_fails_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str]] = []
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str)
+    def startTestDraft(self, mode: str, set_code: str) -> None:
+        self.start_calls.append((mode, set_code))
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "supported_sets": [
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+        ],
+        "default_set_code": "hob",
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+test_draft_button = root.findChild(QObject, "testDraftButton")
+test_draft_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+dialog = root.findChild(QObject, "testDraftDialog")
+start_button = root.findChild(QObject, "testDraftStartButton")
+assert dialog.property("visible") is True
+
+start_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+provider.publish_test_draft(pending=True, phase="starting")
+application.processEvents()
+provider.publish_test_draft(
+    pending=False, phase="failed", error="Draftmancer is not running"
+)
+application.processEvents()
+assert provider.start_calls == [("manual", "hob")]
+assert dialog.property("visible") is True
+
+# A later successful start from the same dialog still closes it.
+provider.publish_test_draft(phase="idle", error=None)
+application.processEvents()
+start_button.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Space)
+application.processEvents()
+provider.publish_test_draft(active=True, phase="drafting")
+application.processEvents()
+assert provider.start_calls == [("manual", "hob"), ("manual", "hob")]
+assert dialog.property("visible") is False
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr

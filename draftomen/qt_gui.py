@@ -810,7 +810,6 @@ class _TestDraftManualSmokeDriver:
     _STEP_MODE = 2
     _STEP_START = 3
     _STEP_DRAFTING = 4
-    _STEP_CLOSE_DIALOG = 5
     _STEP_DIALOG_CLOSED = 6
     _STEP_SELECT_ROW = 7
     _STEP_ROW_SELECTED = 8
@@ -900,11 +899,9 @@ class _TestDraftManualSmokeDriver:
                 self._pool_total = self._published_pool_total() or 0
                 self._set_code = self._draft_set_code()
                 self._heading = self._draft_heading() or ""
-                self._step = self._STEP_CLOSE_DIALOG
-        elif self._step == self._STEP_CLOSE_DIALOG:
-            self._controls.activate("testDraftCloseButton")
-            self._step = self._STEP_DIALOG_CLOSED
+                self._step = self._STEP_DIALOG_CLOSED
         elif self._step == self._STEP_DIALOG_CLOSED:
+            # The dialog closes itself once the draft it started is under way.
             if not self._control_visible("testDraftDialog"):
                 self._step = self._STEP_SELECT_ROW
         elif self._step == self._STEP_SELECT_ROW:
