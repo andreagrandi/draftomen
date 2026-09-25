@@ -1008,6 +1008,17 @@ class _LiveSessionWorker(QObject):
             else:
                 self._timer.stop()
 
+    def profile_refresh_pending(self) -> bool:
+        """Return whether a hosted profile refresh is queued or still downloading.
+        Smoke checks wait on this so they capture the adopted profile.
+        """
+
+        if self._profile_request_in_flight is not None:
+            return True
+        session = self._active_session()
+        get_request = getattr(session, "profile_refresh_request", None)
+        return callable(get_request) and get_request() is not None
+
     def _active_session(self) -> LiveSession | None:
         runtime = self._test_draft_runtime
         if self._authoritative_source == "test-draft" and runtime is not None:
@@ -1978,6 +1989,14 @@ class LiveSessionAdapter(SessionAdapter):
             Qt.ConnectionType.QueuedConnection,
         )
         thread.wait(100)
+
+    def profile_refresh_pending(self) -> bool:
+        """Return whether the live session still waits on a hosted profile refresh.
+        The until-complete smoke test holds its capture until this is false.
+        """
+
+        worker = self._worker
+        return worker is not None and worker.profile_refresh_pending()
 
     def wait_for_shutdown(self) -> None:
         """Wait for the owned worker thread before the adapter is destroyed."""

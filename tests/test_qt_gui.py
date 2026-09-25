@@ -42,6 +42,7 @@ from draftomen.qt_gui import (
     _TestDraftSmokeDriver,
     _build_provider,
     _configure_application_metadata,
+    _draft_complete_capture_ready,
     _live_session_factory,
     _parser,
     _preflight_bundled_profile,
@@ -10073,3 +10074,36 @@ assert provider.download_calls == 1
     completed = _run_qml_probe(probe)
 
     assert completed.returncode == 0, completed.stderr
+
+
+class _CaptureProvider:
+    def __init__(self, *, phase: str, refresh_pending: bool | None) -> None:
+        self.state = {"status": {"phase": phase}}
+        if refresh_pending is not None:
+            self.profile_refresh_pending = lambda: refresh_pending
+
+
+@pytest.mark.parametrize(
+    ("phase", "refresh_pending", "deadline_passed", "expected"),
+    (
+        ("drafting", False, False, False),
+        ("draft_complete", True, False, False),
+        ("draft_complete", True, True, True),
+        ("draft_complete", False, False, True),
+        ("draft_complete", None, False, True),
+    ),
+)
+def test_until_complete_smoke_waits_for_a_pending_profile_refresh(
+    phase: str,
+    refresh_pending: bool | None,
+    deadline_passed: bool,
+    expected: bool,
+) -> None:
+    provider = _CaptureProvider(phase=phase, refresh_pending=refresh_pending)
+
+    ready = _draft_complete_capture_ready(
+        provider=provider,  # type: ignore[arg-type]
+        deadline_passed=deadline_passed,
+    )
+
+    assert ready is expected

@@ -8489,3 +8489,61 @@ def test_recovered_pending_pack_infers_pack_size_from_saved_picks(
 
     assert event is not None
     assert event.picks_per_pack == expected
+
+
+def test_live_session_msh_replay_with_cached_early_profile_reports_ready_ratings(
+    tmp_path: Path,
+) -> None:
+    profile = replace(
+        _fixture_empirical_profile_for_set(set_code="MSH"),
+        maturity=ProfileMaturity.EARLY,
+        profile_version="early-1.0",
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"MSH": profile}),
+    )
+
+    snapshot = session.process_lines(
+        lines=FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    )
+
+    assert snapshot.status.phase is ApplicationPhase.DRAFT_COMPLETE
+    assert snapshot.ratings.phase is DataLoadPhase.READY
+    assert snapshot.ratings.message == "Profile ratings are ready for MSH."
+
+
+def test_live_session_adopts_a_profile_refresh_that_lands_after_the_msh_replay_completes(
+    tmp_path: Path,
+) -> None:
+    profile = replace(
+        _fixture_empirical_profile_for_set(set_code="MSH"),
+        maturity=ProfileMaturity.EARLY,
+        profile_version="early-1.0",
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({}),
+    )
+    completed = session.process_lines(
+        lines=FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    )
+    request = session.profile_refresh_request()
+    assert completed.status.phase is ApplicationPhase.DRAFT_COMPLETE
+    assert completed.ratings.phase is DataLoadPhase.UNAVAILABLE
+    assert request is not None
+
+    session.complete_profile_refresh(
+        request=request,
+        result=ProfileRefreshResult(
+            profile=profile,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+
+    assert session.snapshot.ratings.phase is DataLoadPhase.READY
+    assert session.snapshot.ratings.message == "Profile ratings are ready for MSH."
