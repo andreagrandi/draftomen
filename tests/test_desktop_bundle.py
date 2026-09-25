@@ -986,6 +986,103 @@ def test_native_builds_sync_the_locked_draftmancer_transport_and_socketio() -> N
         assert {"--quiet", "--noinclude-qt-translations"} <= set(nuitka_args)
 
 
+def _read_native_bundle_matrix() -> list[dict[str, str]]:
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    matrix_text = workflow_text.split("        include:\n", maxsplit=1)[1]
+    matrix_text = matrix_text.split("\n    steps:", maxsplit=1)[0]
+    entries: list[dict[str, str]] = []
+    for line in matrix_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("- "):
+            entries.append({})
+            stripped = stripped[2:]
+        key, value = stripped.split(":", maxsplit=1)
+        entries[-1][key.strip()] = value.strip()
+    return entries
+
+
+def test_native_bundle_matrix_builds_both_macos_architectures() -> None:
+    """Each macOS architecture builds from the shared spec on a matching runner
+    and publishes a DMG named after its architecture.
+    """
+
+    macos_entries = {
+        entry["arch"]: entry
+        for entry in _read_native_bundle_matrix()
+        if entry["platform"] == "macos"
+    }
+
+    assert set(macos_entries) == {"arm64", "x86_64"}
+    assert macos_entries["arm64"]["os"] == "macos-latest"
+    assert macos_entries["x86_64"]["os"] == "macos-15-intel"
+    for arch, entry in macos_entries.items():
+        assert entry["config"] == "pysidedeploy.macos.spec"
+        assert entry["bundle"] == "Draftomen-unsigned-macos.app"
+        assert entry["artifact"] == f"Draftomen-unsigned-macos-{arch}.dmg"
+        assert entry["artifact_name"] == f"draftomen-macos-{arch}-unsigned-development"
+
+
+def test_native_bundle_workflow_checks_macos_executable_architecture() -> None:
+    """The macOS build fails when lipo reports an architecture other than the
+    matrix entry's architecture.
+    """
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    check_step = workflow_text.split("- name: Verify macOS bundle architecture", maxsplit=1)[1]
+    check_step = check_step.split("\n      - name:", maxsplit=1)[0]
+
+    assert "if: matrix.platform == 'macos'" in check_step
+    assert "Print :CFBundleExecutable" in check_step
+    assert 'lipo -archs "$bundle/Contents/MacOS/$executable"' in check_step
+    assert '[[ "$archs" != "${{ matrix.arch }}" ]]' in check_step
+    assert "exit 1" in check_step
+    assert workflow_text.index("Verify macOS bundle architecture") < workflow_text.index(
+        "Create macOS unsigned development DMG"
+    )
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "name_variable"),
+    [
+        ("native-bundles.yml", "BUILD_IDENTIFIER"),
+        ("release.yml", "RELEASE_TAG"),
+    ],
+)
+def test_release_workflows_publish_both_macos_dmgs(
+    workflow_name: str, name_variable: str
+) -> None:
+    """Development and tagged releases upload both DMGs, the Windows executable,
+    and a checksum file that lists all three binaries.
+    """
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows" / workflow_name).read_text(
+        encoding="utf-8"
+    )
+    prefix = f"draftomen-${{{name_variable}}}-unsigned"
+
+    for arch in ("arm64", "x86_64"):
+        assert f"name: draftomen-macos-{arch}-unsigned-development" in workflow_text
+        assert f"{prefix}-macos-{arch}.dmg" in workflow_text
+    assert f"{prefix}-windows.exe" in workflow_text
+    assert f"{prefix}-sha256sums.txt" in workflow_text
+    assert "unsigned-macos.dmg" not in workflow_text
+    assert (
+        'sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" "${windows_name}"'
+        in workflow_text
+    )
+
+    upload_command = workflow_text.split("gh release upload", maxsplit=1)[1]
+    upload_command = upload_command.split("\n\n", maxsplit=1)[0]
+    uploaded_assets = re.findall(r'"release-assets/published/([^"]+)"', upload_command)
+    assert len(uploaded_assets) == 4
+
+
 def test_native_specs_enumerate_runtime_inputs() -> None:
     """Both platform specs describe the same app inputs and unsigned outputs."""
 

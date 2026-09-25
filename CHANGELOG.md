@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Publish an Intel macOS DMG next to the Apple Silicon one. A second macOS
+  build job runs on the `macos-15-intel` runner, and each macOS job fails when
+  `lipo -archs` reports the wrong architecture for the app executable. The
+  macOS release assets are now named `unsigned-macos-arm64.dmg` and
+  `unsigned-macos-x86_64.dmg`, the checksum file lists both, and the website
+  offers both downloads. (#347)
 - Add a Sets page to the website at `/sets/`, linked from the navigation. It
   lists the supported sets, those with card data and 17Lands ratings, and
   marks the ones with an augmented model. A second list shows the sets that

@@ -5,7 +5,8 @@ import packageMetadata from '../../package.json';
 const repositoryUrl = 'https://github.com/andreagrandi/draftomen';
 const releaseTag = `v${packageMetadata.version}`;
 const releaseAssetBaseUrl = `${repositoryUrl}/releases/download/${releaseTag}`;
-const macosDownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsigned-macos.dmg`;
+const macosArm64DownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsigned-macos-arm64.dmg`;
+const macosX8664DownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsigned-macos-x86_64.dmg`;
 const windowsDownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsigned-windows.exe`;
 ---
 
@@ -24,9 +25,13 @@ const windowsDownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsig
           with visible data, and helps turn a completed pool into a playable deck.
         </p>
         <div class="download-group" aria-label="Download Draft Omen">
-          <a class="btn btn-primary download-button" href={macosDownloadUrl}>
+          <a class="btn btn-primary download-button" href={macosArm64DownloadUrl}>
             <span aria-hidden="true">⌘</span>
-            <span>Download for macOS<small>{releaseTag} · unsigned .dmg</small></span>
+            <span>Download for macOS<small>{releaseTag} · Apple Silicon · unsigned .dmg</small></span>
+          </a>
+          <a class="btn btn-secondary download-button" href={macosX8664DownloadUrl}>
+            <span aria-hidden="true">⌘</span>
+            <span>Download for macOS<small>{releaseTag} · Intel · unsigned .dmg</small></span>
           </a>
           <a class="btn btn-secondary download-button" href={windowsDownloadUrl}>
             <span aria-hidden="true">⊞</span>

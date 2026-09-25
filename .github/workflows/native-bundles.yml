@@ -21,7 +21,7 @@ env:
 
 jobs:
   native-bundle:
-    name: Build unsigned ${{ matrix.platform }} development bundle
+    name: Build unsigned ${{ matrix.platform }} ${{ matrix.arch }} development bundle
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,13 +29,25 @@ jobs:
         include:
           - os: macos-latest
             platform: macos
+            arch: arm64
             config: pysidedeploy.macos.spec
             bundle: Draftomen-unsigned-macos.app
-            artifact: Draftomen-unsigned-macos.dmg
-            artifact_name: draftomen-macos-unsigned-development
+            artifact: Draftomen-unsigned-macos-arm64.dmg
+            artifact_name: draftomen-macos-arm64-unsigned-development
+            smoke_timeout: 60
+          # Nuitka builds for the host architecture, so the Intel bundle needs
+          # an Intel runner. Intel support lasts as long as GitHub offers one.
+          - os: macos-15-intel
+            platform: macos
+            arch: x86_64
+            config: pysidedeploy.macos.spec
+            bundle: Draftomen-unsigned-macos.app
+            artifact: Draftomen-unsigned-macos-x86_64.dmg
+            artifact_name: draftomen-macos-x86_64-unsigned-development
             smoke_timeout: 60
           - os: windows-latest
             platform: windows
+            arch: x86_64
             config: pysidedeploy.windows.spec
             bundle: Draftomen-unsigned-windows.exe
             artifact: Draftomen-unsigned-windows.exe
@@ -101,6 +113,20 @@ jobs:
 
       - name: Build unsigned bundle
         run: uv run pyside6-deploy --config-file "${{ matrix.config }}" --force
+
+      - name: Verify macOS bundle architecture
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="dist-native/macos-unsigned/${{ matrix.bundle }}"
+          executable="$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$bundle/Contents/Info.plist")"
+          archs="$(lipo -archs "$bundle/Contents/MacOS/$executable")"
+          echo "$executable architectures: $archs"
+          if [[ "$archs" != "${{ matrix.arch }}" ]]; then
+            echo "::error::Expected ${{ matrix.arch }} bundle, got: $archs"
+            exit 1
+          fi
 
       - name: Create macOS unsigned development DMG
         if: matrix.platform == 'macos'
@@ -179,11 +205,17 @@ jobs:
         with:
           version: "0.12.12"
 
-      - name: Download macOS unsigned development bundle
+      - name: Download macOS arm64 unsigned development bundle
         uses: actions/download-artifact@v8
         with:
-          name: draftomen-macos-unsigned-development
-          path: release-assets/macos
+          name: draftomen-macos-arm64-unsigned-development
+          path: release-assets/macos-arm64
+
+      - name: Download macOS x86_64 unsigned development bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: draftomen-macos-x86_64-unsigned-development
+          path: release-assets/macos-x86_64
 
       - name: Download Windows unsigned development bundle
         uses: actions/download-artifact@v8
@@ -245,17 +277,21 @@ jobs:
             exit 0
           fi
 
-          macos_name="draftomen-${BUILD_IDENTIFIER}-unsigned-macos.dmg"
+          macos_arm64_name="draftomen-${BUILD_IDENTIFIER}-unsigned-macos-arm64.dmg"
+          macos_x86_64_name="draftomen-${BUILD_IDENTIFIER}-unsigned-macos-x86_64.dmg"
           windows_name="draftomen-${BUILD_IDENTIFIER}-unsigned-windows.exe"
           checksums_name="draftomen-${BUILD_IDENTIFIER}-unsigned-sha256sums.txt"
           mkdir -p release-assets/published
-          mv release-assets/macos/Draftomen-unsigned-macos.dmg \
-            "release-assets/published/${macos_name}"
+          mv release-assets/macos-arm64/Draftomen-unsigned-macos-arm64.dmg \
+            "release-assets/published/${macos_arm64_name}"
+          mv release-assets/macos-x86_64/Draftomen-unsigned-macos-x86_64.dmg \
+            "release-assets/published/${macos_x86_64_name}"
           mv release-assets/windows/Draftomen-unsigned-windows.exe \
             "release-assets/published/${windows_name}"
           (
             cd release-assets/published
-            sha256sum "${macos_name}" "${windows_name}" > "${checksums_name}"
+            sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" "${windows_name}" \
+              > "${checksums_name}"
           )
 
           git tag --force "${RELEASE_TAG}" "${SOURCE_COMMIT}"
@@ -301,6 +337,7 @@ jobs:
           done <<< "${existing_assets}"
 
           gh release upload "${RELEASE_TAG}" \
-            "release-assets/published/${macos_name}" \
+            "release-assets/published/${macos_arm64_name}" \
+            "release-assets/published/${macos_x86_64_name}" \
             "release-assets/published/${windows_name}" \
             "release-assets/published/${checksums_name}"

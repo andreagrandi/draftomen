@@ -51,7 +51,8 @@ async function main() {
   }
 
   const expectedUrls = [
-    `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-unsigned-macos.dmg`,
+    `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-unsigned-macos-arm64.dmg`,
+    `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-unsigned-macos-x86_64.dmg`,
     `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-unsigned-windows.exe`,
   ];
   const missingChecks = [];

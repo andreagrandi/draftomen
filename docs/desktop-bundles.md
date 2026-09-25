@@ -3,10 +3,12 @@
 Draft Omen's native desktop bundles are unsigned artifacts built in two
 automated contexts: a manual `workflow_dispatch` run for temporary development
 testing, or as part of the tagged `v*` release workflow. Ordinary pushes,
-merges, and pull requests do not trigger native builds automatically. The macOS
-artifact is a compressed, read-only DMG for Finder-native distribution: its
-`Draft Omen` volume contains `Draftomen-unsigned-macos.app` at the volume root
-and an `Applications` symlink to `/Applications`. Nuitka's app bundle has an
+merges, and pull requests do not trigger native builds automatically. macOS
+has two artifacts, one for Apple Silicon (`arm64`) and one for Intel
+(`x86_64`). Each is a compressed, read-only DMG for Finder-native
+distribution: its `Draft Omen` volume contains `Draftomen-unsigned-macos.app`
+at the volume root and an `Applications` symlink to `/Applications`. Each DMG
+runs only on its own architecture. Nuitka's app bundle has an
 ad-hoc signature, but it has no developer or distribution signing identity and
 is not notarized. The Windows artifact is unsigned. Neither artifact is a
 signed installer.
@@ -127,7 +129,9 @@ command needs an extra flag. The transport must be importable when the build
 runs, and only an explicit `uv sync` prunes an environment, so the pinned
 Nuitka installed just above also survives every following `uv run`.
 
-On macOS, package the generated app as a Finder-native compressed DMG:
+On macOS, package the generated app as a Finder-native compressed DMG. Nuitka
+builds for the host architecture, so `uname -m` names the DMG after the
+architecture it contains:
 
 ```bash
 staging="$(mktemp -d)"
@@ -138,7 +142,7 @@ ditto \
   "$staging/Draftomen-unsigned-macos.app"
 ln -s /Applications "$staging/Applications"
 hdiutil create -volname "Draft Omen" -srcfolder "$staging" -ov -format UDZO \
-  dist-native/macos-unsigned/Draftomen-unsigned-macos.dmg
+  "dist-native/macos-unsigned/Draftomen-unsigned-macos-$(uname -m).dmg"
 ```
 
 The resulting image is read-only and compressed with `UDZO`; mounting it
@@ -291,13 +295,23 @@ network request.
   smoke-test implementation. There is no automatic `pull_request` trigger,
   and ordinary pushes or merges do not trigger native builds.
 
-The workflow runs separate `macos-latest` and `windows-latest` jobs. It syncs
-the locked project environment, installs Nuitka 4.1.3, builds with the platform
-spec, and smoke-tests the same payload shape that it uploads:
+The workflow runs three jobs: macOS `arm64` on `macos-latest`, macOS `x86_64`
+on `macos-15-intel`, and Windows on `windows-latest`. Both macOS jobs use
+`pysidedeploy.macos.spec`. Nuitka compiles for the host architecture and the
+uv-managed Python is single-arch, so each macOS bundle comes from a runner of
+its own architecture. A universal build would need a universal2 interpreter
+that uv does not provide and would double the download size. Intel support
+lasts as long as GitHub offers an Intel macOS runner. Each job syncs the locked
+project environment, installs Nuitka 4.1.3, builds with the platform spec, and
+smoke-tests the same payload shape that it uploads:
 
-- macOS: the completed `Draftomen-unsigned-macos.app` is staged with an
-  `Applications` symlink and packaged as the compressed
-  `Draftomen-unsigned-macos.dmg` image. The workflow attaches the image
+- macOS: after the build, the job reads `CFBundleExecutable` from the app's
+  `Info.plist` and runs `lipo -archs` on that executable. The job fails when
+  the result differs from the matrix architecture, so a runner image that
+  changes architecture cannot publish a mislabeled DMG. The completed
+  `Draftomen-unsigned-macos.app` is staged with an `Applications` symlink and
+  packaged as the compressed `Draftomen-unsigned-macos-arm64.dmg` or
+  `Draftomen-unsigned-macos-x86_64.dmg` image. The workflow attaches the image
   read-only and without Finder browsing at a temporary mountpoint, runs
   `tests/bundle_smoke.py` against the mounted app, and detaches the image even
   when the smoke test fails before uploading the DMG.
@@ -308,7 +322,8 @@ spec, and smoke-tests the same payload shape that it uploads:
 
 The uploaded artifact names are:
 
-- `draftomen-macos-unsigned-development`;
+- `draftomen-macos-arm64-unsigned-development`;
+- `draftomen-macos-x86_64-unsigned-development`;
 - `draftomen-windows-unsigned-development`.
 
 Download these from the **Actions** page: open the manual workflow run and
@@ -316,14 +331,15 @@ download its artifacts from the run summary. They are GitHub Actions run
 artifacts, not GitHub Release assets; they are retained only for the
 repository's configured Actions artifact-retention period and may expire.
 
-The macOS artifact download is a GitHub Actions artifact archive containing
-exactly one file, `Draftomen-unsigned-macos.dmg`; it is not the `.app`
-directory directly. Extract that downloaded artifact archive first, then
+Each macOS artifact download is a GitHub Actions artifact archive containing
+exactly one file, `Draftomen-unsigned-macos-<arch>.dmg`; it is not the `.app`
+directory directly. Pick the archive that matches the Mac, extract it, then
 attach the DMG read-only and without Finder browsing at a temporary mountpoint.
 The image contains the app at its volume root and an `Applications` shortcut:
 
 ```bash
-unzip draftomen-macos-unsigned-development.zip -d macos-download
+arch="$(uname -m)"
+unzip "draftomen-macos-${arch}-unsigned-development.zip" -d macos-download
 macos_mount="$(mktemp -d)"
 cleanup() {
   hdiutil detach "$macos_mount" >/dev/null 2>&1 || true
@@ -332,7 +348,7 @@ cleanup() {
 trap cleanup EXIT
 hdiutil attach -readonly -nobrowse \
   -mountpoint "$macos_mount" \
-  macos-download/Draftomen-unsigned-macos.dmg
+  "macos-download/Draftomen-unsigned-macos-${arch}.dmg"
 test -d "$macos_mount/Draftomen-unsigned-macos.app"
 test -L "$macos_mount/Applications"
 uv run python tests/bundle_smoke.py \
@@ -352,31 +368,35 @@ copying it from the mounted image.
 For a tag such as `v1.2.3`, `release.yml` invokes the reusable native workflow
 with `workflow_call`. The GitHub Release publication job runs only after both
 the existing `publish` job has successfully published the Python distributions
-to PyPI and both native bundle jobs have built and passed their smoke tests.
+to PyPI and all three native bundle jobs have built and passed their smoke tests.
 It checks out the tagged repository, extracts the non-empty body under the exact
 `## [1.2.3] - YYYY-MM-DD` section in `CHANGELOG.md`, and uses that body as the
 GitHub Release notes. A missing, duplicate, or empty section fails the job
-before release publication. The job downloads the two native Actions artifacts
+before release publication. The job downloads the three native Actions artifacts
 from that release run, renames their payloads, generates SHA-256 checksums, and
 creates or updates the GitHub Release with those notes.
 
 Release publication is recoverable: rerunning the job reuses an existing draft
-or release, replaces the three assets and changelog notes, and publishes any
+or release, replaces the four assets and changelog notes, and publishes any
 draft left by an earlier interrupted attempt. Native Actions artifacts are
 likewise overwritten when their build jobs are rerun.
 
 The persistent public assets attached to the `v1.2.3` GitHub Release are:
 
-- `draftomen-v1.2.3-unsigned-macos.dmg`, a compressed read-only image containing
-  the `Draftomen-unsigned-macos.app` bundle and an `Applications` symlink;
+- `draftomen-v1.2.3-unsigned-macos-arm64.dmg` and
+  `draftomen-v1.2.3-unsigned-macos-x86_64.dmg`, compressed read-only images
+  each containing the `Draftomen-unsigned-macos.app` bundle for that
+  architecture and an `Applications` symlink;
 - `draftomen-v1.2.3-unsigned-windows.exe`, containing the Windows
   executable; and
 - `draftomen-v1.2.3-unsigned-sha256sums.txt`, containing SHA-256 entries
-  for those two assets.
+  for those three binaries.
 
-The release filenames deliberately include both the tag and `unsigned`.
-Mounting the macOS asset in Finder or with `hdiutil attach -readonly -nobrowse`
-shows the app and Applications shortcut. The DMG and app are not
+The release filenames deliberately include the tag, `unsigned`, and for macOS
+the architecture. Releases before this change published a single
+`unsigned-macos.dmg` that ran only on Apple Silicon. Mounting a macOS asset in
+Finder or with `hdiutil attach -readonly -nobrowse` shows the app and
+Applications shortcut. The DMG and app are not
 developer/distribution signed or notarized; the app has only Nuitka's required
 ad-hoc signature. The Windows executable has no distribution signature. These
 GitHub Release assets therefore require platform-appropriate signing and
