@@ -3,6 +3,16 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Publish the DFT PremierDraft augmented model. On 889,392 held-out picks it
+  raises Basic DO top-1 from 0.520 to 0.562 and mean reciprocal rank from
+  0.690 to 0.726.
+- Make `build-augmented-set` train against the set profile the website
+  publishes in `website/public/profiles`, with its checksums verified. It used
+  to read only the local app cache and fall back to a generic profile without
+  ratings, which calibrated DFT against the wrong baseline and reported it
+  only after training. The build now stops before any download when the set
+  has no published profile with ratings, and stops before training when the
+  dump's format has none.
 - Let `build-augmented-set` train on draft dumps with bonus-sheet cards that
   the set card data does not list, such as the 10 DFT Special Guests. Their
   metadata comes from the local Scryfall bulk file, preferring an Arena

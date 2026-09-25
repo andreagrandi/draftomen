@@ -23,9 +23,13 @@ from draftomen.augmented_manifest import (
 from draftomen.augmented_training import AugmentedTrainingResult
 from draftomen.augmented_training_data import AugmentedTrainingSource
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.profile_generation import generate_set_profile
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
+from draftomen.public_dump import PublicDumpManifest
 from draftomen.set_card_data import SetCardData
-from draftomen.set_profile import SetProfile, SetProfileLoadResult
+from draftomen.set_profile import SetProfile
 from tests.augmented_artifacts import augmented_artifact
+import tests.test_profile_generation as generation_fixture
 
 
 _SET_CODE = "tst"
@@ -88,6 +92,7 @@ def _install_workflow(
     )
 
     def acquire(*, set_code: str, cache, timeout_seconds: int) -> AugmentedTrainingSource:
+        assert events == ["profile-check"]
         assert set_code == "TST"
         assert timeout_seconds == 19
         assert cache.root == cache_dir
@@ -108,7 +113,7 @@ def _install_workflow(
         )
 
     def resolve(*, set_code: str, output_dir: Path, timeout_seconds: int) -> Path:
-        assert events == ["acquire"]
+        assert events == ["profile-check", "acquire", "profile"]
         assert set_code == "TST"
         assert timeout_seconds == 19
         target = output_dir / f"{set_code.casefold()}.json.gz"
@@ -118,21 +123,25 @@ def _install_workflow(
         events.append("card-data")
         return target
 
-    def load_profile(*, set_code: str, event_format: str) -> SetProfileLoadResult:
-        assert events == ["acquire", "card-data"]
+    def require_profile(*, set_code: str, profiles_dir: Path) -> None:
+        assert events == []
+        assert set_code == "TST"
+        events.append("profile-check")
+
+    def load_profile(
+        *, set_code: str, event_format: str, profiles_dir: Path
+    ) -> tuple[SetProfile, str]:
+        assert events == ["profile-check", "acquire"]
         assert set_code == "TST"
         assert event_format == "PremierDraft"
         events.append("profile")
-        return SetProfileLoadResult(
-            profile=SetProfile.generic(
-                set_code=set_code,
-                event_format=event_format,
-            ),
-            source="generic",
+        return (
+            SetProfile.generic(set_code=set_code, event_format=event_format),
+            "published:early",
         )
 
     def train(*, set_code: str, source, card_database, set_profile):
-        assert events == ["acquire", "card-data", "profile"]
+        assert events == ["profile-check", "acquire", "profile", "card-data"]
         assert set_code == "TST"
         assert source.event_type == "PremierDraft"
         assert set_profile.set_code == _SET_CODE
@@ -143,7 +152,8 @@ def _install_workflow(
 
     monkeypatch.setattr(publication, "acquire_augmented_training_source", acquire)
     monkeypatch.setattr(publication, "resolve_set_card_data", resolve)
-    monkeypatch.setattr(publication, "safe_load_set_profile", load_profile)
+    monkeypatch.setattr(publication, "_require_rated_published_profile", require_profile)
+    monkeypatch.setattr(publication, "_load_published_profile", load_profile)
     monkeypatch.setattr(publication, "train_and_gate_augmented_set", train)
     return public_dir, card_data_dir, augmented_dir, events
 
@@ -239,9 +249,9 @@ def test_publishes_client_readable_object_and_preserves_other_set_idempotently(
         cache_dir=tmp_path / "private-cache",
     )
 
-    assert events == ["acquire", "card-data", "profile", "train"]
+    assert events == ["profile-check", "acquire", "profile", "card-data", "train"]
     assert result.training.report["evaluation"] == _training_report()["evaluation"]
-    assert result.profile_source == "generic"
+    assert result.profile_source == "published:early"
     assert result.card_data_path == card_data_dir / f"{_SET_CODE}.json.gz"
     assert result.object_path == augmented_dir / "objects" / f"{expected_digest}.json.gz"
     assert result.manifest_path == augmented_dir / "manifest.json"
@@ -346,6 +356,9 @@ def test_acquisition_failure_precedes_any_public_write(
     def unexpected_card_data(**_kwargs):
         raise AssertionError("card data must not be resolved before source acquisition")
 
+    monkeypatch.setattr(
+        publication, "_require_rated_published_profile", lambda **_kwargs: None
+    )
     monkeypatch.setattr(publication, "acquire_augmented_training_source", fail_acquisition)
     monkeypatch.setattr(publication, "resolve_set_card_data", unexpected_card_data)
 
@@ -469,3 +482,129 @@ def test_manifest_replace_failure_keeps_prior_references_and_cleans_temporary_fi
     _assert_prior_bytes_unchanged(prior_files)
     assert (augmented_dir / "objects" / f"{digest}.json.gz").read_bytes() == payload
     _assert_no_temporary_files(public_dir)
+
+
+def _publish_profile(
+    profiles_dir: Path, *, stage: str = "early"
+) -> tuple[SetProfile, ProfileManifestArtifact]:
+    generation = generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage=stage,
+        card_database=generation_fixture._database(),
+        source_manifest=PublicDumpManifest(
+            sources=(generation_fixture._source("no-data.csv"),)
+        ),
+        generated_at=generation_fixture.GENERATED_AT,
+        ratings=generation_fixture._ratings() if stage != "metadata" else None,
+        config=generation_fixture._config(),
+    )
+    report = generation.report
+    artifact = ProfileManifestArtifact(
+        set_code=report.set_code,
+        event_format=report.event_format,
+        set_profile_schema_version=report.set_profile_schema_version,
+        profile_version=generation.profile.profile_version,
+        generated_at=report.generated_at,
+        url=f"https://www.draftomen.com/profiles/objects/{report.gzip_sha256}.json.gz",
+        gzip_bytes=report.gzip_bytes,
+        profile_bytes=report.profile_bytes,
+        gzip_sha256=report.gzip_sha256,
+        profile_sha256=report.profile_sha256,
+        maturity=generation.profile.maturity,
+    )
+    objects = profiles_dir / "objects"
+    objects.mkdir(parents=True, exist_ok=True)
+    (objects / f"{report.gzip_sha256}.json.gz").write_bytes(generation.gzip_bytes)
+    (profiles_dir / "manifest.json").write_bytes(
+        ProfileManifest(artifacts=(artifact,), published_at=_RETRIEVED_AT).to_bytes()
+    )
+    return generation.profile, artifact
+
+
+def test_published_profile_is_loaded_with_its_maturity_as_the_source(
+    tmp_path: Path,
+) -> None:
+    profiles_dir = tmp_path / "profiles"
+    expected, _ = _publish_profile(profiles_dir)
+
+    profile, source = publication._load_published_profile(
+        set_code="TST", event_format="QuickDraft", profiles_dir=profiles_dir
+    )
+
+    assert profile.to_bytes() == expected.to_bytes()
+    assert source == "published:early"
+
+
+def test_missing_published_format_stops_with_a_named_error(tmp_path: Path) -> None:
+    profiles_dir = tmp_path / "profiles"
+    _publish_profile(profiles_dir)
+
+    with pytest.raises(publication.AugmentedPublicationError, match="No published TST TradDraft"):
+        publication._load_published_profile(
+            set_code="TST", event_format="TradDraft", profiles_dir=profiles_dir
+        )
+
+
+def test_metadata_only_profile_is_rejected_before_any_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    profiles_dir = tmp_path / "profiles"
+    _publish_profile(profiles_dir, stage="metadata")
+
+    def unexpected_acquisition(**_kwargs):
+        raise AssertionError("the dump must not be downloaded without rated profiles")
+
+    monkeypatch.setattr(
+        publication, "acquire_augmented_training_source", unexpected_acquisition
+    )
+
+    with pytest.raises(publication.AugmentedPublicationError, match="card ratings"):
+        publication.build_augmented_set(
+            set_code="TST",
+            card_data_dir=tmp_path / "card-data",
+            augmented_dir=tmp_path / "augmented",
+            cache_dir=tmp_path / "cache",
+            profiles_dir=profiles_dir,
+        )
+    with pytest.raises(publication.AugmentedPublicationError, match="card ratings"):
+        publication._load_published_profile(
+            set_code="TST", event_format="QuickDraft", profiles_dir=profiles_dir
+        )
+
+
+def test_set_without_published_profiles_stops_before_any_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    profiles_dir = tmp_path / "profiles"
+    _publish_profile(profiles_dir)
+
+    def unexpected_acquisition(**_kwargs):
+        raise AssertionError("the dump must not be downloaded without a profile")
+
+    monkeypatch.setattr(
+        publication, "acquire_augmented_training_source", unexpected_acquisition
+    )
+
+    with pytest.raises(publication.AugmentedPublicationError, match="No published OTH"):
+        publication.build_augmented_set(
+            set_code="OTH",
+            card_data_dir=tmp_path / "card-data",
+            augmented_dir=tmp_path / "augmented",
+            cache_dir=tmp_path / "cache",
+            profiles_dir=profiles_dir,
+        )
+
+
+def test_published_profile_with_a_wrong_checksum_is_rejected(tmp_path: Path) -> None:
+    profiles_dir = tmp_path / "profiles"
+    _, artifact = _publish_profile(profiles_dir)
+    object_path = profiles_dir / "objects" / f"{artifact.gzip_sha256}.json.gz"
+    object_path.write_bytes(gzip.compress(b"{}", mtime=0))
+
+    with pytest.raises(publication.AugmentedPublicationError, match="checksum"):
+        publication._load_published_profile(
+            set_code="TST", event_format="QuickDraft", profiles_dir=profiles_dir
+        )

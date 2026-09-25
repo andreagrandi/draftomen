@@ -228,7 +228,7 @@ import draftomen.cli
     ("set_code", "expected_fetch_count", "expected_error"),
     [
         ("HÖB", 0, "Set code"),
-        ("ZZZ", 1, "No supported public Draft Data"),
+        ("ZZZ", 0, "published profile manifest could not be read"),
     ],
 )
 def test_build_augmented_set_rejects_invalid_or_unsupported_sets_before_public_write(
@@ -385,7 +385,7 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
     manifest_path = augmented_dir / "manifest.json"
     assert exit_code == 0
     assert captured.out == (
-        "Profile source: generic\n"
+        "Profile source: published:early\n"
         "Basic DO: top_1=0.25 mean_reciprocal_rank=0.5\n"
         "Basic DO + augmented: top_1=0.5 mean_reciprocal_rank=0.75\n"
         f"Card data: {card_data_path}\n"
@@ -394,7 +394,7 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
     )
     assert captured.err == ""
     assert build_calls == ["TST"]
-    assert events == ["acquire", "card-data", "profile", "train"]
+    assert events == ["profile-check", "acquire", "profile", "card-data", "train"]
     assert card_data_path.is_file()
     assert object_path.is_file()
     assert manifest_path.is_file()
