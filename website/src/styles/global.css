@@ -771,6 +771,78 @@
     font-family: var(--font-mono);
     font-size: 0.68rem;
   }
+
+  .sets-note {
+    max-width: 43rem;
+    margin: 0 0 1.5rem;
+    color: #aeb8cf;
+    font-size: 0.95rem;
+    line-height: 1.65;
+  }
+
+  .sets-table-wrap {
+    border: 1px solid var(--color-base-300);
+    border-radius: var(--radius-box);
+    background: var(--color-base-200);
+    overflow: hidden;
+  }
+
+  .sets-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+  }
+
+  .sets-table th,
+  .sets-table td {
+    padding: 0.85rem 1.1rem;
+    border-bottom: 1px solid var(--color-base-300);
+    color: #c3cbe0;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .sets-table thead th {
+    color: #8e9ab6;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .sets-table tbody tr:last-child th,
+  .sets-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .sets-table .set-name {
+    display: block;
+    color: var(--color-base-content);
+    font-weight: 700;
+  }
+
+  .sets-table .set-code {
+    color: var(--color-primary);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+
+  .sets-table .profile-list {
+    display: grid;
+    gap: 0.2rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .sets-table .maturity {
+    color: #8e9ab6;
+    font-size: 0.8rem;
+  }
+
+  .sets-table .muted {
+    color: #7f8ba6;
+  }
 }
 
 @media (max-width: 900px) {
@@ -856,6 +928,41 @@
 
   .footer-links {
     justify-content: start;
+  }
+
+  .sets-table thead {
+    display: none;
+  }
+
+  .sets-table tr {
+    display: block;
+    padding: 0.9rem 1rem;
+    border-bottom: 1px solid var(--color-base-300);
+  }
+
+  .sets-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .sets-table th,
+  .sets-table td {
+    display: block;
+    padding: 0.2rem 0;
+    border-bottom: 0;
+  }
+
+  .sets-table td::before {
+    content: attr(data-label);
+    display: block;
+    color: #8e9ab6;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .sets-table th[scope="row"] {
+    padding-bottom: 0.4rem;
   }
 }
 

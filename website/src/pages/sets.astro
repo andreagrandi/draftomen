@@ -1,0 +1,127 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import setsManifest from '../../public/sets/manifest.json';
+
+type SetEntry = {
+  name: string;
+  card_data: { url: string; bytes: number; sha256: string } | null;
+  profiles: Record<string, { maturity: string }>;
+  augmented: {
+    metrics: {
+      picks: number;
+      basic_do: { top_1: number };
+      basic_plus_augmented: { top_1: number };
+    };
+  } | null;
+};
+
+const formatLabels: Record<string, string> = {
+  premierdraft: 'Premier Draft',
+  quickdraft: 'Quick Draft',
+  traddraft: 'Traditional Draft',
+  picktwodraft: 'Pick Two Draft',
+};
+const maturityLabels: Record<string, string> = {
+  early: 'early',
+  established: 'established',
+  'metadata-only': 'no ratings',
+};
+
+const sets = Object.entries(setsManifest.sets as Record<string, SetEntry>)
+  .map(([code, entry]) => ({
+    code: code.toUpperCase(),
+    name: entry.name,
+    hasCardData: entry.card_data !== null,
+    profiles: Object.entries(entry.profiles)
+      .map(([format, profile]) => ({
+        format: formatLabels[format] ?? format,
+        maturity: maturityLabels[profile.maturity] ?? profile.maturity,
+      }))
+      .sort((left, right) => left.format.localeCompare(right.format)),
+    augmented: entry.augmented,
+  }))
+  .sort((left, right) => left.name.localeCompare(right.name));
+
+const withProfiles = sets.filter((set) => set.profiles.length > 0).length;
+const withAugmented = sets.filter((set) => set.augmented !== null).length;
+
+function percent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+---
+
+<BaseLayout
+  title="Supported sets — Draft Omen"
+  description="Every set Draft Omen has card data for, with its 17Lands profile formats and augmented model availability."
+  canonicalPath="/sets/"
+>
+  <section class="page-intro">
+    <div class="shell">
+      <p class="eyebrow">Supported sets</p>
+      <h1>Which sets Draft Omen knows.</h1>
+      <p class="intro-lede">
+        {sets.length} sets have card data. {withProfiles} have 17Lands profile
+        ratings for at least one format, and {withAugmented} have an augmented
+        model. This page is built from the published{' '}
+        <a class="text-link" href="/sets/manifest.json">sets manifest</a>.
+      </p>
+    </div>
+  </section>
+
+  <section class="section pt-0" aria-labelledby="sets-heading">
+    <div class="shell">
+      <h2 id="sets-heading" class="sr-only">Set list</h2>
+      <p class="sets-note">
+        Mocked Draft also needs the set in your local Draftmancer checkout, so a
+        set listed here may still be missing from the Mocked Draft set picker.
+      </p>
+      <div class="sets-table-wrap">
+        <table class="sets-table">
+          <thead>
+            <tr>
+              <th scope="col">Set</th>
+              <th scope="col">Card data</th>
+              <th scope="col">Profile ratings</th>
+              <th scope="col">Augmented model</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sets.map((set) => (
+              <tr id={set.code.toLowerCase()}>
+                <th scope="row">
+                  <span class="set-name">{set.name}</span>
+                  <span class="set-code">{set.code}</span>
+                </th>
+                <td data-label="Card data">{set.hasCardData ? 'Available' : 'Missing'}</td>
+                <td data-label="Profile ratings">
+                  {set.profiles.length === 0 ? (
+                    <span class="muted">No ratings yet</span>
+                  ) : (
+                    <ul class="profile-list">
+                      {set.profiles.map((profile) => (
+                        <li>
+                          {profile.format} <span class="maturity">{profile.maturity}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </td>
+                <td data-label="Augmented model">
+                  {set.augmented === null ? (
+                    <span class="muted">None</span>
+                  ) : (
+                    <span>
+                      Available: top pick match{' '}
+                      {percent(set.augmented.metrics.basic_do.top_1)} to{' '}
+                      {percent(set.augmented.metrics.basic_plus_augmented.top_1)}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</BaseLayout>
