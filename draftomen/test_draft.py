@@ -18,7 +18,12 @@ import zlib
 
 from draftomen.augmented_model_client import AugmentedModelClient
 from draftomen.card_data_client import CardDataClient
-from draftomen.carddb import CardDatabase
+from draftomen.carddb import (
+    CardDatabase,
+    CardInfo,
+    build_card_database_from_bulk_file,
+    build_card_database_from_scryfall_cards,
+)
 from draftomen.cardimages import CardImageService
 from draftomen.corpus import DEFAULT_CACHE_DIR
 from draftomen.draftmancer import (
@@ -737,7 +742,7 @@ def create_test_draft_runtime(
             f"card data for set {normalized_set_code!r} is unavailable: {error}",
             stage="startup",
         ) from error
-    canonical_grp_ids_by_scryfall_id = _load_canonical_grp_ids_by_scryfall_id(
+    bulk_scan = _scan_scryfall_bulk(
         bulk_path=scryfall_bulk_file,
         set_code=normalized_set_code,
         card_database=card_database,
@@ -810,7 +815,13 @@ def create_test_draft_runtime(
             adapter = DraftmancerAdapter(
                 config=config,
                 card_database=card_database,
-                canonical_grp_ids_by_scryfall_id=canonical_grp_ids_by_scryfall_id,
+                canonical_grp_ids_by_scryfall_id=(
+                    bulk_scan.canonical_grp_ids_by_scryfall_id
+                ),
+                missing_card_resolver=_MissingCardResolver(
+                    bulk_path=scryfall_bulk_file,
+                    set_rows_by_scryfall_id=bulk_scan.set_rows_by_scryfall_id,
+                ),
                 event_sink=lambda event: session.process_events(events=(event,)),
                 socket_client=socket_client,
             )
@@ -1001,7 +1012,34 @@ def _load_canonical_grp_ids_by_scryfall_id(
     set_code: str,
     card_database: CardDatabase,
 ) -> dict[str, int]:
-    """Resolve every Scryfall printing of a card in the set to a canonical Arena grpId.
+    """Resolve every Scryfall printing that Draft Omen can identify to an Arena grpId.
+    The complete Scryfall bulk file is read locally and never queried per card.
+    """
+
+    return _scan_scryfall_bulk(
+        bulk_path=bulk_path,
+        set_code=set_code,
+        card_database=card_database,
+    ).canonical_grp_ids_by_scryfall_id
+
+
+@dataclass(frozen=True)
+class _ScryfallBulkScan:
+    """Identity map and the draft set's own rows from one pass over the bulk file.
+    The rows let the Mocked Draft describe set cards that Scryfall has no Arena id for.
+    """
+
+    canonical_grp_ids_by_scryfall_id: dict[str, int]
+    set_rows_by_scryfall_id: dict[str, dict[str, Any]]
+
+
+def _scan_scryfall_bulk(
+    *,
+    bulk_path: Path,
+    set_code: str,
+    card_database: CardDatabase,
+) -> _ScryfallBulkScan:
+    """Read the bulk file once for the identity map and the set's own printings.
     The complete Scryfall bulk file is read locally and never queried per card.
     """
 
@@ -1013,7 +1051,7 @@ def _load_canonical_grp_ids_by_scryfall_id(
     # Draftmancer boosters also carry printings from other sets, such as
     # reprints in a bonus slot, so every set's printings are indexed.
     records_by_card_id: dict[str, tuple[str, int | None]] = {}
-    has_set_cards = False
+    set_rows_by_scryfall_id: dict[str, dict[str, Any]] = {}
     open_bulk = gzip.open if bulk_path.suffix == ".gz" else Path.open
     try:
         with open_bulk(bulk_path, mode="rt", encoding="utf-8") as stream:
@@ -1043,7 +1081,8 @@ def _load_canonical_grp_ids_by_scryfall_id(
                         f"Scryfall {set_code} card {card_id} has no oracle_id",
                         stage="startup",
                     )
-                has_set_cards = has_set_cards or in_set
+                if in_set:
+                    set_rows_by_scryfall_id[card_id] = value
                 arena_id = value.get("arena_id")
                 if not isinstance(arena_id, int) or isinstance(arena_id, bool):
                     arena_id = None
@@ -1068,29 +1107,89 @@ def _load_canonical_grp_ids_by_scryfall_id(
             f"could not parse local Scryfall bulk file {bulk_path}: {error}",
             stage="startup",
         ) from error
-    if not has_set_cards:
+    if not set_rows_by_scryfall_id:
         raise TestDraftError(
             f"local Scryfall bulk file {bulk_path} contains no {set_code} cards",
             stage="startup",
         )
 
     canonical_ids = set(card_database.cards)
-    arena_ids_by_oracle: dict[str, set[int]] = {}
+    set_arena_ids_by_oracle: dict[str, set[int]] = {}
+    any_arena_ids_by_oracle: dict[str, set[int]] = {}
     for oracle_id, arena_id in records_by_card_id.values():
-        if arena_id is not None and arena_id in canonical_ids:
-            arena_ids_by_oracle.setdefault(oracle_id, set()).add(arena_id)
+        if arena_id is None:
+            continue
+        any_arena_ids_by_oracle.setdefault(oracle_id, set()).add(arena_id)
+        if arena_id in canonical_ids:
+            set_arena_ids_by_oracle.setdefault(oracle_id, set()).add(arena_id)
 
+    # Arena printings of one card, such as alternate-art basics, play
+    # identically, so the lowest grpId keeps each choice deterministic. The
+    # set's own printings win, so its ratings apply; other Arena printings
+    # cover bonus-sheet cards that the set card data does not list.
     identities: dict[str, int] = {}
     for card_id, (oracle_id, arena_id) in records_by_card_id.items():
         if arena_id is not None and arena_id in canonical_ids:
             identities[card_id] = arena_id
-            continue
-        candidates = arena_ids_by_oracle.get(oracle_id)
-        if candidates:
-            # Arena printings of one card, such as alternate-art basics, play
-            # identically, so the lowest grpId keeps the choice deterministic.
-            identities[card_id] = min(candidates)
-    return identities
+        elif oracle_id in set_arena_ids_by_oracle:
+            identities[card_id] = min(set_arena_ids_by_oracle[oracle_id])
+        elif arena_id is not None:
+            identities[card_id] = arena_id
+        elif oracle_id in any_arena_ids_by_oracle:
+            identities[card_id] = min(any_arena_ids_by_oracle[oracle_id])
+    return _ScryfallBulkScan(
+        canonical_grp_ids_by_scryfall_id=identities,
+        set_rows_by_scryfall_id=set_rows_by_scryfall_id,
+    )
+
+
+class _MissingCardResolver:
+    """Describe Mocked Draft booster cards that the set card data does not list.
+    Cards come from the local Scryfall bulk file and carry no ratings.
+    """
+
+    def __init__(
+        self,
+        *,
+        bulk_path: Path,
+        set_rows_by_scryfall_id: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        self._bulk_path = bulk_path
+        self._set_rows_by_scryfall_id = set_rows_by_scryfall_id
+        self._arena_cards: CardDatabase | None = None
+        self._lock = Lock()
+
+    def __call__(self, *, grp_id: int, scryfall_id: str | None) -> CardInfo | None:
+        """Return card metadata for an Arena grpId the set card data lacks.
+        Scryfall Arena printings come first, then the set's own row for Draftmancer-only ids.
+        """
+
+        card = self._arena_card_database().cards.get(grp_id)
+        if card is not None:
+            return card
+        row = (
+            None
+            if scryfall_id is None
+            else self._set_rows_by_scryfall_id.get(scryfall_id)
+        )
+        if row is None:
+            return None
+        # Scryfall has no arena_id for some set printings, such as KTK, so
+        # Draftmancer's Arena id stands in for it.
+        database = build_card_database_from_scryfall_cards(
+            cards=({**row, "arena_id": grp_id},),
+        )
+        return database.cards.get(grp_id)
+
+    def _arena_card_database(self) -> CardDatabase:
+        # Building every Arena card takes a few seconds, so it waits for the
+        # first missing card and most drafts never pay for it.
+        with self._lock:
+            if self._arena_cards is None:
+                self._arena_cards = build_card_database_from_bulk_file(
+                    path=self._bulk_path,
+                )
+            return self._arena_cards
 
 
 def _scryfall_oracle_id(*, card: Mapping[str, Any]) -> str | None:

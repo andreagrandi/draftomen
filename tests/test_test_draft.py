@@ -73,6 +73,8 @@ from draftomen.test_draft import (
     run_test_draft_auto,
     supported_test_draft_set_codes,
     supported_test_draft_sets,
+    _MissingCardResolver,
+    _scan_scryfall_bulk,
 )
 
 from tests.augmented_artifacts import fixed_delta_artifact
@@ -2179,3 +2181,77 @@ def test_default_test_draft_bulk_file_composes_under_the_application_data_direct
     assert default_test_draft_bulk_file() == (
         app_data_dir() / "corpus-cache" / "sources" / "scryfall-default-cards.jsonl.gz"
     )
+
+
+def _resolver_bulk(*, tmp_path: Path) -> Path:
+    bulk_path = tmp_path / "scryfall-default-cards.jsonl"
+    rows = (
+        {
+            "set": "ktk",
+            "id": "ktk-106",
+            "oracle_id": "claws-oracle",
+            "name": "Crater's Claws",
+            "cmc": 1,
+            "rarity": "rare",
+            "type_line": "Sorcery",
+            "colors": ["R"],
+        },
+        {
+            "set": "spg",
+            "id": "spg-19",
+            "oracle_id": "prison-oracle",
+            "arena_id": 88912,
+            "name": "Ghostly Prison",
+            "cmc": 3,
+            "rarity": "uncommon",
+            "type_line": "Enchantment",
+            "colors": ["W"],
+        },
+    )
+    bulk_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    return bulk_path
+
+
+def test_missing_card_resolver_describes_arena_printings_from_the_bulk_file(
+    tmp_path: Path,
+) -> None:
+    bulk_path = _resolver_bulk(tmp_path=tmp_path)
+    scan = _scan_scryfall_bulk(
+        bulk_path=bulk_path,
+        set_code="ktk",
+        card_database=_database(100),
+    )
+    resolver = _MissingCardResolver(
+        bulk_path=bulk_path,
+        set_rows_by_scryfall_id=scan.set_rows_by_scryfall_id,
+    )
+
+    card = resolver(grp_id=88912, scryfall_id="spg-19")
+
+    assert card is not None
+    assert (card.grp_id, card.name, card.set_code) == (88912, "Ghostly Prison", "spg")
+
+
+def test_missing_card_resolver_uses_the_set_row_for_a_draftmancer_only_arena_id(
+    tmp_path: Path,
+) -> None:
+    bulk_path = _resolver_bulk(tmp_path=tmp_path)
+    scan = _scan_scryfall_bulk(
+        bulk_path=bulk_path,
+        set_code="ktk",
+        card_database=_database(100),
+    )
+    resolver = _MissingCardResolver(
+        bulk_path=bulk_path,
+        set_rows_by_scryfall_id=scan.set_rows_by_scryfall_id,
+    )
+
+    card = resolver(grp_id=58149, scryfall_id="ktk-106")
+    unknown = resolver(grp_id=58150, scryfall_id="not-in-set")
+
+    assert card is not None
+    assert (card.grp_id, card.name, card.colors) == (58149, "Crater's Claws", ("R",))
+    assert unknown is None

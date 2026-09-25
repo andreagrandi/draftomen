@@ -581,7 +581,7 @@ def test_scryfall_identity_mapping_resolves_reprints_from_other_sets(
         card_database=_database(100),
     )
 
-    assert mapping == {"hob-1": 100, "spg-1": 100}
+    assert mapping == {"hob-1": 100, "spg-1": 100, "spg-2": 901}
 
 
 def test_scryfall_identity_mapping_reads_face_oracle_id_for_reversible_cards(
@@ -1375,4 +1375,131 @@ def test_disconnect_during_each_wait_is_terminal(
         assert sum(isinstance(event, PickMadeEvent) for event in published) == 1
     with pytest.raises(DraftmancerAdapterError):
         adapter.connect_and_start()
+    adapter.close()
+
+
+def test_scryfall_identity_mapping_uses_any_arena_printing_when_the_set_has_none(
+    tmp_path: Path,
+) -> None:
+    bulk_path = _write_bulk(
+        path=tmp_path / "default-cards.jsonl",
+        records=(
+            {"set": "ktk", "id": "ktk-1", "oracle_id": "oracle-1"},
+            {"set": "ktk", "id": "ktk-forest", "oracle_id": "forest-oracle"},
+            {"set": "m19", "id": "m19-forest", "oracle_id": "forest-oracle", "arena_id": 68000},
+            {"set": "xln", "id": "xln-forest", "oracle_id": "forest-oracle", "arena_id": 66000},
+        ),
+    )
+
+    mapping = _load_canonical_grp_ids_by_scryfall_id(
+        bulk_path=bulk_path,
+        set_code="ktk",
+        card_database=_database(100),
+    )
+
+    assert mapping == {
+        "ktk-forest": 66000,
+        "m19-forest": 68000,
+        "xln-forest": 66000,
+    }
+
+
+def _resolver_calls() -> tuple[list[tuple[int, str | None]], Callable[..., CardInfo | None]]:
+    calls: list[tuple[int, str | None]] = []
+    cards = {
+        88912: CardInfo(
+            grp_id=88912,
+            name="Ghostly Prison",
+            colors=("W",),
+            mana_value=3.0,
+            rarity="uncommon",
+            types=("Enchantment",),
+            set_code="spg",
+        ),
+    }
+
+    def resolver(*, grp_id: int, scryfall_id: str | None) -> CardInfo | None:
+        calls.append((grp_id, scryfall_id))
+        return cards.get(grp_id)
+
+    return calls, resolver
+
+
+def test_missing_card_resolver_adds_a_bonus_sheet_card_to_the_shared_database() -> None:
+    config = _config()
+    state = {
+        "boosterNumber": 0,
+        "pickNumber": 0,
+        "booster": [
+            {"uniqueID": 1, "arena_id": 100},
+            {"uniqueID": 2, "id": "spg-19", "arena_id": 88912, "name": "Ghostly Prison"},
+        ],
+    }
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    database = _database(100)
+    calls, resolver = _resolver_calls()
+    published: list[object] = []
+    adapter = DraftmancerAdapter(
+        config=config,
+        card_database=database,
+        event_sink=published.append,
+        socket_client=socket,
+        missing_card_resolver=resolver,
+    )
+
+    adapter.connect_and_start()
+
+    assert calls == [(88912, "spg-19")]
+    assert database.cards[88912].name == "Ghostly Prison"
+    assert published[1].offered_grp_ids == (100, 88912)  # type: ignore[union-attr]
+    adapter.close()
+
+
+def test_missing_card_resolver_describes_unlisted_printings_from_the_draftmancer_entry() -> None:
+    config = _config()
+    state = {
+        "boosterNumber": 0,
+        "pickNumber": 0,
+        "booster": [
+            {"uniqueID": 1, "arena_id": 100},
+            {
+                "uniqueID": 2,
+                "id": "0a1b2c3d-0000-4000-8000-000000000000",
+                "name": "Condemn",
+                "mana_cost": "{W}",
+                "cmc": 1,
+                "colors": ["W"],
+                "rarity": "rare",
+                "type": "Instant",
+                "subtypes": [],
+                "set": "spg",
+                "collector_number": "74",
+            },
+        ],
+    }
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    database = _database(100)
+    _, resolver = _resolver_calls()
+    published: list[object] = []
+    adapter = DraftmancerAdapter(
+        config=config,
+        card_database=database,
+        event_sink=published.append,
+        socket_client=socket,
+        missing_card_resolver=resolver,
+    )
+
+    adapter.connect_and_start()
+
+    grp_id = published[1].offered_grp_ids[1]  # type: ignore[union-attr]
+    assert grp_id == 900_000_000 + 0x0A1B2C3
+    card = database.cards[grp_id]
+    assert (card.name, card.colors, card.mana_value, card.types) == (
+        "Condemn",
+        ("W",),
+        1.0,
+        ("Instant",),
+    )
+    assert card.set_code == "spg"
+    assert card.source_provenance == ("draftmancer",)
     adapter.close()
