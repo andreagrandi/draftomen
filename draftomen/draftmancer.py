@@ -854,7 +854,7 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                     "Draftmancer draftState booster must be a list."
                 )
             offers: dict[int, _OfferedCard] = {}
-            arena_ids: list[int] = []
+            labels_by_grp_id: dict[int, str] = {}
             for index, entry in enumerate(booster):
                 if not isinstance(entry, Mapping):
                     raise DraftmancerAdapterError(
@@ -879,20 +879,25 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                     arena_id = entry.get("arena_id")
                     if not isinstance(arena_id, int) or isinstance(arena_id, bool):
                         raise DraftmancerAdapterError(
-                            "Draftmancer booster card must have a mapped Scryfall id "
-                            "or an integer arena_id."
+                            f"Draftmancer booster card {_booster_card_label(entry=entry)} "
+                            "must have a mapped Scryfall id or an integer arena_id."
                         )
                     canonical_grp_id = arena_id
                 offers[unique_id] = _OfferedCard(
                     booster_index=index,
                     arena_id=canonical_grp_id,
                 )
-                arena_ids.append(canonical_grp_id)
-            unresolved = self._card_database.unresolved_grp_ids(grp_ids=arena_ids)
+                labels_by_grp_id.setdefault(
+                    canonical_grp_id,
+                    _booster_card_label(entry=entry),
+                )
+            unresolved = self._card_database.unresolved_grp_ids(grp_ids=labels_by_grp_id)
             if unresolved:
                 raise DraftmancerAdapterError(
                     "Draftmancer booster contains unresolved Arena ids: "
-                    + ", ".join(str(grp_id) for grp_id in unresolved)
+                    + ", ".join(
+                        f"{grp_id} {labels_by_grp_id[grp_id]}" for grp_id in unresolved
+                    )
                     + "."
                 )
             return (booster_number, pick_number), offers
@@ -1003,6 +1008,23 @@ def _seat_records(*, payload: object) -> tuple[object, ...]:
                 "Draftmancer startDraft seats must be a user-ID-to-seat mapping."
             )
     return tuple(payload.values())
+
+
+def _booster_card_label(*, entry: Mapping[object, object]) -> str:
+    """Describe a booster card by name, set and collector number for error messages.
+    Missing fields fall back to the Scryfall id so the card stays identifiable.
+    """
+
+    name = entry.get("name")
+    set_code = entry.get("set")
+    collector_number = entry.get("collector_number")
+    scryfall_id = entry.get("id")
+    label = name if isinstance(name, str) and name else "unnamed card"
+    if isinstance(set_code, str) and set_code and isinstance(collector_number, str):
+        return f"{label} ({set_code.upper()} #{collector_number})"
+    if isinstance(scryfall_id, str) and scryfall_id:
+        return f"{label} (Scryfall {scryfall_id})"
+    return label
 
 
 def _non_negative_int(value: object, *, field_name: str) -> int:

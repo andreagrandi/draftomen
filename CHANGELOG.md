@@ -3,6 +3,12 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Fix Mocked Draft booster cards that failed to map to an Arena card. The
+  Scryfall mapping now reads every set in the bulk file, uses the first face's
+  oracle id when the card has none, and picks the lowest Arena id when a card
+  has several Arena printings, such as the LCI Travel Poster basics. This fixes
+  booster decoding for LCI, M21, and SNC and startup for TDM and ECL. Booster
+  errors now name the card by name, set, and collector number. (#682)
 - Add a QML regression test showing that the Mocked Draft set selector keeps
   the chosen set, such as LCI, through state updates and after Start, and that
   Start sends that set. The fix shipped with the set picker in #688. (#681)

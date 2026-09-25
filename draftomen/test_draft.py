@@ -4,7 +4,7 @@ The controller is UI-neutral so CLIs and native adapters share one contract.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 import gzip
@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 import tempfile
 from threading import Lock, RLock
-from typing import Literal, Self, TypeAlias
+from typing import Any, Literal, Self, TypeAlias
 import uuid
 import zlib
 
@@ -1001,7 +1001,7 @@ def _load_canonical_grp_ids_by_scryfall_id(
     set_code: str,
     card_database: CardDatabase,
 ) -> dict[str, int]:
-    """Resolve every deterministic set printing to its canonical Arena grpId.
+    """Resolve every Scryfall printing of a card in the set to a canonical Arena grpId.
     The complete Scryfall bulk file is read locally and never queried per card.
     """
 
@@ -1010,7 +1010,10 @@ def _load_canonical_grp_ids_by_scryfall_id(
             f"missing local Scryfall bulk file: {bulk_path}",
             stage="startup",
         )
+    # Draftmancer boosters also carry printings from other sets, such as
+    # reprints in a bonus slot, so every set's printings are indexed.
     records_by_card_id: dict[str, tuple[str, int | None]] = {}
+    has_set_cards = False
     open_bulk = gzip.open if bulk_path.suffix == ".gz" else Path.open
     try:
         with open_bulk(bulk_path, mode="rt", encoding="utf-8") as stream:
@@ -1023,20 +1026,24 @@ def _load_canonical_grp_ids_by_scryfall_id(
                         f"Scryfall bulk line {line_number} must be an object",
                         stage="startup",
                     )
-                if value.get("set") != set_code:
-                    continue
+                in_set = value.get("set") == set_code
                 card_id = value.get("id")
-                oracle_id = value.get("oracle_id")
+                oracle_id = _scryfall_oracle_id(card=value)
                 if not isinstance(card_id, str) or not card_id:
+                    if not in_set:
+                        continue
                     raise TestDraftError(
                         f"Scryfall {set_code} card on line {line_number} has no id",
                         stage="startup",
                     )
-                if not isinstance(oracle_id, str) or not oracle_id:
+                if oracle_id is None:
+                    if not in_set:
+                        continue
                     raise TestDraftError(
                         f"Scryfall {set_code} card {card_id} has no oracle_id",
                         stage="startup",
                     )
+                has_set_cards = has_set_cards or in_set
                 arena_id = value.get("arena_id")
                 if not isinstance(arena_id, int) or isinstance(arena_id, bool):
                     arena_id = None
@@ -1061,27 +1068,42 @@ def _load_canonical_grp_ids_by_scryfall_id(
             f"could not parse local Scryfall bulk file {bulk_path}: {error}",
             stage="startup",
         ) from error
-    if not records_by_card_id:
+    if not has_set_cards:
         raise TestDraftError(
             f"local Scryfall bulk file {bulk_path} contains no {set_code} cards",
             stage="startup",
         )
-    records = tuple(
-        (card_id, oracle_id, arena_id)
-        for card_id, (oracle_id, arena_id) in records_by_card_id.items()
-    )
 
     canonical_ids = set(card_database.cards)
     arena_ids_by_oracle: dict[str, set[int]] = {}
-    for _, oracle_id, arena_id in records:
+    for oracle_id, arena_id in records_by_card_id.values():
         if arena_id is not None and arena_id in canonical_ids:
             arena_ids_by_oracle.setdefault(oracle_id, set()).add(arena_id)
 
     identities: dict[str, int] = {}
-    for card_id, oracle_id, arena_id in records:
-        candidates = arena_ids_by_oracle.get(oracle_id, set())
+    for card_id, (oracle_id, arena_id) in records_by_card_id.items():
         if arena_id is not None and arena_id in canonical_ids:
             identities[card_id] = arena_id
-        elif len(candidates) == 1:
-            identities[card_id] = next(iter(candidates))
+            continue
+        candidates = arena_ids_by_oracle.get(oracle_id)
+        if candidates:
+            # Arena printings of one card, such as alternate-art basics, play
+            # identically, so the lowest grpId keeps the choice deterministic.
+            identities[card_id] = min(candidates)
     return identities
+
+
+def _scryfall_oracle_id(*, card: Mapping[str, Any]) -> str | None:
+    """Return the card's oracle id, reading the first face when the top level has none.
+    Reversible layouts keep oracle_id on each face instead of the card object.
+    """
+
+    oracle_id = card.get("oracle_id")
+    if isinstance(oracle_id, str) and oracle_id:
+        return oracle_id
+    faces = card.get("card_faces")
+    if isinstance(faces, list) and faces and isinstance(faces[0], Mapping):
+        face_oracle_id = faces[0].get("oracle_id")
+        if isinstance(face_oracle_id, str) and face_oracle_id:
+            return face_oracle_id
+    return None
