@@ -3,6 +3,9 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Add a QML regression test showing that the Mocked Draft set selector keeps
+  the chosen set, such as LCI, through state updates and after Start, and that
+  Start sends that set. The fix shipped with the set picker in #688. (#681)
 - Make "Refresh hosted ratings" work during a Mocked Draft. The refresh now
   uses the simulated set's profile client and updates only the Mocked Draft
   session, so the Arena profile is never touched. If no hosted profile exists,
