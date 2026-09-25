@@ -41,7 +41,7 @@ from draftomen.carddb import (
     iter_scryfall_default_cards,
 )
 from draftomen.draftmancer import _unlisted_card_grp_id
-from draftomen.paths import app_data_dir
+from draftomen.paths import DEVELOPER_CACHE_DIR
 from draftomen.profile_input_acquisition import SeventeenLandsPublicDraftAdapter
 from draftomen.profile_input_cache import ProfileInputCache
 from draftomen.profile_manifest import (
@@ -266,7 +266,7 @@ def build_augmented_set(
     cache_root = (
         cache_dir
         if cache_dir is not None
-        else app_data_dir() / "profile-input-cache"
+        else DEVELOPER_CACHE_DIR / "profile-input-cache"
     )
     _stage(f"Selecting a public draft dump for {set_code.upper()}")
     source = acquire_augmented_training_source(

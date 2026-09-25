@@ -76,7 +76,11 @@ from draftomen.deckbuilder import (
 from draftomen.draftmancer import DraftmancerAdapterError
 from draftomen.events import DraftLogParseError
 from draftomen.logfollow import LogFollowError
-from draftomen.paths import UnsupportedPlatformError, resolve_player_log_path
+from draftomen.paths import (
+    DEVELOPER_CACHE_DIR,
+    UnsupportedPlatformError,
+    resolve_player_log_path,
+)
 from draftomen.pool import DraftPoolError
 from draftomen.ranking import DEFAULT_RANKING_MODE, RANKING_MODES
 from draftomen.refresh_plan import (
@@ -291,6 +295,12 @@ def build_parser() -> argparse.ArgumentParser:
         "set",
         metavar="SET",
         help="Exact set code to acquire, train, and publish.",
+    )
+    augmented_parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=DEVELOPER_CACHE_DIR,
+        help=f"Developer cache for downloaded draft dumps (default: {DEVELOPER_CACHE_DIR}).",
     )
     augmented_parser.set_defaults(handler=handle_build_augmented_set)
 
@@ -774,10 +784,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Refresh only supported pairs absent from 17Lands live formats.",
     )
     refresh_profile_data_parser.add_argument(
-        "--app-dir",
+        "--cache-dir",
         type=Path,
-        default=None,
-        help=argparse.SUPPRESS,
+        default=DEVELOPER_CACHE_DIR,
+        help=f"Developer cache for downloaded 17Lands ratings (default: {DEVELOPER_CACHE_DIR}).",
     )
     refresh_profile_data_parser.set_defaults(handler=handle_refresh_profile_data)
 
@@ -1111,7 +1121,7 @@ def handle_refresh_profile_data(args: argparse.Namespace) -> int:
     try:
         result = execute_profile_data_refresh(
             plan,
-            cache_dir=getattr(args, "app_dir", None),
+            cache_dir=args.cache_dir,
         )
     except Exception:  # noqa: BLE001 - CLI diagnostics are intentionally path-free.
         print("refresh-profile-data: unable to execute profile refresh", file=sys.stderr)
@@ -1341,7 +1351,10 @@ def handle_build_augmented_set(args: argparse.Namespace) -> int:
     try:
         from draftomen.augmented_publication import build_augmented_set
 
-        result = build_augmented_set(set_code=args.set)
+        result = build_augmented_set(
+            set_code=args.set,
+            cache_dir=args.cache_dir / "profile-input-cache",
+        )
         print(f"Profile source: {result.profile_source}")
         evaluation = result.training.report["evaluation"]
         basic_do = evaluation["basic_do"]

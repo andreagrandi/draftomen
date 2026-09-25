@@ -30,6 +30,9 @@ formats are ignored. A set selector cannot be combined with either lifecycle
 flag. The command prints the deterministic pair list
 before fetching ratings, then uses the existing 24-hour cache for one aggregate
 full-set card-ratings request and one aggregate color-ratings request per pair.
+That cache lives in `.draftomen/corpus-cache/17lands/`, relative to the working
+directory, and `--cache-dir PATH` replaces `.draftomen/corpus-cache`. The
+desktop app never reads it.
 It never downloads or regenerates Scryfall card data and never makes per-card or
 pair-filtered ratings requests.
 

@@ -489,6 +489,7 @@ def test_execute_uses_real_aggregate_loader_and_two_unfiltered_calls_once(
     assert first.failures == ()
     assert second.failures == ()
     assert len(calls) == 2
+    assert [path.name for path in (tmp_path / "cache").iterdir()] == ["17lands"]
     assert all("colors=" not in url for url in calls)
     assert first.manifest_changed is True
     assert second.manifest_changed is False

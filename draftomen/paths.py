@@ -27,6 +27,9 @@ WINDOWS_PLAYER_LOG_RELATIVE_PATH = PureWindowsPath(
     "Player.log",
 )
 APP_DATA_DIRECTORY_NAME = ".draftomen"
+# Profile and augmented-model pipelines cache downloads here, relative to the
+# working directory, so the user data directory holds only what the app uses.
+DEVELOPER_CACHE_DIR = Path(".draftomen") / "corpus-cache"
 
 
 class UnsupportedPlatformError(RuntimeError):

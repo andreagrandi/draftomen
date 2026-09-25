@@ -290,8 +290,10 @@ The command reads the public Draft Data listing and checks the requested set's
 It uses the first listed dump it can acquire and validate. It reuses a valid
 canonical card-data artifact for that set. If none exists, it generates only
 that set's artifact under `website/public/card-data/`; an invalid existing
-artifact causes the command to fail. The downloaded dump stays in the per-user
-`.draftomen/profile-input-cache/`, not in `website/public/`.
+artifact causes the command to fail. The downloaded dump stays in the developer
+cache under `.draftomen/corpus-cache/profile-input-cache/`, relative to the
+working directory, not in `website/public/` or the user's app data directory.
+`--cache-dir PATH` replaces `.draftomen/corpus-cache`.
 
 The held-out evaluation compares Basic DO with Basic DO plus the augmented model.
 The command prints the profile source used for Basic DO and both `top_1` and

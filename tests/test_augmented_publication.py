@@ -385,6 +385,32 @@ def test_acquisition_failure_precedes_any_public_write(
     assert not public_dir.exists()
 
 
+def test_default_cache_is_the_developer_cache_not_the_app_data_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    cache_roots: list[Path] = []
+
+    def stop_after_cache(*, cache, **_kwargs):
+        cache_roots.append(cache.root)
+        raise ValueError("stop after the cache is chosen")
+
+    monkeypatch.setattr(
+        publication, "_require_rated_published_profile", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(publication, "acquire_augmented_training_source", stop_after_cache)
+
+    with pytest.raises(ValueError, match="stop after the cache"):
+        publication.build_augmented_set(set_code="TST")
+
+    assert cache_roots == [Path(".draftomen/corpus-cache/profile-input-cache")]
+    assert list(home.iterdir()) == []
+
+
 def test_corrupt_existing_manifest_is_not_replaced_or_extended(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

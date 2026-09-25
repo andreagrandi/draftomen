@@ -3,6 +3,16 @@
 - Generate the validated HOB QuickDraft metadata-only profile snapshot with canonical provenance, lifecycle, licensing, and deterministic replay evidence. (#325)
 
 ## [Unreleased]
+- Keep pipeline caches out of the user data directory. `build-augmented-set`
+  now caches draft dumps in `.draftomen/corpus-cache/profile-input-cache`, and
+  `refresh-profile-data` caches 17Lands ratings in
+  `.draftomen/corpus-cache/17lands`, both relative to the working directory.
+  Both commands take `--cache-dir` to use another root, and
+  `refresh-profile-data` no longer accepts the hidden `--app-dir` option.
+  Nothing writes `~/.draftomen/profile-input-cache` or
+  `~/.draftomen/set-enrichment` any more, so both can be deleted.
+  `~/.draftomen/17lands` stays for the CLI `build`, `replay` and `backtest`
+  ratings. (#705)
 - Check downloaded card data against the sets manifest. With network access,
   the card-data client reads `sets/manifest.json` once per client, rejects a
   download whose SHA-256 differs from the manifest, and downloads again when a

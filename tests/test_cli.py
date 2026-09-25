@@ -174,6 +174,9 @@ def test_build_augmented_set_parser_requires_exactly_one_set() -> None:
 
     assert args.set == "HOB"
     assert args.handler is cli.handle_build_augmented_set
+    assert args.cache_dir == Path(".draftomen/corpus-cache")
+    overridden = parser.parse_args(args=["build-augmented-set", "HOB", "--cache-dir", "cache"])
+    assert overridden.cache_dir == Path("cache")
 
 
 @pytest.mark.parametrize(
@@ -239,14 +242,9 @@ def test_build_augmented_set_rejects_invalid_or_unsupported_sets_before_public_w
     expected_fetch_count: int,
     expected_error: str,
 ) -> None:
-    from draftomen import augmented_public_data, augmented_publication
+    from draftomen import augmented_public_data
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        augmented_publication,
-        "app_data_dir",
-        lambda: tmp_path / "private-cache",
-    )
     fetched_timeouts: list[int] = []
 
     def fetch_listing(*, timeout_seconds: int) -> dict[str, list[object]]:
@@ -329,8 +327,8 @@ def test_build_augmented_set_interrupt_returns_130_without_publication_claim(
 ) -> None:
     from draftomen import augmented_publication
 
-    def interrupt(*, set_code: str) -> object:
-        del set_code
+    def interrupt(*, set_code: str, cache_dir: Path) -> object:
+        del set_code, cache_dir
         raise KeyboardInterrupt
 
     monkeypatch.setattr(augmented_publication, "build_augmented_set", interrupt)
@@ -361,7 +359,8 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
     actual_build = augmented_publication.build_augmented_set
     build_calls: list[str] = []
 
-    def build_controlled_set(*, set_code: str):
+    def build_controlled_set(*, set_code: str, cache_dir: Path):
+        assert cache_dir == Path(".draftomen/corpus-cache/profile-input-cache")
         build_calls.append(set_code)
         return actual_build(
             set_code=set_code,
@@ -481,7 +480,7 @@ def test_build_augmented_set_cli_reports_each_stage_and_download_in_few_lines(
     monkeypatch.setattr(
         augmented_publication,
         "build_augmented_set",
-        lambda *, set_code: actual_build(
+        lambda *, set_code, cache_dir: actual_build(
             set_code=set_code,
             card_data_dir=card_data_dir,
             augmented_dir=augmented_dir,
@@ -541,20 +540,20 @@ def test_export_set_data_parser_defaults_and_options() -> None:
     assert args.timeout == 17
 
 
-def test_refresh_profile_data_parser_supports_selector_modes_and_app_dir() -> None:
+def test_refresh_profile_data_parser_supports_selector_modes_and_cache_dir() -> None:
     parser = build_parser()
 
     defaults = parser.parse_args(args=["refresh-profile-data"])
     assert defaults.set is None
     assert defaults.active is False
     assert defaults.historical is False
-    assert defaults.app_dir is None
+    assert defaults.cache_dir == Path(".draftomen/corpus-cache")
 
     selected = parser.parse_args(
-        args=["refresh-profile-data", "HOB", "--app-dir", "cache"]
+        args=["refresh-profile-data", "HOB", "--cache-dir", "cache"]
     )
     assert selected.set == "HOB"
-    assert selected.app_dir == Path("cache")
+    assert selected.cache_dir == Path("cache")
 
     active = parser.parse_args(args=["refresh-profile-data", "--active"])
     historical = parser.parse_args(args=["refresh-profile-data", "--historical"])
@@ -582,7 +581,7 @@ def test_refresh_profile_data_rejects_selector_with_lifecycle_flag(
     )
 
 
-def test_refresh_profile_data_passes_app_dir_only_to_ratings_execution(
+def test_refresh_profile_data_passes_cache_dir_only_to_ratings_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     execute_kwargs: dict[str, object] = {}
@@ -598,8 +597,12 @@ def test_refresh_profile_data_passes_app_dir_only_to_ratings_execution(
 
     monkeypatch.setattr(cli, "execute_profile_data_refresh", fake_execute)
 
-    assert main(argv=["refresh-profile-data", "--app-dir", "cache"]) == 0
+    assert main(argv=["refresh-profile-data", "--cache-dir", "cache"]) == 0
     assert execute_kwargs == {"cache_dir": Path("cache")}
+
+    execute_kwargs.clear()
+    assert main(argv=["refresh-profile-data"]) == 0
+    assert execute_kwargs == {"cache_dir": Path(".draftomen/corpus-cache")}
 
 
 def test_refresh_profile_data_prints_plan_before_execution_and_flushes(
