@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-26
+
 - Publish the signed macOS DMGs as `draftomen-vX.Y.Z-macos-arm64.dmg` and
   `draftomen-vX.Y.Z-macos-x86_64.dmg`, and the checksum file as
   `draftomen-vX.Y.Z-sha256sums.txt`. The Windows executable keeps its

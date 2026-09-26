@@ -29,7 +29,7 @@ mode = onefile
 # The developer Test Draft imports socketio lazily inside draftomen/draftmancer.py,
 # so the native build must carry the optional transport explicitly. The package is
 # supplied by the locked draftmancer extra synced by the bundle workflow.
-extra_args = --quiet --noinclude-qt-translations --include-data-files=draftomen/baseline_profiles/hob-quickdraft.json=draftomen/baseline_profiles/hob-quickdraft.json --company-name="Draft Omen" --product-name="Draft Omen" --file-version=0.4.0 --product-version=0.4.0 --file-description="An unofficial Quick Draft assistant for MTG Arena" --include-package=socketio
+extra_args = --quiet --noinclude-qt-translations --include-data-files=draftomen/baseline_profiles/hob-quickdraft.json=draftomen/baseline_profiles/hob-quickdraft.json --company-name="Draft Omen" --product-name="Draft Omen" --file-version=0.4.1 --product-version=0.4.1 --file-description="An unofficial Quick Draft assistant for MTG Arena" --include-package=socketio
 macos.permissions =
 
 # Fonts: none are bundled. The application intentionally uses Qt's system fixed
