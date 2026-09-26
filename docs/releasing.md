@@ -185,3 +185,95 @@ detach the image even when smoke testing fails. To distribute it, drag the app
 onto the DMG's `Applications` shortcut in Finder, then eject the image; arrange
 platform-appropriate signing and notarization before redistributing the copied
 app.
+
+## macOS signing credentials
+
+macOS releases are signed with a Developer ID Application certificate and
+notarized with an App Store Connect Team API key. The release workflow does
+not use these credentials yet; #729 adds signing to the tag release path. The
+Account Holder of Apple team `3UFB423D7P` creates and rotates every credential.
+
+### Protected environment
+
+The credentials live in the `macos-release` GitHub environment. Its deployment
+policy allows only tags matching `v*`, so pull requests, pushes to `master`,
+and development `workflow_dispatch` runs cannot use it. A job reads these values
+only when it declares `environment: macos-release`.
+
+| Name | Kind | Content |
+|---|---|---|
+| `MACOS_CERTIFICATE_P12_BASE64` | secret | Developer ID Application certificate and private key, exported as `.p12` and base64-encoded |
+| `MACOS_CERTIFICATE_PASSWORD` | secret | `.p12` export password |
+| `APPLE_API_KEY_P8` | secret | App Store Connect Team API private key, `.p8` file contents |
+| `APPLE_API_KEY_ID` | variable | App Store Connect API key ID |
+| `APPLE_API_ISSUER_ID` | variable | App Store Connect issuer ID |
+| `APPLE_TEAM_ID` | variable | Apple Developer team ID |
+
+Keep the `.p12`, its password, and the `.p8` in the maintainer's credential
+store. Apple allows only one download of a `.p8`.
+
+### Create the certificate
+
+1. In Xcode, open Settings, then Accounts, select the team, and choose Manage
+   Certificates.
+2. Add a Developer ID Application certificate. Xcode creates the private key
+   and the certificate in the login keychain.
+3. Confirm that `security find-identity -v -p codesigning` lists
+   `Developer ID Application: <name> (3UFB423D7P)`.
+4. In Keychain Access, open My Certificates, expand the certificate, select it
+   together with its private key, and export both as a password-protected
+   `.p12`.
+
+A drag-to-Applications DMG does not need a Developer ID Installer certificate.
+
+### Create the notarization key
+
+1. In App Store Connect, open Users and Access, then Integrations, then App
+   Store Connect API. The first time, request API access.
+2. Under Team Keys, generate a key with the Developer role and download the
+   `.p8`. Note the key ID and the issuer ID.
+3. For local notarization, store a keychain profile:
+
+   ```bash
+   xcrun notarytool store-credentials draftomen-notary \
+     --key /path/to/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISSUER_ID>
+   ```
+
+### Store the credentials
+
+```bash
+base64 -i /path/to/DeveloperID.p12 \
+  | gh secret set MACOS_CERTIFICATE_P12_BASE64 --env macos-release
+gh secret set APPLE_API_KEY_P8 --env macos-release < /path/to/AuthKey_<KEYID>.p8
+gh variable set APPLE_API_KEY_ID --env macos-release --body <KEYID>
+gh variable set APPLE_API_ISSUER_ID --env macos-release --body <ISSUER_ID>
+gh variable set APPLE_TEAM_ID --env macos-release --body 3UFB423D7P
+read -rs P && printf '%s' "$P" \
+  | gh secret set MACOS_CERTIFICATE_PASSWORD --env macos-release; unset P
+```
+
+`read -rs` keeps the password off the screen and out of shell history, and
+`printf '%s'` passes it without a trailing newline. Plain
+`gh secret set MACOS_CERTIFICATE_PASSWORD` can read standard input until
+end-of-input and echo the password.
+
+Check the names with `gh secret list --env macos-release` and
+`gh variable list --env macos-release`. GitHub never shows secret values, so
+the first signing run is what confirms the password.
+
+### Rotate the credentials
+
+- The Developer ID Application certificate is valid for five years. Apps signed
+  and timestamped before it expires keep launching. Before it expires, create
+  a new certificate, export it, and replace `MACOS_CERTIFICATE_P12_BASE64` and
+  `MACOS_CERTIFICATE_PASSWORD`.
+- App Store Connect API keys do not expire. To replace one, generate a new
+  Team key, update `APPLE_API_KEY_P8` and `APPLE_API_KEY_ID`, then revoke the
+  old key in App Store Connect.
+- If the `.p12` or its password leaks, revoke the certificate in the Apple
+  Developer portal under Certificates, IDs & Profiles, create a new one, and
+  replace both secrets. Revoking a Developer ID certificate can stop apps
+  signed with it from launching, so contact Apple Developer Support first
+  when released builds are affected.
+- If the `.p8` leaks, revoke the key in App Store Connect and follow the key
+  replacement steps above.

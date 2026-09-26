@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Document the macOS signing credentials in `docs/releasing.md`: the
+  Developer ID Application certificate, the App Store Connect Team API key,
+  the protected `macos-release` environment that only `v*` tags can use, the
+  secret and variable names, and how to rotate or revoke each credential.
+  (#728)
 - Stop publishing Draft Omen to PyPI and Homebrew. A tagged release now only
   builds the native macOS and Windows bundles and attaches them to the GitHub
   Release. The release workflow drops the wheel build, the wheel smoke tests,
