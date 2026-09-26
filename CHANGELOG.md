@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Update the release skill for signed macOS releases: the new asset names, the
+  run time, and a check that a downloaded DMG is notarized and stapled.
+
 ## [0.4.1] - 2026-09-26
 
 - Publish the signed macOS DMGs as `draftomen-vX.Y.Z-macos-arm64.dmg` and

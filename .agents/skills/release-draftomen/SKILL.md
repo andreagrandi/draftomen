@@ -92,13 +92,15 @@ git push origin vX.Y.Z
 ```
 
 Find the exact `Publish release` run for tag `vX.Y.Z` with `gh`, then watch it
-through completion. The native builds take about 15 minutes. The `validate`
+through completion. The run takes about 30 minutes, most of it the signed
+Intel macOS build. The `validate`
 job checks that the tag matches `pyproject.toml` and `website/package.json`,
 builds the website, extracts the non-empty body under the exact
 `## [X.Y.Z] - YYYY-MM-DD` section from `CHANGELOG.md`, and runs the full CI
 gate. A missing, duplicate, or empty section fails the run; the workflow never
 falls back to generated notes. The native bundle jobs build and smoke-test both
-macOS DMGs and the Windows executable. After both finish, the
+macOS DMGs and the Windows executable, and the macOS jobs sign, notarize and
+staple each DMG in the `macos-release` environment. After both finish, the
 `github-release` job creates or updates the public GitHub Release with the
 changelog body, the native assets, and the checksum file.
 
@@ -120,10 +122,16 @@ Inspect `gh release view vX.Y.Z` and confirm:
 - the release workflow concluded successfully;
 - the release is published, not a draft or prerelease;
 - its body contains the promoted dated changelog entries;
-- it has `draftomen-vX.Y.Z-unsigned-macos-arm64.dmg`,
-  `draftomen-vX.Y.Z-unsigned-macos-x86_64.dmg`,
+- it has `draftomen-vX.Y.Z-macos-arm64.dmg`,
+  `draftomen-vX.Y.Z-macos-x86_64.dmg`,
   `draftomen-vX.Y.Z-unsigned-windows.exe`, and
-  `draftomen-vX.Y.Z-unsigned-sha256sums.txt`;
+  `draftomen-vX.Y.Z-sha256sums.txt`;
+- a macOS DMG downloaded with `gh release download` matches the checksum file,
+  passes `xcrun stapler validate`, and `spctl` accepts the DMG and the mounted
+  `Draft Omen.app` as `Notarized Developer ID`;
 - local `master` is clean and synchronized.
+
+The browser download check on a Mac that has never run Draft Omen, described in
+`docs/releasing.md`, needs a person. Remind the user to do it.
 
 Report the version, tag, workflow URL, and GitHub Release URL.
