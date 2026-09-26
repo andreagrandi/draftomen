@@ -294,9 +294,20 @@ jobs:
           mountpoint="$RUNNER_TEMP/draftomen-macos-mount"
           rm -rf "$mountpoint"
           mkdir -p "$mountpoint"
+          # A process that inspects the app, such as a Gatekeeper scan, can
+          # keep the volume busy for a few seconds after the app exits.
+          detach_image() {
+            for _ in 1 2 3 4 5; do
+              if hdiutil detach "$mountpoint"; then
+                return 0
+              fi
+              sleep 5
+            done
+            hdiutil detach -force "$mountpoint"
+          }
           cleanup() {
-            hdiutil detach "$mountpoint" >/dev/null 2>&1 || true
-            rm -rf "$mountpoint"
+            detach_image >/dev/null 2>&1 || true
+            rmdir "$mountpoint" 2>/dev/null || true
           }
           trap cleanup EXIT
           hdiutil attach -readonly -nobrowse \
@@ -308,9 +319,9 @@ jobs:
           uv run python tests/bundle_smoke.py \
             --timeout "${{ matrix.smoke_timeout }}" \
             "$mountpoint/$BUNDLE"
-          hdiutil detach "$mountpoint"
+          detach_image
           trap - EXIT
-          rm -rf "$mountpoint"
+          rmdir "$mountpoint"
 
       - name: Smoke-test Windows executable with deterministic mock data
         if: matrix.platform == 'windows'

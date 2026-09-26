@@ -11,7 +11,8 @@
   with `ditto` so the data-file signatures survive, signs and notarizes the
   DMG, and runs the smoke test on the app inside the stapled DMG. An
   always-run step deletes the temporary keychain and credential files.
-  Development builds stay unsigned. The release asset names still say
+  The mounted smoke test now retries a busy `hdiutil detach` before forcing
+  it. Development builds stay unsigned. The release asset names still say
   `unsigned` until #730 renames them. (#729)
 - Document the macOS signing credentials in `docs/releasing.md`: the
   Developer ID Application certificate, the App Store Connect Team API key,
