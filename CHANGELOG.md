@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Fix the Homebrew formula build. `bidict`, a dependency of
+  `python-socketio`, builds with `uv_build`, which Homebrew compiles from
+  source with Rust. The formula now declares `rust` as a build dependency.
+
 ## [0.4.0] - 2026-09-25
 
 - Publish an Intel macOS DMG next to the Apple Silicon one. A second macOS

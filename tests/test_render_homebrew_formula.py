@@ -121,6 +121,7 @@ def test_render_formula_preserves_homebrew_pyside_dependency_contract(
 
     rendered_formula = output_path.read_text(encoding="utf-8")
     assert 'depends_on "pyside"' in rendered_formula
+    assert 'depends_on "rust" => :build' in rendered_formula
     assert (
         'pypi_packages package_name:     "draftomen",\n'
         '                exclude_packages: ["pillow", "pyside6"]'
