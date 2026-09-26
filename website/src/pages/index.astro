@@ -5,8 +5,8 @@ import packageMetadata from '../../package.json';
 const repositoryUrl = 'https://github.com/andreagrandi/draftomen';
 const releaseTag = `v${packageMetadata.version}`;
 const releaseAssetBaseUrl = `${repositoryUrl}/releases/download/${releaseTag}`;
-const macosArm64DownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsigned-macos-arm64.dmg`;
-const macosX8664DownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsigned-macos-x86_64.dmg`;
+const macosArm64DownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-macos-arm64.dmg`;
+const macosX8664DownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-macos-x86_64.dmg`;
 const windowsDownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsigned-windows.exe`;
 ---
 
@@ -27,11 +27,11 @@ const windowsDownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsig
         <div class="download-group" aria-label="Download Draft Omen">
           <a class="btn btn-primary download-button" href={macosArm64DownloadUrl}>
             <span aria-hidden="true">⌘</span>
-            <span>Download for macOS<small>{releaseTag} · Apple Silicon · unsigned .dmg</small></span>
+            <span>Download for macOS<small>{releaseTag} · Apple Silicon · .dmg</small></span>
           </a>
           <a class="btn btn-secondary download-button" href={macosX8664DownloadUrl}>
             <span aria-hidden="true">⌘</span>
-            <span>Download for macOS<small>{releaseTag} · Intel · unsigned .dmg</small></span>
+            <span>Download for macOS<small>{releaseTag} · Intel · .dmg</small></span>
           </a>
           <a class="btn btn-secondary download-button" href={windowsDownloadUrl}>
             <span aria-hidden="true">⊞</span>
@@ -39,7 +39,7 @@ const windowsDownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsig
           </a>
         </div>
         <p class="install-note">
-          These buttons download unsigned builds directly. Prefer the terminal? See the{" "}
+          The macOS builds are signed and notarized. The Windows build is not signed yet. Prefer the terminal? See the{" "}
           <a href="/docs/">setup and mechanism docs</a>.
         </p>
       </div>

@@ -1047,30 +1047,35 @@ def test_native_bundle_workflow_checks_macos_executable_architecture() -> None:
 
 
 @pytest.mark.parametrize(
-    ("workflow_name", "name_variable", "macos_artifact_suffix"),
+    ("workflow_name", "name_variable", "macos_artifact_suffix", "signed"),
     [
-        ("native-bundles.yml", "BUILD_IDENTIFIER", "unsigned-development"),
-        ("release.yml", "RELEASE_TAG", "signed-release"),
+        ("native-bundles.yml", "BUILD_IDENTIFIER", "unsigned-development", False),
+        ("release.yml", "RELEASE_TAG", "signed-release", True),
     ],
 )
 def test_release_workflows_publish_both_macos_dmgs(
-    workflow_name: str, name_variable: str, macos_artifact_suffix: str
+    workflow_name: str, name_variable: str, macos_artifact_suffix: str, signed: bool
 ) -> None:
     """Development and tagged releases upload both DMGs, the Windows executable,
-    and a checksum file that lists all three binaries.
+    and a checksum file that lists all three binaries. Only tag releases drop
+    `unsigned` from the macOS and checksum names.
     """
 
     workflow_text = (PROJECT_ROOT / ".github/workflows" / workflow_name).read_text(
         encoding="utf-8"
     )
-    prefix = f"draftomen-${{{name_variable}}}-unsigned"
+    prefix = f"draftomen-${{{name_variable}}}"
+    signed_prefix = prefix if signed else f"{prefix}-unsigned"
 
     for arch in ("arm64", "x86_64"):
         assert f"name: draftomen-macos-{arch}-{macos_artifact_suffix}" in workflow_text
-        assert f"{prefix}-macos-{arch}.dmg" in workflow_text
-    assert f"{prefix}-windows.exe" in workflow_text
-    assert f"{prefix}-sha256sums.txt" in workflow_text
+        assert f"{signed_prefix}-macos-{arch}.dmg" in workflow_text
+    assert f"{prefix}-unsigned-windows.exe" in workflow_text
+    assert f"{signed_prefix}-sha256sums.txt" in workflow_text
     assert "unsigned-macos.dmg" not in workflow_text
+    if signed:
+        assert "-unsigned-macos-" not in workflow_text
+        assert "-unsigned-sha256sums" not in workflow_text
     assert (
         'sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" "${windows_name}"'
         in workflow_text

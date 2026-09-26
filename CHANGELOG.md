@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- Publish the signed macOS DMGs as `draftomen-vX.Y.Z-macos-arm64.dmg` and
+  `draftomen-vX.Y.Z-macos-x86_64.dmg`, and the checksum file as
+  `draftomen-vX.Y.Z-sha256sums.txt`. The Windows executable keeps its
+  `unsigned` name. The website download buttons, the README and the release
+  docs use the new names. The README covers installing, Gatekeeper and
+  notarization troubleshooting, and uninstalling, and `docs/releasing.md`
+  adds a post-release check that opens a browser-downloaded DMG on a Mac that
+  has never run Draft Omen. (#730)
 - Sign, notarize and staple the macOS DMGs in tag releases. `release.yml`
   calls `native-bundles.yml` with `sign_macos: true`, and only the macOS jobs
   of that call use the `macos-release` environment. Each job builds with
