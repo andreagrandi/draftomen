@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build and validate distributions
+  validate:
+    name: Validate release
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -76,80 +76,6 @@ jobs:
       - name: Run checks
         run: uv run nox -s ci
 
-      - name: Build distributions
-        run: uv build --no-sources
-
-      - name: Check distribution metadata
-        run: uvx --from twine twine check dist/*
-
-      - name: Smoke-test wheel
-        run: uv run --no-project --python 3.12 python tests/package_smoke.py "dist/*.whl"
-
-      - name: Smoke-test source distribution
-        run: uv run --no-project --python 3.12 python tests/package_smoke.py "dist/*.tar.gz"
-
-      - name: Upload distributions
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-package-distributions
-          path: dist/
-          if-no-files-found: error
-
-  platform-smoke:
-    name: Smoke-test wheel on ${{ matrix.os }}
-    needs: build
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os:
-          - macos-latest
-          - windows-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
-        with:
-          version: "0.12.12"
-          enable-cache: true
-
-      - name: Download distributions
-        uses: actions/download-artifact@v8
-        with:
-          name: python-package-distributions
-          path: dist/
-
-      - name: Smoke-test wheel
-        run: uv run --no-project --python 3.12 python tests/package_smoke.py "dist/*.whl"
-
-  publish:
-    name: Publish distributions
-    needs:
-      - build
-      - platform-smoke
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/draftomen
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
-        with:
-          version: "0.12.12"
-
-      - name: Download distributions
-        uses: actions/download-artifact@v8
-        with:
-          name: python-package-distributions
-          path: dist/
-
-      - name: Publish to PyPI
-        run: uv publish --trusted-publishing always dist/*
-
   native-bundles:
     name: Build native desktop bundles
     uses: ./.github/workflows/native-bundles.yml
@@ -157,17 +83,10 @@ jobs:
       actions: read
       contents: write
 
-  homebrew:
-    needs: publish
-    uses: ./.github/workflows/homebrew.yml
-    with:
-      version: ${{ github.ref_name }}
-    secrets: inherit
-
   github-release:
     name: Publish GitHub Release
     needs:
-      - publish
+      - validate
       - native-bundles
     runs-on: ubuntu-latest
     permissions:

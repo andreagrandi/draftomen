@@ -42,17 +42,15 @@ For the complete methodology, see [pick scoring](docs/pick-scoring.md), [benchma
 
 ### 1. Install
 
-On macOS, install Draft Omen with Homebrew:
+Download the latest build from [GitHub Releases](https://github.com/andreagrandi/draftomen/releases/latest):
 
-```bash
-brew install andreagrandi/tap/draftomen
-```
+- Apple Silicon Mac: `draftomen-vX.Y.Z-unsigned-macos-arm64.dmg`
+- Intel Mac: `draftomen-vX.Y.Z-unsigned-macos-x86_64.dmg`
+- Windows: `draftomen-vX.Y.Z-unsigned-windows.exe`
 
-On other platforms, [install uv](https://docs.astral.sh/uv/getting-started/installation/) and run:
+On macOS, open the DMG and drag Draft Omen onto the `Applications` shortcut. The builds are not signed yet, so macOS and Windows show a warning the first time you open the app.
 
-```bash
-uv tool install draftomen
-```
+To run from source instead, [install uv](https://docs.astral.sh/uv/getting-started/installation/), clone this repository, and use `uv run draftomen` or `uv run draftomen-tui`. Draft Omen is no longer published to PyPI or Homebrew. Version 0.4.0 is the last release on either.
 
 ### 2. Enable Arena logs
 
@@ -60,10 +58,10 @@ In MTG Arena, open **Settings → Account**, enable **Detailed Logs (Plugin Supp
 
 ### 3. Start Draft Omen
 
-Start Draft Omen before entering a Quick Draft:
+Open the Draft Omen app before entering a Quick Draft. From a source checkout, run:
 
 ```bash
-draftomen
+uv run draftomen
 ```
 
 The PySide6/QML desktop application loads card metadata when needed, watches

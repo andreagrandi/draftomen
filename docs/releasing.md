@@ -1,13 +1,11 @@
 # Releasing Draft Omen
 
-Stable Draft Omen releases publish a Python wheel and source distribution to
-PyPI, generate, install, test, and publish a Homebrew formula to
-`andreagrandi/homebrew-tap`, and create a public GitHub Release with the
-version's native bundle assets and changelog body. The installed `draftomen`
-command launches the live PySide6/QML GUI; `draftomen-tui` provides the
-terminal workflow. Releases use GitHub Actions and PyPI Trusted Publishing, so
-the repository does not store a long-lived PyPI token. Development releases
-are a separate GitHub prerelease path and never publish to PyPI or Homebrew.
+Stable Draft Omen releases create a public GitHub Release with the version's
+native bundle assets and changelog body. The native bundles are the only
+distribution channel. Releases no longer publish to PyPI or update the
+Homebrew tap. Versions up to 0.4.0 stay on PyPI and in
+`andreagrandi/homebrew-tap`, but they get no further updates. Development
+releases are a separate GitHub prerelease path.
 
 ## Hosted profile data operations
 
@@ -18,8 +16,7 @@ complete `website/dist/` output atomically, including
 `website/public/profiles/` at
 <https://www.draftomen.com/profiles/> and `website/public/profiles-dev/` at
 <https://www.draftomen.com/profiles-dev/>. Profile assets never trigger or
-gate a Python package release, PyPI publication, Homebrew update, native
-bundle release, or application startup.
+gate a native bundle release or application startup.
 
 Terminal `watch`, `watch --plain`, CLI `watch`, and the native live command use
 `https://www.draftomen.com/profiles/manifest.json` by default.
@@ -36,8 +33,8 @@ cache when ratings exist; with no usable profile, deterministic fallback scoring
 remains active.
 
 These are runtime client configurations, not package or release inputs. The
-manifest is not bundled: producer generation, website publication, Python
-releases, and native bundle releases remain independent.
+manifest is not bundled: producer generation, website publication, and
+native bundle releases remain independent.
 
 Follow [`docs/set-profiles.md`](set-profiles.md) for validated object staging,
 manifest construction, pruning, cache headers, retention and legal erasure,
@@ -132,25 +129,7 @@ unsigned, and the app has only Nuitka's required ad-hoc signature (no developer
 or distribution identity or notarization). Arrange platform-appropriate signing
 and notarization before redistributing the copied app.
 
-Development releases do not publish Python packages to PyPI, update
-Homebrew, or replace an immutable stable release.
-
-## One-time setup
-
-1. Sign in to PyPI and create a pending Trusted Publisher with:
-   - PyPI project name: `draftomen`
-   - GitHub owner: `andreagrandi`
-   - GitHub repository: `draftomen`
-   - Workflow filename: `release.yml`
-   - Environment name: `pypi`
-2. Create a GitHub environment named `pypi`.
-3. Configure the `pypi` environment to require manual approval before deployment.
-4. Add a write-enabled SSH deploy key to `andreagrandi/homebrew-tap`.
-5. Store its private key in `andreagrandi/draftomen` as an Actions secret named `HOMEBREW_TAP_DEPLOY_KEY`.
-
-Once configured, tagged releases update the Homebrew formula automatically. No manual formula generation or tap update is required.
-
-If PyPI rejects the project name, choose a new distribution name in `pyproject.toml` while retaining the `draftomen` command.
+Development releases do not replace a stable release.
 
 ## Publish a release
 
@@ -169,6 +148,11 @@ If PyPI rejects the project name, choose a new distribution name in `pyproject.t
    uv run nox -s ci
    ```
 
+   `uv version` updates only `pyproject.toml` and `uv.lock`. Set the same
+   version in `pysidedeploy.macos.spec`, `pysidedeploy.windows.spec`, the
+   expected version in `tests/test_desktop_bundle.py`, and
+   `website/package.json` with its lock file.
+
 2. Merge the version and changelog promotion through the normal pull request
    workflow.
 3. From the updated `master` branch, create and push the matching tag:
@@ -181,26 +165,14 @@ If PyPI rejects the project name, choose a new distribution name in `pyproject.t
 The stable workflow checks out the tagged repository and runs
 `python3 scripts/extract_changelog.py --section <version> --output PATH`.
 Missing, duplicate, or empty sections fail the workflow instead of publishing
-empty or generated notes. It rejects mismatched versions, runs the full CI
-gate, builds and validates both distributions, installs and smoke-tests the
-wheel on macOS and Windows, and waits for approval before publishing. After
-PyPI succeeds, it resolves the immutable source archive, pins all Python
-resources, installs and tests the generated formula, pushes
-`Formula/draftomen.rb` to the Homebrew tap, and creates or updates the public
-GitHub Release with the dated changelog body and native bundle assets.
+empty or generated notes. It rejects tags that do not match the versions in
+`pyproject.toml` and `website/package.json`, builds the website, and runs the
+full CI gate. It builds the native bundles in parallel, and creates or updates
+the public GitHub Release with the dated changelog body and native bundle
+assets once both finish.
 
 ## Verify the published release
 
-Install the exact published version in an isolated environment:
-
-```bash
-uvx --from "draftomen==<version>" draftomen-tui --version
-uvx --from "draftomen==<version>" draftomen --provider mock --smoke-test
-brew update
-brew install andreagrandi/tap/draftomen
-draftomen-tui --version
-QT_QPA_PLATFORM=offscreen draftomen --provider mock --smoke-test
-```
 The public GitHub Release for `v<version>` must be published with the promoted
 dated changelog body and the three native bundle assets plus checksum file. The
 macOS release assets are `draftomen-v<version>-unsigned-macos-arm64.dmg` and
@@ -212,6 +184,4 @@ and run `tests/bundle_smoke.py` against the mounted app. Use an `EXIT` trap to
 detach the image even when smoke testing fails. To distribute it, drag the app
 onto the DMG's `Applications` shortcut in Finder, then eject the image; arrange
 platform-appropriate signing and notarization before redistributing the copied
-app. The Homebrew formula is updated only after the immutable PyPI release
-succeeds. If a PyPI release is broken, yank it with a reason and publish a
-corrected patch release rather than replacing its files.
+app.

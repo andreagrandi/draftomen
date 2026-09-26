@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- Stop publishing Draft Omen to PyPI and Homebrew. A tagged release now only
+  builds the native macOS and Windows bundles and attaches them to the GitHub
+  Release. The release workflow drops the wheel build, the wheel smoke tests,
+  the PyPI publish job, and the Homebrew job. `homebrew.yml`, the formula
+  template, `scripts/render_homebrew_formula.py`, and `tests/package_smoke.py`
+  are removed. Version 0.4.0 stays on PyPI and in the Homebrew tap but gets no
+  further updates. The README now points to the GitHub Release downloads.
 - Fix the Homebrew formula build. `bidict`, a dependency of
   `python-socketio`, builds with `uv_build`, which Homebrew compiles from
   source with Rust. The formula now declares `rust` as a build dependency.
