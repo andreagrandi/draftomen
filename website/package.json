@@ -16,6 +16,6 @@
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
-    "wrangler": "4.126.0"
+    "wrangler": "4.131.0"
   }
 }
