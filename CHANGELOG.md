@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+- Add `scripts/compare_augmented_candidates.py`, an offline spike that ranks
+  held-out picks with three candidate models next to Basic DO and Pool Shape,
+  the name now used for Model C. Card Pairs scores cards by how often they win
+  together in 17Lands game data. Player Picks learns the card players take
+  from the exact pack and pool, and Winner Picks does the same from 7-win
+  drafts only. The script uses Model C's chronological split and reports
+  top-1 and mean reciprocal rank with bootstrap ranges, a view limited to
+  7-win drafts, and the rank-adjusted win-rate gap of drafts that followed
+  each candidate. Its `--games-only` mode tests the pair signal on held-out
+  17Lands games: whether decks with better pairs win more than decks of equal
+  card strength in the same colours and player rank. It reorders pool columns
+  for dumps such as WOE that list them in a different order. No app code
+  changes. (#717)
 - Show 17Lands card-rating counts in the Profile Refresh summary. Each
   successful set and format pair lists the fetched rows, the rows accepted
   into the profile, and the rejected rows grouped by reason. It also says
