@@ -205,10 +205,12 @@ def _load_array_training_data(
     pack_columns = [value for value in header if value.startswith("pack_card_")]
     pool_columns = [value for value in header if value.startswith("pool_")]
     card_names = tuple(value.removeprefix("pack_card_") for value in pack_columns)
-    if not pack_columns or card_names != tuple(
+    if not pack_columns or sorted(card_names) != sorted(
         value.removeprefix("pool_") for value in pool_columns
     ):
         raise AugmentedTrainingError("Pack and pool card columns do not match.")
+    # Some dumps, such as WOE, list pool columns in a different order.
+    pool_columns = [f"pool_{name}" for name in card_names]
     metadata_columns = [
         "expansion",
         "event_type",

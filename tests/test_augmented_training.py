@@ -351,6 +351,86 @@ def test_loaders_accept_a_dump_without_the_pick_2_column(tmp_path: Path) -> None
     assert data.targets.tolist() == expected.targets.tolist()
 
 
+def _copy_with_pool_columns(
+    source: AugmentedTrainingSource, *, tmp_path: Path, pool_columns: list[str]
+) -> AugmentedTrainingSource:
+    path = tmp_path / "reordered-pool.csv"
+    with (
+        Path(source.path).open(encoding="utf-8", newline="") as input_file,
+        path.open(mode="w", encoding="utf-8", newline="") as output_file,
+    ):
+        reader = csv.DictReader(input_file)
+        assert reader.fieldnames is not None
+        fieldnames = [
+            name for name in reader.fieldnames if not name.startswith("pool_")
+        ] + pool_columns
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            writer.writerow({name: row.get(name, "0") for name in fieldnames})
+    return _source_for_path(path, set_code="HOB")
+
+
+def test_compact_loader_matches_pool_columns_to_pack_columns_by_name(
+    tmp_path: Path,
+) -> None:
+    original = _public_dump_source()
+    source = _copy_with_pool_columns(
+        original,
+        tmp_path=tmp_path,
+        pool_columns=[
+            "pool_Clockwork Relic",
+            "pool_Red Recruit",
+            "pool_Blue Trick",
+        ],
+    )
+    database = _fixture_card_database()
+
+    data = _load_array_training_data(
+        set_code="HOB",
+        source=source,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+    expected = _load_array_training_data(
+        set_code="HOB",
+        source=original,
+        card_database=database,
+        complete_draft_picks=2,
+    )
+
+    assert data.card_names == expected.card_names
+    assert data.pool_counts.tolist() == expected.pool_counts.tolist()
+    assert data.pool_counts.any()
+    assert data.features.tolist() == expected.features.tolist()
+    assert data.targets.tolist() == expected.targets.tolist()
+
+
+def test_compact_loader_rejects_pool_column_missing_from_pack_columns(
+    tmp_path: Path,
+) -> None:
+    source = _copy_with_pool_columns(
+        _public_dump_source(),
+        tmp_path=tmp_path,
+        pool_columns=[
+            "pool_Red Recruit",
+            "pool_Blue Trick",
+            "pool_Unknown Card",
+        ],
+    )
+
+    with pytest.raises(
+        AugmentedTrainingError,
+        match="Pack and pool card columns do not match.",
+    ):
+        _load_array_training_data(
+            set_code="HOB",
+            source=source,
+            card_database=_fixture_card_database(),
+            complete_draft_picks=2,
+        )
+
+
 def test_compact_loader_reads_gzip_cache_object_with_bin_suffix(
     tmp_path: Path,
 ) -> None:
