@@ -633,6 +633,16 @@ class _BusySession(_FakeSession):
         return self.snapshot
 
 
+class _BlockedStopSession(_FakeSession):
+    def __init__(self, *, publish: SnapshotPublisher) -> None:
+        super().__init__(publish=publish)
+        self.release = threading.Event()
+
+    def stop(self) -> LiveSessionSnapshot:
+        self.release.wait(timeout=3.0)
+        return self.snapshot
+
+
 class _FailingStartupSession(_FakeSession):
     def __init__(self, *, publish: SnapshotPublisher) -> None:
         super().__init__(publish=publish)
@@ -2084,6 +2094,40 @@ def test_live_adapter_shutdown_returns_while_startup_work_is_busy(
         sessions[0].release.set()
         adapter.shutdown()
         adapter.wait_for_shutdown()
+
+
+def test_live_adapter_repeated_shutdown_survives_worker_teardown(
+    qcore_application: QCoreApplication,
+) -> None:
+    """Call shutdown again while the released worker thread deletes its worker.
+    Queuing stop on a worker that is being deleted used to segfault the process.
+    """
+
+    for _ in range(20):
+        sessions: list[_BlockedStopSession] = []
+
+        def factory(publish: SnapshotPublisher) -> LiveSession:
+            session = _BlockedStopSession(publish=publish)
+            sessions.append(session)
+            return cast(LiveSession, session)
+
+        adapter = LiveSessionAdapter(
+            session_factory=factory,
+            poll_interval_ms=60_000,
+        )
+        adapter.start()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(sessions),
+            description="the blocked-stop session",
+        )
+        adapter.shutdown()
+        assert adapter.thread is not None and adapter.thread.isRunning()
+        sessions[0].release.set()
+        while adapter.thread.isRunning():
+            adapter.shutdown()
+        adapter.wait_for_shutdown()
+        assert not adapter.thread.isRunning()
 
 
 def test_application_quit_releases_busy_worker_before_adapter_teardown(

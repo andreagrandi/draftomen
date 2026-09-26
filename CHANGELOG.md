@@ -12,6 +12,9 @@
   (#402)
 - Update the release skill for signed macOS releases: the new asset names, the
   run time, and a check that a downloaded DMG is notarized and stapled.
+- Fix a segfault when the live adapter shuts down while its worker thread is
+  finishing. `shutdown()` now queues the stop through an adapter signal
+  instead of calling the worker, which the thread may be deleting. (#727)
 
 ## [0.4.1] - 2026-09-26
 
