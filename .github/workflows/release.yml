@@ -79,6 +79,8 @@ jobs:
   native-bundles:
     name: Build native desktop bundles
     uses: ./.github/workflows/native-bundles.yml
+    with:
+      sign_macos: true
     permissions:
       actions: read
       contents: write
@@ -103,16 +105,16 @@ jobs:
             --section "${GITHUB_REF_NAME#v}" \
             --output release-notes.md
 
-      - name: Download macOS arm64 native bundle
+      - name: Download macOS arm64 signed bundle
         uses: actions/download-artifact@v8
         with:
-          name: draftomen-macos-arm64-unsigned-development
+          name: draftomen-macos-arm64-signed-release
           path: release-assets/macos-arm64
 
-      - name: Download macOS x86_64 native bundle
+      - name: Download macOS x86_64 signed bundle
         uses: actions/download-artifact@v8
         with:
-          name: draftomen-macos-x86_64-unsigned-development
+          name: draftomen-macos-x86_64-signed-release
           path: release-assets/macos-x86_64
 
       - name: Download Windows native bundle
@@ -133,9 +135,9 @@ jobs:
           checksums_name="draftomen-${RELEASE_TAG}-unsigned-sha256sums.txt"
 
           mkdir -p release-assets/published
-          mv release-assets/macos-arm64/Draftomen-unsigned-macos-arm64.dmg \
+          mv release-assets/macos-arm64/Draftomen-signed-macos-arm64.dmg \
             "release-assets/published/${macos_arm64_name}"
-          mv release-assets/macos-x86_64/Draftomen-unsigned-macos-x86_64.dmg \
+          mv release-assets/macos-x86_64/Draftomen-signed-macos-x86_64.dmg \
             "release-assets/published/${macos_x86_64_name}"
           mv release-assets/windows/Draftomen-unsigned-windows.exe \
             "release-assets/published/${windows_name}"

@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+- Sign, notarize and staple the macOS DMGs in tag releases. `release.yml`
+  calls `native-bundles.yml` with `sign_macos: true`, and only the macOS jobs
+  of that call use the `macos-release` environment. Each job builds with
+  Nuitka's Developer ID signing, copies the verified app to `Draft Omen.app`
+  with `ditto` so the data-file signatures survive, signs and notarizes the
+  DMG, and runs the smoke test on the app inside the stapled DMG. An
+  always-run step deletes the temporary keychain and credential files.
+  Development builds stay unsigned. The release asset names still say
+  `unsigned` until #730 renames them. (#729)
 - Document the macOS signing credentials in `docs/releasing.md`: the
   Developer ID Application certificate, the App Store Connect Team API key,
   the protected `macos-release` environment that only `v*` tags can use, the

@@ -189,8 +189,9 @@ app.
 ## macOS signing credentials
 
 macOS releases are signed with a Developer ID Application certificate and
-notarized with an App Store Connect Team API key. The release workflow does
-not use these credentials yet; #729 adds signing to the tag release path. The
+notarized with an App Store Connect Team API key. The tag release path uses
+them to sign, notarize and staple the macOS DMGs, as described in
+[desktop-bundles.md](desktop-bundles.md#signed-macos-release-path). The
 Account Holder of Apple team `3UFB423D7P` creates and rotates every credential.
 
 ### Protected environment

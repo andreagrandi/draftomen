@@ -1042,19 +1042,19 @@ def test_native_bundle_workflow_checks_macos_executable_architecture() -> None:
     assert '[[ "$archs" != "${{ matrix.arch }}" ]]' in check_step
     assert "exit 1" in check_step
     assert workflow_text.index("Verify macOS bundle architecture") < workflow_text.index(
-        "Create macOS unsigned development DMG"
+        "Create macOS DMG"
     )
 
 
 @pytest.mark.parametrize(
-    ("workflow_name", "name_variable"),
+    ("workflow_name", "name_variable", "macos_artifact_suffix"),
     [
-        ("native-bundles.yml", "BUILD_IDENTIFIER"),
-        ("release.yml", "RELEASE_TAG"),
+        ("native-bundles.yml", "BUILD_IDENTIFIER", "unsigned-development"),
+        ("release.yml", "RELEASE_TAG", "signed-release"),
     ],
 )
 def test_release_workflows_publish_both_macos_dmgs(
-    workflow_name: str, name_variable: str
+    workflow_name: str, name_variable: str, macos_artifact_suffix: str
 ) -> None:
     """Development and tagged releases upload both DMGs, the Windows executable,
     and a checksum file that lists all three binaries.
@@ -1066,7 +1066,7 @@ def test_release_workflows_publish_both_macos_dmgs(
     prefix = f"draftomen-${{{name_variable}}}-unsigned"
 
     for arch in ("arm64", "x86_64"):
-        assert f"name: draftomen-macos-{arch}-unsigned-development" in workflow_text
+        assert f"name: draftomen-macos-{arch}-{macos_artifact_suffix}" in workflow_text
         assert f"{prefix}-macos-{arch}.dmg" in workflow_text
     assert f"{prefix}-windows.exe" in workflow_text
     assert f"{prefix}-sha256sums.txt" in workflow_text
@@ -1080,6 +1080,114 @@ def test_release_workflows_publish_both_macos_dmgs(
     upload_command = upload_command.split("\n\n", maxsplit=1)[0]
     uploaded_assets = re.findall(r'"release-assets/published/([^"]+)"', upload_command)
     assert len(uploaded_assets) == 4
+
+
+def _workflow_step(workflow_text: str, name: str) -> str:
+    step = workflow_text.split(f"- name: {name}\n", maxsplit=1)[1]
+    return step.split("\n      - name:", maxsplit=1)[0]
+
+
+def test_only_release_macos_jobs_use_signing_environment() -> None:
+    """The tag release asks for signing, and only macOS jobs with that input
+    enter the macos-release environment.
+    """
+
+    release_text = (PROJECT_ROOT / ".github/workflows/release.yml").read_text(
+        encoding="utf-8"
+    )
+    native_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    signed_condition = "inputs.sign_macos && matrix.platform == 'macos'"
+
+    assert "    with:\n      sign_macos: true\n" in release_text
+    assert "default: false" in native_text.split("  workflow_dispatch:", maxsplit=1)[0]
+    assert (
+        f"environment: ${{{{ {signed_condition} && 'macos-release' || '' }}}}"
+        in native_text
+    )
+    assert f"MACOS_SIGNED: ${{{{ {signed_condition} }}}}" in native_text
+    publish_job = native_text.split("\n  publish-development:", maxsplit=1)[1]
+    assert "secrets." not in publish_job
+    assert "vars." not in publish_job
+
+
+def test_signed_macos_build_keeps_data_file_signatures() -> None:
+    """The signed build verifies Nuitka's app strictly and copies it with ditto
+    instead of using pyside6-deploy's copy, which drops extended attributes.
+    """
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    build_step = _workflow_step(workflow_text=workflow_text, name="Build signed macOS bundle")
+
+    assert "if: env.MACOS_SIGNED == 'true'" in build_step
+    assert "--macos-sign-identity=$MACOS_SIGNING_IDENTITY --macos-sign-notarization" in build_step
+    assert "--keep-deployment-files" in build_step
+    verify = 'codesign --verify --deep --strict --verbose=2 "$nuitka_app"'
+    copy = 'ditto "$nuitka_app" "$BUNDLE_DIRECTORY/$BUNDLE"'
+    assert build_step.index(verify) < build_step.index(copy)
+
+    dmg_step = _workflow_step(workflow_text=workflow_text, name="Create macOS DMG")
+    assert 'ditto "$BUNDLE_DIRECTORY/$BUNDLE" "$staging/$BUNDLE"' in dmg_step
+    assert "mv " not in dmg_step
+
+
+def test_signed_macos_dmg_is_notarized_before_smoke_test_and_upload() -> None:
+    """The DMG is signed, notarized and stapled before the mounted smoke test,
+    and the upload publishes that same file.
+    """
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    notarize_step = _workflow_step(
+        workflow_text=workflow_text, name="Sign, notarize and staple macOS DMG"
+    )
+    smoke_step = _workflow_step(
+        workflow_text=workflow_text,
+        name="Smoke-test mounted macOS DMG with deterministic mock data",
+    )
+    upload_step = _workflow_step(workflow_text=workflow_text, name="Upload bundle artifact")
+
+    for command in (
+        "xcrun notarytool submit",
+        'xcrun stapler staple "$dmg"',
+        'xcrun stapler validate "$dmg"',
+        "spctl --assess --type open --context context:primary-signature",
+    ):
+        assert command in notarize_step
+    assert '"$status" != "Accepted"' in notarize_step
+    assert 'spctl --assess --type execute --verbose=2 "$mountpoint/$BUNDLE"' in smoke_step
+    assert '"$BUNDLE_DIRECTORY/$ARTIFACT"' in smoke_step
+    assert "path: ${{ env.BUNDLE_DIRECTORY }}/${{ env.ARTIFACT }}" in upload_step
+    assert (
+        workflow_text.index("Sign, notarize and staple macOS DMG")
+        < workflow_text.index("Smoke-test mounted macOS DMG")
+        < workflow_text.index("Upload bundle artifact")
+    )
+
+
+def test_signing_credentials_are_removed_even_after_failure() -> None:
+    """An always-run step deletes the temporary keychain and every decoded
+    credential file.
+    """
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    cleanup_step = _workflow_step(
+        workflow_text=workflow_text,
+        name="Remove temporary signing keychain and credentials",
+    )
+
+    assert "if: always() && env.MACOS_SIGNED == 'true'" in cleanup_step
+    assert 'security delete-keychain "$keychain"' in cleanup_step
+    for credential_file in ("draftomen-signing.p12", "draftomen-notary.p8"):
+        assert credential_file in cleanup_step
+        assert credential_file in workflow_text.split(cleanup_step, maxsplit=1)[0]
+    assert workflow_text.index(cleanup_step) > workflow_text.index("Upload bundle artifact")
 
 
 def test_native_specs_enumerate_runtime_inputs() -> None:
