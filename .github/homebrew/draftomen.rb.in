@@ -11,6 +11,7 @@ class Draftomen < Formula
   sha256 "$PYPI_SHA256"
   license "MIT"
 
+  depends_on "rust" => :build # for bidict, which builds with uv_build
   depends_on "pillow"
   depends_on "pyside"
   depends_on "python@3.14"
