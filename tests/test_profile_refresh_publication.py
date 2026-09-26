@@ -192,6 +192,72 @@ def test_prepare_rejects_malformed_report_fields(
         )
 
 
+@pytest.mark.parametrize(
+    "card_ratings",
+    [
+        None,
+        [{"set_code": "new", "event_format": "PremierDraft", "fetched": 2, "accepted": 1}],
+        [
+            {
+                "set_code": "old",
+                "event_format": "PremierDraft",
+                "fetched": 2,
+                "accepted": 1,
+                "from_other_formats": 0,
+                "rejected": {},
+            }
+        ],
+        [
+            {
+                "set_code": "new",
+                "event_format": "PremierDraft",
+                "fetched": -1,
+                "accepted": 1,
+                "from_other_formats": 0,
+                "rejected": {},
+            }
+        ],
+        [
+            {
+                "set_code": "new",
+                "event_format": "PremierDraft",
+                "fetched": 2,
+                "accepted": 1,
+                "from_other_formats": 0,
+                "rejected": {"/tmp/raw": 1},
+            }
+        ],
+    ],
+)
+def test_prepare_rejects_malformed_card_rating_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    card_ratings: Any,
+) -> None:
+    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
+    result = json.loads((bundle / "result.json").read_text(encoding="utf-8"))
+    assert result["profiles"]["card_ratings"] == [
+        {
+            "set_code": "new",
+            "event_format": "PremierDraft",
+            "fetched": 2,
+            "accepted": 1,
+            "from_other_formats": 0,
+            "rejected": {"card_rating_unmatched_metadata": 1},
+        }
+    ]
+    result["profiles"]["card_ratings"] = card_ratings
+    (bundle / "result.json").write_text(json.dumps(result), encoding="utf-8")
+
+    with pytest.raises(publication.ProfileRefreshPublicationError, match="card_ratings"):
+        publication.prepare_publication(
+            bundle_dir=bundle,
+            repo_root=candidate,
+            expected_base=report["base_commit"],
+            master_commit=report["base_commit"],
+        )
+
+
 def test_prepare_rejects_traversal_and_undeclared_generated_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

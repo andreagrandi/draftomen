@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Show 17Lands card-rating counts in the Profile Refresh summary. Each
+  successful set and format pair lists the fetched rows, the rows accepted
+  into the profile, and the rejected rows grouped by reason. It also says
+  whether those counts add up and how many profile ratings came from other
+  formats. The static card-data counts are now labelled as set artifacts.
+  (#402)
 - Update the release skill for signed macOS releases: the new asset names, the
   run time, and a check that a downloaded DMG is notarized and stapled.
 

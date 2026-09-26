@@ -37,6 +37,7 @@ from draftomen.profile_data_refresh import (
     _now,
     prepare_profile_data_refresh,
 )
+from draftomen.profile_generation import CardRatingCounts
 from draftomen.profile_input_acquisition import (
     CardMetadataAdapter,
     SeventeenLandsPublicDraftAdapter,
@@ -186,6 +187,52 @@ def _summary_pair_key(pair: Mapping[str, Any]) -> tuple[str, str]:
     )
 
 
+def _count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _card_rating_lines(counts: Mapping[str, Any] | None) -> list[str]:
+    """Render one pair's 17Lands card-rating counts as nested list items.
+    Missing or malformed counts render as not reported."""
+
+    if counts is None:
+        return ["  - 17Lands card-rating rows: not reported"]
+    fetched = _count(counts.get("fetched"))
+    accepted = _count(counts.get("accepted"))
+    raw_rejected = counts.get("rejected")
+    rejected: dict[str, int] | None = None
+    if isinstance(raw_rejected, Mapping):
+        values = {str(reason): _count(count) for reason, count in raw_rejected.items()}
+        if all(count is not None for count in values.values()):
+            rejected = {reason: count for reason, count in sorted(values.items()) if count is not None}
+    rejected_total = None if rejected is None else sum(rejected.values())
+    lines = [
+        f"  - 17Lands card-rating rows: fetched {_safe_summary_text(fetched)}, "
+        f"accepted into the profile {_safe_summary_text(accepted)}, "
+        f"rejected {_safe_summary_text(rejected_total)}"
+    ]
+    if rejected:
+        reasons = ", ".join(
+            f"{_safe_summary_text(reason)} {count}" for reason, count in rejected.items()
+        )
+        lines.append(f"  - Rejected rows by reason: {reasons}")
+    from_other_formats = _count(counts.get("from_other_formats"))
+    if from_other_formats:
+        lines.append(f"  - Profile ratings taken from other formats: {from_other_formats}")
+    if fetched is None or accepted is None or rejected_total is None:
+        lines.append("  - Counts reconcile: not reported")
+    elif fetched == accepted + rejected_total:
+        lines.append("  - Counts reconcile: yes")
+    else:
+        difference = fetched - accepted - rejected_total
+        lines.append(
+            f"  - Counts reconcile: no, fetched minus accepted and rejected is {difference}"
+        )
+    return lines
+
+
 def render_summary(report: Mapping[str, Any]) -> str:
     """Render a bounded, escaped summary from the generation report."""
 
@@ -198,6 +245,11 @@ def render_summary(report: Mapping[str, Any]) -> str:
     successful_pairs = profiles.get("successful") if isinstance(profiles.get("successful"), list) else []
     successful_pair_keys = {
         _summary_pair_key(item) for item in successful_pairs if isinstance(item, Mapping)
+    }
+    rating_counts = {
+        _summary_pair_key(item): item
+        for item in (profiles.get("card_ratings") if isinstance(profiles.get("card_ratings"), list) else [])
+        if isinstance(item, Mapping)
     }
     failures = report.get("failures") if isinstance(report.get("failures"), list) else []
     failed_pair_keys = {
@@ -222,8 +274,8 @@ def render_summary(report: Mapping[str, Any]) -> str:
         "## Static card data",
         "",
         f"- Discovery complete: {_safe_summary_text(static.get('discovery_complete'))}",
-        f"- Eligible: {_safe_summary_text(static.get('eligible_count'))}",
-        f"- Already valid: {_safe_summary_text(static.get('already_valid_count'))}",
+        f"- Eligible set artifacts: {_safe_summary_text(static.get('eligible_count'))}",
+        f"- Already valid set artifacts: {_safe_summary_text(static.get('already_valid_count'))}",
         "### Pending sets",
         "",
     ]
@@ -264,6 +316,8 @@ def render_summary(report: Mapping[str, Any]) -> str:
                 else:
                     outcome = "skipped"
                 lines.append(f"- {_pair_label(pair)}: {_safe_summary_text(outcome)}")
+                if outcome == "successful":
+                    lines.extend(_card_rating_lines(rating_counts.get(key)))
     else:
         lines.append("- None")
 
@@ -674,6 +728,7 @@ def generate_website(
             "planning_complete": False,
             "selected": [],
             "successful": [],
+            "card_ratings": [],
             "manifest_changed": False,
         },
         "failures": [],
@@ -801,6 +856,7 @@ def generate_website(
     successful_pairs: list[Pair] = []
     if profile_plan is not None:
         candidates: list[tuple[Pair, Any]] = []
+        rating_counts: dict[tuple[str, str], CardRatingCounts] = {}
         try:
             command_now = _now(clock=clock)
             cache = ProfileInputCache(
@@ -930,6 +986,9 @@ def generate_website(
                             )
                         else:
                             candidates.append((pair, result))
+                            counts = result.generation.card_rating_counts
+                            if counts is not None:
+                                rating_counts[_pair_key(pair)] = counts
                 except (OSError, ProfileBatchGenerationError, ProfileRefreshExecutionError):
                     failures.append(
                         _failure(
@@ -948,6 +1007,15 @@ def generate_website(
             )
             report["profiles"]["successful"] = [
                 pair.to_json() for pair in successful_pairs
+            ]
+            report["profiles"]["card_ratings"] = [
+                {
+                    "event_format": pair.event_format,
+                    "set_code": pair.set_code,
+                    **rating_counts[_pair_key(pair)].to_json(),
+                }
+                for pair in successful_pairs
+                if _pair_key(pair) in rating_counts
             ]
             report["profiles"]["manifest_changed"] = manifest_changed
 

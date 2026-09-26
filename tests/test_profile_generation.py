@@ -5,6 +5,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,7 @@ from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DeckBuilderConfig
 from draftomen.pickengine import PickEngine
 from draftomen.profile_generation import (
+    CardRatingCounts,
     ProfileGenerationConfig,
     ProfileGenerationError,
     ProfileGenerationStage,
@@ -1678,3 +1680,108 @@ def test_lci_aggregate_generation_serialization_scoring_and_order_are_canonical(
     )
     assert reversed_candidates.profile.to_bytes() == complete_fallback.profile.to_bytes()
     assert reversed_candidates.report.to_bytes() == complete_fallback.report.to_bytes()
+
+
+def test_card_rating_counts_account_for_every_requested_format_row() -> None:
+    support = _database().cards[1]
+    database = CardDatabase(
+        cards={
+            **_database().cards,
+            3: replace(support, grp_id=3),
+            5: replace(support, grp_id=5, name="Unrated Card", oracle_id="unrated-id"),
+        }
+    )
+    template = _ratings().card_ratings[1]
+
+    def row(grp_id: int, *, games: int, rate: float | None) -> SeventeenCardStats:
+        return replace(
+            template,
+            grp_id=grp_id,
+            gih_win_rate=rate,
+            sample_counts=replace(template.sample_counts, games_in_hand=games),
+        )
+
+    exact = replace(
+        _format_ratings("QuickDraft"),
+        card_ratings={
+            1: row(1, games=500, rate=0.60),
+            2: row(2, games=10, rate=0.40),
+            3: row(3, games=10, rate=0.50),
+            4: row(4, games=500, rate=0.55),
+            5: row(5, games=500, rate=None),
+        },
+    )
+    premier = _format_ratings("PremierDraft")
+    premier = replace(
+        premier,
+        card_ratings={**premier.card_ratings, 6: row(6, games=500, rate=0.50)},
+    )
+
+    result = _generate_tst(
+        ratings=exact,
+        fallback_ratings=(premier,),
+        card_database=database,
+    )
+
+    counts = result.card_rating_counts
+    assert counts is not None
+    assert counts.to_json() == {
+        "fetched": 5,
+        "accepted": 1,
+        "from_other_formats": 1,
+        "rejected": {
+            "card_rating_duplicate_printing": 1,
+            "card_rating_missing_rate": 1,
+            "card_rating_replaced_by_other_format": 1,
+            "card_rating_unmatched_metadata": 1,
+        },
+    }
+    assert counts.reconciled is True
+    assert len(result.profile.card_ratings) == counts.accepted + counts.from_other_formats
+    assert dict(result.report.skip_reasons) == {
+        "card_rating_missing_rate": 1,
+        "card_rating_unmatched_metadata": 2,
+    }
+    assert "card_rating_counts" not in result.report.to_json()
+
+
+def test_card_rating_counts_for_single_format_profile() -> None:
+    result = _generate_tst(ratings=_format_ratings("PremierDraft"), event_format="PremierDraft")
+
+    assert result.card_rating_counts == CardRatingCounts(
+        fetched=2,
+        accepted=2,
+        rejected={},
+    )
+
+
+def test_metadata_profile_has_no_card_rating_counts() -> None:
+    result = generate_set_profile(
+        set_code="TST",
+        event_format="PremierDraft",
+        stage="metadata",
+        card_database=_database(),
+        generated_at=GENERATED_AT,
+        config=_config(),
+    )
+
+    assert result.card_rating_counts is None
+
+
+@pytest.mark.parametrize(
+    ("fetched", "accepted", "rejected"),
+    [
+        (-1, 0, {}),
+        (1, True, {}),
+        (1, 1, {"card_rating_missing_rate": -1}),
+        (1, 1, {"../path": 1}),
+        (1, 1, {"Missing Rate": 1}),
+    ],
+)
+def test_card_rating_counts_reject_invalid_values(
+    fetched: Any,
+    accepted: Any,
+    rejected: dict[str, Any],
+) -> None:
+    with pytest.raises(ProfileGenerationError):
+        CardRatingCounts(fetched=fetched, accepted=accepted, rejected=rejected)

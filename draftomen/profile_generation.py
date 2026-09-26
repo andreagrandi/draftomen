@@ -18,6 +18,7 @@ import hashlib
 import io
 import json
 import math
+import re
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -329,12 +330,61 @@ class ProfileGenerationReport:
         return (json.dumps(self.to_json(), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
+_REJECTION_REASON_RE = re.compile(r"[a-z0-9]+(?:_[a-z0-9]+)*")
+
+
+@dataclass(frozen=True, slots=True)
+class CardRatingCounts:
+    """Account for every requested-format 17Lands card-rating row.
+    Each fetched row is accepted or rejected for exactly one stable reason."""
+
+    fetched: int
+    accepted: int
+    rejected: Mapping[str, int]
+    from_other_formats: int = 0
+
+    def __post_init__(self) -> None:
+        values = (self.fetched, self.accepted, self.from_other_formats, *self.rejected.values())
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
+            raise ProfileGenerationError("card rating counts must be non-negative integers.")
+        if any(
+            not isinstance(reason, str) or _REJECTION_REASON_RE.fullmatch(reason) is None
+            for reason in self.rejected
+        ):
+            raise ProfileGenerationError("card rating rejection reason is invalid.")
+        object.__setattr__(self, "rejected", MappingProxyType(dict(sorted(self.rejected.items()))))
+
+    @property
+    def rejected_total(self) -> int:
+        """Return the number of rejected rows across every reason."""
+
+        return sum(self.rejected.values())
+
+    @property
+    def reconciled(self) -> bool:
+        """Return whether every fetched row was accepted or rejected."""
+
+        return self.fetched == self.accepted + self.rejected_total
+
+    def to_json(self) -> dict[str, Any]:
+        """Return the path-free counts."""
+
+        return {
+            "accepted": self.accepted,
+            "fetched": self.fetched,
+            "from_other_formats": self.from_other_formats,
+            "rejected": dict(self.rejected),
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class ProfileGenerationResult:
     """A validated runtime profile and its deterministic safe report."""
 
     profile: SetProfile
     report: ProfileGenerationReport
+    # Kept out of the canonical report so report bytes and digests stay stable.
+    card_rating_counts: CardRatingCounts | None = None
 
     @property
     def profile_bytes(self) -> bytes:
@@ -640,6 +690,7 @@ def generate_set_profile(
     samples = SampleSummary(total=sum(deck_counts.values()), by_pair=tuple(deck_counts.items()))
 
     cards = ()
+    card_rating_counts: CardRatingCounts | None = None
     pair_profiles: tuple[PairProfile, ...] = ()
     normalized_structure_targets: Mapping[str, Any] = {}
     if normalized_stage != ProfileGenerationStage.METADATA and valid_rows:
@@ -672,7 +723,7 @@ def generate_set_profile(
             )
 
     if normalized_stage != ProfileGenerationStage.METADATA:
-        cards = _card_ratings(
+        cards, card_rating_counts = _card_ratings(
             datasets=aggregate_datasets if normalized_format == "quickdraft" else (
                 ((normalized_format, ratings),) if ratings is not None else ()
             ),
@@ -756,7 +807,11 @@ def generate_set_profile(
         gzip_sha256=hashlib.sha256(compressed).hexdigest(),
         gzip_bytes=len(compressed),
     )
-    return ProfileGenerationResult(profile=profile, report=report)
+    return ProfileGenerationResult(
+        profile=profile,
+        report=report,
+        card_rating_counts=card_rating_counts,
+    )
 
 
 # A shorter name is useful to callers that treat this as a build operation.
@@ -1292,7 +1347,14 @@ def _card_ratings(
     set_code: str,
     config: ProfileGenerationConfig,
     skip_counts: Counter[str],
-) -> tuple[CardRating, ...]:
+) -> tuple[tuple[CardRating, ...], CardRatingCounts]:
+    exact_ratings = next(
+        (ratings for source_format, ratings in datasets if source_format == requested_format),
+        None,
+    )
+    # Rejections from fallback formats stay in the shared skip counts but
+    # must not be reported against the requested format's rows.
+    exact_rejected: Counter[str] = Counter()
     prepared = tuple(
         (
             source_format,
@@ -1300,11 +1362,17 @@ def _card_ratings(
                 ratings=ratings,
                 card_database=card_database,
                 set_code=set_code,
-                skip_counts=skip_counts,
+                skip_counts=exact_rejected if ratings is exact_ratings else skip_counts,
             ),
         )
         for source_format, ratings in datasets
     )
+    skip_counts.update(exact_rejected)
+    # Valid requested-format rows the profile did not use.  They are reported
+    # only here, so the canonical report's skip counts stay unchanged.
+    unused_rows: Counter[str] = Counter()
+    accepted = 0
+    from_other_formats = 0
     canonical_groups: dict[str, list[int]] = defaultdict(list)
     for grp_id, card in card_database.cards.items():
         if card.unknown or card.set_code is None or card.set_code.casefold() != set_code:
@@ -1341,6 +1409,12 @@ def _card_ratings(
             chosen_format = requested_format
         if chosen is None:
             continue
+        if chosen_format == requested_format:
+            accepted += 1
+            unused_rows["card_rating_duplicate_printing"] += len(exact_values) - 1
+        else:
+            from_other_formats += 1
+            unused_rows["card_rating_replaced_by_other_format"] += len(exact_values)
 
         authority = None
         if chosen.samples > 0:
@@ -1381,7 +1455,17 @@ def _card_ratings(
                 average_last_seen_at=chosen.average_last_seen_at,
             )
         )
-    return tuple(result)
+    counts = CardRatingCounts(
+        fetched=0 if exact_ratings is None else len(exact_ratings.card_ratings),
+        accepted=accepted,
+        rejected={
+            reason: count
+            for reason, count in (exact_rejected + unused_rows).items()
+            if count > 0
+        },
+        from_other_formats=from_other_formats,
+    )
+    return tuple(result), counts
 
 
 def _rate_estimate(
