@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- `build-augmented-set` now matches pool columns to pack columns by card name,
+  so dumps such as WOE that list them in a different order load. It still
+  fails when the two column sets name different cards. (#741)
 - Add `scripts/compare_augmented_candidates.py`, an offline spike that ranks
   held-out picks with three candidate models next to Basic DO and Pool Shape,
   the name now used for Model C. Card Pairs scores cards by how often they win
