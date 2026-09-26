@@ -4,6 +4,12 @@ run-name: ${{ inputs.request_id && format('Development release request {0}', inp
 
 on:
   workflow_call:
+    inputs:
+      sign_macos:
+        description: Sign, notarize and staple the macOS DMGs with the macos-release credentials
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       request_id:
@@ -21,8 +27,17 @@ env:
 
 jobs:
   native-bundle:
-    name: Build unsigned ${{ matrix.platform }} ${{ matrix.arch }} development bundle
+    name: Build ${{ inputs.sign_macos && matrix.platform == 'macos' && 'signed' || 'unsigned' }} ${{ matrix.platform }} ${{ matrix.arch }} bundle
     runs-on: ${{ matrix.os }}
+    # Only signed macOS jobs enter the environment that holds the Apple
+    # credentials. Its deployment policy admits v* tags only.
+    environment: ${{ inputs.sign_macos && matrix.platform == 'macos' && 'macos-release' || '' }}
+    env:
+      MACOS_SIGNED: ${{ inputs.sign_macos && matrix.platform == 'macos' }}
+      BUNDLE_DIRECTORY: ${{ inputs.sign_macos && matrix.platform == 'macos' && 'dist-native/macos-signed' || format('dist-native/{0}-unsigned', matrix.platform) }}
+      BUNDLE: ${{ inputs.sign_macos && matrix.platform == 'macos' && 'Draft Omen.app' || matrix.bundle }}
+      ARTIFACT: ${{ inputs.sign_macos && matrix.platform == 'macos' && format('Draftomen-signed-macos-{0}.dmg', matrix.arch) || matrix.artifact }}
+      ARTIFACT_NAME: ${{ inputs.sign_macos && matrix.platform == 'macos' && format('draftomen-macos-{0}-signed-release', matrix.arch) || matrix.artifact_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +71,67 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      # Runs before the build so missing or wrong credentials fail in seconds.
+      - name: Import Developer ID certificate into a temporary keychain
+        if: env.MACOS_SIGNED == 'true'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD \
+            APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::$name is not set in the macos-release environment."
+              exit 1
+            fi
+          done
+
+          keychain="$RUNNER_TEMP/draftomen-signing.keychain-db"
+          certificate="$RUNNER_TEMP/draftomen-signing.p12"
+          keychain_password="$(uuidgen)"
+          echo "::add-mask::$keychain_password"
+
+          (umask 077; printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate")
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -f pkcs12 \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$certificate"
+          # Lets codesign use the key without a GUI prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" > /dev/null
+
+          # Nuitka calls codesign without --keychain, so the temporary keychain
+          # must be on the user search list.
+          search_list=("$keychain")
+          while IFS= read -r entry; do
+            entry="${entry#"${entry%%[![:space:]]*}"}"
+            search_list+=("${entry//\"/}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${search_list[@]}"
+
+          identity="$(
+            security find-identity -v -p codesigning "$keychain" |
+              awk -v team="($APPLE_TEAM_ID)" \
+                '/Developer ID Application/ && index($0, team) { print $2; exit }'
+          )"
+          if [[ -z "$identity" ]]; then
+            echo "::error::No Developer ID Application identity for team $APPLE_TEAM_ID in the certificate."
+            exit 1
+          fi
+          echo "Signing identity SHA-1: $identity"
+          {
+            echo "MACOS_SIGNING_KEYCHAIN=$keychain"
+            echo "MACOS_SIGNING_IDENTITY=$identity"
+          } >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -109,17 +185,47 @@ jobs:
       - name: Create bundle output directory
         run: >-
           uv run python -c
-          "from pathlib import Path; Path('dist-native/${{ matrix.platform }}-unsigned').mkdir(parents=True, exist_ok=True)"
+          "from pathlib import Path; Path('${{ env.BUNDLE_DIRECTORY }}').mkdir(parents=True, exist_ok=True)"
 
       - name: Build unsigned bundle
+        if: env.MACOS_SIGNED != 'true'
         run: uv run pyside6-deploy --config-file "${{ matrix.config }}" --force
+
+      # pyside6-deploy copies Nuitka's app to exec_directory with
+      # shutil.copytree, which drops the com.apple.cs.* extended attributes
+      # that hold the signatures of the QML and other data files. The build
+      # keeps Nuitka's own output and copies it with ditto, which keeps them.
+      - name: Build signed macOS bundle
+        if: env.MACOS_SIGNED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          spec=pysidedeploy.macos.signed.spec
+          sed -E \
+            -e 's|^title = .*$|title = Draftomen-signed-macos|' \
+            -e "s|^exec_directory = .*$|exec_directory = $BUNDLE_DIRECTORY|" \
+            -e "s|^(extra_args = .*)$|\1 --macos-sign-identity=$MACOS_SIGNING_IDENTITY --macos-sign-notarization|" \
+            "${{ matrix.config }}" > "$spec"
+          if ! grep -q -- "--macos-sign-notarization" "$spec"; then
+            echo "::error::Could not add the signing options to $spec."
+            exit 1
+          fi
+          uv run pyside6-deploy --config-file "$spec" --force --keep-deployment-files
+
+          nuitka_app=draftomen/deployment/qt_gui.app
+          codesign --verify --deep --strict --verbose=2 "$nuitka_app"
+          rm -rf "${BUNDLE_DIRECTORY:?}/Draftomen-signed-macos.app" "${BUNDLE_DIRECTORY:?}/$BUNDLE"
+          ditto "$nuitka_app" "$BUNDLE_DIRECTORY/$BUNDLE"
+          codesign --verify --deep --strict --verbose=2 "$BUNDLE_DIRECTORY/$BUNDLE"
+          codesign -dvv "$BUNDLE_DIRECTORY/$BUNDLE" 2>&1 |
+            grep -E "^(Authority|TeamIdentifier|Timestamp|CodeDirectory)"
 
       - name: Verify macOS bundle architecture
         if: matrix.platform == 'macos'
         shell: bash
         run: |
           set -euo pipefail
-          bundle="dist-native/macos-unsigned/${{ matrix.bundle }}"
+          bundle="$BUNDLE_DIRECTORY/$BUNDLE"
           executable="$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$bundle/Contents/Info.plist")"
           archs="$(lipo -archs "$bundle/Contents/MacOS/$executable")"
           echo "$executable architectures: $archs"
@@ -128,7 +234,7 @@ jobs:
             exit 1
           fi
 
-      - name: Create macOS unsigned development DMG
+      - name: Create macOS DMG
         if: matrix.platform == 'macos'
         shell: bash
         run: |
@@ -136,12 +242,49 @@ jobs:
           staging="$RUNNER_TEMP/draftomen-macos-dmg"
           rm -rf "$staging"
           mkdir -p "$staging"
-          mv \
-            "dist-native/macos-unsigned/${{ matrix.bundle }}" \
-            "$staging/${{ matrix.bundle }}"
+          # ditto and hdiutil -srcfolder both keep the extended attributes
+          # that hold the data-file signatures.
+          ditto "$BUNDLE_DIRECTORY/$BUNDLE" "$staging/$BUNDLE"
           ln -s /Applications "$staging/Applications"
           hdiutil create -volname "Draft Omen" -srcfolder "$staging" -ov -format UDZO \
-            "dist-native/macos-unsigned/${{ matrix.artifact }}"
+            "$BUNDLE_DIRECTORY/$ARTIFACT"
+
+      - name: Sign, notarize and staple macOS DMG
+        if: env.MACOS_SIGNED == 'true'
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          dmg="$BUNDLE_DIRECTORY/$ARTIFACT"
+          codesign --sign "$MACOS_SIGNING_IDENTITY" --keychain "$MACOS_SIGNING_KEYCHAIN" \
+            --timestamp "$dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+
+          api_key="$RUNNER_TEMP/draftomen-notary.p8"
+          (umask 077; printf '%s\n' "$APPLE_API_KEY_P8" > "$api_key")
+          notary_auth=(--key "$api_key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+          result="$RUNNER_TEMP/draftomen-notary-result.json"
+          submit_status=0
+          xcrun notarytool submit "$dmg" "${notary_auth[@]}" \
+            --wait --timeout 1h --output-format json > "$result" || submit_status=$?
+          cat "$result"
+          submission_id="$(plutil -extract id raw -o - "$result" 2>/dev/null || true)"
+          status="$(plutil -extract status raw -o - "$result" 2>/dev/null || true)"
+          if [[ "$submit_status" -ne 0 || "$status" != "Accepted" ]]; then
+            echo "::error::Notarization ended with status '${status:-unknown}'."
+            if [[ -n "$submission_id" ]]; then
+              xcrun notarytool log "$submission_id" "${notary_auth[@]}" || true
+            fi
+            exit 1
+          fi
+          rm -f "$api_key"
+
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
 
       - name: Smoke-test mounted macOS DMG with deterministic mock data
         if: matrix.platform == 'macos'
@@ -151,20 +294,34 @@ jobs:
           mountpoint="$RUNNER_TEMP/draftomen-macos-mount"
           rm -rf "$mountpoint"
           mkdir -p "$mountpoint"
+          # A process that inspects the app, such as a Gatekeeper scan, can
+          # keep the volume busy for a few seconds after the app exits.
+          detach_image() {
+            for _ in 1 2 3 4 5; do
+              if hdiutil detach "$mountpoint"; then
+                return 0
+              fi
+              sleep 5
+            done
+            hdiutil detach -force "$mountpoint"
+          }
           cleanup() {
-            hdiutil detach "$mountpoint" >/dev/null 2>&1 || true
-            rm -rf "$mountpoint"
+            detach_image >/dev/null 2>&1 || true
+            rmdir "$mountpoint" 2>/dev/null || true
           }
           trap cleanup EXIT
           hdiutil attach -readonly -nobrowse \
             -mountpoint "$mountpoint" \
-            "dist-native/macos-unsigned/${{ matrix.artifact }}"
+            "$BUNDLE_DIRECTORY/$ARTIFACT"
+          if [[ "$MACOS_SIGNED" == "true" ]]; then
+            spctl --assess --type execute --verbose=2 "$mountpoint/$BUNDLE"
+          fi
           uv run python tests/bundle_smoke.py \
             --timeout "${{ matrix.smoke_timeout }}" \
-            "$mountpoint/${{ matrix.bundle }}"
-          hdiutil detach "$mountpoint"
+            "$mountpoint/$BUNDLE"
+          detach_image
           trap - EXIT
-          rm -rf "$mountpoint"
+          rmdir "$mountpoint"
 
       - name: Smoke-test Windows executable with deterministic mock data
         if: matrix.platform == 'windows'
@@ -173,13 +330,26 @@ jobs:
           --timeout "${{ matrix.smoke_timeout }}"
           "dist-native/windows-unsigned/${{ matrix.bundle }}"
 
-      - name: Upload unsigned development artifact
+      - name: Upload bundle artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact_name }}
-          path: dist-native/${{ matrix.platform }}-unsigned/${{ matrix.artifact }}
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.BUNDLE_DIRECTORY }}/${{ env.ARTIFACT }}
           if-no-files-found: error
           overwrite: true
+
+      - name: Remove temporary signing keychain and credentials
+        if: always() && env.MACOS_SIGNED == 'true'
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/draftomen-signing.keychain-db"
+          if [[ -e "$keychain" ]]; then
+            security delete-keychain "$keychain"
+          fi
+          rm -f \
+            "$RUNNER_TEMP/draftomen-signing.p12" \
+            "$RUNNER_TEMP/draftomen-notary.p8" \
+            "$RUNNER_TEMP/draftomen-notary-result.json"
 
   publish-development:
     name: Publish rolling development release

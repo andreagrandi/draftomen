@@ -1,17 +1,20 @@
 # Native desktop bundles
 
-Draft Omen's native desktop bundles are unsigned artifacts built in two
-automated contexts: a manual `workflow_dispatch` run for temporary development
-testing, or as part of the tagged `v*` release workflow. Ordinary pushes,
-merges, and pull requests do not trigger native builds automatically. macOS
-has two artifacts, one for Apple Silicon (`arm64`) and one for Intel
-(`x86_64`). Each is a compressed, read-only DMG for Finder-native
-distribution: its `Draft Omen` volume contains `Draftomen-unsigned-macos.app`
-at the volume root and an `Applications` symlink to `/Applications`. Each DMG
-runs only on its own architecture. Nuitka's app bundle has an
-ad-hoc signature, but it has no developer or distribution signing identity and
-is not notarized. The Windows artifact is unsigned. Neither artifact is a
-signed installer.
+Draft Omen's native desktop bundles are built in two automated contexts: a
+manual `workflow_dispatch` run for temporary development testing, or as part
+of the tagged `v*` release workflow. Ordinary pushes, merges, and pull requests
+do not trigger native builds automatically. macOS has two artifacts, one for
+Apple Silicon (`arm64`) and one for Intel (`x86_64`). Each is a compressed,
+read-only DMG for Finder-native distribution with the app at the volume root
+and an `Applications` symlink to `/Applications`. Each DMG runs only on its
+own architecture.
+
+Development builds are unsigned. Their DMG contains
+`Draftomen-unsigned-macos.app`, which has only Nuitka's ad-hoc signature and is
+not notarized. Tag releases sign the macOS app with Developer ID, and they sign,
+notarize and staple the DMG, which contains `Draft Omen.app`. The
+[signed macOS release path](#signed-macos-release-path) section describes it.
+The Windows artifact is unsigned in both contexts.
 
 ## Tool choice
 
@@ -367,10 +370,77 @@ distribution identity or notarization). Anyone redistributing the app must
 arrange platform-appropriate signing and notarization independently after
 copying it from the mounted image.
 
+### Signed macOS release path
+
+`release.yml` calls the native workflow with `sign_macos: true`. The input
+defaults to `false`, and `workflow_dispatch` runs cannot set it, so development
+builds stay unsigned. With the input set, the two macOS jobs run in the
+`macos-release` environment, which holds the Apple credentials and admits only
+`v*` tags. The Windows job never enters that environment. `docs/releasing.md`
+describes the credentials and how to rotate them.
+
+Each signed macOS job runs these steps:
+
+1. Check that every secret and variable is set, decode the `.p12` into a
+   temporary keychain under `$RUNNER_TEMP`, and add that keychain to the user
+   search list, because Nuitka calls `codesign` without `--keychain`. The job
+   reads the SHA-1 of the `Developer ID Application` identity for
+   `APPLE_TEAM_ID` from the keychain. This runs before the build, so bad
+   credentials fail in seconds.
+2. Copy `pysidedeploy.macos.spec` to an untracked
+   `pysidedeploy.macos.signed.spec` with
+   `--macos-sign-identity=<SHA-1> --macos-sign-notarization` added to
+   `extra_args`. Nuitka then signs every binary and data file it places in the
+   bundle with Hardened Runtime and a secure timestamp.
+3. Run `pyside6-deploy --keep-deployment-files`, check Nuitka's own output
+   `draftomen/deployment/qt_gui.app` with
+   `codesign --verify --deep --strict`, copy it with `ditto` to
+   `dist-native/macos-signed/Draft Omen.app`, and check the copy the same way.
+4. Check the executable architecture with `lipo -archs`, then build
+   `Draftomen-signed-macos-<arch>.dmg` from a staging folder filled with
+   `ditto`.
+5. Sign the DMG with the same identity and a timestamp. Submit it with
+   `xcrun notarytool submit --wait`, using the App Store Connect API key. Any
+   status other than `Accepted` prints Apple's log and fails the job.
+6. Staple the ticket, then run `xcrun stapler validate` and
+   `spctl --assess --type open --context context:primary-signature` on the
+   DMG.
+7. Mount the stapled DMG, run `spctl --assess --type execute` on the app inside
+   it, and run `tests/bundle_smoke.py` against that app.
+8. Upload that DMG as `draftomen-macos-<arch>-signed-release`.
+
+A last step runs with `always()`. It deletes the temporary keychain, which also
+removes it from the search list, and deletes the decoded `.p12`, the `.p8` and
+the notarization result, even when signing or notarization failed.
+
+#### Why the build copies with ditto
+
+Nuitka signs the roughly 2,500 QML, `qmldir` and other data files in
+`Contents/MacOS` as nested code. `codesign` stores their signatures in
+`com.apple.cs.*` extended attributes. pyside6-deploy finishes by copying
+Nuitka's app to `exec_directory` with `shutil.copytree`, which drops extended
+attributes on macOS. That copy fails strict verification with
+`code object is not signed at all` on a `.qml` file. `ditto` and
+`hdiutil create -srcfolder` keep the attributes, so the signed path uses them
+and moves only the DMG between jobs. `actions/upload-artifact`, `zip` and other
+copies that ignore extended attributes break the seal in the same way.
+
+The unsigned development bundles have the same broken seal, because they come
+from pyside6-deploy's copy. Nothing checks ad-hoc signatures strictly, so it
+has no visible effect there.
+
+#### Entitlements
+
+The signed app has no entitlements. `tests/bundle_smoke.py` passes on the
+Hardened Runtime build without any, including the QML engine. Add an
+entitlement only when a Hardened Runtime build fails without it, and list it
+here with the failure that required it. Nuitka has no general entitlements
+option, so adding one means re-signing the main executable after the build.
+
 ### Tagged release assets
 
 For a tag such as `v1.2.3`, `release.yml` invokes the reusable native workflow
-with `workflow_call`. The GitHub Release publication job runs only after the
+with `workflow_call` and `sign_macos: true`. The GitHub Release publication job runs only after the
 `validate` job has passed the version, website, changelog, and CI checks and
 all three native bundle jobs have built and passed their smoke tests.
 It checks out the tagged repository, extracts the non-empty body under the exact
@@ -388,9 +458,10 @@ likewise overwritten when their build jobs are rerun.
 The persistent public assets attached to the `v1.2.3` GitHub Release are:
 
 - `draftomen-v1.2.3-unsigned-macos-arm64.dmg` and
-  `draftomen-v1.2.3-unsigned-macos-x86_64.dmg`, compressed read-only images
-  each containing the `Draftomen-unsigned-macos.app` bundle for that
-  architecture and an `Applications` symlink;
+  `draftomen-v1.2.3-unsigned-macos-x86_64.dmg`, signed, notarized and stapled
+  compressed read-only images each containing the signed `Draft Omen.app`
+  bundle for that architecture and an `Applications` symlink. The filenames
+  still say `unsigned` until #730 renames them;
 - `draftomen-v1.2.3-unsigned-windows.exe`, containing the Windows
   executable; and
 - `draftomen-v1.2.3-unsigned-sha256sums.txt`, containing SHA-256 entries
@@ -400,11 +471,7 @@ The release filenames deliberately include the tag, `unsigned`, and for macOS
 the architecture. Releases before this change published a single
 `unsigned-macos.dmg` that ran only on Apple Silicon. Mounting a macOS asset in
 Finder or with `hdiutil attach -readonly -nobrowse` shows the app and
-Applications shortcut. The DMG and app are not
-developer/distribution signed or notarized; the app has only Nuitka's required
-ad-hoc signature. The Windows executable has no distribution signature. These
-GitHub Release assets therefore require platform-appropriate signing and
-notarization before redistribution.
+Applications shortcut. The Windows executable has no distribution signature.
 
 The native assets are the only published distribution. Releases after 0.4.0
 do not publish to PyPI or update the Homebrew tap.
