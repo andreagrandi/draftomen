@@ -18,7 +18,6 @@ from PySide6.QtCore import (
     QByteArray,
     QCoreApplication,
     QEvent,
-    QMetaObject,
     QModelIndex,
     QObject,
     Qt,
@@ -1886,6 +1885,7 @@ class LiveSessionAdapter(SessionAdapter):
     _testDraftDownloadRequested = Signal()
     _testDraftCardDataDownloadRequested = Signal(str)
     _testDraftFactoryChanged = Signal(object)
+    _stopRequested = Signal()
 
     def __init__(
         self,
@@ -1966,6 +1966,7 @@ class LiveSessionAdapter(SessionAdapter):
             Qt.ConnectionType.QueuedConnection,
         )
         worker.failed.connect(self._apply_failure, Qt.ConnectionType.QueuedConnection)
+        self._stopRequested.connect(worker.stop, Qt.ConnectionType.QueuedConnection)
         thread.finished.connect(worker.deleteLater)
         worker.finished.connect(
             thread.quit,
@@ -1983,11 +1984,10 @@ class LiveSessionAdapter(SessionAdapter):
             return
         worker.request_stop()
         thread.requestInterruption()
-        QMetaObject.invokeMethod(
-            worker,
-            "stop",
-            Qt.ConnectionType.QueuedConnection,
-        )
+        # The worker thread deletes the worker as soon as it finishes, which can
+        # happen during this call. Emitting from the adapter never touches a
+        # deleted worker because Qt drops the connection when the worker dies.
+        self._stopRequested.emit()
         thread.wait(100)
 
     def profile_refresh_pending(self) -> bool:
