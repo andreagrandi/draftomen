@@ -29,6 +29,7 @@ from draftomen.profile_client import (
     _validate_profile_metadata,
 )
 from draftomen.profile_data_refresh import SUPPORTED_FORMATS
+from draftomen.profile_generation import CardRatingCounts, ProfileGenerationError
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact, ProfileManifestError
 from draftomen.profile_publication import PROFILE_BASE_URL
 from draftomen.set_card_data import SetCardData, SetCardDataError
@@ -204,7 +205,7 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
     profiles = _mapping(report["profiles"], label="profiles")
     _exact_keys(
         profiles,
-        {"planning_complete", "selected", "successful", "manifest_changed"},
+        {"planning_complete", "selected", "successful", "card_ratings", "manifest_changed"},
         label="profiles",
     )
     if not isinstance(profiles["planning_complete"], bool) or not isinstance(profiles["manifest_changed"], bool):
@@ -227,6 +228,33 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
         if identity in successful_pairs or identity not in selected_pairs or selected_pairs[identity] != name:
             _fail("profiles.successful contains an unselected or duplicate identity")
         successful_pairs.add(identity)
+    if not isinstance(profiles["card_ratings"], list):
+        _fail("profiles.card_ratings must be an array")
+    counted_pairs: set[tuple[str, str]] = set()
+    for index, value in enumerate(profiles["card_ratings"]):
+        label = f"profiles.card_ratings[{index}]"
+        item = _mapping(value, label=label)
+        _exact_keys(
+            item,
+            {"set_code", "event_format", "fetched", "accepted", "from_other_formats", "rejected"},
+            label=label,
+        )
+        code = _safe_code(item["set_code"], label=f"{label}.set_code")
+        event_format = _nonempty_string(item["event_format"], label=f"{label}.event_format")
+        identity = (code, event_format.casefold())
+        if identity in counted_pairs or identity not in successful_pairs:
+            _fail("profiles.card_ratings contains an unsuccessful or duplicate identity")
+        counted_pairs.add(identity)
+        rejected = _mapping(item["rejected"], label=f"{label}.rejected")
+        try:
+            CardRatingCounts(
+                fetched=item["fetched"],
+                accepted=item["accepted"],
+                rejected=rejected,
+                from_other_formats=item["from_other_formats"],
+            )
+        except ProfileGenerationError as error:
+            _fail(f"{label} counts are invalid", error)
 
     failures = report["failures"]
     if not isinstance(failures, list):

@@ -746,6 +746,25 @@ def test_generate_uses_real_producers_and_preserves_valid_static(
     assert report["static"]["selected"] == [{"set_code": "new", "set_name": "New Set"}]
     assert report["profiles"]["selected"][0]["set_code"] == "new"
     assert report["profiles"]["successful"][0]["event_format"] == "PremierDraft"
+    assert report["profiles"]["card_ratings"] == [
+        {
+            "event_format": "PremierDraft",
+            "set_code": "new",
+            "fetched": 2,
+            "accepted": 1,
+            "from_other_formats": 0,
+            "rejected": {"card_rating_unmatched_metadata": 1},
+        }
+    ]
+    summary = (bundle / "summary.md").read_text(encoding="utf-8")
+    assert "- Eligible set artifacts: 2" in summary
+    assert "- Already valid set artifacts: 1" in summary
+    assert (
+        "  - 17Lands card-rating rows: fetched 2, accepted into the profile 1, rejected 1"
+        in summary
+    )
+    assert "  - Rejected rows by reason: card\\_rating\\_unmatched\\_metadata 1" in summary
+    assert "  - Counts reconcile: yes" in summary
     assert "enrichment_conflicts" not in report["profiles"]
     assert old.read_bytes() == old_bytes
     assert old.stat().st_mtime_ns == old_mtime
@@ -1104,6 +1123,97 @@ def test_summary_escapes_report_metadata_and_lists_selected_work() -> None:
     assert [
         line for line in summary.splitlines() if "QuickDraft" in line
     ] == ["- new / QuickDraft / &lt;New&gt;: failed"]
+
+
+def _summary_with_card_ratings(card_ratings: Any) -> str:
+    pairs = [
+        {"set_code": code, "set_name": "Set", "event_format": "QuickDraft"}
+        for code in ("aaa", "bbb", "ccc", "ddd")
+    ]
+    return workflow.render_summary(
+        {
+            "status": "success",
+            "base_commit": "base",
+            "selection": {"mode": "all", "selector": None},
+            "static": {},
+            "profiles": {
+                "planning_complete": True,
+                "selected": pairs,
+                "successful": pairs,
+                "card_ratings": card_ratings,
+                "manifest_changed": True,
+            },
+            "failures": [],
+        }
+    )
+
+
+def _pair_card_rating_lines(summary: str, *, set_code: str) -> list[str]:
+    lines = summary.splitlines()
+    start = lines.index(f"- {set_code} / QuickDraft / Set: successful") + 1
+    end = start
+    while end < len(lines) and lines[end].startswith("  - "):
+        end += 1
+    return lines[start:end]
+
+
+def test_summary_reports_reconciled_card_rating_counts_per_pair() -> None:
+    summary = _summary_with_card_ratings(
+        [
+            {
+                "set_code": "aaa",
+                "event_format": "QuickDraft",
+                "fetched": 286,
+                "accepted": 277,
+                "from_other_formats": 6,
+                "rejected": {"card_rating_out_of_set": 1, "card_rating_missing_rate": 8},
+            },
+            {
+                "set_code": "bbb",
+                "event_format": "QuickDraft",
+                "fetched": 10,
+                "accepted": 7,
+                "rejected": {"card_rating_missing_rate": 1},
+            },
+            {
+                "set_code": "ccc",
+                "event_format": "QuickDraft",
+                "fetched": "10",
+                "accepted": 7,
+                "rejected": {"card_rating_missing_rate": -1},
+            },
+        ]
+    )
+
+    assert _pair_card_rating_lines(summary, set_code="aaa") == [
+        "  - 17Lands card-rating rows: fetched 286, accepted into the profile 277, rejected 9",
+        "  - Rejected rows by reason: card\\_rating\\_missing\\_rate 8, card\\_rating\\_out\\_of\\_set 1",
+        "  - Profile ratings taken from other formats: 6",
+        "  - Counts reconcile: yes",
+    ]
+    assert _pair_card_rating_lines(summary, set_code="bbb") == [
+        "  - 17Lands card-rating rows: fetched 10, accepted into the profile 7, rejected 1",
+        "  - Rejected rows by reason: card\\_rating\\_missing\\_rate 1",
+        "  - Counts reconcile: no, fetched minus accepted and rejected is 2",
+    ]
+    assert _pair_card_rating_lines(summary, set_code="ccc") == [
+        "  - 17Lands card-rating rows: fetched not reported, accepted into the profile 7, rejected not reported",
+        "  - Counts reconcile: not reported",
+    ]
+    assert _pair_card_rating_lines(summary, set_code="ddd") == [
+        "  - 17Lands card-rating rows: not reported",
+    ]
+
+
+def test_summary_renders_when_card_rating_counts_are_absent() -> None:
+    summary = _summary_with_card_ratings(None)
+
+    for set_code in ("aaa", "bbb", "ccc", "ddd"):
+        assert _pair_card_rating_lines(summary, set_code=set_code) == [
+            "  - 17Lands card-rating rows: not reported",
+        ]
+    assert "- Eligible set artifacts: not reported" in summary
+    assert "- Already valid set artifacts: not reported" in summary
 
 
 def test_cli_rejects_invalid_selector_combinations(tmp_path: Path) -> None:
