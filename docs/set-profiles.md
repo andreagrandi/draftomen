@@ -447,8 +447,8 @@ and development cannot have separate publication timing.
 
 There is no profile hook, manual data deployment, branch/preview deployment, or
 alternate publication timing. A failed build leaves the last successful
-snapshot. Publishing a hosted snapshot does not trigger or gate Python, PyPI,
-Homebrew, native packaging, application startup, or release workflows; terminal
+snapshot. Publishing a hosted snapshot does not trigger or gate native
+packaging, application startup, or release workflows; terminal
 runtime consumption of the production manifest is a separate client setting.
 Issue #227 discovery, scheduling, backfill, and publication automation remain
 excluded; baseline application bundling remains owned by #313.
@@ -1940,6 +1940,6 @@ production default, explicit override, or profile-only offline policy, while
 existing ratings controls present shared refresh outcomes without direct
 runtime 17Lands loading.
 Website hosting and profile publication do not trigger or gate native
-packaging, releases, startup, PyPI, or Homebrew. Producers choose maturity and
+packaging, releases, or startup. Producers choose maturity and
 hand off the checksummed artifacts described by their manifest; the loader only
 validates, orders, and exposes profiles.

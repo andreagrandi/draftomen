@@ -69,8 +69,7 @@ nothing because Qt ships as frameworks.
 
 Both specs additionally declare `--include-package=socketio`. The Socket.IO
 transport (`python-socketio[client]`) is a required base dependency, so it is
-always importable: wheel, Homebrew, source startup, and both native builds
-install it, and the developer Test Draft is always available. The specs still
+always importable: source startup and both native builds install it, and the developer Test Draft is always available. The specs still
 hand Nuitka the transport as an explicit packaging input — the developer Test
 Draft reaches it through `draftomen/draftmancer.py`, and the pinned
 `--include-package=socketio` keeps the bundled package declared instead of
@@ -371,9 +370,9 @@ copying it from the mounted image.
 ### Tagged release assets
 
 For a tag such as `v1.2.3`, `release.yml` invokes the reusable native workflow
-with `workflow_call`. The GitHub Release publication job runs only after both
-the existing `publish` job has successfully published the Python distributions
-to PyPI and all three native bundle jobs have built and passed their smoke tests.
+with `workflow_call`. The GitHub Release publication job runs only after the
+`validate` job has passed the version, website, changelog, and CI checks and
+all three native bundle jobs have built and passed their smoke tests.
 It checks out the tagged repository, extracts the non-empty body under the exact
 `## [1.2.3] - YYYY-MM-DD` section in `CHANGELOG.md`, and uses that body as the
 GitHub Release notes. A missing, duplicate, or empty section fails the job
@@ -407,11 +406,8 @@ ad-hoc signature. The Windows executable has no distribution signature. These
 GitHub Release assets therefore require platform-appropriate signing and
 notarization before redistribution.
 
-The existing Python `publish` job and Homebrew job remain separate from native
-packaging: Python wheels and source distributions continue to publish to
-PyPI, and Homebrew continues to run after `publish` using its existing
-workflow. The GitHub Release adds persistent native assets; it does not replace
-the PyPI or Homebrew publication paths.
+The native assets are the only published distribution. Releases after 0.4.0
+do not publish to PyPI or update the Homebrew tap.
 
 ## Independence boundaries
 
@@ -419,5 +415,5 @@ Bundled-baseline embedding is a native packaging concern only: it does not
 publish profiles, change website hosting, or add a default URL or startup
 network request. Hosted refresh remains explicitly configured and independent.
 
-Baseline updates do not gate release timing; PyPI, Homebrew, and existing native
-workflow jobs remain separate.
+Baseline updates do not gate release timing, and the native workflow jobs
+remain separate.
