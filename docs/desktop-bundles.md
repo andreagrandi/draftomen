@@ -457,19 +457,21 @@ likewise overwritten when their build jobs are rerun.
 
 The persistent public assets attached to the `v1.2.3` GitHub Release are:
 
-- `draftomen-v1.2.3-unsigned-macos-arm64.dmg` and
-  `draftomen-v1.2.3-unsigned-macos-x86_64.dmg`, signed, notarized and stapled
+- `draftomen-v1.2.3-macos-arm64.dmg` and
+  `draftomen-v1.2.3-macos-x86_64.dmg`, signed, notarized and stapled
   compressed read-only images each containing the signed `Draft Omen.app`
-  bundle for that architecture and an `Applications` symlink. The filenames
-  still say `unsigned` until #730 renames them;
+  bundle for that architecture and an `Applications` symlink;
 - `draftomen-v1.2.3-unsigned-windows.exe`, containing the Windows
   executable; and
-- `draftomen-v1.2.3-unsigned-sha256sums.txt`, containing SHA-256 entries
-  for those three binaries.
+- `draftomen-v1.2.3-sha256sums.txt`, containing SHA-256 entries for those
+  three binaries.
 
-The release filenames deliberately include the tag, `unsigned`, and for macOS
-the architecture. Releases before this change published a single
-`unsigned-macos.dmg` that ran only on Apple Silicon. Mounting a macOS asset in
+The release filenames include the tag, and the macOS names include the
+architecture. The Windows name keeps `unsigned` until Windows signing lands.
+Releases up to 0.4.0 published unsigned macOS DMGs named
+`draftomen-v<version>-unsigned-macos-<arch>.dmg` and a checksum file named
+`draftomen-v<version>-unsigned-sha256sums.txt`. Releases before 0.4.0
+published a single `unsigned-macos.dmg` that ran only on Apple Silicon. Mounting a macOS asset in
 Finder or with `hdiutil attach -readonly -nobrowse` shows the app and
 Applications shortcut. The Windows executable has no distribution signature.
 

@@ -132,10 +132,10 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          macos_arm64_name="draftomen-${RELEASE_TAG}-unsigned-macos-arm64.dmg"
-          macos_x86_64_name="draftomen-${RELEASE_TAG}-unsigned-macos-x86_64.dmg"
+          macos_arm64_name="draftomen-${RELEASE_TAG}-macos-arm64.dmg"
+          macos_x86_64_name="draftomen-${RELEASE_TAG}-macos-x86_64.dmg"
           windows_name="draftomen-${RELEASE_TAG}-unsigned-windows.exe"
-          checksums_name="draftomen-${RELEASE_TAG}-unsigned-sha256sums.txt"
+          checksums_name="draftomen-${RELEASE_TAG}-sha256sums.txt"
 
           mkdir -p release-assets/published
           mv release-assets/macos-arm64/Draftomen-signed-macos-arm64.dmg \
@@ -169,9 +169,9 @@ jobs:
               --notes-file release-notes.md
           fi
           gh release upload "${RELEASE_TAG}" \
-            "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-macos-arm64.dmg" \
-            "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-macos-x86_64.dmg" \
+            "release-assets/published/draftomen-${RELEASE_TAG}-macos-arm64.dmg" \
+            "release-assets/published/draftomen-${RELEASE_TAG}-macos-x86_64.dmg" \
             "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-windows.exe" \
-            "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-sha256sums.txt" \
+            "release-assets/published/draftomen-${RELEASE_TAG}-sha256sums.txt" \
             --clobber
           gh release edit "${RELEASE_TAG}" --draft=false

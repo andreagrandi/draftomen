@@ -175,16 +175,32 @@ assets once both finish.
 
 The public GitHub Release for `v<version>` must be published with the promoted
 dated changelog body and the three native bundle assets plus checksum file. The
-macOS release assets are `draftomen-v<version>-unsigned-macos-arm64.dmg` and
-`draftomen-v<version>-unsigned-macos-x86_64.dmg`. Download the asset that
+macOS release assets are `draftomen-v<version>-macos-arm64.dmg` and
+`draftomen-v<version>-macos-x86_64.dmg`. Download the asset that
 matches the Mac's architecture, open it
 in Finder or attach it read-only and without Finder browsing with
 `hdiutil attach -readonly -nobrowse -mountpoint <temporary-mount> <file>.dmg`,
 and run `tests/bundle_smoke.py` against the mounted app. Use an `EXIT` trap to
-detach the image even when smoke testing fails. To distribute it, drag the app
-onto the DMG's `Applications` shortcut in Finder, then eject the image; arrange
-platform-appropriate signing and notarization before redistributing the copied
-app.
+detach the image even when smoke testing fails.
+
+Then check what a new user sees. For each macOS DMG, on a Mac of that
+architecture that has never run Draft Omen:
+
+1. Download the DMG from the draftomen.com button or the GitHub Release page
+   in a browser, so the file gets the quarantine attribute a real download
+   has. `gh release download` and `curl` do not set it.
+2. Open the DMG, drag Draft Omen onto the `Applications` shortcut, and eject
+   the DMG.
+3. Open Draft Omen from /Applications. macOS must show only the prompt for an
+   app downloaded from the internet. A "can't be opened", "damaged" or
+   "unidentified developer" dialog means the release is broken.
+4. Run `spctl --assess --type execute --verbose "/Applications/Draft Omen.app"`
+   and check that it reports `accepted` and `source=Notarized Developer ID`.
+
+A Mac that has run Draft Omen before can stand in if you first delete
+`/Applications/Draft Omen.app` and `~/.draftomen`. If no Intel Mac is
+available, record that the `x86_64` DMG was checked only by the release
+workflow.
 
 ## macOS signing credentials
 

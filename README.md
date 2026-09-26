@@ -44,11 +44,20 @@ For the complete methodology, see [pick scoring](docs/pick-scoring.md), [benchma
 
 Download the latest build from [GitHub Releases](https://github.com/andreagrandi/draftomen/releases/latest):
 
-- Apple Silicon Mac: `draftomen-vX.Y.Z-unsigned-macos-arm64.dmg`
-- Intel Mac: `draftomen-vX.Y.Z-unsigned-macos-x86_64.dmg`
+- Apple Silicon Mac: `draftomen-vX.Y.Z-macos-arm64.dmg`
+- Intel Mac: `draftomen-vX.Y.Z-macos-x86_64.dmg`
 - Windows: `draftomen-vX.Y.Z-unsigned-windows.exe`
 
-On macOS, open the DMG and drag Draft Omen onto the `Applications` shortcut. The builds are not signed yet, so macOS and Windows show a warning the first time you open the app.
+On macOS, open the DMG and drag Draft Omen onto the `Applications` shortcut, then eject the DMG and open Draft Omen from Applications. The macOS app is signed with a Developer ID and notarized by Apple, so the first launch shows only the usual prompt for an app downloaded from the internet. The Windows build is not signed yet, so Windows shows a SmartScreen warning the first time you open it.
+
+If macOS says Draft Omen "can't be opened" or "is damaged":
+
+- Check that the DMG matches the Mac. An Apple Silicon Mac needs `arm64`, an Intel Mac needs `x86_64`. **Apple menu → About This Mac** shows the chip.
+- Download the DMG again through a browser. An interrupted download fails the signature check.
+- The first launch checks the notarization with Apple online. If the Mac is offline, connect it and try again.
+- Run `spctl --assess --type execute --verbose "/Applications/Draft Omen.app"` in Terminal. A good copy reports `accepted` and `source=Notarized Developer ID`. Include the output if you open an issue.
+
+To uninstall, quit Draft Omen and move `/Applications/Draft Omen.app` to the Trash. Draft Omen keeps its caches, settings and draft history in `~/.draftomen`. Delete that folder too to remove all its data. Arena's own logs are not affected.
 
 To run from source instead, [install uv](https://docs.astral.sh/uv/getting-started/installation/), clone this repository, and use `uv run draftomen` or `uv run draftomen-tui`. Draft Omen is no longer published to PyPI or Homebrew. Version 0.4.0 is the last release on either.
 

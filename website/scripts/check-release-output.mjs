@@ -51,8 +51,8 @@ async function main() {
   }
 
   const expectedUrls = [
-    `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-unsigned-macos-arm64.dmg`,
-    `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-unsigned-macos-x86_64.dmg`,
+    `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-macos-arm64.dmg`,
+    `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-macos-x86_64.dmg`,
     `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-unsigned-windows.exe`,
   ];
   const missingChecks = [];
@@ -63,6 +63,9 @@ async function main() {
     if (!html.includes(url)) {
       missingChecks.push(`exact download URL ${url}`);
     }
+  }
+  if (/unsigned\s*\.dmg/i.test(visibleText(html))) {
+    missingChecks.push('macOS download labels without "unsigned"');
   }
 
   if (missingChecks.length > 0) {
