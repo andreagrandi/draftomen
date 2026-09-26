@@ -81,6 +81,9 @@ jobs:
     uses: ./.github/workflows/native-bundles.yml
     with:
       sign_macos: true
+    # A called workflow sees only the secrets its caller passes, even in a job
+    # that declares the environment holding them.
+    secrets: inherit
     permissions:
       actions: read
       contents: write

@@ -1101,6 +1101,7 @@ def test_only_release_macos_jobs_use_signing_environment() -> None:
     signed_condition = "inputs.sign_macos && matrix.platform == 'macos'"
 
     assert "    with:\n      sign_macos: true\n" in release_text
+    assert "    secrets: inherit\n" in release_text
     assert "default: false" in native_text.split("  workflow_dispatch:", maxsplit=1)[0]
     assert (
         f"environment: ${{{{ {signed_condition} && 'macos-release' || '' }}}}"
