@@ -358,6 +358,21 @@ Rectangle {
                     wrapMode: Text.WordWrap
                 }
 
+                Label {
+                    objectName: "cardPreviewPairPartner"
+                    visible: text.length > 0
+                    Layout.fillWidth: true
+                    text: root.recommendation
+                        && root.recommendation.card_pair_partner
+                        ? "Pairs well with "
+                            + root.recommendation.card_pair_partner
+                        : ""
+                    textFormat: Text.PlainText
+                    color: Theme.primary
+                    font.pixelSize: Theme.textPixelSize(12)
+                    wrapMode: Text.WordWrap
+                }
+
                 GridLayout {
                     visible: root.detailedIntel
                     objectName: "cardPreviewScores"

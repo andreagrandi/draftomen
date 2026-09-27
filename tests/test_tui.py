@@ -35,7 +35,11 @@ from draftomen.pool import (
     draft_state_path,
     save_draft_state,
 )
-from draftomen.preferences import TuiVisibilityPreferences, tui_preferences_path
+from draftomen.preferences import (
+    TuiVisibilityPreferences,
+    load_tui_preferences,
+    tui_preferences_path,
+)
 from draftomen.profile_client import (
     ProfileClient,
     ProfileNetworkPolicy,
@@ -2351,6 +2355,90 @@ async def _assert_backtest_missing_history_is_read_only(tmp_path: Path) -> None:
         assert "Summary: no comparable picks; 1 skipped." in app.backtest_view_text
         assert state_path.read_text(encoding="utf-8") == before
 
+
+def test_tui_config_switch_turns_augmented_intelligence_on_and_off(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_augmented_intelligence_switch(tmp_path=tmp_path))
+
+
+async def _assert_augmented_intelligence_switch(*, tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert app.session._augmentation_enabled is False
+
+        await _save_tui_config(
+            app=app,
+            pilot=pilot,
+            augmented_intelligence_enabled=True,
+        )
+
+        assert app.visibility_preferences.augmented_intelligence_enabled is True
+        assert app.session._augmentation_enabled is True
+        saved, _ = load_tui_preferences(app_dir=tmp_path / "app")
+        assert saved.augmented_intelligence_enabled is True
+
+        await _save_tui_config(
+            app=app,
+            pilot=pilot,
+            augmented_intelligence_enabled=False,
+        )
+
+        assert app.session._augmentation_enabled is False
+
+
+def test_tui_starts_with_the_saved_augmented_intelligence_preference(
+    tmp_path: Path,
+) -> None:
+    app = _tui_app(
+        tmp_path=tmp_path,
+        visibility_preferences=TuiVisibilityPreferences(
+            augmented_intelligence_enabled=True,
+        ),
+    )
+
+    assert app.session._augmentation_enabled is True
+
+
+def test_tui_focused_card_names_its_pair_partner_only_when_pairs_moved_it(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_focused_card_pair_partner(tmp_path=tmp_path))
+
+
+async def _assert_focused_card_pair_partner(*, tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+        base_snapshot = app.session.snapshot
+        cards = app._sorted_cards()
+        paired_grp_id = cards[0].card.grp_id
+        app._apply_session_snapshot(
+            replace(
+                base_snapshot,
+                recommendations=replace(
+                    base_snapshot.recommendations,
+                    cards=tuple(
+                        replace(recommendation, card_pair_partner="Bitterblossom")
+                        if recommendation.card.grp_id == paired_grp_id
+                        else recommendation
+                        for recommendation in base_snapshot.recommendations.cards
+                    ),
+                ),
+            )
+        )
+        app._move_pack_cursor_to(row=0)
+        await pilot.pause()
+
+        assert "Pairs well with Bitterblossom" in _focused_card_text(app=app)
+
+        app._move_pack_cursor_to(row=1)
+        await pilot.pause()
+
+        assert "Pairs well with" not in _focused_card_text(app=app)
 
 
 def test_tui_long_pack_rationale_is_reachable_in_narrow_sidebar(

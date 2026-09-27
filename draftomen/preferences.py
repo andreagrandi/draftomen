@@ -30,6 +30,7 @@ class TuiVisibilityPreferences:
     secondary_columns: bool = True
     build_details: bool = False
     splash_enabled: bool = True
+    augmented_intelligence_enabled: bool = False
     pool_metadata: bool = True
     pool_color_distribution: bool = True
     pool_mana_curve: bool = True

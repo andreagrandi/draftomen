@@ -783,6 +783,8 @@ class ScoredCard:
     contextual_profile_maturity: str | None = None
     contextual_profile_confidence: float | None = None
     rationale: PickRationale = PickRationale()
+    # Set only when the Card Pairs correction moved this card up the ranking.
+    card_pair_partner: str | None = None
 
     @property
     def no_data(self) -> bool:
@@ -808,6 +810,17 @@ class ScoredCard:
             basic_score=self.basic_score,
             augmentation_delta=self.augmentation_delta,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _PackAugmentation:
+    """Artifact deltas for one pack, with and without the Card Pairs correction.
+    Pool Shape deltas equal the full deltas when the artifact has no pair table.
+    """
+
+    deltas: tuple[float, ...]
+    pool_shape_deltas: tuple[float, ...]
+    pool_cards: tuple[CardInfo, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -971,7 +984,7 @@ class PickEngine:
             normalization=normalization,
             profile_lookup=profile_lookup,
         )
-        augmentation_deltas = self._augmentation_deltas_for_pack(
+        augmentation = self._augmentation_deltas_for_pack(
             card_database=card_database,
             pool_grp_ids=pool_grp_ids,
             offered_grp_ids=offered_grp_ids,
@@ -987,15 +1000,17 @@ class PickEngine:
                 best_on_color_score=best_on_color_score,
                 scoring_context=active_context,
                 augmentation_delta=(
-                    0.0
-                    if augmentation_deltas is None
-                    else augmentation_deltas[index]
+                    0.0 if augmentation is None else augmentation.deltas[index]
                 ),
                 profile=active_profile,
                 normalization=normalization,
                 profile_lookup=profile_lookup,
             )
             for index, grp_id in enumerate(offered_grp_ids)
+        )
+        scored_cards = self._with_card_pair_partners(
+            cards=scored_cards,
+            augmentation=augmentation,
         )
         sorted_cards = _score_sorted_cards(
             cards=scored_cards,
@@ -1075,7 +1090,7 @@ class PickEngine:
         card_database: CardDatabase,
         pool_grp_ids: tuple[int, ...],
         offered_grp_ids: tuple[int, ...],
-    ) -> tuple[float, ...] | None:
+    ) -> _PackAugmentation | None:
         """Return one bounded artifact delta per offered card, or None when unused.
         Artifacts are validated when they load, so a present artifact always
         yields exactly one delta per offered card.
@@ -1095,18 +1110,78 @@ class PickEngine:
             candidate_ids=tuple(card.oracle_id for card in offered_cards),
         )
         if self._card_pairs is None:
-            return deltas
+            return _PackAugmentation(
+                deltas=deltas,
+                pool_shape_deltas=deltas,
+                pool_cards=pool_cards,
+            )
         pair_deltas = self._card_pairs.candidate_deltas(
             pool_cards=pool_cards,
             offered_cards=offered_cards,
         )
+        return _PackAugmentation(
+            deltas=tuple(
+                _clamp(
+                    value=delta + pair_delta,
+                    lower=-AUGMENTED_MAXIMUM_DELTA,
+                    upper=AUGMENTED_MAXIMUM_DELTA,
+                )
+                for delta, pair_delta in zip(deltas, pair_deltas, strict=True)
+            ),
+            pool_shape_deltas=deltas,
+            pool_cards=pool_cards,
+        )
+
+    def _with_card_pair_partners(
+        self,
+        *,
+        cards: tuple[ScoredCard, ...],
+        augmentation: _PackAugmentation | None,
+    ) -> tuple[ScoredCard, ...]:
+        """Name the best pool partner of each card that Card Pairs moved up.
+        Ranks compare the base ordering with and without the pair correction.
+        """
+
+        card_pairs = self._card_pairs
+        if card_pairs is None or augmentation is None:
+            return cards
+        with_pairs = sorted(cards, key=_scored_card_base_sort_key)
+        without_pairs = sorted(
+            cards,
+            key=lambda card: _scored_card_base_sort_key(
+                replace(
+                    card,
+                    augmentation_delta=(
+                        0.0
+                        if card.freely_available_basic
+                        else augmentation.pool_shape_deltas[card.original_index]
+                    ),
+                )
+            ),
+        )
+        rank_with_pairs = {
+            card.original_index: rank for rank, card in enumerate(with_pairs)
+        }
+        rank_without_pairs = {
+            card.original_index: rank for rank, card in enumerate(without_pairs)
+        }
         return tuple(
-            _clamp(
-                value=delta + pair_delta,
-                lower=-AUGMENTED_MAXIMUM_DELTA,
-                upper=AUGMENTED_MAXIMUM_DELTA,
+            (
+                replace(
+                    card,
+                    card_pair_partner=card_pairs.best_partner(
+                        card=card.card,
+                        pool_cards=augmentation.pool_cards,
+                    ),
+                )
+                if not card.freely_available_basic
+                and card.augmentation_delta
+                > augmentation.pool_shape_deltas[card.original_index]
+                and rank_with_pairs[card.original_index]
+                < rank_without_pairs[card.original_index]
+                else card
             )
-            for delta, pair_delta in zip(deltas, pair_deltas, strict=True)
+            for card in cards
         )
 
     def _score_card(
