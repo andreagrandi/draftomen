@@ -478,6 +478,42 @@ Applications shortcut. The Windows executable has no distribution signature.
 The native assets are the only published distribution. Releases after 0.4.0
 do not publish to PyPI or update the Homebrew tap.
 
+## Microsoft Store MSIX package
+
+The Windows app is moving to the Microsoft Store as an MSIX package.
+`packaging/windows/AppxManifest.xml` holds the manifest, and
+`packaging/windows/Assets/` holds the Store logos generated from
+`draftomen/assets/draftomen_logo.png`. The manifest uses the package identity
+that Partner Center assigned to the Draft Omen product:
+
+| Field | Value |
+|---|---|
+| Store ID | `9NPCD3VLZQMX` |
+| Identity Name | `27809AndreaGrandi.DraftOmen` |
+| Publisher | `CN=FF9C1E5C-B365-484C-9D4E-4AA6808AAC3D` |
+| PublisherDisplayName | `Andrea Grandi` |
+
+The package targets x64 Windows Desktop with a minimum of Windows 10 1809,
+`10.0.17763.0`. It runs the frozen executable as a full-trust desktop app and
+declares no capability other than `runFullTrust`.
+
+`scripts/msix_package.py` stages the folder that MakeAppx packs. It copies the
+frozen executable in as `DraftOmen.exe`, copies the logos, writes the manifest
+and then validates the result:
+
+```bash
+uv run python -m scripts.msix_package \
+  --executable dist-native/windows-unsigned/Draftomen-unsigned-windows.exe \
+  --output build/msix/layout \
+  --previous-version v0.4.1
+```
+
+The script prints the package version. The project version `X.Y.Z` always
+becomes `X.Y.Z.0`, because the Store reserves the fourth part. A release build
+passes the previous release tag with `--previous-version`, and the script
+fails if the new version is not higher. Development builds leave it out,
+because they share the version of the last release and never go to the Store.
+
 ## Independence boundaries
 
 Bundled-baseline embedding is a native packaging concern only: it does not

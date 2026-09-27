@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- scripts/msix_package.py fills in the package version and validates the staged result. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+  <!-- Partner Center assigned these identity values; see issue #326. -->
+  <Identity
+    Name="27809AndreaGrandi.DraftOmen"
+    Publisher="CN=FF9C1E5C-B365-484C-9D4E-4AA6808AAC3D"
+    Version="${version}"
+    ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>Draft Omen</DisplayName>
+    <PublisherDisplayName>Andrea Grandi</PublisherDisplayName>
+    <Description>An unofficial Quick Draft assistant for MTG Arena</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <!-- 10.0.17763.0 is Windows 10 1809, the oldest release Qt 6 supports. -->
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Applications>
+    <Application
+      Id="DraftOmen"
+      Executable="DraftOmen.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Draft Omen"
+        Description="An unofficial Quick Draft assistant for MTG Arena"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <!-- The frozen app is a classic desktop process that reads the Arena log. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
