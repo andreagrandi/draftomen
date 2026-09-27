@@ -77,6 +77,13 @@ rejects them. The independent Augmented Intelligence path loads its own
 `AugmentedArtifact` and applies its result after Basic DO. It does not change
 the Basic DO score or supply SetProfile semantics.
 
+Augmented Intelligence is off by default. The GUI turns it on in Settings, and
+the TUI turns it on with the Augmented Intelligence switch in the configuration
+opened with `c`. Both save the choice. When the artifact carries a Card Pairs
+table and the pair correction moves a card up the ranking, the GUI card preview
+and the TUI focused card details show "Pairs well with" and the pool card with
+the largest pair score.
+
 `PickScoringContext` is an immutable value with exactly two fields:
 
 - `set_profile: SetProfile`

@@ -48,6 +48,7 @@ def test_tui_preferences_round_trip_atomically_to_explicit_app_directory(
         "visibility": {
             "account_identifier": True,
             "attribution": False,
+            "augmented_intelligence_enabled": False,
             "build_details": True,
             "card_image_preview": "hide",
             "draft_identifier": True,

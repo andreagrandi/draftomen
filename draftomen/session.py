@@ -253,6 +253,7 @@ class Recommendation:
     explanation: str | None = None
     rationale: PickRationale = field(default_factory=PickRationale)
     concise_explanation: str | None = None
+    card_pair_partner: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2480,6 +2481,7 @@ class LiveSession:
             concise_explanation=render_pick_rationale_concise(
                 scored_card=scored_card,
             ),
+            card_pair_partner=scored_card.card_pair_partner,
         )
 
     def _card_image_uri(self, *, card: CardInfo) -> str | None:

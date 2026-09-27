@@ -285,6 +285,37 @@ def test_card_that_pairs_better_with_the_pool_ranks_first_on_a_close_call() -> N
     assert deltas == {2: pytest.approx(-1.0), 3: pytest.approx(1.0)}
 
 
+def test_card_that_pairs_moved_up_names_its_best_pool_partner() -> None:
+    database = _augmented_card_database()
+    # Card 3 pairs with both pool cards, but more strongly with card 2.
+    artifact = _pair_artifact(pairs=((0, 2, 1.0), (1, 2, 3.0)))
+
+    pack = PickEngine(augmented_artifact=artifact).score_pack(
+        offered_grp_ids=(1, 3),
+        card_database=database,
+        pool_grp_ids=(1, 2),
+    )
+
+    partners = {card.card.grp_id: card.card_pair_partner for card in pack.cards}
+    assert [card.card.grp_id for card in pack.cards] == [3, 1]
+    assert partners == {3: "Augmented Card 2", 1: None}
+
+
+def test_cards_that_pairs_did_not_move_name_no_partner() -> None:
+    database = _augmented_card_database()
+    # Pool Shape already puts card 3 first, so the pair only widens its lead.
+    artifact = _pair_artifact(deltas=(0.0, -4.0, 4.0), pairs=((0, 2, 2.0),))
+
+    pack = PickEngine(augmented_artifact=artifact).score_pack(
+        offered_grp_ids=(2, 3),
+        card_database=database,
+        pool_grp_ids=(1,),
+    )
+
+    assert [card.card.grp_id for card in pack.cards] == [3, 2]
+    assert all(card.card_pair_partner is None for card in pack.cards)
+
+
 def test_artifact_without_a_pair_table_scores_exactly_as_the_model_alone() -> None:
     database = _augmented_card_database()
     model_only = fixed_delta_artifact(

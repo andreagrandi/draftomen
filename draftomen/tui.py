@@ -40,6 +40,11 @@ try:  # pragma: no cover - import availability depends on optional terminal extr
 except Exception:  # pragma: no cover - graceful fallback when unavailable.
     TgpImage = None
 
+from draftomen.augmented_model_client import (
+    AugmentedModelClient,
+    AugmentedModelLoad,
+    AugmentedModelOutcome,
+)
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.config import COLOR_PAIRS, POLL_INTERVAL_SECONDS
@@ -71,10 +76,12 @@ from draftomen.ranking import (
 )
 from draftomen.session import (
     ApplicationPhase,
+    AugmentedModelRequest,
     BacktestPickResult,
     BacktestResult,
     BuildResult,
     CardView,
+    ChangeAugmentation,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
@@ -208,6 +215,11 @@ _VISIBILITY_BOOLEAN_OPTIONS = (
         "splash_enabled",
         "Splash recommendations — consider one supported third color for "
         "exceptionally strong cards.",
+    ),
+    (
+        "augmented_intelligence_enabled",
+        "Augmented Intelligence — adjust DO scores with the set's published "
+        "pool model and Card Pairs.",
     ),
     (
         "secondary_columns",
@@ -612,6 +624,7 @@ class DraftomenTuiApp(App[None]):
         set_card_data_loader: SetCardDataLoader | None = None,
         app_dir: PathInput | None = None,
         profile_client: ProfileClient | None = None,
+        augmented_model_client: AugmentedModelClient | None = None,
         poll_interval: float = POLL_INTERVAL_SECONDS,
         previous_log_path: PathInput | None = None,
         startup_scan: bool = False,
@@ -654,6 +667,8 @@ class DraftomenTuiApp(App[None]):
         self._textual_thread_id: int | None = None
         self._profile_refresh_in_flight: ProfileRefreshRequest | None = None
         self._profile_client = profile_client
+        self._augmented_model_client = augmented_model_client
+        self._augmented_request_in_flight: AugmentedModelRequest | None = None
         self.session = LiveSession(
             log_path=self.log_path,
             card_database=card_database,
@@ -664,7 +679,11 @@ class DraftomenTuiApp(App[None]):
             snapshot_publisher=self._publish_session_snapshot,
             event_publisher=self._publish_session_event,
             splash_enabled=self.visibility_preferences.splash_enabled,
+            augmentation_enabled=(
+                self.visibility_preferences.augmented_intelligence_enabled
+            ),
             profile_client=profile_client,
+            augmented_model_client=augmented_model_client,
         )
         self.startup_scan = startup_scan
         self.once = once
@@ -889,6 +908,11 @@ class DraftomenTuiApp(App[None]):
         self._save_visibility_preferences()
         self.session.dispatch(
             command=ChangeSplashPreference(enabled=preferences.splash_enabled),
+        )
+        self.session.dispatch(
+            command=ChangeAugmentation(
+                enabled=preferences.augmented_intelligence_enabled,
+            ),
         )
         if had_build_result and splash_changed:
             self._request_build_view(success_message=None)
@@ -1365,6 +1389,60 @@ class DraftomenTuiApp(App[None]):
         self._apply_session_snapshot(self.session.snapshot)
         self._schedule_profile_refresh()
 
+    def _schedule_augmented_model_load(self) -> None:
+        """Start the one pending augmented model load without blocking Textual."""
+
+        if self._augmented_model_client is None or not self.is_running:
+            return
+        request = self.session.augmented_model_request()
+        if request is None or self._augmented_request_in_flight is not None:
+            return
+
+        self._augmented_request_in_flight = request
+        self._load_augmented_model_worker(request=request)
+
+    @work(thread=True, group="augmented-model")
+    def _load_augmented_model_worker(self, *, request: AugmentedModelRequest) -> None:
+        """Load one set's augmented model in a worker and hand it to LiveSession."""
+
+        worker = get_current_worker()
+        try:
+            if worker.is_cancelled or self._augmented_model_client is None:
+                return
+            try:
+                load = self._augmented_model_client.load(
+                    set_code=request.set_code,
+                    allow_network=True,
+                )
+            except Exception:  # pragma: no cover - network boundary.
+                load = AugmentedModelLoad(
+                    outcome=AugmentedModelOutcome.UNREACHABLE,
+                    set_code=request.set_code,
+                    message=(
+                        f"Augmented model for set {request.set_code!r} is "
+                        "unavailable."
+                    ),
+                )
+            if not worker.is_cancelled:
+                self.session.complete_augmented_model(request=request, load=load)
+        finally:
+            if self.is_running:
+                try:
+                    self.call_from_thread(self._augmented_model_load_finished, request)
+                except Exception:  # pragma: no cover - app may be shutting down.
+                    self._augmented_request_in_flight = None
+            else:
+                self._augmented_request_in_flight = None
+
+    def _augmented_model_load_finished(self, request: AugmentedModelRequest) -> None:
+        """Release the in-flight guard and pick up a newer set's request."""
+
+        if self._augmented_request_in_flight != request:
+            return
+        self._augmented_request_in_flight = None
+        self._apply_session_snapshot(self.session.snapshot)
+        self._schedule_augmented_model_load()
+
     def _session_publication_is_allowed(self) -> bool:
         """Allow presentation updates only while Textual is running."""
         return self.is_running
@@ -1476,6 +1554,7 @@ class DraftomenTuiApp(App[None]):
         if snapshot.card_data.phase == DataLoadPhase.READY:
             self._start_log_processing()
         self._schedule_profile_refresh()
+        self._schedule_augmented_model_load()
         self.refresh_bindings()
         self._render_all()
 
@@ -2325,6 +2404,10 @@ class DraftomenTuiApp(App[None]):
         details = Text.from_markup(facts)
         if self._view_mode == "pack":
             recommendation = self._recommendations_by_grp_id.get(card.grp_id)
+            if recommendation is not None and recommendation.card_pair_partner:
+                details.append(
+                    f"\nPairs well with {recommendation.card_pair_partner}"
+                )
             if recommendation is not None and recommendation.concise_explanation:
                 details.append("\n\nWhy this score:\n")
                 details.append(recommendation.concise_explanation)
@@ -3926,6 +4009,7 @@ def run_tui_watch(
     set_card_data_loader: SetCardDataLoader | None = None,
     app_dir: PathInput | None = None,
     profile_client: ProfileClient | None = None,
+    augmented_model_client: AugmentedModelClient | None = None,
     poll_interval: float = POLL_INTERVAL_SECONDS,
     once: bool = False,
     startup_scan: bool = False,
@@ -3942,6 +4026,7 @@ def run_tui_watch(
         set_card_data_loader=set_card_data_loader,
         app_dir=app_dir,
         profile_client=profile_client,
+        augmented_model_client=augmented_model_client,
         poll_interval=poll_interval,
         startup_scan=startup_scan,
         once=once,

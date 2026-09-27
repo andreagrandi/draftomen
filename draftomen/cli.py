@@ -12,6 +12,7 @@ from pathlib import Path
 
 from draftomen import DISCLAIMER, __version__
 from draftomen.audit import DraftAuditError
+from draftomen.augmented_model_client import AugmentedModelClient
 from draftomen.backtest import (
     BacktestError,
     format_backtest_report,
@@ -1479,6 +1480,7 @@ def handle_watch(args: argparse.Namespace) -> int:
             mana_icons_enabled=args.mana_icons,
             splash_enabled=args.splash_enabled,
             profile_client=profile_client,
+            augmented_model_client=AugmentedModelClient(app_dir=args.app_dir),
         )
 
     except KeyboardInterrupt:

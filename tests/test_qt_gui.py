@@ -7440,7 +7440,13 @@ with TemporaryDirectory() as preferences_dir:
     application.processEvents()
 
     rows = session.snapshot.recommendations.cards
-    first = replace(rows[0], score=76, basic_score=72, augmentation_delta=4)
+    first = replace(
+        rows[0],
+        score=76,
+        basic_score=72,
+        augmentation_delta=4,
+        card_pair_partner="Bitterblossom",
+    )
     second = replace(rows[1], score=64, basic_score=70, augmentation_delta=-6)
     publish_recommendations(
         cards=(first, second), selected_grp_id=first.card.grp_id
@@ -7448,6 +7454,13 @@ with TemporaryDirectory() as preferences_dir:
 
     preview = root.findChild(QObject, "wideLiveCardPreview")
     assert preview is not None
+    pair_partner = preview.findChild(QObject, "cardPreviewPairPartner")
+    assert pair_partner is not None
+    wait_until(
+        lambda: pair_partner.property("text") == "Pairs well with Bitterblossom",
+        "the pair partner line for the first card",
+    )
+    assert pair_partner.isVisible()
     basic = preview.findChild(QObject, "cardPreviewBasicScore")
     adjustment = preview.findChild(QObject, "cardPreviewAugmentedAdjustment")
     total = preview.findChild(QObject, "cardPreviewDoScore")
@@ -7501,6 +7514,8 @@ with TemporaryDirectory() as preferences_dir:
     )
     assert basic.property("text") == "70"
     assert adjustment.property("text") == "-6"
+    assert pair_partner.property("text") == ""
+    assert pair_partner.isVisible() is False
     assert QColor(adjustment.property("color")) == QColor("#e7c993")
     assert total.property("text") == "64"
     assert total_label.property("text") == "Augmented DO Score"

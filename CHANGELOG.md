@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- When the Card Pairs correction moves a card up the ranking, the GUI card
+  preview and the TUI focused card details show "Pairs well with <card>". The
+  named card is the pool card with the largest pair score. Cards that pairs did
+  not move up show no line. (#745)
+- The TUI can now use Augmented Intelligence. The configuration opened with
+  `c` has an Augmented Intelligence switch, off by default and saved in
+  `tui-preferences.json`. When it is on, the TUI loads the set's model, from the
+  cache or the published manifest, and DO scores include its adjustment. (#745)
 - Pick scores now use the Card Pairs table to break close calls. Each offered
   card gets the sum of its pair scores against the current pool, centered on
   the pack average, times a weight, and clipped to ±8 points. The Card Pairs

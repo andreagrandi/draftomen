@@ -687,6 +687,29 @@ class AugmentedCardPairs:
             for value in sums
         )
 
+    def best_partner(
+        self, *, card: CardInfo, pool_cards: Iterable[CardInfo]
+    ) -> str | None:
+        """Return the name of the pool card with the largest positive pair score.
+        Cards the table does not list, and pools without a positive pair, give None.
+        """
+
+        known = frozenset(self.card_names)
+        name = _table_name(card=card, known=known)
+        if name is None:
+            return None
+        best_name: str | None = None
+        best_score = 0.0
+        for pool_card in pool_cards:
+            other = _table_name(card=pool_card, known=known)
+            if other is None:
+                continue
+            pair_score = self.score(first=name, second=other)
+            if pair_score > best_score:
+                best_name = pool_card.name
+                best_score = pair_score
+        return best_name
+
     @classmethod
     def from_json(cls, value: Any) -> AugmentedCardPairs:
         if not isinstance(value, Mapping):
