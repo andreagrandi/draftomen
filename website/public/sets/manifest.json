@@ -135,7 +135,14 @@
         "url": "https://www.draftomen.com/card-data/dom.json.gz"
       },
       "name": "Dominaria",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        }
+      }
     },
     "dsk": {
       "augmented": null,
@@ -145,7 +152,17 @@
         "url": "https://www.draftomen.com/card-data/dsk.json.gz"
       },
       "name": "Duskmourn: House of Horror",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "ecl": {
       "augmented": null,
