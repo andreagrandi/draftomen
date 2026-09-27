@@ -11,7 +11,11 @@ from functools import cmp_to_key
 from types import MappingProxyType
 from typing import Mapping
 
-from draftomen.augmented_artifact import AugmentedArtifact, pool_feature_counts
+from draftomen.augmented_artifact import (
+    AUGMENTED_MAXIMUM_DELTA,
+    AugmentedArtifact,
+    pool_feature_counts,
+)
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, PICK_ENGINE, SPLASH, PickEngineConfig
 from draftomen.events import EXPECTED_PACK_COUNT, EXPECTED_PICKS_PER_PACK
@@ -846,6 +850,10 @@ class PickEngine:
         self.set_profile = _normalize_scoring_profile(set_profile)
         self.scoring_context = scoring_context
         self.augmented_artifact = augmented_artifact
+        # Parsed once, since each pack looks up every pool pair.
+        self._card_pairs = (
+            None if augmented_artifact is None else augmented_artifact.card_pairs
+        )
         self.normalization = _normalization_from_data(
             ratings_data=ratings_data,
             config=config,
@@ -1076,17 +1084,29 @@ class PickEngine:
         artifact = self.augmented_artifact
         if artifact is None:
             return None
-        return artifact.candidate_deltas(
-            pool_features=pool_feature_counts(
-                pool_cards=(
-                    card_database.lookup(grp_id=grp_id)
-                    for grp_id in pool_grp_ids
-                )
-            ),
-            candidate_ids=tuple(
-                card_database.lookup(grp_id=grp_id).oracle_id
-                for grp_id in offered_grp_ids
-            ),
+        pool_cards = tuple(
+            card_database.lookup(grp_id=grp_id) for grp_id in pool_grp_ids
+        )
+        offered_cards = tuple(
+            card_database.lookup(grp_id=grp_id) for grp_id in offered_grp_ids
+        )
+        deltas = artifact.candidate_deltas(
+            pool_features=pool_feature_counts(pool_cards=pool_cards),
+            candidate_ids=tuple(card.oracle_id for card in offered_cards),
+        )
+        if self._card_pairs is None:
+            return deltas
+        pair_deltas = self._card_pairs.candidate_deltas(
+            pool_cards=pool_cards,
+            offered_cards=offered_cards,
+        )
+        return tuple(
+            _clamp(
+                value=delta + pair_delta,
+                lower=-AUGMENTED_MAXIMUM_DELTA,
+                upper=AUGMENTED_MAXIMUM_DELTA,
+            )
+            for delta, pair_delta in zip(deltas, pair_deltas, strict=True)
         )
 
     def _score_card(

@@ -42,6 +42,8 @@ class CardPairsGate:
     gap: float
     gap_low: float
     gap_high: float
+    # The game dump's URL and checksum, recorded in the report when set.
+    source: dict[str, str] | None = None
 
     @property
     def passed(self) -> bool:
@@ -50,7 +52,7 @@ class CardPairsGate:
     def report(self) -> dict[str, object]:
         """Return the gate result for the build report, with gaps in points."""
 
-        return {
+        report: dict[str, object] = {
             "passed": self.passed,
             "rule": CARD_PAIRS_GATE_RULE,
             "gap_pp": round(self.gap * 100.0, 4),
@@ -61,6 +63,9 @@ class CardPairsGate:
             "held_out_games": self.held_out_games,
             "held_out_drafts": self.held_out_drafts,
         }
+        if self.source is not None:
+            report["source"] = dict(self.source)
+        return report
 
     def table_json(self) -> dict[str, object]:
         """Return the table as card names and nonzero pairs rounded to 0.01 points.

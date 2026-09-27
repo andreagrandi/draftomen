@@ -202,7 +202,7 @@ def _install_workflow(
             "published:early",
         )
 
-    def train(*, set_code: str, source, card_database, set_profile):
+    def train(*, set_code: str, source, card_database, set_profile, card_pairs_gate):
         assert events == ["profile-check", "acquire", "profile", "games", "card-data"]
         assert set_code == "TST"
         assert source.event_type == "PremierDraft"
@@ -210,7 +210,14 @@ def _install_workflow(
         assert set_profile.event_format == "premierdraft"
         assert tuple(card_database.cards) == (1,)
         events.append("train")
-        return result
+        if result.artifact is None:
+            return result
+        # Training runs the gate only for a promoted model and reports it.
+        gate_result = card_pairs_gate(_VALIDATION_START)
+        return AugmentedTrainingResult(
+            artifact=result.artifact,
+            report={**result.report, "card_pairs": gate_result.report()},
+        )
 
     monkeypatch.setattr(publication, "acquire_augmented_training_source", acquire)
     monkeypatch.setattr(publication, "resolve_set_card_data", resolve)
@@ -421,11 +428,11 @@ def test_failed_gate_returns_no_publication_paths_and_preserves_prior_files(
     _assert_no_temporary_files(public_dir)
 
 
-def test_passing_card_pairs_gate_publishes_the_table_under_training(
+def test_training_gets_a_card_pairs_gate_on_the_game_dump_with_its_source(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _, card_data_dir, augmented_dir, _ = _install_workflow(
+    _, card_data_dir, augmented_dir, events = _install_workflow(
         monkeypatch,
         tmp_path,
         gate=_card_pairs_gate(gap_low=0.012),
@@ -437,41 +444,13 @@ def test_passing_card_pairs_gate_publishes_the_table_under_training(
         cache_dir=tmp_path / "private-cache",
     )
 
+    assert events[-2:] == ["train", "card-pairs"]
     gate_report = result.training.report["card_pairs"]
     assert gate_report["passed"] is True
     assert gate_report["gap_low_pp"] == pytest.approx(1.2)
     assert gate_report["validation_start"] == _VALIDATION_START
     assert gate_report["source"] == {"url": _GAME_URL, "sha256": "b" * 64}
     assert result.object_path is not None
-    payload = result.object_path.read_bytes()
-    assert result.training.report["artifact_sha256"] == hashlib.sha256(
-        gzip.decompress(payload)
-    ).hexdigest()
-    published = AugmentedArtifact.from_gzip_bytes(
-        payload,
-        expected_set_code=_SET_CODE,
-        expected_compatibility=AUGMENTED_ARTIFACT_COMPATIBILITY,
-    )
-    card_pairs = published.card_pairs
-    assert card_pairs is not None
-    assert card_pairs.card_names == ("Alpha", "Beta", "Gamma")
-    assert card_pairs.score(first="Beta", second="Alpha") == pytest.approx(1.23)
-    assert card_pairs.score(first="Beta", second="Gamma") == pytest.approx(-0.5)
-    assert card_pairs.score(first="Alpha", second="Gamma") == 0.0
-    # Released clients accept only these top-level keys, so the table stays
-    # inside training, which they read as a free-form object.
-    raw = json.loads(gzip.decompress(payload))
-    assert set(raw) == {
-        "schema_version",
-        "compatibility",
-        "set_code",
-        "model",
-        "calibration",
-        "source",
-        "evaluation",
-        "training",
-    }
-    assert raw["schema_version"] == 1
 
 
 def test_failing_card_pairs_gate_publishes_the_model_without_a_table(

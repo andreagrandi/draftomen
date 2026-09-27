@@ -1375,6 +1375,20 @@ def handle_build_augmented_set(args: argparse.Namespace) -> int:
                     else "did not pass, published without a table"
                 )
             )
+            held_out = card_pairs.get("held_out")
+            if isinstance(held_out, dict):
+                print(
+                    "Card Pairs weight: "
+                    f"{card_pairs['weight_selection']['weight']:g} DO points per pp"
+                )
+                for label, key in (
+                    ("Pool Shape", "pool_shape"),
+                    ("Pool Shape + Card Pairs", "pool_shape_plus_pairs"),
+                ):
+                    print(
+                        f"{label}: top_1={held_out[key]['top_1']} "
+                        f"mean_reciprocal_rank={held_out[key]['mean_reciprocal_rank']}"
+                    )
 
         if result.training.artifact is None:
             print(

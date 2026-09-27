@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- Pick scores now use the Card Pairs table to break close calls. Each offered
+  card gets the sum of its pair scores against the current pool, centered on
+  the pack average, times a weight, and clipped to ±8 points. The Card Pairs
+  and Pool Shape corrections together stay within ±8 points. The build picks
+  the weight with the best validation MRR, then top-1, where weight zero is
+  Pool Shape alone. It stores the weight in the table and prints it with
+  held-out top-1 and MRR with and without pairs. An artifact without a table, or with a table that
+  has no weight, scores as before. (#744)
 - `build-augmented-set` now also downloads the set's 17Lands game dump
   through the checksummed draft dump cache. It builds a Card Pairs table from
   games drafted before Model C's validation period and tests it on the later

@@ -136,6 +136,7 @@ def fixed_delta_artifact_json(
     set_code: str,
     candidate_ids: tuple[str, ...],
     deltas: tuple[float, ...],
+    training: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Return artifact JSON that applies exactly these mean-centered deltas."""
 
@@ -150,6 +151,7 @@ def fixed_delta_artifact_json(
         output_weights=[[0.0] * len(candidate_ids)],
         bias=list(deltas),
         multiplier=1.0,
+        training=training,
     )
 
 
@@ -158,6 +160,7 @@ def fixed_delta_artifact(
     set_code: str,
     candidate_ids: tuple[str, ...],
     deltas: tuple[float, ...],
+    training: Mapping[str, object] | None = None,
 ):
     """Return one validated artifact that applies exactly these deltas."""
 
@@ -169,9 +172,32 @@ def fixed_delta_artifact(
                 set_code=set_code,
                 candidate_ids=candidate_ids,
                 deltas=deltas,
+                training=training,
             )
         )
     )
+
+
+def card_pairs_training(
+    *,
+    card_names: tuple[str, ...],
+    pairs: tuple[tuple[int, int, float], ...],
+    weight: float | None,
+) -> dict[str, object]:
+    """Return artifact training JSON that holds one Card Pairs table.
+    A weight of None leaves the field out, as tables built before weight selection do.
+    """
+
+    table: dict[str, object] = {
+        "format": "shrunk_pair_win_rate_interaction_pp/v1",
+        "card_names": list(card_names),
+        "pairs": [list(pair) for pair in pairs],
+        "training_games": 700,
+        "trained_before": "2026-08-01T00:00:00.000000+00:00",
+    }
+    if weight is not None:
+        table["weight"] = weight
+    return {"card_pairs": table}
 
 
 def augmented_manifest_entry_json(

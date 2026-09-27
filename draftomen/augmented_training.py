@@ -11,6 +11,7 @@ import os
 import shutil
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from draftomen.augmented_artifact import (
     AugmentedMetricSummary,
     AugmentedSource,
 )
+from draftomen.augmented_card_pairs import CardPairsGate
 from draftomen.augmented_training_data import (
     FEATURE_NAMES,
     AugmentedTrainingDataError,
@@ -71,6 +73,7 @@ class ModelCTrainingConfig:
         8.0,
         16.0,
     )
+    pair_weights: tuple[float, ...] = (0.0, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -861,27 +864,186 @@ def _evaluate_arrays(
         pack_mask=mask,
         targets=targets,
     )
-    logits = _array_logits(
-        model=model,
-        features=data.features[rows],
-        batch_size=config.batch_size,
-    )
-    centered = _centered_array_deltas(logits=logits, pack_mask=mask)
-    deltas = np.clip(
-        centered * float(calibration["multiplier"]),
-        float(calibration["minimum_delta"]),
-        float(calibration["maximum_delta"]),
-    )
     augmented_ranks = _runtime_array_ranks(
         basic_scores=basic_scores,
         pack_mask=mask,
         targets=targets,
-        deltas=deltas,
+        deltas=_model_deltas(
+            model=model,
+            data=data,
+            rows=rows,
+            calibration=calibration,
+            config=config,
+        ),
     )
     return {
         "basic_do": _rank_metrics(ranks=basic_ranks),
         "basic_plus_augmented": _rank_metrics(ranks=augmented_ranks),
     }
+
+
+def _model_deltas(
+    *,
+    model: _Model,
+    data: _ArrayTrainingData,
+    rows: np.ndarray,
+    calibration: dict[str, object],
+    config: ModelCTrainingConfig,
+) -> np.ndarray:
+    """Return the calibrated Pool Shape delta for every card in each row's pack."""
+
+    logits = _array_logits(
+        model=model,
+        features=data.features[rows],
+        batch_size=config.batch_size,
+    )
+    centered = _centered_array_deltas(logits=logits, pack_mask=data.pack_mask[rows])
+    return np.clip(
+        centered * float(calibration["multiplier"]),
+        float(calibration["minimum_delta"]),
+        float(calibration["maximum_delta"]),
+    )
+
+
+def _pair_matrix(*, card_names: tuple[str, ...], gate: CardPairsGate) -> np.ndarray:
+    """Return the published pair scores in the draft dump's card order.
+    Scores are rounded as the artifact stores them, so ranks match the app.
+    """
+
+    index_by_name = {name: index for index, name in enumerate(gate.card_names)}
+    dump_positions = [
+        position for position, name in enumerate(card_names) if name in index_by_name
+    ]
+    table_positions = [index_by_name[card_names[position]] for position in dump_positions]
+    matrix = np.zeros((len(card_names), len(card_names)), dtype=np.float32)
+    matrix[np.ix_(dump_positions, dump_positions)] = np.round(
+        gate.scores[np.ix_(table_positions, table_positions)].astype(np.float64), 2
+    )
+    return matrix
+
+
+def _centered_pair_sums(
+    *, pair_matrix: np.ndarray, data: _ArrayTrainingData, rows: np.ndarray
+) -> np.ndarray:
+    """Return each offered card's pair sum against the pool, minus the pack average."""
+
+    sums = data.pool_counts[rows].astype(np.float32) @ pair_matrix
+    return _centered_array_deltas(logits=sums, pack_mask=data.pack_mask[rows])
+
+
+def _with_pair_deltas(
+    *, model_deltas: np.ndarray, centered_pairs: np.ndarray, weight: float
+) -> np.ndarray:
+    """Add the weighted pair correction and keep the total within ±8 points."""
+
+    pair_deltas = np.clip(
+        centered_pairs * weight, -AUGMENTED_MAXIMUM_DELTA, AUGMENTED_MAXIMUM_DELTA
+    )
+    return np.clip(
+        model_deltas + pair_deltas, -AUGMENTED_MAXIMUM_DELTA, AUGMENTED_MAXIMUM_DELTA
+    )
+
+
+def _select_pair_weight(
+    *,
+    validation_ranks: Callable[[float], np.ndarray],
+    config: ModelCTrainingConfig,
+) -> dict[str, object]:
+    """Return the pair weight with the best validation MRR, then top-1, then the smaller weight.
+    Weight zero is Pool Shape alone, so pairs never lower validation MRR.
+    """
+
+    candidates: list[dict[str, float]] = []
+    for weight in config.pair_weights:
+        metrics = _rank_metrics(ranks=validation_ranks(weight))
+        candidates.append(
+            {
+                "weight": weight,
+                "top_1": float(metrics["top_1"]),
+                "mean_reciprocal_rank": float(metrics["mean_reciprocal_rank"]),
+            }
+        )
+    selected = max(
+        candidates,
+        key=lambda value: (
+            value["mean_reciprocal_rank"],
+            value["top_1"],
+            -value["weight"],
+        ),
+    )
+    return {
+        "weight": selected["weight"],
+        "selection_partition": "validation",
+        "selection_metric": "mean_reciprocal_rank_then_top_1",
+        "candidates": candidates,
+    }
+
+
+def _card_pairs_results(
+    *,
+    gate: CardPairsGate,
+    model: _Model,
+    data: _ArrayTrainingData,
+    evaluation_basic: np.ndarray | _BasicArrayScores,
+    calibration: dict[str, object],
+    config: ModelCTrainingConfig,
+) -> tuple[dict[str, object], dict[str, object] | None]:
+    """Return the Card Pairs report and, when the gate passed, the artifact table.
+    The weight comes from validation drafts; test drafts report its effect.
+    """
+
+    report = gate.report()
+    if not gate.passed:
+        return report, None
+    pair_matrix = _pair_matrix(card_names=data.card_names, gate=gate)
+    validation_count = len(data.split_rows["validation"])
+    basic_by_partition = {
+        "validation": evaluation_basic[:validation_count],
+        "test": evaluation_basic[validation_count:],
+    }
+    deltas_by_partition = {
+        partition: (
+            _model_deltas(
+                model=model,
+                data=data,
+                rows=data.split_rows[partition],
+                calibration=calibration,
+                config=config,
+            ),
+            _centered_pair_sums(
+                pair_matrix=pair_matrix, data=data, rows=data.split_rows[partition]
+            ),
+        )
+        for partition in basic_by_partition
+    }
+
+    def ranks(*, partition: str, weight: float) -> np.ndarray:
+        rows = data.split_rows[partition]
+        model_deltas, centered_pairs = deltas_by_partition[partition]
+        return _runtime_array_ranks(
+            basic_scores=basic_by_partition[partition],
+            pack_mask=data.pack_mask[rows],
+            targets=data.targets[rows],
+            deltas=_with_pair_deltas(
+                model_deltas=model_deltas,
+                centered_pairs=centered_pairs,
+                weight=weight,
+            ),
+        )
+
+    selection = _select_pair_weight(
+        validation_ranks=lambda weight: ranks(partition="validation", weight=weight),
+        config=config,
+    )
+    held_out = {
+        "pool_shape": _rank_metrics(ranks=ranks(partition="test", weight=0.0)),
+        "pool_shape_plus_pairs": _rank_metrics(
+            ranks=ranks(partition="test", weight=float(selection["weight"]))
+        ),
+    }
+    report = {**report, "weight_selection": selection, "held_out": held_out}
+    table = {**gate.table_json(), "weight": selection["weight"], "gate": gate.report()}
+    return report, table
 
 
 
@@ -928,6 +1090,21 @@ def _validate_config(*, config: ModelCTrainingConfig) -> None:
         raise AugmentedTrainingError(
             "Calibration settings are invalid or exceed runtime bounds."
         )
+    pair_weights = config.pair_weights
+    if (
+        not isinstance(pair_weights, (tuple, list))
+        or 0.0 not in pair_weights
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0.0 <= value <= AUGMENTED_MAXIMUM_MULTIPLIER
+            for value in pair_weights
+        )
+    ):
+        raise AugmentedTrainingError(
+            "Card Pairs weights must include 0.0 and stay within runtime bounds."
+        )
 
 
 def train_and_gate_augmented_set(
@@ -938,8 +1115,11 @@ def train_and_gate_augmented_set(
     set_profile: SetProfile,
     complete_draft_picks: int = 42,
     config: ModelCTrainingConfig = ModelCTrainingConfig(),
+    card_pairs_gate: Callable[[str], CardPairsGate] | None = None,
 ) -> AugmentedTrainingResult:
-    """Train and return a runtime artifact only after strict held-out promotion."""
+    """Train and return a runtime artifact only after strict held-out promotion.
+    A promoted model gets the Card Pairs gate for its validation start, if given.
+    """
 
     _validate_config(config=config)
     try:
@@ -1024,6 +1204,18 @@ def train_and_gate_augmented_set(
         "best_epoch": training["best_epoch"],
         "best_validation_mrr": training["best_validation_mrr"],
     }
+    card_pairs_report: dict[str, object] | None = None
+    if promoted and card_pairs_gate is not None:
+        card_pairs_report, card_pairs_table = _card_pairs_results(
+            gate=card_pairs_gate(data.validation_start),
+            model=model,
+            data=data,
+            evaluation_basic=evaluation_basic,
+            calibration=calibration,
+            config=config,
+        )
+        if card_pairs_table is not None:
+            training_metadata["card_pairs"] = card_pairs_table
     artifact: AugmentedArtifact | None = None
     artifact_sha256: str | None = None
     if promoted:
@@ -1118,4 +1310,6 @@ def train_and_gate_augmented_set(
         },
         "artifact_sha256": artifact_sha256,
     }
+    if card_pairs_report is not None:
+        report["card_pairs"] = card_pairs_report
     return AugmentedTrainingResult(artifact=artifact, report=report)

@@ -20,7 +20,7 @@ from draftomen.augmented_artifact import (
     pool_feature_counts,
 )
 from draftomen.augmented_training_data import FEATURE_NAMES
-from draftomen.carddb import CardInfo
+from draftomen.carddb import CardFace, CardInfo
 from tests.augmented_artifacts import (
     augmented_artifact,
     augmented_artifact_json,
@@ -98,6 +98,10 @@ def test_artifact_without_card_pairs_has_no_table() -> None:
         {"pairs": [[0, 1, 1.0], [0, 1, 2.0]]},
         {"pairs": [[0, 1, True]]},
         {"pairs": [[0, 1]]},
+        {"weight": -0.5},
+        {"weight": 16.5},
+        {"weight": True},
+        {"weight": "1.0"},
     ],
 )
 def test_malformed_card_pairs_table_rejected(changes: dict[str, object]) -> None:
@@ -105,6 +109,58 @@ def test_malformed_card_pairs_table_rejected(changes: dict[str, object]) -> None
 
     with pytest.raises(AugmentedArtifactError):
         AugmentedArtifact.from_bytes(canonical_bytes(payload))
+
+
+def _named_card(
+    *, grp_id: int, name: str, faces: tuple[CardFace, ...] = ()
+) -> CardInfo:
+    return CardInfo(
+        grp_id=grp_id,
+        name=name,
+        colors=(),
+        mana_value=1.0,
+        rarity="common",
+        types=("Artifact",),
+        faces=faces,
+    )
+
+
+def test_card_pairs_table_without_a_weight_changes_no_score() -> None:
+    card_pairs = augmented_artifact(training={"card_pairs": _card_pairs()}).card_pairs
+    assert card_pairs is not None
+    alpha = _named_card(grp_id=1, name="Alpha")
+    beta = _named_card(grp_id=2, name="Beta")
+
+    assert card_pairs.weight == 0.0
+    assert card_pairs.candidate_deltas(
+        pool_cards=(alpha,), offered_cards=(alpha, beta)
+    ) == (0.0, 0.0)
+
+
+def test_card_pairs_deltas_center_weighted_pool_sums_and_match_front_faces() -> None:
+    card_pairs = augmented_artifact(
+        training={"card_pairs": _card_pairs(weight=2.0)}
+    ).card_pairs
+    assert card_pairs is not None
+    alpha = _named_card(grp_id=1, name="Alpha")
+    # The app names a double-faced card by both faces; the table uses the front.
+    beta = _named_card(
+        grp_id=2,
+        name="Beta // Beta Back",
+        faces=(CardFace(name="Beta"), CardFace(name="Beta Back")),
+    )
+    unlisted = _named_card(grp_id=3, name="Delta")
+
+    deltas = card_pairs.candidate_deltas(
+        pool_cards=(alpha, alpha, unlisted),
+        offered_cards=(beta, alpha, unlisted),
+    )
+
+    # Beta sums 2 * 1.25 against two Alphas; the pack mean is 2.5 / 3.
+    mean = 2.5 / 3
+    assert deltas == pytest.approx(
+        ((2.5 - mean) * 2.0, -mean * 2.0, -mean * 2.0)
+    )
 
 
 def test_non_canonical_json_bytes_rejected() -> None:
