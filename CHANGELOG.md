@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Add the Microsoft Store MSIX package definition for the Windows app: a
+  manifest with the Partner Center identity, the Store logos, and
+  `scripts/msix_package.py`, which stages the package folder, maps `X.Y.Z` to
+  `X.Y.Z.0`, and rejects a release version that does not increase. (#755)
 - WOE now has a published augmented model with a Card Pairs table. On held-out
   PremierDraft picks, Pool Shape raises top-1 from 0.4912 to 0.5398 and MRR
   from 0.6692 to 0.7110 over Basic DO. The Card Pairs test passed with a
