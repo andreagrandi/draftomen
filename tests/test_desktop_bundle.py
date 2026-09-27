@@ -955,7 +955,7 @@ def test_native_builds_sync_the_locked_draftmancer_transport_and_socketio() -> N
     ]
     smoke_lines = [line for line in run_lines if "tests/bundle_smoke.py" in line]
     build_lines = [line for line in run_lines if "tests/bundle_smoke.py" not in line]
-    assert len(smoke_lines) == 2
+    assert len(smoke_lines) == 3
     assert build_lines
 
     project_metadata = _read_project_metadata()
@@ -1194,6 +1194,65 @@ def test_signing_credentials_are_removed_even_after_failure() -> None:
         assert credential_file in cleanup_step
         assert credential_file in workflow_text.split(cleanup_step, maxsplit=1)[0]
     assert workflow_text.index(cleanup_step) > workflow_text.index("Upload bundle artifact")
+
+
+def test_windows_msix_is_built_installed_and_smoke_tested_before_upload() -> None:
+    """The Windows job packs the MSIX, archives it, smoke-tests an installed
+    test-signed copy, and only then uploads the archive and its checksum.
+    """
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    step_names = [
+        "Build MSIX package with MakeAppx",
+        "Create MSIX upload archive",
+        "Install test-signed MSIX copy and smoke-test the installed app",
+        "Record checksum of the MSIX inside the upload archive",
+        "Upload validated MSIX upload artifact",
+    ]
+    steps = {
+        name: _workflow_step(workflow_text=workflow_text, name=name)
+        for name in step_names
+    }
+    positions = [workflow_text.index(f"- name: {name}\n") for name in step_names]
+
+    assert positions == sorted(positions)
+    for step in steps.values():
+        assert "if: matrix.platform == 'windows'" in step
+        assert "secrets." not in step
+        assert ".pfx" not in step.lower()
+
+    build_step = steps["Build MSIX package with MakeAppx"]
+    assert "WINDOWS_SDK_VERSION: 10.0.26100.0" in build_step
+    assert "uv run python -m scripts.msix_package" in build_step
+    assert "makeappx.exe\") pack /o /d $layout /p $msix" in build_step
+
+    archive_step = steps["Create MSIX upload archive"]
+    assert ".msixupload" in archive_step
+    assert '-Filter "*.appxsym"' in archive_step
+
+    install_step = steps["Install test-signed MSIX copy and smoke-test the installed app"]
+    for command in (
+        "Copy-Item -LiteralPath $env:MSIX_PATH -Destination $testPackage",
+        "New-SelfSignedCertificate",
+        "Add-AppxPackage -Path $testPackage",
+        "uv run python tests/bundle_smoke.py",
+        '(Join-Path $installed.InstallLocation "DraftOmen.exe")',
+        "Remove-AppxPackage -Package $installed.PackageFullName",
+    ):
+        assert command in install_step
+    install_body, cleanup = install_step.split("finally {", maxsplit=1)
+    assert "$testPackage" in install_body.split("signtool.exe")[1]
+    assert "Remove-AppxPackage" in cleanup
+    assert "-DeleteKey" in cleanup
+    assert "Cert:\\LocalMachine\\TrustedPeople" in install_body
+
+    upload_step = steps["Upload validated MSIX upload artifact"]
+    assert "name: draftomen-windows-msixupload" in upload_step
+    assert "${{ env.MSIX_UPLOAD_PATH }}" in upload_step
+    assert "${{ env.MSIX_PATH }}.sha256" in upload_step
+    assert "if-no-files-found: error" in upload_step
 
 
 def test_native_specs_enumerate_runtime_inputs() -> None:
