@@ -18,7 +18,10 @@ from draftomen.augmented_training_data import (
 from draftomen.profile_input_acquisition import (
     PUBLIC_DRAFT_ATTRIBUTION,
     PUBLIC_DRAFT_LICENSE,
+    PUBLIC_GAME_REQUIRED_FIELDS,
+    PUBLIC_GAME_SOURCE_NAME,
     ProfileInputAcquisitionError,
+    PublicDraftFetcher,
     SeventeenLandsPublicDraftAdapter,
     acquire_public_draft_source,
 )
@@ -28,6 +31,7 @@ from draftomen.refresh_plan import PlannedEnvironment
 from draftomen.seventeen import (
     SEVENTEEN_LANDS_USER_AGENT,
     public_draft_data_url,
+    public_game_data_url,
 )
 
 _PRISMIC_API_ROOT = "https://17lands.cdn.prismic.io/api/v2"
@@ -214,6 +218,53 @@ def acquire_augmented_training_source(
     )
 
 
+def acquire_augmented_game_source(
+    *,
+    set_code: str,
+    event_format: str,
+    cache: ProfileInputCache,
+    fetch_public_games: PublicDraftFetcher,
+    timeout_seconds: int,
+) -> AugmentedTrainingSource:
+    """Acquire the set's public game dump through the checksummed input cache.
+    It uses the same format as the draft dump, so games and drafts cover the same queue.
+    """
+
+    normalized_set = _normalized_set_code(set_code)
+    if event_format not in _SUPPORTED_FORMAT_SET:
+        raise AugmentedPublicDataError(
+            f"Unsupported public game data format {event_format!r}."
+        )
+    adapter = SeventeenLandsPublicDraftAdapter(
+        fetch_public_drafts=fetch_public_games,
+        timeout_seconds=_validated_timeout(timeout_seconds),
+        source_name=PUBLIC_GAME_SOURCE_NAME,
+        required_fields=PUBLIC_GAME_REQUIRED_FIELDS,
+    )
+    try:
+        source = acquire_public_draft_source(
+            environment=PlannedEnvironment(
+                set_code=normalized_set,
+                event_format=event_format,
+                lifecycle=None,
+                reasons=("augmented-card-pairs",),
+            ),
+            cache=cache,
+            adapter=adapter,
+        )
+    except ProfileInputAcquisitionError as error:
+        raise AugmentedPublicDataError(
+            f"No valid public game data is available for {normalized_set} {event_format}."
+        ) from error
+    return _training_source(
+        source=source,
+        dataset=PublicDraftDataset(
+            event_format=event_format,
+            url=public_game_data_url(set_code=normalized_set, event_format=event_format),
+        ),
+    )
+
+
 def _fetch_json(*, url: str, timeout_seconds: int) -> Mapping[str, Any]:
     request = urllib.request.Request(
         url,
@@ -332,6 +383,7 @@ def _training_source(
 __all__ = [
     "AugmentedPublicDataError",
     "PublicDraftDataset",
+    "acquire_augmented_game_source",
     "acquire_augmented_training_source",
     "discover_public_draft_datasets",
     "fetch_public_draft_listing",

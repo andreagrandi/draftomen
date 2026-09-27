@@ -12,6 +12,7 @@ import pytest
 
 from draftomen.augmented_artifact import (
     AUGMENTED_ARTIFACT_MAX_DECOMPRESSED_BYTES,
+    AUGMENTED_CARD_PAIRS_FORMAT,
     AUGMENTED_MAXIMUM_DELTA,
     AugmentedArtifact,
     AugmentedArtifactError,
@@ -46,6 +47,64 @@ def test_canonical_round_trip_preserves_training_block() -> None:
     assert restored == original
     assert restored.training == {"seed": 7, "hidden_size": 2}
     assert restored.to_gzip_bytes() == original.to_gzip_bytes()
+
+
+def _card_pairs(**changes: object) -> dict[str, object]:
+    return {
+        "format": AUGMENTED_CARD_PAIRS_FORMAT,
+        "card_names": ["Alpha", "Beta", "Gamma"],
+        "pairs": [[0, 1, 1.25], [1, 2, -0.5]],
+        "training_games": 700,
+        "trained_before": "2026-08-01T00:00:00.000000+00:00",
+        **changes,
+    }
+
+
+def test_card_pairs_table_round_trips_under_training() -> None:
+    original = augmented_artifact(training={"seed": 7, "card_pairs": _card_pairs()})
+
+    restored = AugmentedArtifact.from_bytes(original.to_bytes())
+
+    card_pairs = restored.card_pairs
+    assert card_pairs is not None
+    assert card_pairs.card_names == ("Alpha", "Beta", "Gamma")
+    assert card_pairs.score(first="Beta", second="Alpha") == 1.25
+    assert card_pairs.score(first="Gamma", second="Beta") == -0.5
+    assert card_pairs.score(first="Alpha", second="Gamma") == 0.0
+    assert set(json.loads(original.to_bytes())) == {
+        "schema_version",
+        "compatibility",
+        "set_code",
+        "model",
+        "calibration",
+        "source",
+        "evaluation",
+        "training",
+    }
+
+
+def test_artifact_without_card_pairs_has_no_table() -> None:
+    assert augmented_artifact(training={"seed": 7}).card_pairs is None
+    assert augmented_artifact().card_pairs is None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"format": "other/v9"},
+        {"card_names": ["Alpha", "Alpha", "Gamma"]},
+        {"pairs": [[1, 0, 1.0]]},
+        {"pairs": [[0, 3, 1.0]]},
+        {"pairs": [[0, 1, 1.0], [0, 1, 2.0]]},
+        {"pairs": [[0, 1, True]]},
+        {"pairs": [[0, 1]]},
+    ],
+)
+def test_malformed_card_pairs_table_rejected(changes: dict[str, object]) -> None:
+    payload = augmented_artifact_json(training={"card_pairs": _card_pairs(**changes)})
+
+    with pytest.raises(AugmentedArtifactError):
+        AugmentedArtifact.from_bytes(canonical_bytes(payload))
 
 
 def test_non_canonical_json_bytes_rejected() -> None:

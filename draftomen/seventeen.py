@@ -51,6 +51,10 @@ PUBLIC_DRAFT_DATA_URL_TEMPLATE = (
     "https://17lands-public.s3.amazonaws.com/analysis_data/draft_data/"
     "draft_data_public.{set_code}.{event_format}.csv.gz"
 )
+PUBLIC_GAME_DATA_URL_TEMPLATE = (
+    "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/"
+    "game_data_public.{set_code}.{event_format}.csv.gz"
+)
 SEVENTEEN_LANDS_USER_AGENT = (
     f"draftomen/{__version__} "
     "(+https://github.com/andreagrandi/draftomen)"
@@ -1171,6 +1175,20 @@ def public_draft_data_url(*, set_code: str, event_format: str) -> str:
     """
 
     return PUBLIC_DRAFT_DATA_URL_TEMPLATE.format(
+        set_code=set_code.upper(),
+        event_format=_HOSTED_EVENT_FORMATS.get(
+            event_format.casefold(),
+            event_format,
+        ),
+    )
+
+
+def public_game_data_url(*, set_code: str, event_format: str) -> str:
+    """Return the 17Lands public game dump URL for one set and format.
+    Each row is one game with the player's main deck.
+    """
+
+    return PUBLIC_GAME_DATA_URL_TEMPLATE.format(
         set_code=set_code.upper(),
         event_format=_HOSTED_EVENT_FORMATS.get(
             event_format.casefold(),

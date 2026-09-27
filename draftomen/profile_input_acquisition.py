@@ -64,6 +64,18 @@ _PUBLIC_DRAFT_REQUIRED_FIELDS = frozenset(
         "pick_maindeck_rate",
     }
 )
+PUBLIC_GAME_SOURCE_NAME = "17lands-public-games"
+PUBLIC_GAME_REQUIRED_FIELDS = frozenset(
+    {
+        "draft_id",
+        "draft_time",
+        "event_type",
+        "expansion",
+        "main_colors",
+        "rank",
+        "won",
+    }
+)
 
 
 class ProfileInputAcquisitionError(ValueError):
@@ -593,6 +605,7 @@ class SeventeenLandsPublicDraftAdapter:
     fetch_public_drafts: PublicDraftFetcher = field(default=_fetch_default_public_drafts)
     timeout_seconds: int = HTTP_TIMEOUT_SECONDS
     source_name: str = PUBLIC_DRAFT_SOURCE_NAME
+    required_fields: frozenset[str] = _PUBLIC_DRAFT_REQUIRED_FIELDS
 
     def __post_init__(self) -> None:
         if not callable(self.fetch_public_drafts):
@@ -647,6 +660,7 @@ class SeventeenLandsPublicDraftAdapter:
                 sha256=sha256,
             ),
             environment=environment,
+            required_fields=self.required_fields,
         )
         if draft_rows == 0:
             raise ProfileInputAcquisitionError(
@@ -1087,6 +1101,7 @@ def _acquire_public_drafts(
     cached, draft_rows, content_diagnostics = _load_cached_public_drafts(
         result=lookup,
         environment=environment,
+        required_fields=adapter.required_fields,
     )
     cache_is_corrupt = lookup.record is not None and cached is None
     if cached is not None and lookup.outcome in {
@@ -1451,11 +1466,12 @@ def _validated_public_draft_rows(
     *,
     source: PublicDumpSource,
     environment: PlannedEnvironment,
+    required_fields: frozenset[str] = _PUBLIC_DRAFT_REQUIRED_FIELDS,
 ) -> int:
     rows = 0
     reader = PublicDumpReader(source=source)
     for row in reader.iter_rows():
-        if not _PUBLIC_DRAFT_REQUIRED_FIELDS.issubset(row):
+        if not required_fields.issubset(row):
             raise ProfileInputAcquisitionError(
                 "Public-draft data does not use the supported row schema."
             )
@@ -1514,6 +1530,7 @@ def _load_cached_public_drafts(
     *,
     result: ProfileInputCacheResult,
     environment: PlannedEnvironment,
+    required_fields: frozenset[str],
 ) -> tuple[PublicDumpManifest | None, int, tuple[str, ...]]:
     if result.record is None or result.content_path is None:
         return None, 0, result.diagnostics
@@ -1522,6 +1539,7 @@ def _load_cached_public_drafts(
         draft_rows = _validated_public_draft_rows(
             source=manifest.sources[0],
             environment=environment,
+            required_fields=required_fields,
         )
         if draft_rows == 0:
             raise ProfileInputAcquisitionError(
@@ -1800,6 +1818,8 @@ __all__ = [
     "PUBLIC_DRAFT_ATTRIBUTION",
     "PUBLIC_DRAFT_LICENSE",
     "PUBLIC_DRAFT_SOURCE_NAME",
+    "PUBLIC_GAME_REQUIRED_FIELDS",
+    "PUBLIC_GAME_SOURCE_NAME",
     "RATINGS_ADAPTER_VERSION",
     "RATINGS_SOURCE_NAME",
     "CardDatabaseFetcher",

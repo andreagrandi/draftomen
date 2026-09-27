@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+- `build-augmented-set` now also downloads the set's 17Lands game dump
+  through the checksummed draft dump cache. It builds a Card Pairs table from
+  games drafted before Model C's validation period and tests it on the later
+  games. The table is published under the artifact's `training` field only
+  when decks with better pairs win more games than decks of equal card
+  strength in the same colours and player rank, with a 95% lower bound above
+  zero. A failed test publishes the model without a table. The build prints
+  the gap, its range and the result. Released clients still load the
+  artifact, because they accept any object under `training`. (#743)
 - `build-augmented-set` now matches pool columns to pack columns by card name,
   so dumps such as WOE that list them in a different order load. It still
   fails when the two column sets name different cards. (#741)

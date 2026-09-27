@@ -1363,6 +1363,18 @@ def handle_build_augmented_set(args: argparse.Namespace) -> int:
             "mean_reciprocal_rank="
             f"{basic_plus_augmented['mean_reciprocal_rank']}"
         )
+        card_pairs = result.training.report.get("card_pairs")
+        if isinstance(card_pairs, dict):
+            print(
+                "Card Pairs held-out gap: "
+                f"{card_pairs['gap_pp']:+.2f} pp "
+                f"[{card_pairs['gap_low_pp']:+.2f}, {card_pairs['gap_high_pp']:+.2f}] "
+                + (
+                    "passed, table published"
+                    if card_pairs["passed"]
+                    else "did not pass, published without a table"
+                )
+            )
 
         if result.training.artifact is None:
             print(
