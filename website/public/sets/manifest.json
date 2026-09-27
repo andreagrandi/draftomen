@@ -646,7 +646,19 @@
       "profiles": {}
     },
     "woe": {
-      "augmented": null,
+      "augmented": {
+        "metrics": {
+          "basic_do": {
+            "mean_reciprocal_rank": 0.6691815435151498,
+            "top_1": 0.4911674038332663
+          },
+          "basic_plus_augmented": {
+            "mean_reciprocal_rank": 0.7109990028560165,
+            "top_1": 0.5397935933520975
+          },
+          "picks": 1044540
+        }
+      },
       "card_data": {
         "bytes": 54295,
         "sha256": "b5622e3071d47ee04c61d82f2fef5fa40b5543f8e3bc45026a30f3e5c49ded73",

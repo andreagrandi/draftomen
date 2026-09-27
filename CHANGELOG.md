@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- WOE now has a published augmented model with a Card Pairs table. On held-out
+  PremierDraft picks, Pool Shape raises top-1 from 0.4912 to 0.5398 and MRR
+  from 0.6692 to 0.7110 over Basic DO. The Card Pairs test passed with a
+  held-out gap of +3.88 pp [+3.56, +4.26]. At the selected weight of 0.25,
+  pairs raise top-1 to 0.5424 and MRR to 0.7127.
 - When the Card Pairs correction moves a card up the ranking, the GUI card
   preview and the TUI focused card details show "Pairs well with <card>". The
   named card is the pool card with the largest pair score. Cards that pairs did
