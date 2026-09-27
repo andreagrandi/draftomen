@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Add `docs/microsoft-store.md` with what the first Microsoft Store
+  submission needs: the Store listing text, runFullTrust justification,
+  certification notes, age rating guidance and a publication record to fill
+  in. Add Store screenshots rendered from a recorded MSH Quick Draft, two of
+  them without card art. (#328)
 - The Windows CI job now builds the MSIX with MakeAppx and zips it into a
   `.msixupload`. It installs a test-signed copy, runs the mock smoke test from
   the installed package, and removes the package. It then uploads the

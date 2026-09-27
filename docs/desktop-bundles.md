@@ -551,7 +551,8 @@ writes to package storage.
 
 The uploaded `.msixupload` is unsigned, because the Store signs packages on
 submission. CI does not pass `--previous-version`, so this build does not
-check that the version increases.
+check that the version increases. [Microsoft Store submission](microsoft-store.md)
+covers submitting the artifact in Partner Center.
 
 ## Independence boundaries
 
