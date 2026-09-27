@@ -323,7 +323,9 @@ smoke-tests the same payload shape that it uploads:
   `tests/bundle_smoke.py` against the mounted app, and detaches the image even
   when the smoke test fails before uploading the DMG.
 - Windows: the workflow runs `tests/bundle_smoke.py` directly against
-  `Draftomen-unsigned-windows.exe` and uploads that `.exe` directly.
+  `Draftomen-unsigned-windows.exe` and uploads that `.exe` directly. It then
+  builds, installs and smoke-tests the MSIX package, as described in
+  [Microsoft Store MSIX package](#microsoft-store-msix-package).
 
 ### Manual development artifacts
 
@@ -331,7 +333,8 @@ The uploaded artifact names are:
 
 - `draftomen-macos-arm64-unsigned-development`;
 - `draftomen-macos-x86_64-unsigned-development`;
-- `draftomen-windows-unsigned-development`.
+- `draftomen-windows-unsigned-development`;
+- `draftomen-windows-msixupload`.
 
 Download these from the **Actions** page: open the manual workflow run and
 download its artifacts from the run summary. They are GitHub Actions run
@@ -513,6 +516,42 @@ becomes `X.Y.Z.0`, because the Store reserves the fourth part. A release build
 passes the previous release tag with `--previous-version`, and the script
 fails if the new version is not higher. Development builds leave it out,
 because they share the version of the last release and never go to the Store.
+
+### MSIX build in GitHub Actions
+
+After the Windows executable passes its smoke test, the Windows job in
+`native-bundles.yml` builds and checks the Store package:
+
+1. `scripts/msix_package.py` stages the package folder, and MakeAppx from
+   Windows SDK `10.0.26100.0` packs it into `DraftOmen_X.Y.Z.0_x64.msix`. The
+   runner image ships that SDK. The job fails if MakeAppx or SignTool is
+   missing from it.
+2. A separate step zips the `.msix` into `DraftOmen_X.Y.Z.0_x64.msixupload`.
+   The Nuitka one-file build produces no symbol files. Any `.appxsym` next to
+   the package would go into the archive too.
+3. The job copies the `.msix` and signs only the copy. It uses a self-signed
+   certificate that it creates on the runner with the manifest's publisher as
+   the subject. The certificate goes into the user store, and its public part
+   goes into the machine's Trusted People store. The job installs the copy for
+   the runner user with `Add-AppxPackage` and runs `tests/bundle_smoke.py`
+   against `DraftOmen.exe` in the package's install folder. It then removes the
+   package and fails if the package is still installed. A `finally` block
+   removes the package, both certificate entries and the private key, even
+   after a failure. No certificate file, PFX or secret is involved.
+4. The job extracts the `.msix` from the `.msixupload` and checks that it
+   matches the tested package byte for byte. It then writes its SHA-256 in
+   `sha256sum` format to `DraftOmen_X.Y.Z.0_x64.msix.sha256`.
+5. The `draftomen-windows-msixupload` artifact holds the `.msixupload` and
+   the `.sha256` file.
+
+The smoke test sets `TEMP` and `TMP` to a folder under the runner's temp
+directory, outside `AppData`. The helper's checks then read the same files
+that the installed app writes, even if MSIX redirects the app's `AppData`
+writes to package storage.
+
+The uploaded `.msixupload` is unsigned, because the Store signs packages on
+submission. CI does not pass `--previous-version`, so this build does not
+check that the version increases.
 
 ## Independence boundaries
 

@@ -330,6 +330,171 @@ jobs:
           --timeout "${{ matrix.smoke_timeout }}"
           "dist-native/windows-unsigned/${{ matrix.bundle }}"
 
+      # The runner image ships this Windows SDK. Naming the version keeps
+      # MakeAppx and SignTool fixed until someone changes it here.
+      - name: Build MSIX package with MakeAppx
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          WINDOWS_SDK_VERSION: 10.0.26100.0
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\$env:WINDOWS_SDK_VERSION\x64"
+          foreach ($tool in "makeappx.exe", "signtool.exe") {
+            if (-not (Test-Path -LiteralPath (Join-Path $sdkBin $tool) -PathType Leaf)) {
+              throw "Windows SDK $env:WINDOWS_SDK_VERSION has no $tool in $sdkBin."
+            }
+          }
+
+          $workDirectory = Join-Path $env:RUNNER_TEMP "draftomen-msix"
+          $layout = Join-Path $workDirectory "layout"
+          $version = uv run python -m scripts.msix_package `
+            --executable "dist-native/windows-unsigned/${{ matrix.bundle }}" `
+            --output $layout
+          $version = "$version".Trim()
+          Write-Host "MSIX version: $version"
+
+          $outputDirectory = "dist-native/windows-msix"
+          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+          $msix = Join-Path $outputDirectory "DraftOmen_${version}_x64.msix"
+          & (Join-Path $sdkBin "makeappx.exe") pack /o /d $layout /p $msix
+
+          @(
+            "WINDOWS_SDK_BIN=$sdkBin"
+            "MSIX_VERSION=$version"
+            "MSIX_WORK_DIRECTORY=$workDirectory"
+            "MSIX_OUTPUT_DIRECTORY=$outputDirectory"
+            "MSIX_PATH=$msix"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      # The Nuitka one-file build writes no symbol files today. Any .appxsym
+      # a later build adds next to the package goes into the upload too.
+      - name: Create MSIX upload archive
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $payload = @(Get-Item -LiteralPath $env:MSIX_PATH) +
+            @(Get-ChildItem -Path $env:MSIX_OUTPUT_DIRECTORY -Filter "*.appxsym")
+          $archive = Join-Path $env:MSIX_WORK_DIRECTORY "DraftOmen_$($env:MSIX_VERSION)_x64.zip"
+          Compress-Archive -LiteralPath $payload.FullName -DestinationPath $archive -Force
+          $upload = Join-Path $env:MSIX_OUTPUT_DIRECTORY "DraftOmen_$($env:MSIX_VERSION)_x64.msixupload"
+          Move-Item -LiteralPath $archive -Destination $upload -Force
+          "MSIX_UPLOAD_PATH=$upload" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      # The Store signs the real package. This step signs a throwaway copy
+      # with a certificate that exists only on this runner, so the package can
+      # be installed and launched here. It runs in Windows PowerShell because
+      # the Appx cmdlets do not load reliably in PowerShell 7.
+      - name: Install test-signed MSIX copy and smoke-test the installed app
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          function Assert-NativeSuccess([string] $Command) {
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Command exited with code $LASTEXITCODE."
+            }
+          }
+
+          $testDirectory = Join-Path $env:MSIX_WORK_DIRECTORY "test"
+          New-Item -ItemType Directory -Force -Path $testDirectory | Out-Null
+          $testPackage = Join-Path $testDirectory "DraftOmen-test.msix"
+          Copy-Item -LiteralPath $env:MSIX_PATH -Destination $testPackage
+
+          $manifest = [xml](Get-Content -LiteralPath (Join-Path $env:MSIX_WORK_DIRECTORY "layout\AppxManifest.xml") -Raw)
+          $identityName = $manifest.Package.Identity.Name
+          $publisher = $manifest.Package.Identity.Publisher
+
+          $certificate = $null
+          $trustedPath = $null
+          try {
+            # Code-signing usage and no basic constraints, as MSIX requires.
+            $certificate = New-SelfSignedCertificate `
+              -Type Custom `
+              -Subject $publisher `
+              -KeyUsage DigitalSignature `
+              -FriendlyName "Draft Omen CI test signing" `
+              -CertStoreLocation "Cert:\CurrentUser\My" `
+              -NotAfter (Get-Date).AddDays(1) `
+              -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+            $publicCertificate = Join-Path $testDirectory "DraftOmen-test.cer"
+            Export-Certificate -Cert $certificate -FilePath $publicCertificate | Out-Null
+            Import-Certificate -FilePath $publicCertificate `
+              -CertStoreLocation "Cert:\LocalMachine\TrustedPeople" | Out-Null
+            $trustedPath = "Cert:\LocalMachine\TrustedPeople\$($certificate.Thumbprint)"
+
+            & (Join-Path $env:WINDOWS_SDK_BIN "signtool.exe") sign `
+              /fd SHA256 /s My /sha1 $certificate.Thumbprint $testPackage
+            Assert-NativeSuccess "signtool sign"
+
+            Add-AppxPackage -Path $testPackage
+            $installed = Get-AppxPackage -Name $identityName
+            if ($null -eq $installed -or $installed.Version -ne $env:MSIX_VERSION) {
+              throw "Expected $identityName $env:MSIX_VERSION to be installed."
+            }
+            Write-Host "Installed $($installed.PackageFullName) at $($installed.InstallLocation)"
+
+            # The smoke directories live outside AppData, so the checks read
+            # the same files the installed app writes.
+            $smokeTemp = Join-Path $testDirectory "tmp"
+            New-Item -ItemType Directory -Force -Path $smokeTemp | Out-Null
+            $env:TEMP = $smokeTemp
+            $env:TMP = $smokeTemp
+            uv run python tests/bundle_smoke.py `
+              --timeout "${{ matrix.smoke_timeout }}" `
+              (Join-Path $installed.InstallLocation "DraftOmen.exe")
+            Assert-NativeSuccess "Installed package smoke test"
+
+            Remove-AppxPackage -Package $installed.PackageFullName
+            if ($null -ne (Get-AppxPackage -Name $identityName)) {
+              throw "$identityName is still installed after removal."
+            }
+          }
+          finally {
+            $leftover = Get-AppxPackage -Name $identityName
+            if ($null -ne $leftover) {
+              Remove-AppxPackage -Package $leftover.PackageFullName
+            }
+            if ($null -ne $trustedPath -and (Test-Path -LiteralPath $trustedPath)) {
+              Remove-Item -LiteralPath $trustedPath
+            }
+            if ($null -ne $certificate) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -DeleteKey
+            }
+            Remove-Item -LiteralPath $testDirectory -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Record checksum of the MSIX inside the upload archive
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $extracted = Join-Path $env:MSIX_WORK_DIRECTORY "upload-contents"
+          Expand-Archive -LiteralPath $env:MSIX_UPLOAD_PATH -DestinationPath $extracted -Force
+          $name = Split-Path -Leaf $env:MSIX_PATH
+          $contained = Join-Path $extracted $name
+          if (-not (Test-Path -LiteralPath $contained -PathType Leaf)) {
+            throw "$env:MSIX_UPLOAD_PATH does not contain $name."
+          }
+          $hash = (Get-FileHash -LiteralPath $contained -Algorithm SHA256).Hash.ToLowerInvariant()
+          $builtHash = (Get-FileHash -LiteralPath $env:MSIX_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $builtHash) {
+            throw "The MSIX in the upload archive differs from the tested package."
+          }
+          # sha256sum format, so `sha256sum -c` can check the extracted file.
+          "$hash  $name`n" | Out-File -FilePath "$env:MSIX_PATH.sha256" -Encoding ascii -NoNewline
+          Write-Host "$hash  $name"
+
+      - name: Upload validated MSIX upload artifact
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: draftomen-windows-msixupload
+          path: |
+            ${{ env.MSIX_UPLOAD_PATH }}
+            ${{ env.MSIX_PATH }}.sha256
+          if-no-files-found: error
+          overwrite: true
+
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v7
         with:

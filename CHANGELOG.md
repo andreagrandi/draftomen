@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- The Windows CI job now builds the MSIX with MakeAppx and zips it into a
+  `.msixupload`. It installs a test-signed copy, runs the mock smoke test from
+  the installed package, and removes the package. It then uploads the
+  `.msixupload` and the SHA-256 of the `.msix` inside it as a CI artifact.
+  (#756)
 - Add the Microsoft Store MSIX package definition for the Windows app: a
   manifest with the Partner Center identity, the Store logos, and
   `scripts/msix_package.py`, which stages the package folder, maps `X.Y.Z` to
