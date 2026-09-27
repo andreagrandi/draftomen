@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-27
+
 - Add `docs/microsoft-store.md` with what the first Microsoft Store
   submission needs: the Store listing text, runFullTrust justification,
   certification notes, age rating guidance and a publication record to fill
