@@ -559,6 +559,8 @@ def test_compact_loader_sorts_offset_times_by_actual_time_at_partition_boundary(
     assert data.draft_indices[20:22].tolist() == [10, 10]
     assert data.draft_indices[22:24].tolist() == [11, 11]
     assert data.targets[[20, 22]].tolist() == [0, 1]
+    # The first validation draft's time, in UTC, is the Card Pairs cut-off.
+    assert data.validation_start == "2026-09-11T01:00:00.000000+00:00"
     _assert_ordered_complete_splits(data)
 
 
@@ -921,6 +923,7 @@ def test_passing_set_trains_a_deterministic_validated_runtime_artifact(
         "rule": "both_metrics_strictly_improve",
     }
     assert first.report["source"] == artifact.source.to_json()
+    assert isinstance(first.report["data"]["validation_start"], str)
     assert first.report["artifact_sha256"] == hashlib.sha256(
         artifact_bytes
     ).hexdigest()

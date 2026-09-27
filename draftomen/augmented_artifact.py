@@ -29,6 +29,7 @@ AUGMENTED_ARTIFACT_CALIBRATION_METHOD = "offered_mean_centered_logit_clip"
 AUGMENTED_MAXIMUM_DELTA = 8.0
 AUGMENTED_MAXIMUM_MULTIPLIER = 16.0
 AUGMENTED_ARTIFACT_MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
+AUGMENTED_CARD_PAIRS_FORMAT = "shrunk_pair_win_rate_interaction_pp/v1"
 _SET_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 _TOP_LEVEL_KEYS = frozenset(
@@ -637,6 +638,65 @@ class AugmentedCalibration:
 
 
 @dataclass(frozen=True, slots=True)
+class AugmentedCardPairs:
+    """One gated Card Pairs table: each pair's win-rate interaction in points.
+    Pairs absent from the table score zero.
+    """
+
+    card_names: tuple[str, ...]
+    scores: Mapping[tuple[str, str], float]
+
+    def score(self, *, first: str, second: str) -> float:
+        """Return the pair's interaction in either card order."""
+
+        key = (first, second) if first <= second else (second, first)
+        return self.scores.get(key, 0.0)
+
+    @classmethod
+    def from_json(cls, value: Any) -> AugmentedCardPairs:
+        if not isinstance(value, Mapping):
+            raise AugmentedArtifactError("training.card_pairs must be an object.")
+        if value.get("format") != AUGMENTED_CARD_PAIRS_FORMAT:
+            raise AugmentedArtifactError(
+                f"Unsupported Card Pairs format {value.get('format')!r}."
+            )
+        names = value.get("card_names")
+        if (
+            not isinstance(names, list)
+            or not all(isinstance(name, str) and name for name in names)
+            or len(set(names)) != len(names)
+        ):
+            raise AugmentedArtifactError(
+                "Card Pairs card_names must be distinct non-empty strings."
+            )
+        pairs = value.get("pairs")
+        if not isinstance(pairs, list):
+            raise AugmentedArtifactError("Card Pairs pairs must be a list.")
+        scores: dict[tuple[str, str], float] = {}
+        for pair in pairs:
+            if (
+                not isinstance(pair, list)
+                or len(pair) != 3
+                or any(isinstance(item, bool) for item in pair)
+                or not isinstance(pair[0], int)
+                or not isinstance(pair[1], int)
+                or not 0 <= pair[0] < pair[1] < len(names)
+                or not isinstance(pair[2], (int, float))
+                or not math.isfinite(pair[2])
+            ):
+                raise AugmentedArtifactError(
+                    "Each Card Pairs entry must be [first, second, score] with "
+                    "first below second."
+                )
+            first, second = names[pair[0]], names[pair[1]]
+            key = (first, second) if first <= second else (second, first)
+            if key in scores:
+                raise AugmentedArtifactError("Card Pairs lists a pair twice.")
+            scores[key] = float(pair[2])
+        return cls(card_names=tuple(names), scores=scores)
+
+
+@dataclass(frozen=True, slots=True)
 class AugmentedArtifact:
     """One validated per-set coarse-context augmentation artifact."""
 
@@ -780,6 +840,18 @@ class AugmentedArtifact:
             raise AugmentedArtifactError("evaluation must be an AugmentedMetricSummary.")
         if self.training is not None and not isinstance(self.training, Mapping):
             raise AugmentedArtifactError("training must be an object.")
+        if self.training is not None and "card_pairs" in self.training:
+            AugmentedCardPairs.from_json(self.training["card_pairs"])
+
+    @property
+    def card_pairs(self) -> AugmentedCardPairs | None:
+        """Return the Card Pairs table that passed its held-out gate, if any.
+        It sits under training, which released clients accept without checking.
+        """
+
+        if self.training is None or "card_pairs" not in self.training:
+            return None
+        return AugmentedCardPairs.from_json(self.training["card_pairs"])
 
     def to_json(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -1067,6 +1139,7 @@ __all__ = [
     "AUGMENTED_ARTIFACT_INPUT_TRANSFORM",
     "AUGMENTED_ARTIFACT_MAX_DECOMPRESSED_BYTES",
     "AUGMENTED_ARTIFACT_MODEL_NAME",
+    "AUGMENTED_CARD_PAIRS_FORMAT",
     "AUGMENTED_ARTIFACT_SCHEMA_VERSION",
     "AUGMENTED_MAXIMUM_DELTA",
     "AUGMENTED_MAXIMUM_MULTIPLIER",
@@ -1074,6 +1147,7 @@ __all__ = [
     "AugmentedArtifactError",
     "AugmentedArtifactIncompatibleError",
     "AugmentedCalibration",
+    "AugmentedCardPairs",
     "AugmentedMetricSet",
     "AugmentedMetricSummary",
     "AugmentedSource",

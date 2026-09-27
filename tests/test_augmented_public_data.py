@@ -16,6 +16,7 @@ import draftomen.augmented_public_data as public_data
 from draftomen.augmented_public_data import (
     AugmentedPublicDataError,
     PublicDraftDataset,
+    acquire_augmented_game_source,
     acquire_augmented_training_source,
     discover_public_draft_datasets,
     fetch_public_draft_listing,
@@ -32,7 +33,7 @@ from draftomen.profile_input_cache import (
 )
 from draftomen.public_dump import PublicDumpSource
 from draftomen.refresh_plan import PlannedEnvironment
-from draftomen.seventeen import public_draft_data_url
+from draftomen.seventeen import public_draft_data_url, public_game_data_url
 
 _NOW = datetime(2026, 8, 31, 12, tzinfo=UTC)
 
@@ -383,6 +384,66 @@ def test_cached_public_draft_is_reused_with_pinned_provenance(
     assert first.attribution == PUBLIC_DRAFT_ATTRIBUTION
     assert first.license == PUBLIC_DRAFT_LICENSE
     _assert_no_website_public_write(tmp_path)
+
+
+def _game_csv(*, set_code: str = "HOB") -> bytes:
+    text = (
+        "expansion,event_type,draft_id,draft_time,rank,main_colors,won,deck_Card\n"
+        f"{set_code},PremierDraft,draft-one,2026-08-01 12:00:00,gold,WU,True,1\n"
+    )
+    return gzip.compress(text.encode("utf-8"), mtime=0)
+
+
+def test_game_dump_is_checksummed_and_cached_beside_the_draft_dump(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cache = _cache(tmp_path)
+    draft_fetcher = _DraftFetcher(_draft_csv())
+    game_fetcher = _DraftFetcher(_game_csv())
+    drafts = acquire_augmented_training_source(
+        set_code="HOB",
+        cache=cache,
+        timeout_seconds=17,
+        listing=_listing(_row(event_format="PremierDraft")),
+        adapter=_adapter(draft_fetcher),
+    )
+
+    first, second = (
+        acquire_augmented_game_source(
+            set_code="HOB",
+            event_format=drafts.event_type,
+            cache=cache,
+            fetch_public_games=game_fetcher,
+            timeout_seconds=29,
+        )
+        for _ in range(2)
+    )
+
+    assert game_fetcher.calls == [("HOB", "premierdraft", 29)]
+    assert first == second
+    assert first.url == public_game_data_url(set_code="HOB", event_format="PremierDraft")
+    assert first.sha256 == hashlib.sha256(_game_csv()).hexdigest()
+    assert Path(first.path).read_bytes() == _game_csv()
+    assert first.path != drafts.path
+    assert Path(drafts.path).read_bytes() == _draft_csv()
+    _assert_no_website_public_write(tmp_path)
+
+
+@pytest.mark.parametrize("payload", [_draft_csv(), _game_csv(set_code="WOE")])
+def test_game_dump_with_the_wrong_rows_is_not_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, payload: bytes
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(AugmentedPublicDataError, match="game data"):
+        acquire_augmented_game_source(
+            set_code="HOB",
+            event_format="PremierDraft",
+            cache=_cache(tmp_path),
+            fetch_public_games=_DraftFetcher(payload),
+            timeout_seconds=29,
+        )
 
 
 def test_invalid_listed_dumps_fall_back_to_valid_quickdraft_through_real_wrapper(

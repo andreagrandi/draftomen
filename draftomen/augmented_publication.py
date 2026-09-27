@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 import csv
+import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import gzip
@@ -19,6 +20,7 @@ from draftomen.augmented_artifact import (
     AUGMENTED_ARTIFACT_COMPATIBILITY,
     AugmentedArtifact,
 )
+from draftomen.augmented_card_pairs import CardPairsError, gate_card_pairs
 from draftomen.augmented_manifest import (
     AugmentedManifest,
     AugmentedManifestEntry,
@@ -27,12 +29,14 @@ from draftomen.augmented_manifest import (
 from draftomen.augmented_public_data import (
     AugmentedPublicDataError,
     _normalized_set_code,
+    acquire_augmented_game_source,
     acquire_augmented_training_source,
 )
 from draftomen.augmented_training import (
     AugmentedTrainingResult,
     train_and_gate_augmented_set,
 )
+from draftomen.augmented_training_data import AugmentedTrainingSource
 from draftomen.card_data_export import resolve_set_card_data
 from draftomen.carddb import (
     HTTP_TIMEOUT_SECONDS,
@@ -54,7 +58,11 @@ from draftomen.progress import ProgressReporter
 from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import ProfileMaturity, SetProfile, SetProfileError
 from draftomen.sets_manifest import SetsManifestError, write_sets_manifest
-from draftomen.seventeen import download_public_draft_data, public_draft_data_url
+from draftomen.seventeen import (
+    download_public_draft_data,
+    public_draft_data_url,
+    public_game_data_url,
+)
 from draftomen.test_draft import DEFAULT_TEST_DRAFT_SCRYFALL_BULK_FILE
 
 
@@ -103,6 +111,77 @@ def _fetch_public_drafts_with_progress(
         on_progress=report,
     )
     _stage("Checking the downloaded dump's rows")
+
+
+def _fetch_public_games_with_progress(
+    *,
+    set_code: str,
+    event_format: str,
+    path: Path,
+    timeout_seconds: int,
+) -> None:
+    """Download one public game dump and report progress in 10% steps."""
+
+    url = public_game_data_url(set_code=set_code, event_format=event_format)
+    _stage(f"Downloading {url}")
+    reporter: ProgressReporter | None = None
+
+    def report(written: int, total: int | None) -> None:
+        nonlocal reporter
+        if reporter is None:
+            reporter = ProgressReporter(label="Download", total=total, unit="bytes")
+        reporter.update(done=written)
+
+    download_public_draft_data(
+        url=url,
+        path=path,
+        timeout_seconds=timeout_seconds,
+        on_progress=report,
+    )
+    _stage("Checking the downloaded game dump's rows")
+
+
+def _with_card_pairs(
+    *,
+    training: AugmentedTrainingResult,
+    game_source: AugmentedTrainingSource,
+) -> AugmentedTrainingResult:
+    """Record the Card Pairs gate in the report and add the table when it passes.
+    A failed gate keeps the promoted model without a table.
+    """
+
+    if training.artifact is None:
+        return training
+    data = training.report.get("data")
+    validation_start = data.get("validation_start") if isinstance(data, Mapping) else None
+    if not isinstance(validation_start, str):
+        raise AugmentedPublicationError(
+            "The training report does not name Model C's validation start."
+        )
+    _stage(f"Testing Card Pairs on games drafted from {validation_start}")
+    try:
+        gate = gate_card_pairs(
+            game_path=Path(game_source.path),
+            validation_start=validation_start,
+        )
+    except CardPairsError as error:
+        raise AugmentedPublicationError(str(error)) from error
+    gate_report: dict[str, object] = {
+        **gate.report(),
+        "source": {"url": game_source.url, "sha256": game_source.sha256},
+    }
+    report = {**training.report, "card_pairs": gate_report}
+    if not gate.passed:
+        return AugmentedTrainingResult(artifact=training.artifact, report=report)
+    artifact = dataclasses.replace(
+        training.artifact,
+        training={
+            **(training.artifact.training or {}),
+            "card_pairs": {**gate.table_json(), "gate": gate_report},
+        },
+    )
+    report["artifact_sha256"] = hashlib.sha256(artifact.to_bytes()).hexdigest()
+    return AugmentedTrainingResult(artifact=artifact, report=report)
 
 
 def _dump_card_names(*, path: Path) -> tuple[str, ...]:
@@ -268,13 +347,14 @@ def build_augmented_set(
         if cache_dir is not None
         else DEVELOPER_CACHE_DIR / "profile-input-cache"
     )
+    cache = ProfileInputCache(
+        cache_root,
+        policy=DEFAULT_PROFILE_REFRESH_CACHE_POLICY,
+    )
     _stage(f"Selecting a public draft dump for {set_code.upper()}")
     source = acquire_augmented_training_source(
         set_code=set_code,
-        cache=ProfileInputCache(
-            cache_root,
-            policy=DEFAULT_PROFILE_REFRESH_CACHE_POLICY,
-        ),
+        cache=cache,
         timeout_seconds=timeout_seconds,
         adapter=SeventeenLandsPublicDraftAdapter(
             fetch_public_drafts=_fetch_public_drafts_with_progress,
@@ -290,6 +370,19 @@ def build_augmented_set(
         event_format=source.event_type,
         profiles_dir=profiles_dir,
     )
+    # The Card Pairs table needs the game dump, so fetch it before training.
+    _stage(f"Selecting the public game dump for {set_code.upper()} {source.event_type}")
+    try:
+        game_source = acquire_augmented_game_source(
+            set_code=set_code,
+            event_format=source.event_type,
+            cache=cache,
+            fetch_public_games=_fetch_public_games_with_progress,
+            timeout_seconds=timeout_seconds,
+        )
+    except AugmentedPublicDataError as error:
+        raise AugmentedPublicationError(str(error)) from error
+    _stage(f"Game data: {game_source.url}")
 
     _stage(f"Resolving {set_code.upper()} card data")
     card_data_path = resolve_set_card_data(
@@ -313,6 +406,7 @@ def build_augmented_set(
         card_database=card_database,
         set_profile=set_profile,
     )
+    training = _with_card_pairs(training=training, game_source=game_source)
     if training.artifact is None:
         return AugmentedBuildResult(
             training=training,

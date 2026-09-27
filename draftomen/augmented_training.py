@@ -112,6 +112,7 @@ class _ArrayTrainingData:
     split_drafts: dict[str, np.ndarray]
     rows_seen: int
     drafts_seen: int
+    validation_start: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,6 +429,7 @@ def _load_array_training_data(
         split_drafts=split_drafts,
         rows_seen=rows_seen,
         drafts_seen=drafts_seen,
+        validation_start=complete["draft_time"][train_end],
     )
 
 
@@ -1112,6 +1114,7 @@ def train_and_gate_augmented_set(
                 name: len(data.split_drafts[name])
                 for name in ("train", "validation", "test")
             },
+            "validation_start": data.validation_start,
         },
         "artifact_sha256": artifact_sha256,
     }

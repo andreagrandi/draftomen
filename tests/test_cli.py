@@ -348,6 +348,7 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
 ) -> None:
     from draftomen import augmented_publication
     from tests.augmented_artifacts import augmented_artifact
+    from tests.test_augmented_publication import _GAME_URL as events_game_url
     from tests.test_augmented_publication import _SOURCE_URL as events_source_url
     from tests.test_augmented_publication import _install_workflow
 
@@ -388,19 +389,32 @@ def test_build_augmented_set_cli_publishes_real_outputs_and_reports_metrics(
         "Selecting a public draft dump for TST\n"
         f"Dataset: PremierDraft dump from {events_source_url}\n"
         "Loading the published TST PremierDraft profile\n"
+        "Selecting the public game dump for TST PremierDraft\n"
+        f"Game data: {events_game_url}\n"
         "Resolving TST card data\n"
         "Training the augmented model\n"
+        "Testing Card Pairs on games drafted from 2026-08-01T00:00:00.000000+00:00\n"
         f"Publishing the augmented model to {augmented_dir}\n"
         "Profile source: published:early\n"
         "Basic DO: top_1=0.25 mean_reciprocal_rank=0.5\n"
         "Basic DO + augmented: top_1=0.5 mean_reciprocal_rank=0.75\n"
+        "Card Pairs held-out gap: +0.00 pp [-1.00, +1.00] "
+        "did not pass, published without a table\n"
         f"Card data: {card_data_path}\n"
         f"Augmented object: {object_path}\n"
         f"Manifest: {manifest_path}\n"
     )
     assert captured.err == ""
     assert build_calls == ["TST"]
-    assert events == ["profile-check", "acquire", "profile", "card-data", "train"]
+    assert events == [
+        "profile-check",
+        "acquire",
+        "profile",
+        "games",
+        "card-data",
+        "train",
+        "card-pairs",
+    ]
     assert card_data_path.is_file()
     assert object_path.is_file()
     assert manifest_path.is_file()

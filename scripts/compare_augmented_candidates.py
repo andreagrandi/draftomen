@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import csv
 import dataclasses
 import gzip
 import hashlib
@@ -19,6 +18,18 @@ import numpy as np
 import polars as pl
 
 from draftomen import augmented_training
+from draftomen.augmented_card_pairs import (
+    BOOTSTRAP_SAMPLES,
+    bootstrap_counts as _bootstrap_counts,
+    colours_and_rank,
+    csv_header as _csv_header,
+    deciles as _deciles,
+    deck_measures,
+    game_card_names,
+    pair_table as _pair_table,
+    read_decks as _read_decks,
+    split_gap as _split_gap,
+)
 from draftomen.augmented_publication import (
     _dump_card_names,
     _load_published_profile,
@@ -46,13 +57,8 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 EVENT_TYPE = "PremierDraft"
 PICKS_PER_DRAFT = 42
 HIGH_WINS = 7
-# A pair seen in n games keeps n / (n + 200) of its raw interaction.
-PAIR_SHRINKAGE_GAMES = 200.0
-BOOTSTRAP_SAMPLES = 1000
-BOOTSTRAP_SEED = 20260926
 RANK_ORDER = ("bronze", "silver", "gold", "platinum", "diamond", "mythic", "unknown")
 MODEL_C = "Pool Shape on Basic DO"
-BASIC_LANDS = frozenset(("Plains", "Island", "Swamp", "Mountain", "Forest"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,14 +87,6 @@ def _sha256(*, path: Path) -> str:
         for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _csv_header(*, path: Path) -> list[str]:
-    with path.open(mode="rb") as probe:
-        is_gzip = probe.read(2) == b"\x1f\x8b"
-    opener = gzip.open if is_gzip else open
-    with opener(path, mode="rt", encoding="utf-8", newline="") as handle:
-        return next(csv.reader(handle))
 
 
 def _pack_ordered_dump(*, path: Path, work_dir: Path) -> Path:
@@ -245,148 +243,27 @@ def _pair_scores(
     return _pair_table(in_deck=in_deck[keep], won=won[keep]), int(keep.sum())
 
 
-def _read_decks(
-    *, game_path: Path, card_names: tuple[str, ...]
-) -> tuple[pl.DataFrame, np.ndarray]:
-    """Return each game's draft, time and result, and a games-by-cards deck matrix.
-    A matrix cell is 1 when that card is in the game's main deck.
-    """
-
-    header = _csv_header(path=game_path)
-    index_by_name = {name: index for index, name in enumerate(card_names)}
-    deck_columns = [
-        column
-        for column in header
-        if column.startswith("deck_") and column.removeprefix("deck_") in index_by_name
-    ]
-    games = pl.read_csv(
-        game_path,
-        columns=["draft_id", "draft_time", "won", "main_colors", "rank", *deck_columns],
-        schema_overrides={
-            "main_colors": pl.Utf8,
-            "rank": pl.Utf8,
-            # Older dumps such as WOE write deck counts as 0.0.
-            **{column: pl.Float32 for column in deck_columns},
-        },
-        low_memory=False,
-    ).with_columns(pl.col("draft_time").str.to_datetime())
-    columns = [index_by_name[column.removeprefix("deck_")] for column in deck_columns]
-    # Float32 counts stay exact up to 16 million games.
-    in_deck = np.zeros((len(games), len(card_names)), dtype=np.float32)
-    in_deck[:, columns] = games.select(deck_columns).to_numpy() > 0
-    return games.select("draft_id", "draft_time", "won", "main_colors", "rank"), in_deck
-
-
-def _pair_table(*, in_deck: np.ndarray, won: np.ndarray) -> np.ndarray:
-    pair_games = in_deck.T @ in_deck
-    pair_wins = in_deck.T @ (in_deck * won[:, None])
-    card_games = np.diag(pair_games)
-    card_rate = np.diag(pair_wins) / np.maximum(card_games, 1.0)
-    pair_rate = pair_wins / np.maximum(pair_games, 1.0)
-    overall_rate = won.mean()
-    interaction = pair_rate - card_rate[:, None] - card_rate[None, :] + overall_rate
-    scores = interaction * pair_games / (pair_games + PAIR_SHRINKAGE_GAMES)
-    np.fill_diagonal(scores, 0.0)
-    return (scores * 100.0).astype(np.float32)
-
-
-def _deciles(*, values: np.ndarray) -> np.ndarray:
-    edges = np.quantile(values, np.linspace(0.0, 1.0, 11)[1:-1])
-    return np.searchsorted(edges, values, side="right")
-
-
-def _split_gap(
-    *,
-    strata: np.ndarray,
-    split_by: np.ndarray,
-    won: np.ndarray,
-    draft_codes: np.ndarray,
-    counts: np.ndarray,
-) -> tuple[float, float, float]:
-    """Return the win-rate gap between the halves of split_by within each stratum.
-    Each stratum's gap is weighted by n1 * n0 / (n1 + n0), resampling whole drafts.
-    """
-
-    _, strata = np.unique(strata, return_inverse=True)
-    stratum_count = int(strata.max()) + 1
-    high = np.zeros(len(won), dtype=np.int64)
-    for stratum in range(stratum_count):
-        members = strata == stratum
-        high[members] = split_by[members] > np.median(split_by[members])
-    cells = strata * 2 + high
-    wins = np.zeros((int(draft_codes.max()) + 1, stratum_count * 2))
-    games = np.zeros_like(wins)
-    np.add.at(wins, (draft_codes, cells), won)
-    np.add.at(games, (draft_codes, cells), 1.0)
-
-    def gap(*, cell_wins: np.ndarray, cell_games: np.ndarray) -> np.ndarray:
-        cell_wins = cell_wins.reshape(-1, stratum_count, 2)
-        cell_games = cell_games.reshape(-1, stratum_count, 2)
-        rates = cell_wins / np.maximum(cell_games, 1.0)
-        n0, n1 = cell_games[..., 0], cell_games[..., 1]
-        weight = np.where((n0 > 0) & (n1 > 0), n1 * n0 / np.maximum(n1 + n0, 1.0), 0.0)
-        return np.sum((rates[..., 1] - rates[..., 0]) * weight, axis=-1) / np.maximum(
-            np.sum(weight, axis=-1), 1e-12
-        )
-
-    point = gap(cell_wins=wins.sum(axis=0), cell_games=games.sum(axis=0))[0]
-    samples = gap(cell_wins=counts @ wins, cell_games=counts @ games)
-    low, top = np.percentile(samples, [2.5, 97.5])
-    return float(point), float(low), float(top)
-
-
 def _games_report(*, set_code: str, game_path: Path) -> str:
     """Test whether better card pairs win more among decks of equal card strength.
     Pair and card tables come from the earliest 70% of drafts; the rest are tested.
     """
 
-    # Basic lands would carry deck colours into both measures.
-    card_names = tuple(
-        column.removeprefix("deck_")
-        for column in _csv_header(path=game_path)
-        if column.startswith("deck_")
-        and column.removeprefix("deck_") not in BASIC_LANDS
-    )
+    card_names = game_card_names(path=game_path)
     games, in_deck = _read_decks(game_path=game_path, card_names=card_names)
     won = games["won"].cast(pl.Float32).to_numpy()
     times = games["draft_time"]
     cutoff = times.sort()[int(len(times) * 0.70)]
     train = (times < cutoff).to_numpy()
     held = ~train
-    table = _pair_table(in_deck=in_deck[train], won=won[train]) / 100.0
-    card_games = in_deck[train].sum(axis=0)
-    card_rate = (won[train] @ in_deck[train]) / np.maximum(card_games, 1.0)
-    # Cards seen in fewer than 200 training games count as average strength.
-    card_edge = np.where(
-        card_games >= PAIR_SHRINKAGE_GAMES, card_rate - won[train].mean(), 0.0
+    _, strength, pairs = deck_measures(
+        in_deck=in_deck, won=won, train=train, held=held
     )
-    decks = in_deck[held]
-    sizes = np.maximum(decks.sum(axis=1), 2.0)
-    strength = (decks @ card_edge) / sizes
-    pairs = np.sum((decks @ table) * decks, axis=1) / (sizes * (sizes - 1.0))
-    _, draft_codes = np.unique(
-        games["draft_id"].to_numpy()[held], return_inverse=True
-    )
+    held_games = games.filter(pl.Series(held))
+    _, draft_codes = np.unique(held_games["draft_id"].to_numpy(), return_inverse=True)
     counts = _bootstrap_counts(draft_count=int(draft_codes.max()) + 1)
     held_won = won[held].astype(np.float64)
     strength_deciles = _deciles(values=strength)
-    # Decks in the same colours and player rank, so the pair score cannot
-    # stand in for archetype strength or skill.
-    colours_and_rank = (
-        games.filter(pl.Series(held))
-        .select(
-            pl.concat_str(
-                [
-                    pl.col("main_colors").fill_null(""),
-                    pl.col("rank").fill_null("unknown"),
-                ],
-                separator="|",
-            )
-        )
-        .to_series()
-        .to_numpy()
-    )
-    _, colour_codes = np.unique(colours_and_rank, return_inverse=True)
+    colour_codes = colours_and_rank(games=held_games)
     pair_gap = _split_gap(
         strata=strength_deciles,
         split_by=pairs,
@@ -539,19 +416,6 @@ def _with_basic(
         name=name,
         test_ranks=ranks(split="test", multiplier=multiplier),
         multiplier=multiplier,
-    )
-
-
-def _bootstrap_counts(*, draft_count: int) -> np.ndarray:
-    rng = np.random.default_rng(BOOTSTRAP_SEED)
-    return np.stack(
-        [
-            np.bincount(
-                rng.integers(0, draft_count, size=draft_count),
-                minlength=draft_count,
-            ).astype(np.float32)
-            for _ in range(BOOTSTRAP_SAMPLES)
-        ]
     )
 
 

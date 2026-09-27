@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import draftomen.augmented_manifest as augmented_manifest
@@ -14,6 +15,7 @@ from draftomen.augmented_artifact import (
     AUGMENTED_ARTIFACT_COMPATIBILITY,
     AugmentedArtifact,
 )
+from draftomen.augmented_card_pairs import CardPairsGate
 from draftomen.augmented_manifest import (
     AugmentedManifest,
     AugmentedManifestEntry,
@@ -62,6 +64,13 @@ def _card_data_bytes(set_code: str = _SET_CODE) -> bytes:
     return artifact.to_gzip_bytes()
 
 
+_VALIDATION_START = "2026-08-01T00:00:00.000000+00:00"
+_GAME_URL = (
+    "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/"
+    "game_data_public.TST.PremierDraft.csv.gz"
+)
+
+
 def _training_report() -> dict[str, object]:
     return {
         "evaluation": {
@@ -70,8 +79,26 @@ def _training_report() -> dict[str, object]:
                 "top_1": 0.5,
                 "mean_reciprocal_rank": 0.75,
             },
-        }
+        },
+        "data": {"validation_start": _VALIDATION_START},
     }
+
+
+def _card_pairs_gate(*, gap_low: float) -> CardPairsGate:
+    return CardPairsGate(
+        card_names=("Alpha", "Beta", "Gamma"),
+        scores=np.asarray(
+            [[0.0, 1.234, 0.0], [1.234, 0.0, -0.5], [0.0, -0.5, 0.0]],
+            dtype=np.float32,
+        ),
+        validation_start=_VALIDATION_START,
+        training_games=700,
+        held_out_games=300,
+        held_out_drafts=40,
+        gap=gap_low + 0.01,
+        gap_low=gap_low,
+        gap_high=gap_low + 0.02,
+    )
 
 
 def _install_workflow(
@@ -80,6 +107,7 @@ def _install_workflow(
     *,
     artifact: AugmentedArtifact | None = None,
     report: dict[str, object] | None = None,
+    gate: CardPairsGate | None = None,
 ) -> tuple[Path, Path, Path, list[str]]:
     public_dir = tmp_path / "website" / "public"
     card_data_dir = public_dir / "card-data"
@@ -117,8 +145,37 @@ def _install_workflow(
             event_type="PremierDraft",
         )
 
-    def resolve(*, set_code: str, output_dir: Path, timeout_seconds: int) -> Path:
+    def acquire_games(
+        *, set_code: str, event_format: str, cache, fetch_public_games, timeout_seconds: int
+    ) -> AugmentedTrainingSource:
         assert events == ["profile-check", "acquire", "profile"]
+        assert set_code == "TST"
+        assert event_format == "PremierDraft"
+        assert cache.root == cache_dir
+        assert fetch_public_games is publication._fetch_public_games_with_progress
+        assert timeout_seconds == 19
+        events.append("games")
+        game_dump = cache.root / "game-data.csv.gz"
+        game_dump.write_bytes(gzip.compress(b"draft_id\ncontrolled-1\n", mtime=0))
+        return AugmentedTrainingSource(
+            path=game_dump,
+            url=_GAME_URL,
+            sha256="b" * 64,
+            retrieved_at=_RETRIEVED_AT,
+            attribution="17Lands public datasets",
+            license="CC BY 4.0",
+            event_type="PremierDraft",
+        )
+
+    def gate_pairs(*, game_path: Path, validation_start: str) -> CardPairsGate:
+        assert events[-1] == "train"
+        assert game_path == cache_dir / "game-data.csv.gz"
+        assert validation_start == _VALIDATION_START
+        events.append("card-pairs")
+        return _card_pairs_gate(gap_low=-0.01) if gate is None else gate
+
+    def resolve(*, set_code: str, output_dir: Path, timeout_seconds: int) -> Path:
+        assert events == ["profile-check", "acquire", "profile", "games"]
         assert set_code == "TST"
         assert timeout_seconds == 19
         target = output_dir / f"{set_code.casefold()}.json.gz"
@@ -146,7 +203,7 @@ def _install_workflow(
         )
 
     def train(*, set_code: str, source, card_database, set_profile):
-        assert events == ["profile-check", "acquire", "profile", "card-data"]
+        assert events == ["profile-check", "acquire", "profile", "games", "card-data"]
         assert set_code == "TST"
         assert source.event_type == "PremierDraft"
         assert set_profile.set_code == _SET_CODE
@@ -160,6 +217,8 @@ def _install_workflow(
     monkeypatch.setattr(publication, "_require_rated_published_profile", require_profile)
     monkeypatch.setattr(publication, "_load_published_profile", load_profile)
     monkeypatch.setattr(publication, "train_and_gate_augmented_set", train)
+    monkeypatch.setattr(publication, "acquire_augmented_game_source", acquire_games)
+    monkeypatch.setattr(publication, "gate_card_pairs", gate_pairs)
     return public_dir, card_data_dir, augmented_dir, events
 
 
@@ -254,7 +313,15 @@ def test_publishes_client_readable_object_and_preserves_other_set_idempotently(
         cache_dir=tmp_path / "private-cache",
     )
 
-    assert events == ["profile-check", "acquire", "profile", "card-data", "train"]
+    assert events == [
+        "profile-check",
+        "acquire",
+        "profile",
+        "games",
+        "card-data",
+        "train",
+        "card-pairs",
+    ]
     assert result.training.report["evaluation"] == _training_report()["evaluation"]
     assert result.profile_source == "published:early"
     assert result.card_data_path == card_data_dir / f"{_SET_CODE}.json.gz"
@@ -352,6 +419,111 @@ def test_failed_gate_returns_no_publication_paths_and_preserves_prior_files(
     assert not (augmented_dir / "objects" / f"{hashlib.sha256(augmented_artifact(_SET_CODE).to_gzip_bytes()).hexdigest()}.json.gz").exists()
     assert (card_data_dir / f"{_SET_CODE}.json.gz").exists()
     _assert_no_temporary_files(public_dir)
+
+
+def test_passing_card_pairs_gate_publishes_the_table_under_training(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, card_data_dir, augmented_dir, _ = _install_workflow(
+        monkeypatch,
+        tmp_path,
+        gate=_card_pairs_gate(gap_low=0.012),
+    )
+
+    result = _build(
+        card_data_dir=card_data_dir,
+        augmented_dir=augmented_dir,
+        cache_dir=tmp_path / "private-cache",
+    )
+
+    gate_report = result.training.report["card_pairs"]
+    assert gate_report["passed"] is True
+    assert gate_report["gap_low_pp"] == pytest.approx(1.2)
+    assert gate_report["validation_start"] == _VALIDATION_START
+    assert gate_report["source"] == {"url": _GAME_URL, "sha256": "b" * 64}
+    assert result.object_path is not None
+    payload = result.object_path.read_bytes()
+    assert result.training.report["artifact_sha256"] == hashlib.sha256(
+        gzip.decompress(payload)
+    ).hexdigest()
+    published = AugmentedArtifact.from_gzip_bytes(
+        payload,
+        expected_set_code=_SET_CODE,
+        expected_compatibility=AUGMENTED_ARTIFACT_COMPATIBILITY,
+    )
+    card_pairs = published.card_pairs
+    assert card_pairs is not None
+    assert card_pairs.card_names == ("Alpha", "Beta", "Gamma")
+    assert card_pairs.score(first="Beta", second="Alpha") == pytest.approx(1.23)
+    assert card_pairs.score(first="Beta", second="Gamma") == pytest.approx(-0.5)
+    assert card_pairs.score(first="Alpha", second="Gamma") == 0.0
+    # Released clients accept only these top-level keys, so the table stays
+    # inside training, which they read as a free-form object.
+    raw = json.loads(gzip.decompress(payload))
+    assert set(raw) == {
+        "schema_version",
+        "compatibility",
+        "set_code",
+        "model",
+        "calibration",
+        "source",
+        "evaluation",
+        "training",
+    }
+    assert raw["schema_version"] == 1
+
+
+def test_failing_card_pairs_gate_publishes_the_model_without_a_table(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, card_data_dir, augmented_dir, _ = _install_workflow(
+        monkeypatch,
+        tmp_path,
+        gate=_card_pairs_gate(gap_low=-0.003),
+    )
+
+    result = _build(
+        card_data_dir=card_data_dir,
+        augmented_dir=augmented_dir,
+        cache_dir=tmp_path / "private-cache",
+    )
+
+    gate_report = result.training.report["card_pairs"]
+    assert gate_report["passed"] is False
+    assert gate_report["gap_low_pp"] == pytest.approx(-0.3)
+    assert gate_report["gap_high_pp"] == pytest.approx(1.7)
+    assert result.object_path is not None
+    assert result.manifest_path is not None
+    assert result.object_path.read_bytes() == augmented_artifact(_SET_CODE).to_gzip_bytes()
+    published = AugmentedArtifact.from_gzip_bytes(
+        result.object_path.read_bytes(),
+        expected_set_code=_SET_CODE,
+    )
+    assert published.card_pairs is None
+
+
+def test_missing_game_data_stops_the_build_before_training(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, card_data_dir, augmented_dir, events = _install_workflow(monkeypatch, tmp_path)
+
+    def unavailable(**_kwargs):
+        raise publication.AugmentedPublicDataError("No valid public game data.")
+
+    monkeypatch.setattr(publication, "acquire_augmented_game_source", unavailable)
+
+    with pytest.raises(publication.AugmentedPublicationError, match="game data"):
+        _build(
+            card_data_dir=card_data_dir,
+            augmented_dir=augmented_dir,
+            cache_dir=tmp_path / "private-cache",
+        )
+
+    assert "train" not in events
+    assert not augmented_dir.exists()
 
 
 def test_acquisition_failure_precedes_any_public_write(

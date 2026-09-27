@@ -221,12 +221,12 @@
       "augmented": {
         "metrics": {
           "basic_do": {
-            "mean_reciprocal_rank": 0.711535463864858,
-            "top_1": 0.5489211877846158
+            "mean_reciprocal_rank": 0.7114155016895514,
+            "top_1": 0.5487102265287417
           },
           "basic_plus_augmented": {
-            "mean_reciprocal_rank": 0.7474174648111295,
-            "top_1": 0.5922118923952104
+            "mean_reciprocal_rank": 0.747044468069576,
+            "top_1": 0.5917063128337189
           },
           "picks": 274932
         }
