@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 import csv
 import dataclasses
 from dataclasses import dataclass
@@ -20,7 +20,11 @@ from draftomen.augmented_artifact import (
     AUGMENTED_ARTIFACT_COMPATIBILITY,
     AugmentedArtifact,
 )
-from draftomen.augmented_card_pairs import CardPairsError, gate_card_pairs
+from draftomen.augmented_card_pairs import (
+    CardPairsError,
+    CardPairsGate,
+    gate_card_pairs,
+)
 from draftomen.augmented_manifest import (
     AugmentedManifest,
     AugmentedManifestEntry,
@@ -141,47 +145,30 @@ def _fetch_public_games_with_progress(
     _stage("Checking the downloaded game dump's rows")
 
 
-def _with_card_pairs(
-    *,
-    training: AugmentedTrainingResult,
-    game_source: AugmentedTrainingSource,
-) -> AugmentedTrainingResult:
-    """Record the Card Pairs gate in the report and add the table when it passes.
+def _card_pairs_gate_for(
+    *, game_source: AugmentedTrainingSource
+) -> Callable[[str], CardPairsGate]:
+    """Return the Card Pairs gate that training runs once Model C is promoted.
     A failed gate keeps the promoted model without a table.
     """
 
-    if training.artifact is None:
-        return training
-    data = training.report.get("data")
-    validation_start = data.get("validation_start") if isinstance(data, Mapping) else None
-    if not isinstance(validation_start, str):
-        raise AugmentedPublicationError(
-            "The training report does not name Model C's validation start."
+    def gate(validation_start: str) -> CardPairsGate:
+        _stage(f"Testing Card Pairs on games drafted from {validation_start}")
+        try:
+            result = gate_card_pairs(
+                game_path=Path(game_source.path),
+                validation_start=validation_start,
+            )
+        except CardPairsError as error:
+            raise AugmentedPublicationError(str(error)) from error
+        if result.passed:
+            _stage("Selecting the Card Pairs weight on validation drafts")
+        return dataclasses.replace(
+            result,
+            source={"url": game_source.url, "sha256": game_source.sha256},
         )
-    _stage(f"Testing Card Pairs on games drafted from {validation_start}")
-    try:
-        gate = gate_card_pairs(
-            game_path=Path(game_source.path),
-            validation_start=validation_start,
-        )
-    except CardPairsError as error:
-        raise AugmentedPublicationError(str(error)) from error
-    gate_report: dict[str, object] = {
-        **gate.report(),
-        "source": {"url": game_source.url, "sha256": game_source.sha256},
-    }
-    report = {**training.report, "card_pairs": gate_report}
-    if not gate.passed:
-        return AugmentedTrainingResult(artifact=training.artifact, report=report)
-    artifact = dataclasses.replace(
-        training.artifact,
-        training={
-            **(training.artifact.training or {}),
-            "card_pairs": {**gate.table_json(), "gate": gate_report},
-        },
-    )
-    report["artifact_sha256"] = hashlib.sha256(artifact.to_bytes()).hexdigest()
-    return AugmentedTrainingResult(artifact=artifact, report=report)
+
+    return gate
 
 
 def _dump_card_names(*, path: Path) -> tuple[str, ...]:
@@ -405,8 +392,8 @@ def build_augmented_set(
         source=source,
         card_database=card_database,
         set_profile=set_profile,
+        card_pairs_gate=_card_pairs_gate_for(game_source=game_source),
     )
-    training = _with_card_pairs(training=training, game_source=game_source)
     if training.artifact is None:
         return AugmentedBuildResult(
             training=training,

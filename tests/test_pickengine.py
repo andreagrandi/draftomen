@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from draftomen.augmented_artifact import pool_feature_counts
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, PickEngineConfig
 from draftomen.events import (
@@ -72,6 +73,7 @@ from draftomen.seventeen import (
 from draftomen.splash import card_is_castable_in_pair, splash_requirement
 from tests.augmented_artifacts import (
     augmented_artifact,
+    card_pairs_training,
     fixed_delta_artifact,
 )
 
@@ -231,6 +233,114 @@ def test_pick_engine_augmented_deltas_follow_the_picked_pool() -> None:
     assert empty_pool_deltas == (0.0, 0.0, 0.0)
     assert picked_pool_deltas != empty_pool_deltas
     assert picked_pool_deltas[0] != 0.0
+
+
+def _pair_artifact(
+    *,
+    deltas: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    pairs: tuple[tuple[int, int, float], ...] = (),
+    weight: float | None = 1.0,
+):
+    """Return a fixed-delta artifact for cards 1 to 3 with a Card Pairs table.
+    Table indices 0, 1 and 2 name Augmented Cards 1, 2 and 3.
+    """
+
+    return fixed_delta_artifact(
+        set_code="tst",
+        candidate_ids=tuple(
+            _augmented_oracle_id(grp_id=grp_id) for grp_id in (1, 2, 3)
+        ),
+        deltas=deltas,
+        training=card_pairs_training(
+            card_names=tuple(f"Augmented Card {grp_id}" for grp_id in (1, 2, 3)),
+            pairs=pairs,
+            weight=weight,
+        ),
+    )
+
+
+def test_card_that_pairs_better_with_the_pool_ranks_first_on_a_close_call() -> None:
+    database = _augmented_card_database()
+    # Cards 2 and 3 tie on Basic DO and Pool Shape; only card 3 pairs with card 1.
+    artifact = _pair_artifact(pairs=((0, 2, 2.0),))
+
+    without_pairs = PickEngine(
+        augmented_artifact=_pair_artifact(pairs=((0, 2, 2.0),), weight=0.0)
+    ).score_pack(
+        offered_grp_ids=(2, 3),
+        card_database=database,
+        pool_grp_ids=(1,),
+    )
+    with_pairs = PickEngine(augmented_artifact=artifact).score_pack(
+        offered_grp_ids=(2, 3),
+        card_database=database,
+        pool_grp_ids=(1,),
+    )
+
+    assert [card.card.grp_id for card in without_pairs.cards] == [2, 3]
+    assert [card.card.grp_id for card in with_pairs.cards] == [3, 2]
+    assert len({card.basic_score for card in with_pairs.cards}) == 1
+    deltas = {card.card.grp_id: card.augmentation_delta for card in with_pairs.cards}
+    # Pair sums are 0 and 2 points, centered on their mean of 1.
+    assert deltas == {2: pytest.approx(-1.0), 3: pytest.approx(1.0)}
+
+
+def test_artifact_without_a_pair_table_scores_exactly_as_the_model_alone() -> None:
+    database = _augmented_card_database()
+    model_only = fixed_delta_artifact(
+        set_code="tst",
+        candidate_ids=tuple(
+            _augmented_oracle_id(grp_id=grp_id) for grp_id in (1, 2, 3)
+        ),
+        deltas=(3.0, -1.0, -2.0),
+    )
+    unweighted_table = _pair_artifact(
+        deltas=(3.0, -1.0, -2.0),
+        pairs=((0, 2, 2.0),),
+        weight=None,
+    )
+    expected = model_only.candidate_deltas(
+        pool_features=pool_feature_counts(pool_cards=(database.lookup(grp_id=1),)),
+        candidate_ids=tuple(
+            _augmented_oracle_id(grp_id=grp_id) for grp_id in (2, 3, 1)
+        ),
+    )
+
+    packs = [
+        PickEngine(augmented_artifact=artifact).score_pack(
+            offered_grp_ids=(2, 3, 1),
+            card_database=database,
+            pool_grp_ids=(1,),
+        )
+        for artifact in (model_only, unweighted_table)
+    ]
+
+    assert model_only.card_pairs is None
+    for pack in packs:
+        by_id = {card.card.grp_id: card.augmentation_delta for card in pack.cards}
+        assert (by_id[2], by_id[3], by_id[1]) == expected
+    assert _augmented_score_rows(packs[0]) == _augmented_score_rows(packs[1])
+
+
+def test_pair_and_pool_shape_corrections_together_stay_within_eight_points() -> None:
+    database = _augmented_card_database()
+    # Pool Shape already gives card 3 +7.5 and card 2 -7.5, and the pairs push
+    # the same way by 10 points at the largest allowed weight.
+    artifact = _pair_artifact(
+        deltas=(0.0, -7.5, 7.5),
+        pairs=((0, 1, -10.0), (0, 2, 10.0)),
+        weight=16.0,
+    )
+
+    pack = PickEngine(augmented_artifact=artifact).score_pack(
+        offered_grp_ids=(1, 2, 3),
+        card_database=database,
+        pool_grp_ids=(1, 1),
+    )
+
+    deltas = {card.card.grp_id: card.augmentation_delta for card in pack.cards}
+    assert deltas == {1: 0.0, 2: -8.0, 3: 8.0}
+    assert all(abs(card.augmentation_delta) <= 8.0 for card in pack.cards)
 
 
 def test_every_engine_row_has_an_immutable_ordered_pick_rationale() -> None:

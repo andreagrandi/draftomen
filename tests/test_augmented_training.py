@@ -4,6 +4,7 @@ import csv
 import gzip
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from draftomen.augmented_training import (
     train_and_gate_augmented_set,
 )
 from draftomen.augmented_artifact import AugmentedArtifact
+from draftomen.augmented_card_pairs import CardPairsGate
 from draftomen.augmented_training_data import (
     FEATURE_NAMES,
     AugmentedTrainingSource,
@@ -1155,3 +1157,169 @@ def test_one_metric_only_held_out_improvements_never_promote(
             assert evaluation["basic_plus_augmented"]["top_1"] == (
                 evaluation["basic_do"]["top_1"]
             ) == 0.0
+
+
+def _card_pairs_gate(
+    *, gap_low: float, validation_starts: list[str]
+) -> Callable[[str], CardPairsGate]:
+    """Return a gate whose table pairs the two fixture cards at +3 points.
+    Each call records the validation start that training passed in.
+    """
+
+    def gate(validation_start: str) -> CardPairsGate:
+        validation_starts.append(validation_start)
+        return CardPairsGate(
+            card_names=("Blue Trick", "Red Recruit"),
+            scores=np.asarray([[0.0, 3.0], [3.0, 0.0]], dtype=np.float32),
+            validation_start=validation_start,
+            training_games=700,
+            held_out_games=300,
+            held_out_drafts=40,
+            gap=gap_low + 0.01,
+            gap_low=gap_low,
+            gap_high=gap_low + 0.02,
+            source={"url": "https://example.test/games.csv.gz", "sha256": "b" * 64},
+        )
+
+    return gate
+
+
+def test_passing_card_pairs_gate_ships_the_table_with_its_validation_weight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        augmented_training, "_build_array_basic_scores", _controlled_basic_scores
+    )
+    validation_starts: list[str] = []
+
+    result = train_and_gate_augmented_set(
+        set_code="HOB",
+        source=_passing_compact_source(tmp_path=tmp_path),
+        card_database=_fixture_card_database(),
+        set_profile=SetProfile.generic(set_code="HOB", event_format="PremierDraft"),
+        complete_draft_picks=2,
+        config=_CONFIG,
+        card_pairs_gate=_card_pairs_gate(
+            gap_low=0.012, validation_starts=validation_starts
+        ),
+    )
+
+    assert result.artifact is not None
+    assert validation_starts == [result.report["data"]["validation_start"]]
+    report = result.report["card_pairs"]
+    assert report["passed"] is True
+    selection = report["weight_selection"]
+    assert selection["selection_partition"] == "validation"
+    assert [candidate["weight"] for candidate in selection["candidates"]] == list(
+        _CONFIG.pair_weights
+    )
+    selected = next(
+        candidate
+        for candidate in selection["candidates"]
+        if candidate["weight"] == selection["weight"]
+    )
+    assert selected["mean_reciprocal_rank"] == max(
+        candidate["mean_reciprocal_rank"] for candidate in selection["candidates"]
+    )
+    # Weight zero on held-out drafts is exactly the promoted Pool Shape model.
+    assert report["held_out"]["pool_shape"] == (
+        result.report["evaluation"]["basic_plus_augmented"]
+    )
+    assert set(report["held_out"]["pool_shape_plus_pairs"]) == {
+        "picks",
+        "top_1",
+        "mean_reciprocal_rank",
+    }
+    payload = result.artifact.to_bytes()
+    assert result.report["artifact_sha256"] == hashlib.sha256(payload).hexdigest()
+    published = AugmentedArtifact.from_bytes(payload, expected_set_code="hob")
+    card_pairs = published.card_pairs
+    assert card_pairs is not None
+    assert card_pairs.weight == selection["weight"]
+    assert card_pairs.score(first="Red Recruit", second="Blue Trick") == 3.0
+    raw = json.loads(payload)
+    assert raw["training"]["card_pairs"]["gate"]["source"]["sha256"] == "b" * 64
+    # Released clients accept only these top-level keys, so the table stays
+    # inside training, which they read as a free-form object.
+    assert set(raw) == {
+        "schema_version",
+        "compatibility",
+        "set_code",
+        "model",
+        "calibration",
+        "source",
+        "evaluation",
+        "training",
+    }
+
+
+def test_failing_card_pairs_gate_ships_the_model_without_a_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        augmented_training, "_build_array_basic_scores", _controlled_basic_scores
+    )
+
+    result = train_and_gate_augmented_set(
+        set_code="HOB",
+        source=_passing_compact_source(tmp_path=tmp_path),
+        card_database=_fixture_card_database(),
+        set_profile=SetProfile.generic(set_code="HOB", event_format="PremierDraft"),
+        complete_draft_picks=2,
+        config=_CONFIG,
+        card_pairs_gate=_card_pairs_gate(gap_low=-0.003, validation_starts=[]),
+    )
+
+    assert result.artifact is not None
+    assert result.artifact.card_pairs is None
+    report = result.report["card_pairs"]
+    assert report["passed"] is False
+    assert "weight_selection" not in report
+    assert "held_out" not in report
+
+
+def test_pair_weight_is_the_one_with_the_best_validation_mrr_then_top_1() -> None:
+    # Ranks per validation pick for each weight. Weights 0.25 and 0.5 share the
+    # best MRR of 0.5, and 0.5 wins on top-1.
+    ranks_by_weight = {
+        0.0: [3, 3, 3, 3],
+        0.125: [3, 3, 3, 3],
+        0.25: [2, 2, 2, 2],
+        0.5: [1, 2, 4, 4],
+        1.0: [3, 3, 3, 3],
+        2.0: [4, 4, 4, 4],
+        4.0: [4, 4, 4, 4],
+    }
+
+    selection = augmented_training._select_pair_weight(
+        validation_ranks=lambda weight: np.asarray(ranks_by_weight[weight]),
+        config=ModelCTrainingConfig(),
+    )
+
+    assert selection["selection_metric"] == "mean_reciprocal_rank_then_top_1"
+    assert selection["weight"] == 0.5
+
+
+def test_pair_weight_ties_keep_the_smaller_weight() -> None:
+    selection = augmented_training._select_pair_weight(
+        validation_ranks=lambda weight: np.asarray([1, 2]),
+        config=ModelCTrainingConfig(),
+    )
+
+    assert selection["weight"] == 0.0
+
+
+def test_training_rejects_pair_weights_without_pool_shape_alone(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AugmentedTrainingError, match="must include 0.0"):
+        train_and_gate_augmented_set(
+            set_code="HOB",
+            source=_passing_compact_source(tmp_path=tmp_path),
+            card_database=_fixture_card_database(),
+            set_profile=SetProfile.generic(
+                set_code="HOB", event_format="PremierDraft"
+            ),
+            complete_draft_picks=2,
+            config=ModelCTrainingConfig(pair_weights=(0.5, 1.0)),
+        )

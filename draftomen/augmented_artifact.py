@@ -645,12 +645,47 @@ class AugmentedCardPairs:
 
     card_names: tuple[str, ...]
     scores: Mapping[tuple[str, str], float]
+    # DO points per point of centered pair sum. Tables built before the build
+    # selected a weight carry none and leave scores unchanged.
+    weight: float = 0.0
 
     def score(self, *, first: str, second: str) -> float:
         """Return the pair's interaction in either card order."""
 
         key = (first, second) if first <= second else (second, first)
         return self.scores.get(key, 0.0)
+
+    def candidate_deltas(
+        self, *, pool_cards: Iterable[CardInfo], offered_cards: Sequence[CardInfo]
+    ) -> tuple[float, ...]:
+        """Return each offered card's pair sum against the pool, centered and clipped.
+        The sum is centered on the pack average, weighted, and kept within ±8 points.
+        """
+
+        if not offered_cards:
+            return ()
+        known = frozenset(self.card_names)
+        pool_names = [
+            name
+            for name in (_table_name(card=card, known=known) for card in pool_cards)
+            if name is not None
+        ]
+        sums: list[float] = []
+        for card in offered_cards:
+            name = _table_name(card=card, known=known)
+            sums.append(
+                0.0
+                if name is None
+                else sum(self.score(first=name, second=other) for other in pool_names)
+            )
+        mean = sum(sums) / len(sums)
+        return tuple(
+            min(
+                max((value - mean) * self.weight, -AUGMENTED_MAXIMUM_DELTA),
+                AUGMENTED_MAXIMUM_DELTA,
+            )
+            for value in sums
+        )
 
     @classmethod
     def from_json(cls, value: Any) -> AugmentedCardPairs:
@@ -693,7 +728,28 @@ class AugmentedCardPairs:
             if key in scores:
                 raise AugmentedArtifactError("Card Pairs lists a pair twice.")
             scores[key] = float(pair[2])
-        return cls(card_names=tuple(names), scores=scores)
+        weight = value.get("weight", 0.0)
+        if (
+            isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or not math.isfinite(weight)
+            or not 0.0 <= weight <= AUGMENTED_MAXIMUM_MULTIPLIER
+        ):
+            raise AugmentedArtifactError(
+                "Card Pairs weight must be within [0.0, 16.0]."
+            )
+        return cls(card_names=tuple(names), scores=scores, weight=float(weight))
+
+
+def _table_name(*, card: CardInfo, known: frozenset[str]) -> str | None:
+    """Return the name a Card Pairs table uses for a card, if it lists one.
+    17Lands names a double-faced card by its front face.
+    """
+
+    for name in (card.name, *(face.name for face in card.faces)):
+        if name in known:
+            return name
+    return None
 
 
 @dataclass(frozen=True, slots=True)
