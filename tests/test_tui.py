@@ -49,7 +49,6 @@ from draftomen.profile_client import (
 from draftomen.session import (
     ApplicationPhase,
     CardView,
-    ChangeRanking,
     DataLoadPhase,
     LiveSessionSnapshot,
     OperationKind,

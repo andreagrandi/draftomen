@@ -49,6 +49,7 @@ def gui(session: nox.Session) -> None:
 
 @nox.session(python=False)
 def ci(session: nox.Session) -> None:
+    session.run("uv", "run", "ruff", "check", ".", external=True)
     session.run("uv", "run", "pytest", external=True)
     _run_replay_regressions(session=session)
     session.run("uv", "run", "draftomen-tui", "--version", external=True)

@@ -28,12 +28,10 @@ from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.session import AugmentationStatus, ChangeAugmentation
 from draftomen.set_card_data import SetCardData
 from draftomen.profile_client import ProfileClient, ProfileNetworkPolicy
-from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.pool import load_draft_state
 from draftomen.preferences import GuiDisplayPreferences
 from draftomen.qt_gui import (
     APPLICATION_NAME,
-    DEFAULT_PROFILE_MANIFEST_URL,
     TEST_DRAFT_MANUAL_PICK_COUNT,
     TEST_DRAFT_SMOKE_SUMMARY_PREFIX,
     TEST_DRAFT_SMOKE_TIMEOUT_SECONDS,

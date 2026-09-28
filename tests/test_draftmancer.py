@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -1349,7 +1350,7 @@ def test_disconnect_during_each_wait_is_terminal(
         operation = adapter.connect_and_start
     else:
         adapter.connect_and_start()
-        operation = lambda: adapter.pick(unique_card_id=1)
+        operation = partial(adapter.pick, unique_card_id=1)
 
     with pytest.raises(
         DraftmancerAdapterError,

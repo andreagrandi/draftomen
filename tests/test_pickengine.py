@@ -12,7 +12,6 @@ from draftomen.augmented_artifact import pool_feature_counts
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, PickEngineConfig
 from draftomen.events import (
-    EXPECTED_TOTAL_PICKS,
     PackOfferedEvent,
 )
 from draftomen.pickengine import (

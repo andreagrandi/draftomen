@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Ruff now lints Python code with the `F`, `E4`, `E7` and `E9` rules. A
+  pre-commit hook runs `ruff check` on staged files, and the nox `ci` session
+  runs it on the whole repository. The 36 existing findings are fixed. Three
+  tests that had lost their final assertions check their results again. (#750)
+
 - `draftomen-tui build-augmented-set` now reports progress while it checks the
   rows of the draft and game dumps. It prints a line at most every 10% of the
   file read or every 5 seconds, with the rows checked so far, and a final line

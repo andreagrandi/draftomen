@@ -30,7 +30,7 @@ from draftomen.carddb import (
 )
 from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.draftmancer_server import MockedDraftServer
-from draftomen.mock_session import MOCK_SCENARIOS, MockLiveSession, MockScenario
+from draftomen.mock_session import MOCK_SCENARIOS, MockLiveSession
 from draftomen.paths import resolve_player_log_path
 from draftomen.preferences import GuiDisplayPreferences, load_gui_preferences
 from draftomen.qt_adapter import (
@@ -1243,7 +1243,8 @@ def run_gui(
     if isinstance(provider, LiveSessionAdapter):
         provider.shutdown()
         provider.wait_for_shutdown()
-    del engine
+    # Clears the smoke-test lambda's closure too, so a pending timer cannot keep the engine alive.
+    engine = None
     return exit_code
 
 

@@ -1119,6 +1119,7 @@ def test_real_acquisition_online_then_offline_reuses_cache(tmp_path: Path) -> No
         clock=lambda: NOW,
         **offline_adapters,
     )
+    assert second.succeeded
     second_authority = json.loads(
         (tmp_path / "online" / "bundles" / first_bundle / "bundle.json").read_bytes()
     )
