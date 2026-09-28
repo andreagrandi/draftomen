@@ -22,6 +22,7 @@ from draftomen.profile_input_acquisition import (
     PUBLIC_GAME_SOURCE_NAME,
     ProfileInputAcquisitionError,
     PublicDraftFetcher,
+    RowCheckProgress,
     SeventeenLandsPublicDraftAdapter,
     acquire_public_draft_source,
 )
@@ -225,6 +226,7 @@ def acquire_augmented_game_source(
     cache: ProfileInputCache,
     fetch_public_games: PublicDraftFetcher,
     timeout_seconds: int,
+    row_check_progress: RowCheckProgress | None = None,
 ) -> AugmentedTrainingSource:
     """Acquire the set's public game dump through the checksummed input cache.
     It uses the same format as the draft dump, so games and drafts cover the same queue.
@@ -240,6 +242,7 @@ def acquire_augmented_game_source(
         timeout_seconds=_validated_timeout(timeout_seconds),
         source_name=PUBLIC_GAME_SOURCE_NAME,
         required_fields=PUBLIC_GAME_REQUIRED_FIELDS,
+        row_check_progress=row_check_progress,
     )
     try:
         source = acquire_public_draft_source(

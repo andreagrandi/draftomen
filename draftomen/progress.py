@@ -31,8 +31,10 @@ class ProgressReporter:
         self._last_printed_at = self._started
         self._last_step = 0
 
-    def update(self, *, done: int) -> None:
-        """Record the completed amount and print only when a new step is reached."""
+    def update(self, *, done: int, detail: str = "") -> None:
+        """Record the completed amount and print only when a new step is reached.
+        A detail, such as a count of rows, is added after the amounts.
+        """
 
         now = self._clock()
         too_soon = now - self._last_printed_at < self._interval_seconds
@@ -46,17 +48,21 @@ class ProgressReporter:
                 return
             self._last_step = reached
         self._last_printed_at = now
-        print(self._line(done=done, now=now), flush=True)
+        print(self._line(done=done, detail=detail, now=now), flush=True)
 
-    def _line(self, *, done: int, now: float) -> str:
+    def _line(self, *, done: int, detail: str, now: float) -> str:
         elapsed = f"{now - self._started:.0f}s"
+        suffix = f", {detail}" if detail else ""
         if self._total is None:
-            return f"{self._label}: {_amount(done, unit=self._unit)} after {elapsed}"
+            amount = _amount(done, unit=self._unit)
+            if detail:
+                amount = f"{amount} ({detail})"
+            return f"{self._label}: {amount} after {elapsed}"
         percent = min(100, int(done * 100 / self._total))
         return (
             f"{self._label}: {percent}% "
-            f"({_amount(done, unit=self._unit)} of {_amount(self._total, unit=self._unit)}) "
-            f"after {elapsed}"
+            f"({_amount(done, unit=self._unit)} of {_amount(self._total, unit=self._unit)}"
+            f"{suffix}) after {elapsed}"
         )
 
 

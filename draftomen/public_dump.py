@@ -22,7 +22,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from os import PathLike
 from types import MappingProxyType
-from typing import Any, Literal, TypeAlias
+from typing import Any, BinaryIO, Literal, TypeAlias
 
 PathInput: TypeAlias = str | PathLike[str]
 PUBLIC_DUMP_MANIFEST_SCHEMA_VERSION = 1
@@ -565,12 +565,24 @@ class PublicDumpReader:
                 )
             self.source = PublicDumpSource(name=os.path.basename(path), path=path)
         self._report: PublicDumpReadReport | None = None
+        self._container: BinaryIO | None = None
 
     @property
     def report(self) -> PublicDumpReadReport | None:
         """Return the report from the most recently exhausted read, if any."""
 
         return self._report
+
+    @property
+    def bytes_read(self) -> int:
+        """Return how many bytes of the file on disk the open read has consumed.
+        For a gzip dump this counts compressed bytes, so it reaches the file size at the end.
+        """
+
+        container = self._container
+        if container is None or container.closed:
+            return 0
+        return container.tell()
 
     def iter_rows(self) -> Iterator[Mapping[str, str]]:
         """Validate before returning a generator, then yield valid CSV mappings."""
@@ -599,7 +611,8 @@ class PublicDumpReader:
     def _iter_rows(self, *, path: str) -> Iterator[Mapping[str, str]]:
         builder = _ReportBuilder(source_name=self.source.name)
         try:
-            with _open_text(path=path) as text_file:
+            with _open_text(path=path) as (text_file, container):
+                self._container = container
                 tracker = _CSVLineTracker(
                     text_file,
                     on_blank_row=lambda row_number: builder.skip(
@@ -671,12 +684,15 @@ class PublicDumpReader:
 
 
 @contextmanager
-def _open_text(*, path: str) -> Iterator[io.TextIOBase]:
-    """Open a CSV stream from a plain, gzip, or tar container."""
+def _open_text(*, path: str) -> Iterator[tuple[io.TextIOBase, BinaryIO]]:
+    """Open a CSV stream from a plain, gzip, or tar container.
+    The container file is yielded too, so callers can see how far it has been read.
+    """
 
     with ExitStack() as stack:
+        container = stack.enter_context(open(path, mode="rb"))
         if tarfile.is_tarfile(path):
-            archive = stack.enter_context(tarfile.open(path, mode="r:*"))
+            archive = stack.enter_context(tarfile.open(fileobj=container, mode="r:*"))
             members = sorted(
                 (member for member in archive.getmembers() if member.isfile()),
                 key=lambda member: member.name,
@@ -702,7 +718,7 @@ def _open_text(*, path: str) -> Iterator[io.TextIOBase]:
             if member.name.lower().endswith((".gz", ".gzip")):
                 raw = stack.enter_context(gzip.GzipFile(fileobj=raw, mode="rb"))
         else:
-            raw = stack.enter_context(open(path, mode="rb"))
+            raw = container
             if path.lower().endswith((".gz", ".gzip")) or _has_gzip_magic(
                 path=path
             ):
@@ -710,7 +726,7 @@ def _open_text(*, path: str) -> Iterator[io.TextIOBase]:
         text_file = stack.enter_context(
             io.TextIOWrapper(raw, encoding="utf-8-sig", newline="")
         )
-        yield text_file
+        yield text_file, container
 
 
 def _has_gzip_magic(*, path: str) -> bool:

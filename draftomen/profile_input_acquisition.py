@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -76,6 +77,8 @@ PUBLIC_GAME_REQUIRED_FIELDS = frozenset(
         "won",
     }
 )
+# Reading the file position every row would slow the check, so report in batches.
+_ROW_CHECK_REPORT_EVERY = 1_000
 
 
 class ProfileInputAcquisitionError(ValueError):
@@ -136,6 +139,22 @@ class PublicDraftFetcher(Protocol):
         path: Path,
         timeout_seconds: int,
     ) -> None:
+        ...
+
+
+class RowCheckReport(Protocol):
+    """Receive the rows checked so far and the dump bytes read so far."""
+
+    def __call__(self, *, rows: int, bytes_read: int) -> None:
+        ...
+
+
+class RowCheckProgress(Protocol):
+    """Start reporting one dump's row check, given the dump's size in bytes.
+    The returned report is called while rows are checked and once at the end.
+    """
+
+    def __call__(self, *, total_bytes: int) -> RowCheckReport:
         ...
 
 
@@ -606,6 +625,7 @@ class SeventeenLandsPublicDraftAdapter:
     timeout_seconds: int = HTTP_TIMEOUT_SECONDS
     source_name: str = PUBLIC_DRAFT_SOURCE_NAME
     required_fields: frozenset[str] = _PUBLIC_DRAFT_REQUIRED_FIELDS
+    row_check_progress: RowCheckProgress | None = None
 
     def __post_init__(self) -> None:
         if not callable(self.fetch_public_drafts):
@@ -661,6 +681,7 @@ class SeventeenLandsPublicDraftAdapter:
             ),
             environment=environment,
             required_fields=self.required_fields,
+            progress=self.row_check_progress,
         )
         if draft_rows == 0:
             raise ProfileInputAcquisitionError(
@@ -1102,6 +1123,7 @@ def _acquire_public_drafts(
         result=lookup,
         environment=environment,
         required_fields=adapter.required_fields,
+        progress=adapter.row_check_progress,
     )
     cache_is_corrupt = lookup.record is not None and cached is None
     if cached is not None and lookup.outcome in {
@@ -1467,9 +1489,15 @@ def _validated_public_draft_rows(
     source: PublicDumpSource,
     environment: PlannedEnvironment,
     required_fields: frozenset[str] = _PUBLIC_DRAFT_REQUIRED_FIELDS,
+    progress: RowCheckProgress | None = None,
 ) -> int:
     rows = 0
     reader = PublicDumpReader(source=source)
+    report: RowCheckReport | None = None
+    total_bytes = 0
+    if progress is not None and source.path is not None:
+        total_bytes = os.path.getsize(source.path)
+        report = progress(total_bytes=total_bytes)
     for row in reader.iter_rows():
         if not required_fields.issubset(row):
             raise ProfileInputAcquisitionError(
@@ -1484,6 +1512,10 @@ def _validated_public_draft_rows(
                 "Public-draft data contains an unexpected event format."
             )
         rows += 1
+        if report is not None and rows % _ROW_CHECK_REPORT_EVERY == 0:
+            report(rows=rows, bytes_read=reader.bytes_read)
+    if report is not None:
+        report(rows=rows, bytes_read=total_bytes)
     return rows
 
 
@@ -1531,6 +1563,7 @@ def _load_cached_public_drafts(
     result: ProfileInputCacheResult,
     environment: PlannedEnvironment,
     required_fields: frozenset[str],
+    progress: RowCheckProgress | None,
 ) -> tuple[PublicDumpManifest | None, int, tuple[str, ...]]:
     if result.record is None or result.content_path is None:
         return None, 0, result.diagnostics
@@ -1540,6 +1573,7 @@ def _load_cached_public_drafts(
             source=manifest.sources[0],
             environment=environment,
             required_fields=required_fields,
+            progress=progress,
         )
         if draft_rows == 0:
             raise ProfileInputAcquisitionError(
@@ -1832,6 +1866,8 @@ __all__ = [
     "ProfileInputSourceReport",
     "PublicDraftFetcher",
     "RatingsFetcher",
+    "RowCheckProgress",
+    "RowCheckReport",
     "SeventeenLandsPublicDraftAdapter",
     "SeventeenLandsRatingsAdapter",
     "acquire_card_metadata_bundle",
