@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Any
 import zlib
 
@@ -50,7 +51,11 @@ from draftomen.carddb import (
 )
 from draftomen.draftmancer import _unlisted_card_grp_id
 from draftomen.paths import DEVELOPER_CACHE_DIR
-from draftomen.profile_input_acquisition import SeventeenLandsPublicDraftAdapter
+from draftomen.profile_input_acquisition import (
+    RowCheckProgress,
+    RowCheckReport,
+    SeventeenLandsPublicDraftAdapter,
+)
 from draftomen.profile_input_cache import ProfileInputCache
 from draftomen.profile_manifest import (
     ProfileManifest,
@@ -114,7 +119,6 @@ def _fetch_public_drafts_with_progress(
         timeout_seconds=timeout_seconds,
         on_progress=report,
     )
-    _stage("Checking the downloaded dump's rows")
 
 
 def _fetch_public_games_with_progress(
@@ -142,7 +146,29 @@ def _fetch_public_games_with_progress(
         timeout_seconds=timeout_seconds,
         on_progress=report,
     )
-    _stage("Checking the downloaded game dump's rows")
+
+
+def _row_check_progress(
+    *,
+    stage: str,
+    clock: Callable[[], float] = time.monotonic,
+) -> RowCheckProgress:
+    """Print the stage, then progress lines while a dump's rows are checked.
+    The percentage is of the file's bytes read, since the row count is not known in advance.
+    """
+
+    def start(*, total_bytes: int) -> RowCheckReport:
+        _stage(stage)
+        reporter = ProgressReporter(
+            label="Rows checked", total=total_bytes, unit="bytes", clock=clock
+        )
+
+        def report(*, rows: int, bytes_read: int) -> None:
+            reporter.update(done=bytes_read, detail=f"{rows:,} rows")
+
+        return report
+
+    return start
 
 
 def _card_pairs_gate_for(
@@ -346,6 +372,7 @@ def build_augmented_set(
         adapter=SeventeenLandsPublicDraftAdapter(
             fetch_public_drafts=_fetch_public_drafts_with_progress,
             timeout_seconds=timeout_seconds,
+            row_check_progress=_row_check_progress(stage="Checking the draft dump's rows"),
         ),
     )
     _stage(f"Dataset: {source.event_type} dump from {source.url}")
@@ -366,6 +393,7 @@ def build_augmented_set(
             cache=cache,
             fetch_public_games=_fetch_public_games_with_progress,
             timeout_seconds=timeout_seconds,
+            row_check_progress=_row_check_progress(stage="Checking the game dump's rows"),
         )
     except AugmentedPublicDataError as error:
         raise AugmentedPublicationError(str(error)) from error

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from datetime import timedelta
 import gzip
 import hashlib
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 import pytest
@@ -22,16 +24,23 @@ from draftomen.augmented_manifest import (
     AugmentedManifestError,
     AugmentedManifestSchemaError,
 )
+from draftomen.augmented_public_data import (
+    acquire_augmented_game_source,
+    acquire_augmented_training_source,
+)
 from draftomen.augmented_training import AugmentedTrainingResult
 from draftomen.augmented_training_data import AugmentedTrainingSource
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.profile_generation import generate_set_profile
+from draftomen.profile_input_acquisition import SeventeenLandsPublicDraftAdapter
+from draftomen.profile_input_cache import ProfileInputCache, ProfileInputCachePolicy
 from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.public_dump import PublicDumpManifest
 from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import SetProfile
 from draftomen.sets_manifest import SetsManifest
 from tests.augmented_artifacts import augmented_artifact
+import tests.test_augmented_public_data as public_data_fixture
 import tests.test_profile_generation as generation_fixture
 
 
@@ -129,6 +138,7 @@ def _install_workflow(
         assert cache.root == cache_dir
         assert adapter.fetch_public_drafts is publication._fetch_public_drafts_with_progress
         assert adapter.timeout_seconds == 19
+        assert adapter.row_check_progress is not None
         events.append("acquire")
         cache.root.mkdir(parents=True, exist_ok=True)
         private_dump = cache.root / "draft-data.csv.gz"
@@ -146,7 +156,13 @@ def _install_workflow(
         )
 
     def acquire_games(
-        *, set_code: str, event_format: str, cache, fetch_public_games, timeout_seconds: int
+        *,
+        set_code: str,
+        event_format: str,
+        cache,
+        fetch_public_games,
+        timeout_seconds: int,
+        row_check_progress,
     ) -> AugmentedTrainingSource:
         assert events == ["profile-check", "acquire", "profile"]
         assert set_code == "TST"
@@ -154,6 +170,7 @@ def _install_workflow(
         assert cache.root == cache_dir
         assert fetch_public_games is publication._fetch_public_games_with_progress
         assert timeout_seconds == 19
+        assert row_check_progress is not None
         events.append("games")
         game_dump = cache.root / "game-data.csv.gz"
         game_dump.write_bytes(gzip.compress(b"draft_id\ncontrolled-1\n", mtime=0))
@@ -796,3 +813,165 @@ def test_published_profile_with_a_wrong_checksum_is_rejected(tmp_path: Path) -> 
         publication._load_published_profile(
             set_code="TST", event_format="QuickDraft", profiles_dir=profiles_dir
         )
+
+
+class _SteppingClock:
+    def __init__(self, *, step: float) -> None:
+        self.now = 0.0
+        self.step = step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
+_ROW_CHECK_ROWS = 20_000
+
+
+def _plain_draft_dump(*, set_code: str = "HOB") -> bytes:
+    lines = ["draft_id,expansion,event_type,event_match_wins,pick,pick_maindeck_rate"]
+    lines.extend(
+        f"draft-{index},{set_code},PremierDraft,7,Requested Card,1.0"
+        for index in range(_ROW_CHECK_ROWS)
+    )
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _plain_game_dump(*, set_code: str = "HOB") -> bytes:
+    lines = ["expansion,event_type,draft_id,draft_time,rank,main_colors,won"]
+    lines.extend(
+        f"{set_code},PremierDraft,draft-{index},2026-08-01 12:00:00,gold,WU,True"
+        for index in range(_ROW_CHECK_ROWS)
+    )
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _large_cache(tmp_path: Path) -> ProfileInputCache:
+    return ProfileInputCache(
+        tmp_path / "profile-input-cache",
+        policy=ProfileInputCachePolicy(
+            freshness_ttl=timedelta(hours=1),
+            max_entry_bytes=10_000_000,
+            max_total_bytes=30_000_000,
+            max_records=10,
+            max_versions_per_source=3,
+        ),
+    )
+
+
+def _acquire_drafts_with_row_progress(
+    *, cache: ProfileInputCache, fetcher: public_data_fixture._DraftFetcher, clock
+) -> None:
+    acquire_augmented_training_source(
+        set_code="HOB",
+        cache=cache,
+        timeout_seconds=23,
+        listing=public_data_fixture._listing(
+            public_data_fixture._row(event_format="PremierDraft")
+        ),
+        adapter=SeventeenLandsPublicDraftAdapter(
+            fetch_public_drafts=fetcher,
+            timeout_seconds=23,
+            row_check_progress=publication._row_check_progress(
+                stage="Checking the draft dump's rows", clock=clock
+            ),
+        ),
+    )
+
+
+def _assert_row_check_lines(*, lines: list[str], stage: str) -> None:
+    assert lines[0] == stage
+    progress = lines[1:]
+    assert 2 <= len(progress) <= 10
+    tenths = []
+    for line in progress:
+        match = re.fullmatch(
+            r"Rows checked: (\d+)% \([\d.,]+ MB of [\d.,]+ MB, ([\d,]+) rows\) after \d+s",
+            line,
+        )
+        assert match is not None, line
+        tenths.append(int(match.group(1)) // 10)
+    assert tenths == sorted(set(tenths))
+    assert progress[-1].startswith("Rows checked: 100% ")
+    assert f", {_ROW_CHECK_ROWS:,} rows) after " in progress[-1]
+
+
+def test_draft_dump_row_check_prints_a_line_per_ten_percent_with_rows_checked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    _acquire_drafts_with_row_progress(
+        cache=_large_cache(tmp_path),
+        fetcher=public_data_fixture._DraftFetcher(_plain_draft_dump()),
+        clock=_SteppingClock(step=10.0),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    _assert_row_check_lines(lines=lines, stage="Checking the draft dump's rows")
+
+
+def test_fast_row_check_waits_five_seconds_and_still_prints_the_total_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    _acquire_drafts_with_row_progress(
+        cache=_large_cache(tmp_path),
+        fetcher=public_data_fixture._DraftFetcher(_plain_draft_dump()),
+        clock=_SteppingClock(step=0.1),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "Checking the draft dump's rows"
+    assert len(lines) == 2
+    assert lines[1].startswith("Rows checked: 100% ")
+    assert f", {_ROW_CHECK_ROWS:,} rows) after " in lines[1]
+
+
+def test_game_dump_row_check_prints_the_same_progress_lines(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    acquire_augmented_game_source(
+        set_code="HOB",
+        event_format="PremierDraft",
+        cache=_large_cache(tmp_path),
+        fetch_public_games=public_data_fixture._DraftFetcher(_plain_game_dump()),
+        timeout_seconds=29,
+        row_check_progress=publication._row_check_progress(
+            stage="Checking the game dump's rows", clock=_SteppingClock(step=10.0)
+        ),
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    _assert_row_check_lines(lines=lines, stage="Checking the game dump's rows")
+
+
+def test_dump_reused_from_the_input_cache_prints_the_same_progress_lines(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cache = _large_cache(tmp_path)
+    fetcher = public_data_fixture._DraftFetcher(_plain_draft_dump())
+    _acquire_drafts_with_row_progress(
+        cache=cache, fetcher=fetcher, clock=_SteppingClock(step=10.0)
+    )
+    capsys.readouterr()
+
+    _acquire_drafts_with_row_progress(
+        cache=cache, fetcher=fetcher, clock=_SteppingClock(step=10.0)
+    )
+
+    assert len(fetcher.calls) == 1
+    lines = capsys.readouterr().out.splitlines()
+    _assert_row_check_lines(lines=lines, stage="Checking the draft dump's rows")

@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- `draftomen-tui build-augmented-set` now reports progress while it checks the
+  rows of the draft and game dumps. It prints a line at most every 10% of the
+  file read or every 5 seconds, with the rows checked so far, and a final line
+  with the total rows. A dump reused from the input cache shows the same
+  lines. (#753)
+
 ## [0.4.2] - 2026-09-27
 
 - Add `docs/microsoft-store.md` with what the first Microsoft Store
