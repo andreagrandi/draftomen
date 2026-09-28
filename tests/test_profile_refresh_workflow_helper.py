@@ -19,7 +19,7 @@ from draftomen.card_data_export import build_card_database_from_scryfall_cards
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS
 from draftomen.pickengine import PickEngine
-from draftomen.profile_client import ProfileClient, ProfileNetworkPolicy, ProfileRefreshOutcome
+from draftomen.profile_client import ProfileClient, ProfileRefreshOutcome
 from draftomen.profile_generation import (
     AGGREGATE_FALLBACK_CONFIDENCE_FACTOR,
     generate_set_profile,
@@ -38,10 +38,7 @@ from draftomen.profile_manifest import (
 from draftomen.set_profile import SetProfile
 from draftomen.set_card_data import SetCardData
 from draftomen.seventeen import (
-    CARD_RATINGS_ENDPOINT,
-    COLOR_RATINGS_ENDPOINT,
     ColorPairWinRate,
-    QUICK_DRAFT_FORMAT,
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsError,

@@ -42,7 +42,6 @@ from draftomen.deckbuilder import (
 from draftomen.events import (
     EXPECTED_PACK_COUNT,
     EXPECTED_PICKS_PER_PACK,
-    DraftEvent,
     AccountEvent,
     DraftCompletedEvent,
     DraftEvent,

@@ -285,6 +285,7 @@ def test_same_key_concurrency_fetches_once_and_installs_one_cache(tmp_path: Path
         assert first.result().lookup(grp_id=1).name == "Test Card"
         assert second.result().lookup(grp_id=1).name == "Test Card"
     assert len(calls) == 1
+    assert calls[0]["request"].full_url == url
 
 
 def _manifest_bytes(*payloads_by_set: tuple[str, bytes]) -> bytes:

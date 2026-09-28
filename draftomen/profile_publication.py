@@ -20,7 +20,7 @@ import tempfile
 from typing import TypeAlias
 import zlib
 
-from draftomen.carddb import CardDatabase, CardDatabaseError, load_card_database
+from draftomen.carddb import CardDatabaseError, load_card_database
 from draftomen.profile_generation import (
     DEFAULT_PROFILE_GENERATION_CONFIG,
     ProfileGenerationConfig,
@@ -165,7 +165,7 @@ def profile_manifest_artifact_from_publication(
         report = generation.report
         if not isinstance(report, ProfileGenerationReport):
             raise ProfilePublicationError("publication result contains an invalid generation report.")
-        validated = validate_profile_generation(
+        validate_profile_generation(
             generation=generation,
             set_code=profile.set_code,
             event_format=profile.event_format,

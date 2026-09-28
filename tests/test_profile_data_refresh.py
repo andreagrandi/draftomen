@@ -385,9 +385,8 @@ def test_prepare_selector_matches_code_or_full_name_and_rejects_ambiguous(
     card_dir = tmp_path / "card-data"
     _write_card_artifact(card_dir, set_code="aaa", set_name="Alpha Set")
     _write_card_artifact(card_dir, set_code="bbb", set_name="Beta Set")
-    fetcher = lambda _url, _timeout: _filters(
-        available={"AAA": ["PremierDraft"], "BBB": ["PremierDraft"]}
-    )
+    def fetcher(_url: str, _timeout: float) -> Any:
+        return _filters(available={"AAA": ["PremierDraft"], "BBB": ["PremierDraft"]})
 
     by_code = refresh.prepare_profile_data_refresh(
         " AaA ", card_data_dir=card_dir, fetch_json=fetcher

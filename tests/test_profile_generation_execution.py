@@ -670,7 +670,6 @@ def test_empirical_staged_bundles_are_publication_eligible_after_full_validation
     validated = result.validated
     profile_bytes = validated.profile_bytes
     gzip_bytes = validated.gzip_bytes
-    report_bytes = validated.report_bytes
     profile = SetProfile.from_json(json.loads(profile_bytes))
     report = generation.report
 

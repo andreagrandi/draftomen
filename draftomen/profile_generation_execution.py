@@ -14,7 +14,7 @@ from enum import Enum
 import hashlib
 import json
 import re
-from typing import Any, Mapping, TypeAlias
+from typing import Any, Mapping
 
 from draftomen.profile_generation import (
     DEFAULT_PROFILE_GENERATION_CONFIG,

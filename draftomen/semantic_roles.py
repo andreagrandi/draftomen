@@ -1805,13 +1805,13 @@ def _card_key(card: Mapping[str, Any]) -> str:
 def _card_identity_keys(card: Mapping[str, Any]) -> tuple[str, ...]:
     keys: list[str] = []
     numeric_values: list[int] = []
-    for field in ("arena_id", "grp_id"):
-        value = card.get(field)
+    for key in ("arena_id", "grp_id"):
+        value = card.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             if value not in numeric_values:
                 numeric_values.append(value)
         elif value is not None and str(value).strip():
-            keys.append(f"{field}:{value}".lower())
+            keys.append(f"{key}:{value}".lower())
     for value in numeric_values:
         keys.extend((f"arena_id:{value}".lower(), f"grp_id:{value}".lower()))
     set_code = _optional_code(card.get("set_code", card.get("set")))
@@ -1839,8 +1839,8 @@ def _card_text(card: Mapping[str, Any]) -> tuple[str, tuple[Mapping[str, Any], .
 
 def _mechanics(card: Mapping[str, Any]) -> tuple[str, ...]:
     values: list[str] = []
-    for field in ("keywords", "mechanics", "unknown_mechanics"):
-        value = card.get(field)
+    for key in ("keywords", "mechanics", "unknown_mechanics"):
+        value = card.get(key)
         if isinstance(value, (list, tuple, set, frozenset)):
             values.extend(item for item in value if isinstance(item, str))
     faces = card.get("faces", ())

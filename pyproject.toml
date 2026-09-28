@@ -48,7 +48,9 @@ dev = [
     "nox>=2026.4.10",
     "numpy>=2.3,<3",
     "polars>=1.34,<2",
+    "pre-commit>=4.6.2",
     "pytest>=8.4.0",
+    "ruff>=0.16.9",
 ]
 
 [build-system]
@@ -159,3 +161,6 @@ files = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

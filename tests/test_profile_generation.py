@@ -664,11 +664,11 @@ def test_accepted_deck_rejections_have_stable_aggregate_reasons(tmp_path: Path) 
     rows = [
         "draft_id,expansion,event_type,event_match_wins,pick,pick_maindeck_rate",
         *(
-            f"mono,TST,QuickDraft,7,Support Creature,1.0"
+            "mono,TST,QuickDraft,7,Support Creature,1.0"
             for _ in range(24)
         ),
         *(
-            f"short,TST,QuickDraft,7,Removal Spell,1.0"
+            "short,TST,QuickDraft,7,Removal Spell,1.0"
             for _ in range(10)
         ),
     ]

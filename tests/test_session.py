@@ -38,6 +38,7 @@ from draftomen.events import (
     EXPECTED_TOTAL_PICKS,
     AccountEvent,
     DraftCompletedEvent,
+    DraftEvent,
     DraftStartedEvent,
     PackOfferedEvent,
     PickMadeEvent,
@@ -46,7 +47,6 @@ from draftomen.events import (
 from draftomen.pickengine import (
     ColorCommitment,
     ContextualScoreBreakdown,
-    PickEngine,
     PickScoringContext,
     ScoredCard,
     ScoredPack,
@@ -99,6 +99,7 @@ from draftomen.session import (
     DraftIdentity,
     FocusBuildCard,
     LiveSession,
+    LiveSessionCommand,
     LiveSessionEvent,
     LiveSessionSnapshot,
     OperationKind,
@@ -110,7 +111,6 @@ from draftomen.session import (
     RecommendationState,
     RequestBacktest,
     RequestBuild,
-    ProfileRefreshRequest,
     RequestRatingsDownload,
     RetryError,
     SessionError,
@@ -3577,7 +3577,7 @@ def test_live_session_recovered_profiled_pack_uses_shared_context(
     assert event is not None
     assert event.pool_grp_ids == pending_pick.pool_before_pick
     assert scored_pack is not None
-    context = _assert_profile_context(
+    _assert_profile_context(
         scored_pack=scored_pack,
         profile=profile,
         event=event,
@@ -3615,7 +3615,7 @@ def test_live_session_accountless_profiled_pack_uses_shared_context(
     assert event is not None
     assert event.pool_grp_ids == pool_before_pick
     assert scored_pack is not None
-    context = _assert_profile_context(
+    _assert_profile_context(
         scored_pack=scored_pack,
         profile=profile,
         event=event,

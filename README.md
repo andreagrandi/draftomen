@@ -241,6 +241,21 @@ Use the arrow keys or `j`/`k` to browse cards, `s` to change the ranking,
 `b` to open the current build, `c` to configure the view and optional splash
 recommendations, `d` to refresh the hosted profile in the TUI, and `q` to quit.
 
+### Linting
+
+Ruff checks Python code for unused imports, undefined names and syntax errors.
+The rules live in `[tool.ruff.lint]` in `pyproject.toml`. Install the
+pre-commit hook once per clone so each commit runs `ruff check` on the staged
+Python files:
+
+```bash
+uv sync
+uv run pre-commit install
+```
+
+To check the whole repository, run `uv run ruff check .`. The nox `ci` session
+runs the same check.
+
 ### Visual development
 
 For deterministic visual development, launch the explicit forced-mock entry

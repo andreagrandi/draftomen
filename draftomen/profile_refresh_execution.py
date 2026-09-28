@@ -395,7 +395,7 @@ def load_staged_profile_build_bundle(
     plan_sha256 = _valid_hash(value["plan_sha256"], "plan SHA-256")
     if expected_plan_sha256 is not None and plan_sha256 != expected_plan_sha256:
         raise ProfileRefreshExecutionError("staged bundle does not match requested plan")
-    mode = _mode_value(value["mode"])
+    _mode_value(value["mode"])
     outcome = _enum_value(value["outcome"], ProfileRefreshEnvironmentOutcome)
     if outcome is not ProfileRefreshEnvironmentOutcome.STAGED:
         raise ProfileRefreshExecutionError("failed profile bundle cannot be loaded")
@@ -405,7 +405,7 @@ def load_staged_profile_build_bundle(
     bundle_id = _valid_hash(value["bundle_id"], "bundle id")
     if bundle_id != _bundle_id(parsed_environment) or root.name != bundle_id:
         raise ProfileRefreshExecutionError("staged bundle id is invalid")
-    skip_reasons = _parse_diagnostics(value["skip_reasons"], "bundle skip reasons")
+    _parse_diagnostics(value["skip_reasons"], "bundle skip reasons")
 
     inputs = value["inputs"]
     sources = value["sources"]

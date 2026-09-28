@@ -807,6 +807,10 @@ def test_refresh_failure_preserves_last_good_cache_and_manifest(tmp_path: Path) 
 
     result = client.refresh("TST", "QuickDraft", force=True)
 
+    assert result.outcome is ProfileRefreshOutcome.ARTIFACT_INVALID
+    assert result.profile == current
+    assert set_profile_path(set_code="TST", event_format="QuickDraft", app_dir=tmp_path).read_bytes() == before
+
 def test_manifest_and_artifact_urls_reject_credentials_fragments_ports_and_cross_origin(tmp_path: Path) -> None:
     invalid = (
         "http://profiles.example.test/manifest.json",
