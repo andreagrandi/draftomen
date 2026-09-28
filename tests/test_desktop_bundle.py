@@ -1046,6 +1046,104 @@ def test_native_bundle_workflow_checks_macos_executable_architecture() -> None:
     )
 
 
+def _read_native_bundle_step(name: str) -> str:
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    step_text = workflow_text.split(f"- name: {name}\n", maxsplit=1)[1]
+    return step_text.split("\n      - name:", maxsplit=1)[0]
+
+
+def test_nuitka_cache_key_tracks_lock_nuitka_and_python_versions() -> None:
+    """The compilation cache key changes with uv.lock, the pinned Nuitka version
+    and the interpreter version, so a dependency change never reuses objects.
+    """
+
+    cache_step = _read_native_bundle_step(name="Cache Nuitka compilation")
+    key_lines = [
+        line.strip()
+        for line in cache_step.splitlines()
+        if line.strip().startswith("key:")
+    ]
+
+    assert "uses: actions/cache@" in cache_step
+    assert "restore-keys" not in cache_step
+    assert len(key_lines) == 1
+    key = key_lines[0]
+    assert "${{ runner.os }}" in key
+    assert "${{ runner.arch }}" in key
+    assert "${{ hashFiles('uv.lock') }}" in key
+    assert "${{ env.NUITKA_VERSION }}" in key
+    assert "${{ steps.nuitka-cache.outputs.python_version }}" in key
+
+    configure_step = _read_native_bundle_step(
+        name="Configure Nuitka compilation cache"
+    )
+    assert "id: nuitka-cache" in configure_step
+    assert "platform.python_version()" in configure_step
+    assert (
+        'echo "python_version=$python_version" >> "$GITHUB_OUTPUT"'
+        in configure_step
+    )
+    assert "NUITKA_CACHE_DIR=${{ runner.temp }}/nuitka-cache" in configure_step
+    assert "path: ${{ runner.temp }}/nuitka-cache" in cache_step
+
+    install_step = _read_native_bundle_step(
+        name="Install pinned Nuitka deployment dependency"
+    )
+    assert 'uv pip install "Nuitka==${{ env.NUITKA_VERSION }}"' in install_step
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    version_lines = [
+        line.strip()
+        for line in workflow_text.splitlines()
+        if line.strip().startswith("NUITKA_VERSION:")
+    ]
+    assert len(version_lines) == 1
+    nuitka_version = version_lines[0].split(":", maxsplit=1)[1].strip().strip('"')
+    for spec_path in SPEC_PATHS.values():
+        spec_packages = _read_spec(path=spec_path)["python"]["packages"]
+        assert spec_packages == f"Nuitka=={nuitka_version}"
+
+
+def test_tag_release_builds_never_use_the_nuitka_cache() -> None:
+    """Every cache step runs only for workflow_dispatch, so the push-triggered
+    tag release neither restores nor saves compilation objects.
+    """
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    build_job_text = workflow_text.split("\n  publish-development:", maxsplit=1)[0]
+    cache_step_names = [
+        "Configure Nuitka compilation cache",
+        "Install ccache",
+        "Cache Nuitka compilation",
+    ]
+
+    assert build_job_text.count("uses: actions/cache") == 1
+    assert build_job_text.count("NUITKA_CACHE_DIR=") == 1
+    for name in cache_step_names:
+        condition_lines = [
+            line.strip()
+            for line in _read_native_bundle_step(name=name).splitlines()
+            if line.strip().startswith("if:")
+        ]
+        assert len(condition_lines) == 1
+        assert condition_lines[0].startswith(
+            "if: github.event_name == 'workflow_dispatch'"
+        )
+
+    release_text = (PROJECT_ROOT / ".github/workflows/release.yml").read_text(
+        encoding="utf-8"
+    )
+    release_trigger = release_text.split("\njobs:", maxsplit=1)[0]
+    assert "workflow_dispatch" not in release_trigger
+    assert "push:" in release_trigger
+    assert "uses: ./.github/workflows/native-bundles.yml" in release_text
+
+
 @pytest.mark.parametrize(
     ("workflow_name", "name_variable", "macos_artifact_suffix", "signed"),
     [

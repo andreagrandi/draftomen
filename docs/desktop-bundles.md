@@ -327,6 +327,28 @@ smoke-tests the same payload shape that it uploads:
   builds, installs and smoke-tests the MSIX package, as described in
   [Microsoft Store MSIX package](#microsoft-store-msix-package).
 
+### Nuitka compilation cache
+
+A `workflow_dispatch` run keeps Nuitka's cache between runs. The job points
+`NUITKA_CACHE_DIR` at `$RUNNER_TEMP/nuitka-cache` and saves that directory
+with `actions/cache`. On macOS the job installs `ccache` with Homebrew, and
+Nuitka puts it in front of clang. On Windows Nuitka uses its bundled `clcache`
+with MSVC. Both store the compiled objects under `NUITKA_CACHE_DIR`.
+
+The cache key is
+`nuitka-<runner OS>-<runner arch>-python<version>-nuitka<version>-<uv.lock hash>`.
+The Python version is the one `uv run python` reports in that job. The Nuitka
+version is the job's `NUITKA_VERSION`, which must match the `Nuitka==` pin in
+both `pysidedeploy` specs. A change to `uv.lock`, Nuitka or Python starts a
+new cache. There are no fallback restore keys, so a changed key builds from
+scratch once and saves a fresh cache.
+
+Tag releases never use this cache. `release.yml` runs on a tag push and
+calls this workflow, so its jobs see the `push` event and skip the cache steps.
+They neither restore a cache that a development run on any ref saved nor save
+one of their own. Every release bundle, signed or unsigned, is built from a
+clean Nuitka cache.
+
 ### Manual development artifacts
 
 The uploaded artifact names are:

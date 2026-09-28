@@ -9,6 +9,10 @@
   file read or every 5 seconds, with the rows checked so far, and a final line
   with the total rows. A dump reused from the input cache shows the same
   lines. (#753)
+- Manual native bundle builds now keep Nuitka's cache between runs, keyed by
+  runner OS, architecture, Python version, Nuitka version and `uv.lock`. The
+  macOS jobs install `ccache`, and the Windows job uses Nuitka's `clcache`.
+  Tag release builds skip the cache and always compile from scratch. (#736)
 
 ## [0.4.2] - 2026-09-27
 
