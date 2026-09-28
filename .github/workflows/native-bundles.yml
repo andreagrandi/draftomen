@@ -398,9 +398,15 @@ jobs:
             --executable (Join-Path $env:STANDALONE_DIRECTORY "qt_gui.exe") `
             --output $layout
           $version = "$version".Trim()
-          Get-ChildItem -LiteralPath $env:STANDALONE_DIRECTORY |
-            Where-Object Name -ne "qt_gui.exe" |
-            Copy-Item -Destination $layout -Recurse
+          # The app's assets folder merges into the manifest's Assets folder,
+          # because Windows paths ignore case. No file names overlap.
+          # Robocopy exit codes below 8 mean success.
+          $PSNativeCommandUseErrorActionPreference = $false
+          robocopy $env:STANDALONE_DIRECTORY $layout /E /XF qt_gui.exe /NFL /NDL /NJH /NP
+          if ($LASTEXITCODE -ge 8) {
+            throw "robocopy failed with exit code $LASTEXITCODE."
+          }
+          $PSNativeCommandUseErrorActionPreference = $true
           Write-Host "MSIX version: $version"
 
           $outputDirectory = "dist-native/windows-msix"
