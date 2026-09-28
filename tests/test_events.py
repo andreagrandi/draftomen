@@ -129,14 +129,16 @@ def test_parse_fixture_yields_account_start_all_picks_and_completion() -> None:
     assert [
         (event.pack_number, event.pick_number) for event in pick_events
     ] == EXPECTED_PICK_COORDINATES
-    assert [event.chosen_grp_id for event in pick_events] == EXPECTED_CHOSEN_GRP_IDS
+    assert [
+        event.selected_grp_ids[0] for event in pick_events
+    ] == EXPECTED_CHOSEN_GRP_IDS
     assert [len(event.offered_grp_ids) for event in pack_events] == list(
         range(14, 0, -1)
     ) * 3
     assert pack_events[0].offered_grp_ids == EXPECTED_FIRST_PACK
-    assert pick_events[0].chosen_grp_id == 105097
+    assert pick_events[0].selected_grp_ids == (105097,)
     assert pack_events[-1].offered_grp_ids == (105182,)
-    assert pick_events[-1].chosen_grp_id == 105182
+    assert pick_events[-1].selected_grp_ids == (105182,)
 
     completion = events[-1]
     assert isinstance(completion, DraftCompletedEvent)
@@ -471,3 +473,15 @@ def test_malformed_or_unknown_draft_lines_raise_diagnostic_with_raw_line(
 
     assert error.value.raw_line == raw_line
     assert raw_line in str(error.value)
+
+
+def test_pick_made_event_rejects_empty_selected_grp_ids() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        PickMadeEvent(
+            event_name="QuickDraft_ABC_20260702",
+            set_code="ABC",
+            pack_number=0,
+            pick_number=0,
+            selected_grp_ids=(),
+            account_id=None,
+        )

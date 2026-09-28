@@ -165,7 +165,9 @@ def _validate_event_stream(
     pick_coordinates = tuple((event.pack_number, event.pick_number) for event in picks)
     if pick_coordinates != offer_coordinates:
         raise DraftmancerSmokeError("PickMadeEvent coordinates do not match their offers")
-    if tuple(event.chosen_grp_id for event in picks) != expected_grp_ids:
+    if tuple(event.selected_grp_ids for event in picks) != tuple(
+        (grp_id,) for grp_id in expected_grp_ids
+    ):
         raise DraftmancerSmokeError(
             "PickMadeEvent Arena IDs do not match the first card from each offered pack"
         )

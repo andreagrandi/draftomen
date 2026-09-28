@@ -342,7 +342,7 @@ The method returns only after a subsequent offer or completion is processed.
                 set_code=self._config.set_code.upper(),
                 pack_number=coordinates[0],
                 pick_number=coordinates[1],
-                chosen_grp_id=selected.arena_id,
+                selected_grp_ids=(selected.arena_id,),
                 account_id=self._config.user_id,
             )
         self._emit(event=event)

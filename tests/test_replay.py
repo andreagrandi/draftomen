@@ -592,7 +592,7 @@ def test_legacy_enrichment_does_not_change_replay_output() -> None:
                 set_code=set_code,
                 pack_number=pack_number,
                 pick_number=pick_number,
-                chosen_grp_id=grp_id,
+                selected_grp_ids=(grp_id,),
                 account_id=account_id,
             )
             for pick_number, grp_id in enumerate(pool_before_pick)
@@ -647,7 +647,7 @@ def _replay_context_events() -> tuple[
             set_code="MSH",
             pack_number=0,
             pick_number=0,
-            chosen_grp_id=105097,
+            selected_grp_ids=(105097,),
             account_id=account_id,
         ),
         PickMadeEvent(
@@ -655,7 +655,7 @@ def _replay_context_events() -> tuple[
             set_code="MSH",
             pack_number=0,
             pick_number=1,
-            chosen_grp_id=105134,
+            selected_grp_ids=(105134,),
             account_id=account_id,
         ),
         PackOfferedEvent(

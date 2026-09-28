@@ -5,6 +5,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from draftomen.events import (
     AccountEvent,
     DraftCompletedEvent,
@@ -17,6 +19,7 @@ from draftomen.events import (
 )
 from draftomen.pool import (
     DraftPick,
+    DraftPoolError,
     DraftPoolStore,
     DraftState,
     draft_state_path,
@@ -54,7 +57,9 @@ def test_fixture_replay_persists_complete_pool_under_account_directory(
     assert state.completed_at == FIXTURE_NOW.isoformat()
     assert state.chosen_pick_count == len(pick_events)
     assert len(state.pool_grp_ids) == len(pick_events)
-    assert state.pool_grp_ids == tuple(event.chosen_grp_id for event in pick_events)
+    assert state.pool_grp_ids == tuple(
+        event.selected_grp_ids[0] for event in pick_events
+    )
     assert len(state.picks) == len(pick_events)
     assert all(pick.chosen_grp_id is not None for pick in state.picks)
 
@@ -151,7 +156,7 @@ def test_two_account_stream_persists_separated_states_without_pool_leakage(
             set_code="ABC",
             pack_number=0,
             pick_number=0,
-            chosen_grp_id=101,
+            selected_grp_ids=(101,),
             account_id=None,
         ),
         AccountEvent(
@@ -179,7 +184,7 @@ def test_two_account_stream_persists_separated_states_without_pool_leakage(
             set_code="DEF",
             pack_number=0,
             pick_number=0,
-            chosen_grp_id=201,
+            selected_grp_ids=(201,),
             account_id=None,
         ),
         DraftCompletedEvent(
@@ -210,7 +215,7 @@ def test_two_account_stream_persists_separated_states_without_pool_leakage(
             set_code="ABC",
             pack_number=0,
             pick_number=1,
-            chosen_grp_id=102,
+            selected_grp_ids=(102,),
             account_id=None,
         ),
         DraftCompletedEvent(
@@ -356,7 +361,7 @@ def test_conflicting_first_pack_starts_new_synthetic_draft_state(
             set_code="ABC",
             pack_number=0,
             pick_number=0,
-            chosen_grp_id=101,
+            selected_grp_ids=(101,),
             account_id=None,
         )
     )
@@ -387,6 +392,48 @@ def test_conflicting_first_pack_starts_new_synthetic_draft_state(
         "QuickDraft_ABC_20260703-2026-07-03T12_00_00+00_00.json",
         "QuickDraft_ABC_20260703.json",
     ]
+
+
+def test_multi_card_pick_made_event_raises_and_leaves_state_unchanged(
+    tmp_path: Path,
+) -> None:
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name="First"))
+    store.consume(
+        event=PackOfferedEvent(
+            event_name="QuickDraft_ABC_20260703",
+            set_code="ABC",
+            pack_number=0,
+            pick_number=0,
+            offered_grp_ids=(101, 102),
+            pool_grp_ids=(),
+            account_id=None,
+        )
+    )
+    before = load_draft_state(
+        account_id="ACCOUNT-A",
+        draft_id="QuickDraft_ABC_20260703",
+        app_dir=tmp_path,
+    )
+
+    with pytest.raises(DraftPoolError, match="multi-card picks are not supported"):
+        store.consume(
+            event=PickMadeEvent(
+                event_name="QuickDraft_ABC_20260703",
+                set_code="ABC",
+                pack_number=0,
+                pick_number=0,
+                selected_grp_ids=(101, 102),
+                account_id=None,
+            )
+        )
+
+    after = load_draft_state(
+        account_id="ACCOUNT-A",
+        draft_id="QuickDraft_ABC_20260703",
+        app_dir=tmp_path,
+    )
+    assert after == before
 
 
 def _fixture_events() -> list[DraftEvent]:

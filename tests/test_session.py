@@ -1058,7 +1058,7 @@ def test_live_session_without_log_source_processes_typed_persisted_lifecycle(
             set_code="TST",
             pack_number=0,
             pick_number=0,
-            chosen_grp_id=104976,
+            selected_grp_ids=(104976,),
             account_id="direct-account",
         ),
         PackOfferedEvent(
@@ -1218,7 +1218,7 @@ def test_live_session_direct_ingestion_loads_configured_empirical_profile(
                 set_code="TST",
                 pack_number=0,
                 pick_number=0,
-                chosen_grp_id=104894,
+                selected_grp_ids=(104894,),
                 account_id="direct-account",
             ),
             PackOfferedEvent(
@@ -2961,7 +2961,7 @@ def test_live_session_ordinary_draft_progression_keeps_profile_request(
             set_code="TST",
             pack_number=CONTEXT_PACK_NUMBER,
             pick_number=CONTEXT_PICK_NUMBER,
-            chosen_grp_id=CONTEXT_OFFERED_GRP_IDS[0],
+            selected_grp_ids=(CONTEXT_OFFERED_GRP_IDS[0],),
             account_id=None,
         ),
         state=None,
@@ -8222,7 +8222,7 @@ def _profiled_history_events(
                 set_code="TST",
                 pack_number=pack_number,
                 pick_number=pick_number,
-                chosen_grp_id=picked_card,
+                selected_grp_ids=(picked_card,),
                 account_id="profiled-account",
             )
         )
