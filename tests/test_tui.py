@@ -2330,7 +2330,7 @@ async def _assert_backtest_missing_history_is_read_only(tmp_path: Path) -> None:
                 pick_number=0,
                 offered_grp_ids=None,
                 pool_before_pick=(),
-                chosen_grp_id=105097,
+                selected_grp_ids=(105097,),
             ),
         ),
     )

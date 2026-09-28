@@ -8,7 +8,6 @@
   "event_name": "QuickDraft_HOB_20260912",
   "picks": [
     {
-      "chosen_grp_id": 103382,
       "offered_grp_ids": [
         103382,
         103526,
@@ -21,10 +20,12 @@
         103405,
         103410,
         103415
+      ],
+      "selected_grp_ids": [
+        103382
       ]
     },
     {
-      "chosen_grp_id": 103531,
       "offered_grp_ids": [
         103531,
         103526,
@@ -38,10 +39,12 @@
         103410,
         103415,
         103382
+      ],
+      "selected_grp_ids": [
+        103531
       ]
     },
     {
-      "chosen_grp_id": 103458,
       "offered_grp_ids": [
         103458,
         103530
@@ -55,10 +58,12 @@
         103415,
         103382,
         103531
+      ],
+      "selected_grp_ids": [
+        103458
       ]
     },
     {
-      "chosen_grp_id": 103526,
       "offered_grp_ids": [
         103526,
         103525
@@ -71,6 +76,9 @@
         103410,
         103415,
         103382
+      ],
+      "selected_grp_ids": [
+        103526
       ]
     }
   ],
@@ -84,7 +92,7 @@
     103458,
     103526
   ],
-  "schema_version": 1,
+  "schema_version": 2,
   "set_code": "hob",
   "started_at": "2026-09-12T09:00:00+00:00",
   "updated_at": "2026-09-12T09:30:00+00:00"

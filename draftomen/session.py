@@ -4777,7 +4777,7 @@ def _pending_pack_event(*, state: DraftState) -> PackOfferedEvent | None:
     pending_picks = tuple(
         pick
         for pick in state.picks
-        if pick.offered_grp_ids and pick.chosen_grp_id is None
+        if pick.offered_grp_ids and not pick.is_picked
     )
     if not pending_picks:
         return None

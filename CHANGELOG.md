@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+- Draft state files now store each pick's cards as a `selected_grp_ids` list,
+  so a Pick-Two pick keeps both cards at one pack/pick coordinate and adds both
+  to the pool once. The state schema moves to version 2. Version 1 files load
+  through a migration and are saved as version 2 on the next change. Replaying
+  the same pick is a no-op, and a different selection at the same coordinate
+  raises the existing conflict error. `DraftState` gains `selected_card_count`
+  beside the logical `chosen_pick_count`. Backtest reports skip multi-card
+  picks with the reason `multi-card pick`. Quick Draft output is unchanged.
+  (#769)
+
 - `PickMadeEvent` now carries `selected_grp_ids`, a non-empty tuple of Arena
   grpIds, in place of `chosen_grp_id`, so one event can describe a Pick-Two
   pick. The Quick Draft parser and the Mocked Draft adapter emit a one-card

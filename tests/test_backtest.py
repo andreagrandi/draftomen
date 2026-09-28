@@ -54,14 +54,14 @@ def test_backtest_uses_saved_pool_before_pick_for_recommendation() -> None:
                 pick_number=0,
                 offered_grp_ids=(4, 3),
                 pool_before_pick=(),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
             DraftPick(
                 pack_number=0,
                 pick_number=5,
                 offered_grp_ids=(4, 3),
                 pool_before_pick=(1, 2),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
         ),
         pool_grp_ids=(4, 4, 4),
@@ -94,6 +94,31 @@ def test_backtest_uses_saved_pool_before_pick_for_recommendation() -> None:
     assert "Summary: 1/2 recommendations matched actual picks (50.0%)." in output
 
 
+def test_backtest_skips_multi_card_pick_instead_of_comparing_one_card() -> None:
+    state = _draft_state(
+        picks=(
+            DraftPick(
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(4, 3),
+                pool_before_pick=(),
+                selected_grp_ids=(4, 3),
+            ),
+        ),
+        pool_grp_ids=(4, 3),
+    )
+
+    report = generate_backtest_report(
+        state=state,
+        card_database=_card_database(),
+    )
+
+    assert report.compared_rows == ()
+    assert len(report.skipped_rows) == 1
+    assert report.skipped_rows[0].skipped_reason == "multi-card pick"
+    assert report.skipped_rows[0].actual is None
+
+
 def test_backtest_retains_profile_context_and_recommendation_evidence() -> None:
     state = _draft_state(
         picks=(
@@ -102,7 +127,7 @@ def test_backtest_retains_profile_context_and_recommendation_evidence() -> None:
                 pick_number=5,
                 offered_grp_ids=(4, 3),
                 pool_before_pick=(1, 2),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
         ),
         pool_grp_ids=(1, 2, 3),
@@ -138,7 +163,7 @@ def test_backtest_contextual_mode_changes_saved_pick_scoring() -> None:
                 pick_number=5,
                 offered_grp_ids=(3, 4),
                 pool_before_pick=(1, 2),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
         ),
         pool_grp_ids=(1, 2, 3),
@@ -175,7 +200,7 @@ def test_backtest_injected_engine_configuration_takes_precedence() -> None:
                 pick_number=5,
                 offered_grp_ids=(3, 4),
                 pool_before_pick=(1, 2),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
         ),
         pool_grp_ids=(1, 2, 3),
@@ -207,7 +232,7 @@ def test_backtest_no_profile_retains_generic_scoring_without_context() -> None:
                 pick_number=5,
                 offered_grp_ids=(4, 3),
                 pool_before_pick=(1, 2),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
         ),
         pool_grp_ids=(1, 2, 3),
@@ -304,7 +329,7 @@ def test_backtest_cli_skips_missing_offered_history_without_mutating_state(
                 pick_number=0,
                 offered_grp_ids=None,
                 pool_before_pick=(),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
         ),
         pool_grp_ids=(3,),
@@ -356,12 +381,12 @@ def test_backtest_cli_skips_omitted_pick_history_without_mutating_state(
                 pick_number=0,
                 offered_grp_ids=(3, 4),
                 pool_before_pick=(),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
             DraftPick(
                 pack_number=0,
                 pick_number=1,
-                chosen_grp_id=None,
+                selected_grp_ids=(),
             ),
         ),
         pool_grp_ids=(3,),
@@ -435,14 +460,14 @@ def test_backtest_cli_skips_end_of_pack_handshake_picks_without_mutating_state(
                 pick_number=0,
                 offered_grp_ids=(3, 4),
                 pool_before_pick=(),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
             DraftPick(
                 pack_number=0,
                 pick_number=EXPECTED_PICKS_PER_PACK,
                 offered_grp_ids=(4,),
                 pool_before_pick=(3,),
-                chosen_grp_id=4,
+                selected_grp_ids=(4,),
             ),
         ),
         pool_grp_ids=(3, 4),
@@ -493,7 +518,7 @@ def test_backtest_cli_loads_state_profile_once_and_passes_it_to_report(
                 pick_number=5,
                 offered_grp_ids=(4, 3),
                 pool_before_pick=(1, 2),
-                chosen_grp_id=3,
+                selected_grp_ids=(3,),
             ),
         ),
         pool_grp_ids=(1, 2, 3),
