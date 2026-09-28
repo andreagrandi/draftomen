@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+- The log parser now reads human drafts. A new `draftomen/draft_format.py`
+  defines the pack rules for Quick, Premier, Traditional and Pick-Two drafts and
+  maps the `QuickDraft_`, `PremierDraft_`, `TradDraft_`, `PickTwoDraft_` and
+  `PickTwoTradDraft_` event prefixes to them, longest prefix first. `Draft.Notify`
+  lines become pack-offered events with 0-based coordinates, and a notify that
+  Arena logs twice yields one event. A draft that starts at pack 1 pick 2 works.
+  Unknown event prefixes and malformed notify lines are ignored. Lines that
+  start with a `[<thread>] ` prefix, as in Arena's rotated `UTC_Log` files,
+  parse like the plain lines. Quick and Mocked Draft parsing is unchanged. (#261)
+
 - Ruff now lints Python code with the `F`, `E4`, `E7` and `E9` rules. A
   pre-commit hook runs `ruff check` on staged files, and the nox `ci` session
   runs it on the whole repository. The 36 existing findings are fixed. Three

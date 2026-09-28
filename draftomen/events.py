@@ -1,4 +1,4 @@
-"""Parse Quick Draft log lines into typed events.
+"""Parse Quick, Premier, Traditional and Pick-Two draft log lines into typed events.
 Keep Arena log knowledge isolated in a pure line-consumer layer.
 """
 
@@ -10,14 +10,29 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, TypeAlias
 
-QUICK_DRAFT_PREFIX = "QuickDraft_"
-EXPECTED_PACK_COUNT = 3
-EXPECTED_PICKS_PER_PACK = 14
-EXPECTED_TOTAL_PICKS = EXPECTED_PACK_COUNT * EXPECTED_PICKS_PER_PACK
+from draftomen.draft_format import (
+    DRAFT_EVENT_PREFIXES,
+    QUICK_DRAFT_PREFIX,
+    QUICK_RULES,
+    DraftFormat,
+    DraftRules,
+    detect_draft_format,
+    rules_for_format,
+)
+
+EXPECTED_PACK_COUNT = QUICK_RULES.pack_count
+EXPECTED_PICKS_PER_PACK = QUICK_RULES.picks_per_pack
+EXPECTED_TOTAL_PICKS = QUICK_RULES.total_picks
 FINAL_PACK_NUMBER = EXPECTED_PACK_COUNT - 1
 FINAL_PICK_NUMBER = EXPECTED_PICKS_PER_PACK - 1
 
 _REQUEST_LINE = re.compile(r"^\[UnityCrossThreadLogger\]==>\s+(?P<token>\S+)\s+(?P<body>\{.*\})$")
+_NOTIFY_LINE = re.compile(r"^\[UnityCrossThreadLogger\]Draft\.Notify\s+(?P<body>\{.*\})$")
+# Rotated UTC_Log files start each line with "[<thread>] ". The lookahead keeps
+# tags such as "[Accounts - Login] Logged in" intact.
+_THREAD_PREFIX = re.compile(
+    r"^\[(?!UnityCrossThreadLogger\])[^\[\]]+\]\s+(?=\[UnityCrossThreadLogger\]|<==|==>|\{)"
+)
 _RESPONSE_MARKER = re.compile(r"^<==\s+(?P<token>[^()]+)\(")
 _LOGIN_DISPLAY_NAME = re.compile(
     r"\[Accounts - Login\]\s+Logged in successfully\.\s+"
@@ -71,8 +86,8 @@ class DraftStartedEvent:
 
 @dataclass(frozen=True, slots=True)
 class PackOfferedEvent:
-    """Pack contents offered for a Quick Draft pick.
-    Card identifiers are normalized Arena grpIds.
+    """Pack contents offered for a draft pick.
+    Card identifiers are normalized Arena grpIds and coordinates are 0-based.
     """
 
     event_name: str
@@ -85,6 +100,9 @@ class PackOfferedEvent:
     # Arena packs hold 14 picks; Mocked Draft packs from Draftmancer can hold
     # 13 or 15 depending on the set's booster layout.
     picks_per_pack: int = EXPECTED_PICKS_PER_PACK
+    draft_format: DraftFormat = DraftFormat.QUICK
+    # Pick-Two takes two cards for each logical pick.
+    cards_per_pick: int = QUICK_RULES.cards_per_pick
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +144,13 @@ DraftEvent: TypeAlias = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _DraftContext:
+    event_name: str
+    set_code: str
+    rules: DraftRules
+
+
 @dataclass(slots=True)
 class _ParserState:
     account_id: str | None = None
@@ -133,6 +158,9 @@ class _ParserState:
     screen_names_by_client_id: dict[str, str] = field(default_factory=dict)
     observed_quick_draft_course_ids: set[str] = field(default_factory=set)
     login_generation: int = 0
+    # Draft.Notify carries no event name, so packs use the last event Arena joined.
+    draft_context: _DraftContext | None = None
+    last_notify: tuple[str, int, int, tuple[int, ...]] | None = None
 
 
 class DraftLogParser:
@@ -187,7 +215,7 @@ def parse_events(lines: Iterable[str]) -> Iterator[DraftEvent]:
 
 
 def _parse_line(line: str, state: _ParserState) -> tuple[DraftEvent, ...]:
-    stripped = line.strip()
+    stripped = _THREAD_PREFIX.sub("", line.strip(), count=1)
     if not stripped:
         return ()
 
@@ -203,8 +231,14 @@ def _parse_line(line: str, state: _ParserState) -> tuple[DraftEvent, ...]:
         state.pending_login_screen_name = login_match.group("screen_name").strip()
         state.screen_names_by_client_id.clear()
         state.observed_quick_draft_course_ids.clear()
+        state.draft_context = None
+        state.last_notify = None
         state.login_generation += 1
         return ()
+
+    notify_match = _NOTIFY_LINE.match(stripped)
+    if notify_match is not None:
+        return _parse_draft_notify(body=notify_match.group("body"), state=state)
 
     request_match = _REQUEST_LINE.match(stripped)
     if request_match is not None:
@@ -319,6 +353,7 @@ def _parse_event_join_request(
     state: _ParserState,
 ) -> tuple[DraftEvent, ...]:
     if QUICK_DRAFT_PREFIX not in raw_line:
+        _remember_join_request_event(body=body, raw_line=raw_line, state=state)
         return ()
 
     request = _request_payload(body=body, raw_line=raw_line)
@@ -327,7 +362,12 @@ def _parse_event_join_request(
         field_name="request.EventName",
         raw_line=raw_line,
     )
+    if not event_name.startswith(QUICK_DRAFT_PREFIX):
+        # The substring gate above also matches names such as PickTwoQuickDraft_.
+        return ()
+
     set_code = _set_code(event_name=event_name, raw_line=raw_line)
+    _remember_draft_event(event_name=event_name, state=state)
     return (
         QuickDraftDetectedEvent(
             event_name=event_name,
@@ -335,6 +375,115 @@ def _parse_event_join_request(
             account_id=state.account_id,
         ),
     )
+
+
+def _remember_join_request_event(
+    *,
+    body: str,
+    raw_line: str,
+    state: _ParserState,
+) -> None:
+    if not any(prefix in raw_line for prefix in DRAFT_EVENT_PREFIXES):
+        return
+
+    # Human drafts share the EventJoin token with every other event, so a request
+    # this parser cannot read must not fail the live loop.
+    try:
+        request = _request_payload(body=body, raw_line=raw_line)
+    except DraftLogParseError:
+        return
+
+    event_name = request.get("EventName")
+    if isinstance(event_name, str):
+        _remember_draft_event(event_name=event_name, state=state)
+
+
+def _remember_draft_event(*, event_name: str, state: _ParserState) -> None:
+    draft_format = detect_draft_format(event_name=event_name)
+    if draft_format is None:
+        return
+
+    parts = event_name.split("_")
+    if len(parts) < 2 or parts[1] == "":
+        return
+
+    context = state.draft_context
+    if context is not None and context.event_name == event_name:
+        return
+
+    state.draft_context = _DraftContext(
+        event_name=event_name,
+        set_code=parts[1],
+        rules=rules_for_format(draft_format=draft_format),
+    )
+    state.last_notify = None
+
+
+def _parse_draft_notify(*, body: str, state: _ParserState) -> tuple[DraftEvent, ...]:
+    # Notify lines come from untrusted logs and Arena logs each one twice, so any
+    # record that does not fit the active draft is dropped without raising.
+    context = state.draft_context
+    if context is None:
+        return ()
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return ()
+
+    if not isinstance(payload, dict):
+        return ()
+
+    draft_id = payload.get("draftId")
+    pack = payload.get("SelfPack")
+    pick = payload.get("SelfPick")
+    offered_grp_ids = _notify_card_ids(payload.get("PackCards"))
+    rules = context.rules
+    if (
+        not isinstance(draft_id, str)
+        or draft_id == ""
+        or not _is_plain_int(pack)
+        or not 1 <= pack <= rules.pack_count
+        or not _is_plain_int(pick)
+        or not 1 <= pick <= rules.picks_per_pack
+        or offered_grp_ids is None
+    ):
+        return ()
+
+    notify_key = (draft_id, pack, pick, offered_grp_ids)
+    if notify_key == state.last_notify:
+        return ()
+
+    state.last_notify = notify_key
+    return (
+        PackOfferedEvent(
+            event_name=context.event_name,
+            set_code=context.set_code,
+            pack_number=pack - 1,
+            pick_number=pick - 1,
+            offered_grp_ids=offered_grp_ids,
+            pool_grp_ids=(),
+            account_id=state.account_id,
+            picks_per_pack=rules.picks_per_pack,
+            draft_format=rules.draft_format,
+            cards_per_pick=rules.cards_per_pick,
+        ),
+    )
+
+
+def _is_plain_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _notify_card_ids(value: Any) -> tuple[int, ...] | None:
+    if not isinstance(value, str):
+        return None
+
+    parts = [part.strip() for part in value.split(",")]
+    if not all(part.isascii() and part.isdigit() for part in parts):
+        return None
+
+    return tuple(int(part) for part in parts)
 
 
 def _request_payload(*, body: str, raw_line: str) -> dict[str, Any]:
@@ -355,6 +504,7 @@ def _parse_json_line(
 ) -> tuple[DraftEvent, ...]:
     data = _json_object(text=text, raw_line=raw_line, context="JSON log line")
     _remember_quick_draft_course_ids(data=data, state=state)
+    _remember_player_draft_course(data=data, state=state)
 
     if "authenticateResponse" in data:
         account = _parse_account(data=data, raw_line=raw_line, state=state)
@@ -400,6 +550,21 @@ def _remember_quick_draft_course_ids(
             and course_id != ""
         ):
             state.observed_quick_draft_course_ids.add(course_id)
+
+
+def _remember_player_draft_course(*, data: dict[str, Any], state: _ParserState) -> None:
+    # The EventJoin response wraps the course, while resume snapshots are flat.
+    course = data.get("Course")
+    if not isinstance(course, dict):
+        course = data
+
+    event_name = course.get("InternalEventName")
+    if (
+        course.get("CurrentModule") == "PlayerDraft"
+        and isinstance(course.get("CourseId"), str)
+        and isinstance(event_name, str)
+    ):
+        _remember_draft_event(event_name=event_name, state=state)
 
 
 def _parse_account(
