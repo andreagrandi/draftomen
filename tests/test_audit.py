@@ -202,6 +202,19 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
     assert completion["inferred"] is False
 
 
+def test_audit_record_choice_rejects_multi_card_pick(tmp_path: Path) -> None:
+    state = _draft_state()
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+    multi_card_event = replace(_pick_event(), selected_grp_ids=(102, 103))
+
+    with pytest.raises(ValueError, match="multi-card"):
+        store.record_choice(
+            state=state,
+            event=multi_card_event,
+            ranking_mode="mv",
+        )
+
+
 @pytest.mark.parametrize(
     ("comparison_summary",),
     ((None,), ("DO recommendation: Alpha leads Beta by 10 DO points.",)),
@@ -806,7 +819,7 @@ def _pick_event() -> PickMadeEvent:
         set_code=SET_CODE,
         pack_number=0,
         pick_number=0,
-        chosen_grp_id=102,
+        selected_grp_ids=(102,),
         account_id=ACCOUNT_ID,
     )
 

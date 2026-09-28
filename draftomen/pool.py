@@ -569,6 +569,13 @@ class DraftPoolStore:
         return updated
 
     def _consume_pick_made(self, *, event: PickMadeEvent) -> DraftState:
+        if len(event.selected_grp_ids) != 1:
+            raise DraftPoolError(
+                f"Pack {event.pack_number} pick {event.pick_number} selected "
+                f"{len(event.selected_grp_ids)} cards; multi-card picks are not "
+                "supported yet by the stored pool state."
+            )
+        chosen_grp_id = event.selected_grp_ids[0]
         state = self._state_for_draft_event(
             account_id=event.account_id,
             event_name=event.event_name,
@@ -584,7 +591,7 @@ class DraftPoolStore:
             pick_number=event.pick_number,
             offered_grp_ids=None,
             pool_before_pick=None,
-            chosen_grp_id=event.chosen_grp_id,
+            chosen_grp_id=chosen_grp_id,
         )
         if existing_pick == merged_pick:
             return state
@@ -592,7 +599,7 @@ class DraftPoolStore:
         updated = replace(
             state,
             picks=_replace_pick(picks=state.picks, pick=merged_pick),
-            pool_grp_ids=state.pool_grp_ids + (event.chosen_grp_id,),
+            pool_grp_ids=state.pool_grp_ids + (chosen_grp_id,),
             updated_at=self._now_iso(),
         )
         save_draft_state(state=updated, app_dir=self.app_dir)

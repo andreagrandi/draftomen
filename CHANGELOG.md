@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- `PickMadeEvent` now carries `selected_grp_ids`, a non-empty tuple of Arena
+  grpIds, in place of `chosen_grp_id`, so one event can describe a Pick-Two
+  pick. The Quick Draft parser and the Mocked Draft adapter emit a one-card
+  tuple. The pool state still stores one card per pick and raises an error for
+  a pick with more cards. Quick Draft replay, audit and backtest output is
+  unchanged. (#768)
+
 - The log parser now reads human drafts. A new `draftomen/draft_format.py`
   defines the pack rules for Quick, Premier, Traditional and Pick-Two drafts and
   maps the `QuickDraft_`, `PremierDraft_`, `TradDraft_`, `PickTwoDraft_` and

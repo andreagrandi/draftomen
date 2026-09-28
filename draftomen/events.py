@@ -107,16 +107,20 @@ class PackOfferedEvent:
 
 @dataclass(frozen=True, slots=True)
 class PickMadeEvent:
-    """Chosen card for a Quick Draft pick.
-    Quick Draft picks one card, exposed as an Arena grpId.
+    """Cards selected at one pack and pick coordinate, as Arena grpIds.
+    Quick Draft selects one card; Pick-Two selects two.
     """
 
     event_name: str
     set_code: str
     pack_number: int
     pick_number: int
-    chosen_grp_id: int
+    selected_grp_ids: tuple[int, ...]
     account_id: str | None
+
+    def __post_init__(self) -> None:
+        if not self.selected_grp_ids:
+            raise ValueError("PickMadeEvent.selected_grp_ids must not be empty.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,7 +339,7 @@ def _parse_request_line(
                 set_code=set_code,
                 pack_number=pack_number,
                 pick_number=pick_number,
-                chosen_grp_id=card_ids[0],
+                selected_grp_ids=(card_ids[0],),
                 account_id=state.account_id,
             ),
         )

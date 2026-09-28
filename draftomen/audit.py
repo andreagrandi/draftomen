@@ -237,6 +237,12 @@ class DraftAuditStore:
         The choice links to the most recent persisted evaluation when available.
         """
 
+        if len(event.selected_grp_ids) > 1:
+            raise ValueError(
+                "record_choice does not support multi-card picks; "
+                f"got {event.selected_grp_ids!r}."
+            )
+        chosen_grp_id = event.selected_grp_ids[0]
         mode = validate_ranking_mode(ranking_mode=ranking_mode)
         path = self.path_for(state=state)
         self._ensure_index(path=path)
@@ -257,20 +263,20 @@ class DraftAuditStore:
             ),
             "pack_number": event.pack_number,
             "pick_number": event.pick_number,
-            "chosen_grp_id": event.chosen_grp_id,
+            "chosen_grp_id": chosen_grp_id,
             "ranking_mode": mode,
             "recommended_grp_id": recommended_grp_id,
             "recommendation_followed": (
                 None
                 if recommended_grp_id is None
-                else recommended_grp_id == event.chosen_grp_id
+                else recommended_grp_id == chosen_grp_id
             ),
         }
         record_id = _record_id(
             prefix="choice",
             value={
                 "decision_id": decision_id,
-                "chosen_grp_id": event.chosen_grp_id,
+                "chosen_grp_id": chosen_grp_id,
             },
         )
         return self._append(

@@ -803,7 +803,7 @@ def _fixture_grp_ids() -> set[int]:
             grp_ids.update(event.offered_grp_ids)
             grp_ids.update(event.pool_grp_ids)
         elif isinstance(event, PickMadeEvent):
-            grp_ids.add(event.chosen_grp_id)
+            grp_ids.update(event.selected_grp_ids)
         elif isinstance(event, DraftCompletedEvent):
             grp_ids.update(event.picked_grp_ids)
 

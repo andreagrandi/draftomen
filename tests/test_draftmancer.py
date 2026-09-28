@@ -727,7 +727,7 @@ def test_duplicate_arena_ids_use_unique_instance_index_for_pick() -> None:
         set_code="HOB",
         pack_number=0,
         pick_number=0,
-        chosen_grp_id=100,
+        selected_grp_ids=(100,),
         account_id="developer-1",
     )
     assert published[3].offered_grp_ids == (101,)  # type: ignore[union-attr]
@@ -865,7 +865,7 @@ def test_three_pack_lifecycle_orders_pick_before_queued_offer_and_completion(
     coordinates = ((0, 0), (0, 1), (1, 0), (2, 0))
     assert tuple((event.pack_number, event.pick_number) for event in offers) == coordinates
     assert tuple((event.pack_number, event.pick_number) for event in picks) == coordinates
-    assert tuple(event.chosen_grp_id for event in picks) == (100, 101, 200, 300)
+    assert tuple(event.selected_grp_ids[0] for event in picks) == (100, 101, 200, 300)
     assert tuple(event.offered_grp_ids for event in offers) == ((100,), (101,), (200,), (300,))
     completed = published[-1]
     assert isinstance(completed, DraftCompletedEvent)

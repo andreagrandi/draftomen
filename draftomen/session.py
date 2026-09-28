@@ -3999,7 +3999,7 @@ class LiveSession:
                 )
                 keep_recommendations = False
             elif isinstance(event, PickMadeEvent):
-                self._transient_pool_grp_ids += (event.chosen_grp_id,)
+                self._transient_pool_grp_ids += event.selected_grp_ids
                 phase = ApplicationPhase.DRAFTING
                 message = (
                     f"Pack {event.pack_number + 1}, pick "

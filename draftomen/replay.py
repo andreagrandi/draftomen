@@ -366,10 +366,11 @@ def format_pick_made_event(
     The caller decides whether to add a separating blank line.
     """
 
-    return [
-        "Chosen card: "
-        f"{format_card_info(card_database.lookup(grp_id=event.chosen_grp_id))}"
-    ]
+    chosen_cards = ", ".join(
+        format_card_info(card_database.lookup(grp_id=grp_id))
+        for grp_id in event.selected_grp_ids
+    )
+    return [f"Chosen card: {chosen_cards}"]
 
 
 def format_draft_completed_event(*, event: DraftCompletedEvent) -> list[str]:
