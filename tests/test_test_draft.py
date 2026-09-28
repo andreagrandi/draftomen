@@ -372,7 +372,7 @@ def _seed_helper_sources(*, tmp_path: Path) -> _HelperSources:
                 pick_number=0,
                 offered_grp_ids=(100, 101),
                 pool_before_pick=(),
-                chosen_grp_id=100,
+                selected_grp_ids=(100,),
             ),
         ),
         pool_grp_ids=(100,),

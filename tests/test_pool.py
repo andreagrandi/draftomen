@@ -18,6 +18,7 @@ from draftomen.events import (
     parse_events,
 )
 from draftomen.pool import (
+    LEGACY_CHOSEN_CARD_KEY,
     DraftPick,
     DraftPoolError,
     DraftPoolStore,
@@ -61,7 +62,8 @@ def test_fixture_replay_persists_complete_pool_under_account_directory(
         event.selected_grp_ids[0] for event in pick_events
     )
     assert len(state.picks) == len(pick_events)
-    assert all(pick.chosen_grp_id is not None for pick in state.picks)
+    assert all(pick.selected_grp_ids for pick in state.picks)
+    assert state.selected_card_count == len(pick_events)
 
     path = draft_state_path(
         account_id=FIXTURE_ACCOUNT_ID,
@@ -386,7 +388,7 @@ def test_conflicting_first_pack_starts_new_synthetic_draft_state(
         pick_number=0,
         offered_grp_ids=(201, 202),
         pool_before_pick=(),
-        chosen_grp_id=None,
+        selected_grp_ids=(),
     )
     assert sorted(path.name for path in (tmp_path / "state" / "ACCOUNT-A").iterdir()) == [
         "QuickDraft_ABC_20260703-2026-07-03T12_00_00+00_00.json",
@@ -394,46 +396,253 @@ def test_conflicting_first_pack_starts_new_synthetic_draft_state(
     ]
 
 
-def test_multi_card_pick_made_event_raises_and_leaves_state_unchanged(
+def test_two_card_pick_adds_both_cards_to_pool_at_one_coordinate(
     tmp_path: Path,
 ) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+
+    state = store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+
+    assert state is not None
+    assert state.pool_grp_ids == (101, 102)
+    assert state.picks == (
+        DraftPick(
+            pack_number=0,
+            pick_number=0,
+            offered_grp_ids=(101, 102, 103),
+            pool_before_pick=(),
+            selected_grp_ids=(101, 102),
+        ),
+    )
+    assert state.chosen_pick_count == 1
+    assert state.selected_card_count == 2
+    assert _load_pick_two_state(tmp_path=tmp_path) == state
+
+
+def test_duplicate_identical_multi_card_pick_is_a_no_op(tmp_path: Path) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+    path = store.path_for(account_id="ACCOUNT-A", draft_id=PICK_TWO_EVENT_NAME)
+    saved_payload = path.read_text(encoding="utf-8")
+
+    replayed = store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+
+    assert replayed is not None
+    assert replayed.pool_grp_ids == (101, 102)
+    assert replayed.selected_card_count == 2
+    assert path.read_text(encoding="utf-8") == saved_payload
+
+
+def test_different_selection_at_same_coordinate_raises_conflict(
+    tmp_path: Path,
+) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+    before = _load_pick_two_state(tmp_path=tmp_path)
+
+    with pytest.raises(DraftPoolError, match="selected_grp_ids changed from"):
+        store.consume(event=_pick_two_pick(selected_grp_ids=(101, 103)))
+
+    assert _load_pick_two_state(tmp_path=tmp_path) == before
+
+
+def test_multi_card_pick_with_unoffered_card_raises(tmp_path: Path) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+
+    with pytest.raises(DraftPoolError, match="which were not all offered"):
+        store.consume(event=_pick_two_pick(selected_grp_ids=(101, 101)))
+
+
+def test_multi_card_pick_survives_next_pack_and_completion(tmp_path: Path) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+    store.consume(
+        event=PackOfferedEvent(
+            event_name=PICK_TWO_EVENT_NAME,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=1,
+            offered_grp_ids=(201, 202),
+            pool_grp_ids=(102, 101),
+            account_id=None,
+        )
+    )
+    pending = _load_pick_two_state(tmp_path=tmp_path)
+    assert pending.pool_grp_ids == (101, 102)
+    assert pending.pick_for(pack_number=0, pick_number=1) == DraftPick(
+        pack_number=0,
+        pick_number=1,
+        offered_grp_ids=(201, 202),
+        pool_before_pick=(102, 101),
+    )
+
+    store.consume(
+        event=_pick_two_pick(selected_grp_ids=(201, 202), pick_number=1)
+    )
+    completed = store.consume(
+        event=DraftCompletedEvent(
+            event_name=PICK_TWO_EVENT_NAME,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=1,
+            picked_grp_ids=(202, 101, 201, 102),
+            inferred=False,
+            account_id=None,
+        )
+    )
+
+    assert completed is not None
+    assert completed.completed is True
+    assert completed.pool_grp_ids == (101, 102, 201, 202)
+    assert completed.chosen_pick_count == 2
+    assert completed.selected_card_count == 4
+
+
+def test_schema_1_state_file_migrates_chosen_card_on_load(tmp_path: Path) -> None:
+    path = draft_state_path(
+        account_id="ACCOUNT-A",
+        draft_id="draft-v1",
+        app_dir=tmp_path,
+    )
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "account_id": "ACCOUNT-A",
+                "account_screen_name": None,
+                "draft_id": "draft-v1",
+                "event_name": "QuickDraft_ABC_20260703",
+                "set_code": "ABC",
+                "course_id": "draft-v1",
+                "started_at": "2026-07-03T12:00:00+00:00",
+                "updated_at": "2026-07-03T12:00:00+00:00",
+                "completed_at": None,
+                "completed": False,
+                "picks": [
+                    {
+                        "pack_number": 0,
+                        "pick_number": 0,
+                        "offered_grp_ids": [101, 102],
+                        "pool_before_pick": [],
+                        LEGACY_CHOSEN_CARD_KEY: 101,
+                    },
+                    {
+                        "pack_number": 0,
+                        "pick_number": 1,
+                        "offered_grp_ids": [201, 202],
+                        "pool_before_pick": [101],
+                        LEGACY_CHOSEN_CARD_KEY: None,
+                    },
+                ],
+                "pool_grp_ids": [101],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = load_draft_state(account_id="ACCOUNT-A", draft_id="draft-v1", app_dir=tmp_path)
+
+    assert state.picks == (
+        DraftPick(
+            pack_number=0,
+            pick_number=0,
+            offered_grp_ids=(101, 102),
+            pool_before_pick=(),
+            selected_grp_ids=(101,),
+        ),
+        DraftPick(
+            pack_number=0,
+            pick_number=1,
+            offered_grp_ids=(201, 202),
+            pool_before_pick=(101,),
+            selected_grp_ids=(),
+        ),
+    )
+    assert state.chosen_pick_count == 1
+    assert state.selected_card_count == 1
+
+    save_draft_state(state=state, app_dir=tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    assert [pick["selected_grp_ids"] for pick in payload["picks"]] == [[101], []]
+    assert all(LEGACY_CHOSEN_CARD_KEY not in pick for pick in payload["picks"])
+
+
+def test_schema_1_state_file_with_invalid_chosen_card_raises() -> None:
+    with pytest.raises(DraftPoolError, match=rf"picks\[0\]\.{LEGACY_CHOSEN_CARD_KEY}"):
+        DraftState.from_json(
+            data={
+                "schema_version": 1,
+                "picks": [
+                    {"pack_number": 0, "pick_number": 0, LEGACY_CHOSEN_CARD_KEY: "x"}
+                ],
+            }
+        )
+
+
+def test_schema_2_state_file_round_trips_multi_card_picks(tmp_path: Path) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    state = store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+    assert state is not None
+
+    payload = json.loads(
+        store.path_for(account_id="ACCOUNT-A", draft_id=PICK_TWO_EVENT_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert payload["schema_version"] == 2
+    assert payload["picks"][0]["selected_grp_ids"] == [101, 102]
+    assert DraftState.from_json(data=payload) == state
+
+
+def test_unknown_state_schema_raises() -> None:
+    with pytest.raises(DraftPoolError, match="Unsupported draft state schema 3"):
+        DraftState.from_json(data={"schema_version": 3, "picks": []})
+
+
+PICK_TWO_EVENT_NAME = "PickTwoDraft_ABC_20260703"
+
+
+def _pick_two_store(*, tmp_path: Path) -> DraftPoolStore:
     store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
     store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name="First"))
     store.consume(
         event=PackOfferedEvent(
-            event_name="QuickDraft_ABC_20260703",
+            event_name=PICK_TWO_EVENT_NAME,
             set_code="ABC",
             pack_number=0,
             pick_number=0,
-            offered_grp_ids=(101, 102),
+            offered_grp_ids=(101, 102, 103),
             pool_grp_ids=(),
             account_id=None,
         )
     )
-    before = load_draft_state(
-        account_id="ACCOUNT-A",
-        draft_id="QuickDraft_ABC_20260703",
-        app_dir=tmp_path,
+    return store
+
+
+def _pick_two_pick(
+    *,
+    selected_grp_ids: tuple[int, ...],
+    pick_number: int = 0,
+) -> PickMadeEvent:
+    return PickMadeEvent(
+        event_name=PICK_TWO_EVENT_NAME,
+        set_code="ABC",
+        pack_number=0,
+        pick_number=pick_number,
+        selected_grp_ids=selected_grp_ids,
+        account_id=None,
     )
 
-    with pytest.raises(DraftPoolError, match="multi-card picks are not supported"):
-        store.consume(
-            event=PickMadeEvent(
-                event_name="QuickDraft_ABC_20260703",
-                set_code="ABC",
-                pack_number=0,
-                pick_number=0,
-                selected_grp_ids=(101, 102),
-                account_id=None,
-            )
-        )
 
-    after = load_draft_state(
+def _load_pick_two_state(*, tmp_path: Path) -> DraftState:
+    return load_draft_state(
         account_id="ACCOUNT-A",
-        draft_id="QuickDraft_ABC_20260703",
+        draft_id=PICK_TWO_EVENT_NAME,
         app_dir=tmp_path,
     )
-    assert after == before
 
 
 def _fixture_events() -> list[DraftEvent]:

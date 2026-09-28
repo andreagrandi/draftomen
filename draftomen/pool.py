@@ -29,7 +29,8 @@ PathInput: TypeAlias = str | PathLike[str]
 Clock: TypeAlias = Callable[[], datetime]
 
 STATE_DIRECTORY_NAME = "state"
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
+LEGACY_CHOSEN_CARD_KEY = "chosen_grp_id"
 ACCOUNT_PROFILE_DIRECTORY_NAME = "accounts"
 ACCOUNT_PROFILE_SCHEMA_VERSION = 1
 
@@ -42,15 +43,23 @@ class DraftPoolError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class DraftPick:
-    """One draft pick coordinate with offered and chosen card data.
-    Offered cards remain optional so pick-only streams can still build pools.
+    """One draft pick coordinate with offered and selected card data.
+    A Pick-Two pick selects two cards; an empty selection means still pending.
     """
 
     pack_number: int
     pick_number: int
     offered_grp_ids: tuple[int, ...] | None = None
     pool_before_pick: tuple[int, ...] | None = None
-    chosen_grp_id: int | None = None
+    selected_grp_ids: tuple[int, ...] = ()
+
+    @property
+    def is_picked(self) -> bool:
+        """Return whether at least one card was selected at this coordinate.
+        Picks with offered cards but no selection are pending.
+        """
+
+        return bool(self.selected_grp_ids)
 
     @property
     def coordinate(self) -> tuple[int, int]:
@@ -70,7 +79,7 @@ class DraftPick:
             "pick_number": self.pick_number,
             "offered_grp_ids": _optional_int_list(self.offered_grp_ids),
             "pool_before_pick": _optional_int_list(self.pool_before_pick),
-            "chosen_grp_id": self.chosen_grp_id,
+            "selected_grp_ids": list(self.selected_grp_ids),
         }
 
     @classmethod
@@ -90,9 +99,9 @@ class DraftPick:
                 data.get("pool_before_pick"),
                 field_name="pick.pool_before_pick",
             ),
-            chosen_grp_id=_optional_int(
-                data.get("chosen_grp_id"),
-                field_name="pick.chosen_grp_id",
+            selected_grp_ids=_int_tuple(
+                data.get("selected_grp_ids"),
+                field_name="pick.selected_grp_ids",
             ),
         )
 
@@ -118,11 +127,19 @@ class DraftState:
 
     @property
     def chosen_pick_count(self) -> int:
-        """Return the number of picks with a chosen card.
-        This is the draft pick count represented in the accumulated pool.
+        """Return the number of logical picks with at least one selected card.
+        A Pick-Two pick counts once here, see selected_card_count for cards.
         """
 
-        return sum(1 for pick in self.picks if pick.chosen_grp_id is not None)
+        return sum(1 for pick in self.picks if pick.is_picked)
+
+    @property
+    def selected_card_count(self) -> int:
+        """Return the number of cards selected across all logical picks.
+        This differs from chosen_pick_count when a pick selects several cards.
+        """
+
+        return sum(len(pick.selected_grp_ids) for pick in self.picks)
 
     def pick_for(self, *, pack_number: int, pick_number: int) -> DraftPick | None:
         """Return an existing pick for the coordinate, if present.
@@ -159,13 +176,17 @@ class DraftState:
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> DraftState:
         """Load a draft state from Draftomen's JSON shape.
-        Schema mismatches and duplicate coordinates fail loudly.
+        Schema 1 files migrate on load; other mismatches fail loudly.
         """
 
         schema_version = _required_int(
             data.get("schema_version"),
             field_name="schema_version",
         )
+        if schema_version == 1:
+            data = _migrate_state_v1_to_v2(data=data)
+            schema_version = STATE_SCHEMA_VERSION
+
         if schema_version != STATE_SCHEMA_VERSION:
             raise DraftPoolError(
                 "Unsupported draft state schema "
@@ -546,7 +567,7 @@ class DraftPoolStore:
             )
             existing_pick = None
 
-        if existing_pick is None or existing_pick.chosen_grp_id is None:
+        if existing_pick is None or not existing_pick.is_picked:
             _ensure_pool_snapshot(state=state, pool_grp_ids=event.pool_grp_ids)
 
         merged_pick = _merge_pick(
@@ -555,7 +576,7 @@ class DraftPoolStore:
             pick_number=event.pick_number,
             offered_grp_ids=event.offered_grp_ids,
             pool_before_pick=event.pool_grp_ids,
-            chosen_grp_id=None,
+            selected_grp_ids=(),
         )
         if existing_pick == merged_pick:
             return state
@@ -569,13 +590,6 @@ class DraftPoolStore:
         return updated
 
     def _consume_pick_made(self, *, event: PickMadeEvent) -> DraftState:
-        if len(event.selected_grp_ids) != 1:
-            raise DraftPoolError(
-                f"Pack {event.pack_number} pick {event.pick_number} selected "
-                f"{len(event.selected_grp_ids)} cards; multi-card picks are not "
-                "supported yet by the stored pool state."
-            )
-        chosen_grp_id = event.selected_grp_ids[0]
         state = self._state_for_draft_event(
             account_id=event.account_id,
             event_name=event.event_name,
@@ -591,7 +605,7 @@ class DraftPoolStore:
             pick_number=event.pick_number,
             offered_grp_ids=None,
             pool_before_pick=None,
-            chosen_grp_id=chosen_grp_id,
+            selected_grp_ids=event.selected_grp_ids,
         )
         if existing_pick == merged_pick:
             return state
@@ -599,7 +613,7 @@ class DraftPoolStore:
         updated = replace(
             state,
             picks=_replace_pick(picks=state.picks, pick=merged_pick),
-            pool_grp_ids=state.pool_grp_ids + (chosen_grp_id,),
+            pool_grp_ids=state.pool_grp_ids + event.selected_grp_ids,
             updated_at=self._now_iso(),
         )
         save_draft_state(state=updated, app_dir=self.app_dir)
@@ -1080,7 +1094,7 @@ def _merge_pick(
     pick_number: int,
     offered_grp_ids: tuple[int, ...] | None,
     pool_before_pick: tuple[int, ...] | None,
-    chosen_grp_id: int | None,
+    selected_grp_ids: tuple[int, ...],
 ) -> DraftPick:
     pick = existing_pick or DraftPick(pack_number=pack_number, pick_number=pick_number)
     _ensure_pick_coordinate(
@@ -1101,22 +1115,23 @@ def _merge_pick(
         field_name="pool_before_pick",
         coordinate=pick.coordinate,
     )
-    next_chosen = _merge_optional_int(
-        current=pick.chosen_grp_id,
-        incoming=chosen_grp_id,
-        field_name="chosen_grp_id",
+    next_selected = _merge_optional_tuple(
+        current=pick.selected_grp_ids or None,
+        incoming=selected_grp_ids or None,
+        field_name="selected_grp_ids",
         coordinate=pick.coordinate,
-    )
-    if next_chosen is not None and next_offered is not None and next_chosen not in next_offered:
+    ) or ()
+    if next_offered is not None and Counter(next_selected) - Counter(next_offered):
         raise DraftPoolError(
-            f"Pick {pick.coordinate!r} chose {next_chosen}, which was not offered."
+            f"Pick {pick.coordinate!r} selected {next_selected!r}, "
+            "which were not all offered."
         )
 
     return replace(
         pick,
         offered_grp_ids=next_offered,
         pool_before_pick=next_pool_before,
-        chosen_grp_id=next_chosen,
+        selected_grp_ids=next_selected,
     )
 
 
@@ -1168,22 +1183,29 @@ def _merge_optional_tuple(
     return incoming
 
 
-def _merge_optional_int(
-    *,
-    current: int | None,
-    incoming: int | None,
-    field_name: str,
-    coordinate: tuple[int, int],
-) -> int | None:
-    if incoming is None:
-        return current
+def _migrate_state_v1_to_v2(*, data: Mapping[str, Any]) -> dict[str, Any]:
+    # Schema 1 stored one optional chosen card per pick; schema 2 stores a list.
+    picks_value = data.get("picks")
+    if not isinstance(picks_value, list):
+        return {**data, "schema_version": STATE_SCHEMA_VERSION}
 
-    if current is not None and current != incoming:
-        raise DraftPoolError(
-            f"Pick {coordinate!r} {field_name} changed from {current!r} to {incoming!r}."
+    migrated_picks: list[Any] = []
+    for index, pick in enumerate(picks_value):
+        if not isinstance(pick, dict):
+            migrated_picks.append(pick)
+            continue
+
+        migrated = {
+            key: value for key, value in pick.items() if key != LEGACY_CHOSEN_CARD_KEY
+        }
+        chosen = _optional_int(
+            pick.get(LEGACY_CHOSEN_CARD_KEY),
+            field_name=f"picks[{index}].{LEGACY_CHOSEN_CARD_KEY}",
         )
+        migrated["selected_grp_ids"] = [] if chosen is None else [chosen]
+        migrated_picks.append(migrated)
 
-    return incoming
+    return {**data, "schema_version": STATE_SCHEMA_VERSION, "picks": migrated_picks}
 
 
 def _draft_pick_from_value(*, value: Any, index: int) -> DraftPick:

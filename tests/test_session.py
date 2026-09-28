@@ -1390,21 +1390,21 @@ def _save_empirical_backtest_draft(*, app_dir: Path) -> None:
                     pick_number=0,
                     offered_grp_ids=(104894, 104976),
                     pool_before_pick=(),
-                    chosen_grp_id=104894,
+                    selected_grp_ids=(104894,),
                 ),
                 DraftPick(
                     pack_number=0,
                     pick_number=1,
                     offered_grp_ids=(104976,),
                     pool_before_pick=(104894,),
-                    chosen_grp_id=104976,
+                    selected_grp_ids=(104976,),
                 ),
                 DraftPick(
                     pack_number=0,
                     pick_number=2,
                     offered_grp_ids=(104894,),
                     pool_before_pick=(104894, 104976),
-                    chosen_grp_id=104894,
+                    selected_grp_ids=(104894,),
                 ),
             ),
         ),
@@ -4117,7 +4117,7 @@ def test_live_session_recovers_login_profile_and_selects_latest_account_draft(
             app_dir=app_dir,
         ).read_text(encoding="utf-8")
     )
-    assert state_payload["schema_version"] == 1
+    assert state_payload["schema_version"] == 2
     assert state_payload["account_id"] == "alpha-account"
     assert state_payload["draft_id"] == "alpha-latest"
     account_payload = json.loads(
@@ -6280,14 +6280,14 @@ def test_live_session_backtest_request_preserves_comparisons_and_missing_history
                 pick_number=0,
                 offered_grp_ids=offered_grp_ids,
                 pool_before_pick=(),
-                chosen_grp_id=offered_grp_ids[0],
+                selected_grp_ids=(offered_grp_ids[0],),
             ),
             DraftPick(
                 pack_number=0,
                 pick_number=1,
                 offered_grp_ids=None,
                 pool_before_pick=(offered_grp_ids[0],),
-                chosen_grp_id=offered_grp_ids[1],
+                selected_grp_ids=(offered_grp_ids[1],),
             ),
         ),
     )
@@ -7584,7 +7584,7 @@ def test_live_session_account_recovery_requests_selected_card_image(
                 pick_number=0,
                 offered_grp_ids=offered_grp_ids,
                 pool_before_pick=(),
-                chosen_grp_id=None,
+                selected_grp_ids=(),
             ),
         ),
     )
@@ -8463,7 +8463,7 @@ def test_recovered_pending_pack_infers_pack_size_from_saved_picks(
     expected: int,
 ) -> None:
     finished = tuple(
-        DraftPick(pack_number=0, pick_number=pick_number, chosen_grp_id=100)
+        DraftPick(pack_number=0, pick_number=pick_number, selected_grp_ids=(100,))
         for pick_number in range(finished_pack_size or 0)
     )
     pending = DraftPick(
@@ -8489,6 +8489,38 @@ def test_recovered_pending_pack_infers_pack_size_from_saved_picks(
 
     assert event is not None
     assert event.picks_per_pack == expected
+
+
+def test_recovered_pending_pack_keeps_every_card_of_a_multi_card_pick() -> None:
+    state = DraftState(
+        account_id="account-1",
+        draft_id="draft-1",
+        event_name="PickTwoDraft_LCI_20260101",
+        set_code="LCI",
+        course_id=None,
+        started_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        completed_at=None,
+        completed=False,
+        picks=(
+            DraftPick(
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(100, 101, 102),
+                pool_before_pick=(),
+                selected_grp_ids=(100, 101),
+            ),
+            DraftPick(pack_number=0, pick_number=1, offered_grp_ids=(200, 201)),
+        ),
+        pool_grp_ids=(100, 101),
+    )
+
+    event = _pending_pack_event(state=state)
+
+    assert event is not None
+    assert (event.pack_number, event.pick_number) == (0, 1)
+    assert event.offered_grp_ids == (200, 201)
+    assert event.pool_grp_ids == (100, 101)
 
 
 def test_live_session_msh_replay_with_cached_early_profile_reports_ready_ratings(

@@ -207,9 +207,17 @@ def _score_pick(
     pick_engine: PickEngine,
     ranking_mode: str,
 ) -> BacktestPickResult:
+    if len(pick.selected_grp_ids) > 1:
+        return _skipped_result(
+            pick=pick,
+            actual=None,
+            reason="multi-card pick",
+        )
+
+    actual_grp_id = pick.selected_grp_ids[0] if pick.selected_grp_ids else None
     actual = (
-        card_database.lookup(grp_id=pick.chosen_grp_id)
-        if pick.chosen_grp_id is not None
+        card_database.lookup(grp_id=actual_grp_id)
+        if actual_grp_id is not None
         else None
     )
     if pick.offered_grp_ids is None:
@@ -270,7 +278,7 @@ def _score_pick(
             offered_count=len(pick.offered_grp_ids),
         )
 
-    if pick.chosen_grp_id is None:
+    if actual_grp_id is None:
         return BacktestPickResult(
             pack_number=pick.pack_number,
             pick_number=pick.pick_number,
@@ -293,7 +301,7 @@ def _score_pick(
         offered_count=len(pick.offered_grp_ids),
         recommended=recommended,
         actual=actual,
-        match=recommended.card.grp_id == pick.chosen_grp_id,
+        match=recommended.card.grp_id == actual_grp_id,
         skipped_reason=None,
         data_source=scored_pack.source_summary,
         role_ledger=scored_pack.role_ledger,
