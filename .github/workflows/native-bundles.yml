@@ -38,6 +38,9 @@ jobs:
       BUNDLE: ${{ inputs.sign_macos && matrix.platform == 'macos' && 'Draft Omen.app' || matrix.bundle }}
       ARTIFACT: ${{ inputs.sign_macos && matrix.platform == 'macos' && format('Draftomen-signed-macos-{0}.dmg', matrix.arch) || matrix.artifact }}
       ARTIFACT_NAME: ${{ inputs.sign_macos && matrix.platform == 'macos' && format('draftomen-macos-{0}-signed-release', matrix.arch) || matrix.artifact_name }}
+      # Must match the pin in both pysidedeploy specs. The compilation cache
+      # key includes it.
+      NUITKA_VERSION: "4.1.3"
     strategy:
       fail-fast: false
       matrix:
@@ -143,7 +146,34 @@ jobs:
         run: uv sync --locked
 
       - name: Install pinned Nuitka deployment dependency
-        run: uv pip install "Nuitka==4.1.3"
+        run: uv pip install "Nuitka==${{ env.NUITKA_VERSION }}"
+
+      # Only workflow_dispatch runs use the compilation cache. A tag release
+      # runs from a push event and builds from scratch, so objects that a
+      # development run on another ref wrote never reach a release bundle.
+      - name: Configure Nuitka compilation cache
+        id: nuitka-cache
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_version="$(uv run python -c 'import platform; print(platform.python_version())')"
+          echo "python_version=$python_version" >> "$GITHUB_OUTPUT"
+          echo "NUITKA_CACHE_DIR=${{ runner.temp }}/nuitka-cache" >> "$GITHUB_ENV"
+
+      # Nuitka puts ccache in front of clang when it finds it on PATH and keeps
+      # the objects under NUITKA_CACHE_DIR. On Windows it uses its bundled
+      # clcache with MSVC, so no install is needed there.
+      - name: Install ccache
+        if: github.event_name == 'workflow_dispatch' && matrix.platform == 'macos'
+        run: brew install ccache
+
+      - name: Cache Nuitka compilation
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-python${{ steps.nuitka-cache.outputs.python_version }}-nuitka${{ env.NUITKA_VERSION }}-${{ hashFiles('uv.lock') }}
 
       - name: Verify bundled profile provenance before build
         run: uv run pytest -q tests/test_desktop_bundle.py::test_bundled_profile_provenance_and_packaging_are_deterministic
