@@ -17,16 +17,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def executable(tmp_path: Path) -> Path:
-    path = tmp_path / "Draftomen-unsigned-windows.exe"
-    path.write_bytes(data=b"MZ frozen app")
+def app_directory(tmp_path: Path) -> Path:
+    """Build a small Nuitka standalone folder with its own assets folder.
+    The lowercase name matches what pyside6-deploy writes.
+    """
+    path = tmp_path / "Draftomen-unsigned-windows.dist"
+    (path / "assets").mkdir(parents=True)
+    (path / "qml").mkdir()
+    (path / "qt_gui.exe").write_bytes(data=b"MZ frozen app")
+    (path / "python312.dll").write_bytes(data=b"MZ runtime")
+    (path / "assets" / "draftomen.ico").write_bytes(data=b"icon")
+    (path / "qml" / "Main.qml").write_text(data="Item {}\n", encoding="utf-8")
     return path
 
 
 @pytest.fixture
-def layout(tmp_path: Path, executable: Path) -> Path:
+def layout(tmp_path: Path, app_directory: Path) -> Path:
     output = tmp_path / "layout"
-    stage_package(executable=executable, output=output, version="0.4.1.0")
+    stage_package(app_directory=app_directory, output=output, version="0.4.1.0")
     return output
 
 
@@ -68,11 +76,13 @@ def test_duplicate_or_regressing_version_fails(previous_version: str) -> None:
         msix_version(project_version="0.4.1", previous_version=previous_version)
 
 
-def test_staged_package_holds_executable_manifest_and_logos(
+def test_staged_package_holds_app_folder_manifest_and_logos(
     layout: Path,
-    executable: Path,
+    app_directory: Path,
 ) -> None:
-    assert (layout / "DraftOmen.exe").read_bytes() == executable.read_bytes()
+    assert (layout / "DraftOmen.exe").read_bytes() == (
+        app_directory / "qt_gui.exe"
+    ).read_bytes()
     assert sorted(
         path.relative_to(layout).as_posix() for path in layout.rglob("*")
     ) == [
@@ -82,7 +92,11 @@ def test_staged_package_holds_executable_manifest_and_logos(
         "Assets/Square44x44Logo.png",
         "Assets/StoreLogo.png",
         "Assets/Wide310x150Logo.png",
+        "Assets/draftomen.ico",
         "DraftOmen.exe",
+        "python312.dll",
+        "qml",
+        "qml/Main.qml",
     ]
     manifest = (layout / "AppxManifest.xml").read_text(encoding="utf-8")
     assert 'Version="0.4.1.0"' in manifest
@@ -202,10 +216,35 @@ def test_wrong_logo_size_fails_validation(layout: Path) -> None:
         validate_package(layout=layout)
 
 
-def test_staging_refuses_a_missing_executable(tmp_path: Path) -> None:
-    with pytest.raises(expected_exception=MsixPackageError, match="does not exist"):
+def test_paths_that_differ_only_in_case_fail_validation(layout: Path) -> None:
+    if (layout / "QML").exists():
+        pytest.skip(reason="This filesystem ignores case in paths.")
+    (layout / "QML").mkdir()
+    with pytest.raises(expected_exception=MsixPackageError, match="only in case"):
+        validate_package(layout=layout)
+
+
+def test_staging_refuses_a_folder_without_the_nuitka_executable(
+    tmp_path: Path,
+    app_directory: Path,
+) -> None:
+    (app_directory / "qt_gui.exe").unlink()
+    with pytest.raises(expected_exception=MsixPackageError, match="qt_gui.exe"):
         stage_package(
-            executable=tmp_path / "missing.exe",
+            app_directory=app_directory,
+            output=tmp_path / "layout",
+            version="0.4.1.0",
+        )
+
+
+def test_staging_refuses_an_app_file_that_shadows_a_store_logo(
+    tmp_path: Path,
+    app_directory: Path,
+) -> None:
+    (app_directory / "assets" / "StoreLogo.png").write_bytes(data=b"not a logo")
+    with pytest.raises(expected_exception=MsixPackageError, match="StoreLogo.png"):
+        stage_package(
+            app_directory=app_directory,
             output=tmp_path / "layout",
             version="0.4.1.0",
         )
@@ -213,15 +252,15 @@ def test_staging_refuses_a_missing_executable(tmp_path: Path) -> None:
 
 def test_staging_refuses_an_existing_output_folder(
     layout: Path,
-    executable: Path,
+    app_directory: Path,
 ) -> None:
     with pytest.raises(expected_exception=MsixPackageError, match="already exists"):
-        stage_package(executable=executable, output=layout, version="0.4.1.0")
+        stage_package(app_directory=app_directory, output=layout, version="0.4.1.0")
 
 
 def test_main_stages_the_package_and_prints_the_version(
     tmp_path: Path,
-    executable: Path,
+    app_directory: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -233,7 +272,7 @@ def test_main_stages_the_package_and_prints_the_version(
     output = tmp_path / "layout"
 
     exit_code = msix_package.main(
-        argv=["--executable", str(executable), "--output", str(output)]
+        argv=["--app-directory", str(app_directory), "--output", str(output)]
     )
 
     assert exit_code == 0
@@ -243,7 +282,7 @@ def test_main_stages_the_package_and_prints_the_version(
 
 def test_main_fails_before_staging_when_the_version_does_not_increase(
     tmp_path: Path,
-    executable: Path,
+    app_directory: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -256,8 +295,8 @@ def test_main_fails_before_staging_when_the_version_does_not_increase(
 
     exit_code = msix_package.main(
         argv=[
-            "--executable",
-            str(executable),
+            "--app-directory",
+            str(app_directory),
             "--output",
             str(output),
             "--previous-version",

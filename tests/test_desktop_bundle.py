@@ -1303,6 +1303,8 @@ def test_windows_msix_is_built_installed_and_smoke_tested_before_upload() -> Non
         encoding="utf-8"
     )
     step_names = [
+        "Smoke-test Windows executable with deterministic mock data",
+        "Build standalone Windows folder for the MSIX",
         "Build MSIX package with MakeAppx",
         "Create MSIX upload archive",
         "Install test-signed MSIX copy and smoke-test the installed app",
@@ -1321,9 +1323,19 @@ def test_windows_msix_is_built_installed_and_smoke_tested_before_upload() -> Non
         assert "secrets." not in step
         assert ".pfx" not in step.lower()
 
+    standalone_step = steps["Build standalone Windows folder for the MSIX"]
+    assert (
+        'pyside6-deploy --config-file "${{ matrix.config }}" --force --mode standalone'
+        in standalone_step
+    )
+
     build_step = steps["Build MSIX package with MakeAppx"]
     assert "WINDOWS_SDK_VERSION: 10.0.26100.0" in build_step
     assert "uv run python -m scripts.msix_package" in build_step
+    assert (
+        '--app-directory "dist-native/windows-unsigned/Draftomen-unsigned-windows.dist"'
+        in build_step
+    )
     assert "makeappx.exe\") pack /o /d $layout /p $msix" in build_step
 
     archive_step = steps["Create MSIX upload archive"]

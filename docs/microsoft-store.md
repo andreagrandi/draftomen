@@ -30,6 +30,28 @@ the installed app and removes it again. The job then uploads the
 
 Actions artifacts expire, so download the artifact soon after the release run.
 
+## If certification fails the malware scan
+
+Certification runs Microsoft Defender over the package. Defender's cloud
+machine-learning model can flag a new, unsigned `DraftOmen.exe` as
+`Trojan:Win32/Wacatac.C!ml`. Partner Center may then show only "a report was
+not generated" or "We weren't able to digitally sign this submission", and
+the malware finding arrives later by email from reportapp@microsoft.com.
+
+1. Extract `DraftOmen.exe` from the `.msix` inside the `.msixupload` and look
+   it up on VirusTotal by its SHA-256.
+2. If Microsoft flags it, zip the file and submit it at
+   <https://www.microsoft.com/en-us/wdsi/filesubmission> as a software
+   developer, with "Incorrectly detected as malware/malicious" and the
+   detection name.
+3. Reanalyze the file on VirusTotal. Once Microsoft no longer flags it,
+   resubmit the Store submission and put the WDSI submission ID in the
+   certification notes.
+
+A cleared verdict covers one file hash. Each release builds a new
+`DraftOmen.exe`, so the detection can come back until the app has a
+download history or the executable is Authenticode-signed.
+
 ## Pricing and availability
 
 - Pricing: free. The automated update flow in #329 supports free products only.

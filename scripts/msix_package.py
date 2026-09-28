@@ -29,6 +29,9 @@ ARCHITECTURE = "x64"
 DEVICE_FAMILY = "Windows.Desktop"
 MIN_VERSION = "10.0.17763.0"
 EXECUTABLE_NAME = "DraftOmen.exe"
+# Nuitka names the standalone executable after draftomen/qt_gui.py.
+NUITKA_EXECUTABLE_NAME = "qt_gui.exe"
+LOGO_DIRECTORY_NAME = "Assets"
 FULL_TRUST_ENTRY_POINT = "Windows.FullTrustApplication"
 
 FOUNDATION_NS = "http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -113,26 +116,47 @@ def render_manifest(version: str) -> str:
 
 
 def stage_package(
-    executable: Path,
+    app_directory: Path,
     output: Path,
     version: str,
 ) -> None:
-    """Write the manifest, executable and logos into a new package folder.
+    """Copy the Nuitka standalone folder, logos and manifest into a new folder.
     Validate the folder before returning so MakeAppx only sees good input.
     """
-    if not executable.is_file():
-        raise MsixPackageError(f"Executable {executable} does not exist.")
+    if not (app_directory / NUITKA_EXECUTABLE_NAME).is_file():
+        raise MsixPackageError(
+            f"{NUITKA_EXECUTABLE_NAME} does not exist in {app_directory}."
+        )
     if output.exists():
         raise MsixPackageError(f"Package folder {output} already exists.")
 
-    output.mkdir(parents=True)
-    shutil.copy2(src=executable, dst=output / EXECUTABLE_NAME)
-    shutil.copytree(src=ASSETS_DIR, dst=output / "Assets")
+    shutil.copytree(src=app_directory, dst=output)
+    (output / NUITKA_EXECUTABLE_NAME).rename(target=output / EXECUTABLE_NAME)
+    _copy_logos(output=output)
     (output / "AppxManifest.xml").write_text(
         data=render_manifest(version=version),
         encoding="utf-8",
     )
     validate_package(layout=output)
+
+
+def _copy_logos(output: Path) -> None:
+    # Windows paths ignore case, so the app's own assets folder and the
+    # manifest's Assets folder are one folder in the package.
+    for entry in output.iterdir():
+        if entry.name.casefold() == LOGO_DIRECTORY_NAME.casefold():
+            # Two renames, because Windows ignores a rename that only
+            # changes case.
+            staging = entry.with_name(name=f"{entry.name}.staging")
+            entry.rename(target=staging)
+            staging.rename(target=output / LOGO_DIRECTORY_NAME)
+    logo_directory = output / LOGO_DIRECTORY_NAME
+    logo_directory.mkdir(exist_ok=True)
+    for logo in sorted(ASSETS_DIR.iterdir()):
+        target = logo_directory / logo.name
+        if target.exists():
+            raise MsixPackageError(f"The app already has a file at {target}.")
+        shutil.copy2(src=logo, dst=target)
 
 
 def validate_package(layout: Path) -> None:
@@ -145,12 +169,25 @@ def validate_package(layout: Path) -> None:
     except (OSError, ElementTree.ParseError) as error:
         raise MsixPackageError(f"Cannot read {manifest_path}: {error}") from error
 
+    _validate_unique_paths(layout=layout)
     _validate_identity(root=root)
     _validate_properties(root=root)
     _validate_device_family(root=root)
     application = _validate_application(root=root, layout=layout)
     _validate_capabilities(root=root)
     _validate_assets(root=root, application=application, layout=layout)
+
+
+def _validate_unique_paths(layout: Path) -> None:
+    # MakeAppx rejects two paths that differ only in case.
+    seen: dict[str, str] = {}
+    for path in sorted(layout.rglob(pattern="*")):
+        relative = path.relative_to(layout).as_posix()
+        previous = seen.setdefault(relative.casefold(), relative)
+        if previous != relative:
+            raise MsixPackageError(
+                f"Package paths {previous} and {relative} differ only in case."
+            )
 
 
 def _validate_identity(root: ElementTree.Element) -> None:
@@ -317,10 +354,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Stage and validate the Draft Omen MSIX package folder.",
     )
     parser.add_argument(
-        "--executable",
+        "--app-directory",
         type=Path,
         required=True,
-        help="Frozen Windows executable to package.",
+        help="Nuitka standalone folder that holds qt_gui.exe.",
     )
     parser.add_argument(
         "--output",
@@ -346,7 +383,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             project_version=read_project_version(),
             previous_version=args.previous_version,
         )
-        stage_package(executable=args.executable, output=args.output, version=version)
+        stage_package(
+            app_directory=args.app_directory,
+            output=args.output,
+            version=version,
+        )
     except (MsixPackageError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

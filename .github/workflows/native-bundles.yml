@@ -360,21 +360,13 @@ jobs:
           --timeout "${{ matrix.smoke_timeout }}"
           "dist-native/windows-unsigned/${{ matrix.bundle }}"
 
-      # Experiment for #764: package a standalone folder instead of the
-      # onefile executable to see whether the Store malware scan passes.
-      - name: Build standalone Windows folder
+      # The MSIX holds a standalone folder, not the onefile executable. A
+      # onefile build unpacks and runs code from a temp folder at launch, and
+      # antivirus engines, the Store malware scan among them, flag it for that.
+      # The onefile executable stays the GitHub release asset.
+      - name: Build standalone Windows folder for the MSIX
         if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $PSNativeCommandUseErrorActionPreference = $true
-          uv run pyside6-deploy --config-file "${{ matrix.config }}" --force --mode standalone
-          $dist = "dist-native/windows-unsigned/Draftomen-unsigned-windows.dist"
-          Get-ChildItem -LiteralPath $dist | Select-Object Mode, Length, Name | Format-Table -AutoSize
-          if (-not (Test-Path -LiteralPath (Join-Path $dist "qt_gui.exe") -PathType Leaf)) {
-            throw "$dist has no qt_gui.exe."
-          }
-          "STANDALONE_DIRECTORY=$dist" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        run: uv run pyside6-deploy --config-file "${{ matrix.config }}" --force --mode standalone
 
       # The runner image ships this Windows SDK. Naming the version keeps
       # MakeAppx and SignTool fixed until someone changes it here.
@@ -395,18 +387,9 @@ jobs:
           $workDirectory = Join-Path $env:RUNNER_TEMP "draftomen-msix"
           $layout = Join-Path $workDirectory "layout"
           $version = uv run python -m scripts.msix_package `
-            --executable (Join-Path $env:STANDALONE_DIRECTORY "qt_gui.exe") `
+            --app-directory "dist-native/windows-unsigned/Draftomen-unsigned-windows.dist" `
             --output $layout
           $version = "$version".Trim()
-          # The app's assets folder merges into the manifest's Assets folder,
-          # because Windows paths ignore case. No file names overlap.
-          # Robocopy exit codes below 8 mean success.
-          $PSNativeCommandUseErrorActionPreference = $false
-          robocopy $env:STANDALONE_DIRECTORY $layout /E /XF qt_gui.exe /NFL /NDL /NJH /NP
-          if ($LASTEXITCODE -ge 8) {
-            throw "robocopy failed with exit code $LASTEXITCODE."
-          }
-          $PSNativeCommandUseErrorActionPreference = $true
           Write-Host "MSIX version: $version"
 
           $outputDirectory = "dist-native/windows-msix"
@@ -422,7 +405,7 @@ jobs:
             "MSIX_PATH=$msix"
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      # The Nuitka one-file build writes no symbol files today. Any .appxsym
+      # The Nuitka standalone build writes no symbol files today. Any .appxsym
       # a later build adds next to the package goes into the upload too.
       - name: Create MSIX upload archive
         if: matrix.platform == 'windows'
