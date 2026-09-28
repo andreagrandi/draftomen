@@ -522,16 +522,32 @@ The package targets x64 Windows Desktop with a minimum of Windows 10 1809,
 `10.0.17763.0`. It runs the frozen executable as a full-trust desktop app and
 declares no capability other than `runFullTrust`.
 
+The package holds a Nuitka standalone build: `DraftOmen.exe` next to the
+Python runtime, the Qt DLLs, the QML files and the app's data. It does not
+hold the onefile executable that the GitHub release ships. A onefile
+executable unpacks its code into a temp folder and runs it at launch.
+Antivirus engines flag that pattern, and the Store malware scan failed the
+first submission because of it. On VirusTotal the onefile build had 11
+detections out of 68, and the standalone build had 1, from Microsoft. See
+issue #764.
+
 `scripts/msix_package.py` stages the folder that MakeAppx packs. It copies the
-frozen executable in as `DraftOmen.exe`, copies the logos, writes the manifest
-and then validates the result:
+standalone folder, renames `qt_gui.exe` to `DraftOmen.exe`, adds the Store
+logos, writes the manifest and then validates the result:
 
 ```bash
 uv run python -m scripts.msix_package \
-  --executable dist-native/windows-unsigned/Draftomen-unsigned-windows.exe \
+  --app-directory dist-native/windows-unsigned/Draftomen-unsigned-windows.dist \
   --output build/msix/layout \
   --previous-version v0.4.1
 ```
+
+The standalone folder has its own `assets` folder with the app logo and
+icons. Windows paths ignore case, so that folder and the manifest's `Assets`
+folder are one folder in the package. The script names it `Assets` and adds
+the Store logos to it. It fails if the app already has a file with a logo's
+name, or if two package paths differ only in case, because MakeAppx rejects
+those.
 
 The script prints the package version. The project version `X.Y.Z` always
 becomes `X.Y.Z.0`, because the Store reserves the fourth part. A release build
@@ -544,12 +560,14 @@ because they share the version of the last release and never go to the Store.
 After the Windows executable passes its smoke test, the Windows job in
 `native-bundles.yml` builds and checks the Store package:
 
-1. `scripts/msix_package.py` stages the package folder, and MakeAppx from
+1. pyside6-deploy builds the app a second time with `--mode standalone`,
+   into `dist-native/windows-unsigned/Draftomen-unsigned-windows.dist`.
+   `scripts/msix_package.py` stages the package folder from it, and MakeAppx from
    Windows SDK `10.0.26100.0` packs it into `DraftOmen_X.Y.Z.0_x64.msix`. The
    runner image ships that SDK. The job fails if MakeAppx or SignTool is
    missing from it.
 2. A separate step zips the `.msix` into `DraftOmen_X.Y.Z.0_x64.msixupload`.
-   The Nuitka one-file build produces no symbol files. Any `.appxsym` next to
+   The Nuitka standalone build produces no symbol files. Any `.appxsym` next to
    the package would go into the archive too.
 3. The job copies the `.msix` and signs only the copy. It uses a self-signed
    certificate that it creates on the runner with the manifest's publisher as
