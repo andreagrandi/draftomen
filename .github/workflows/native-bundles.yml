@@ -360,6 +360,22 @@ jobs:
           --timeout "${{ matrix.smoke_timeout }}"
           "dist-native/windows-unsigned/${{ matrix.bundle }}"
 
+      # Experiment for #764: package a standalone folder instead of the
+      # onefile executable to see whether the Store malware scan passes.
+      - name: Build standalone Windows folder
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          uv run pyside6-deploy --config-file "${{ matrix.config }}" --force --mode standalone
+          $dist = "dist-native/windows-unsigned/Draftomen-unsigned-windows.dist"
+          Get-ChildItem -LiteralPath $dist | Select-Object Mode, Length, Name | Format-Table -AutoSize
+          if (-not (Test-Path -LiteralPath (Join-Path $dist "qt_gui.exe") -PathType Leaf)) {
+            throw "$dist has no qt_gui.exe."
+          }
+          "STANDALONE_DIRECTORY=$dist" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       # The runner image ships this Windows SDK. Naming the version keeps
       # MakeAppx and SignTool fixed until someone changes it here.
       - name: Build MSIX package with MakeAppx
@@ -379,9 +395,12 @@ jobs:
           $workDirectory = Join-Path $env:RUNNER_TEMP "draftomen-msix"
           $layout = Join-Path $workDirectory "layout"
           $version = uv run python -m scripts.msix_package `
-            --executable "dist-native/windows-unsigned/${{ matrix.bundle }}" `
+            --executable (Join-Path $env:STANDALONE_DIRECTORY "qt_gui.exe") `
             --output $layout
           $version = "$version".Trim()
+          Get-ChildItem -LiteralPath $env:STANDALONE_DIRECTORY |
+            Where-Object Name -ne "qt_gui.exe" |
+            Copy-Item -Destination $layout -Recurse
           Write-Host "MSIX version: $version"
 
           $outputDirectory = "dist-native/windows-msix"

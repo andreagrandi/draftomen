@@ -13,6 +13,10 @@
   runner OS, architecture, Python version, Nuitka version and `uv.lock`. The
   macOS jobs install `ccache`, and the Windows job uses Nuitka's `clcache`.
   Tag release builds skip the cache and always compile from scratch. (#736)
+- The MSIX package now holds a Nuitka standalone build, with `DraftOmen.exe`
+  next to its DLLs, instead of the onefile executable. Antivirus engines,
+  including the Microsoft Store malware scan, flagged the onefile build.
+  (#764)
 
 ## [0.4.2] - 2026-09-27
 
