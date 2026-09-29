@@ -218,6 +218,20 @@ flagged it, and the submission passed certification. The history is on #328.
 ## Store acquisition check
 
 GitHub-hosted runners cannot install apps from the Microsoft Store client, so
-nothing in CI proves that the live listing installs and launches. That check
-runs by hand on an external Windows 11 device before the Windows release
-channel moves to the Store in #330. It is not part of this first submission.
+nothing in CI proves that the live listing installs, updates and launches.
+Check it by hand on a Windows 11 device outside CI, in two passes:
+
+1. Before submitting the next release, install Draft Omen from
+   <https://apps.microsoft.com/detail/9NPCD3VLZQMX> and confirm that
+   **Settings > Apps > Installed apps** shows the version the Store publishes.
+2. After that release reaches **In the Store**, let the Store update the app
+   on the same device, or click **Get updates** in the Store's **Downloads**
+   page. Confirm the new version, launch Draft Omen, check that it opens on
+   the Live Draft view, then uninstall it.
+
+Record each pass here.
+
+| Pass | Date | Device | Version | Result |
+|---|---|---|---|---|
+| Install from the Store | Not run | | | |
+| Update, launch and uninstall | Not run | | | |

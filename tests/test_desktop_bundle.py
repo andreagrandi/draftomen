@@ -1154,9 +1154,8 @@ def test_tag_release_builds_never_use_the_nuitka_cache() -> None:
 def test_release_workflows_publish_both_macos_dmgs(
     workflow_name: str, name_variable: str, macos_artifact_suffix: str, signed: bool
 ) -> None:
-    """Development and tagged releases upload both DMGs, the Windows executable,
-    and a checksum file that lists all three binaries. Only tag releases drop
-    `unsigned` from the macOS and checksum names.
+    """Development and tagged releases upload both DMGs and a checksum file for
+    them, and no Windows asset. Only tag releases drop `unsigned` from the names.
     """
 
     workflow_text = (PROJECT_ROOT / ".github/workflows" / workflow_name).read_text(
@@ -1168,21 +1167,36 @@ def test_release_workflows_publish_both_macos_dmgs(
     for arch in ("arm64", "x86_64"):
         assert f"name: draftomen-macos-{arch}-{macos_artifact_suffix}" in workflow_text
         assert f"{signed_prefix}-macos-{arch}.dmg" in workflow_text
-    assert f"{prefix}-unsigned-windows.exe" in workflow_text
     assert f"{signed_prefix}-sha256sums.txt" in workflow_text
     assert "unsigned-macos.dmg" not in workflow_text
     if signed:
         assert "-unsigned-macos-" not in workflow_text
         assert "-unsigned-sha256sums" not in workflow_text
     assert (
-        'sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" "${windows_name}"'
+        'sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" \\\n'
         in workflow_text
     )
 
     upload_command = workflow_text.split("gh release upload", maxsplit=1)[1]
     upload_command = upload_command.split("\n\n", maxsplit=1)[0]
     uploaded_assets = re.findall(r'"release-assets/published/([^"]+)"', upload_command)
-    assert len(uploaded_assets) == 4
+    assert len(uploaded_assets) == 3
+    publish_text = workflow_text.split("\n  publish-development:", maxsplit=1)[-1]
+    assert "windows" not in publish_text.lower()
+
+
+def test_windows_executable_stays_a_private_actions_artifact() -> None:
+    """The build job still uploads the Windows executable and Store package as
+    Actions artifacts after the release jobs stop publishing them.
+    """
+
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    build_job_text = workflow_text.split("\n  publish-development:", maxsplit=1)[0]
+
+    assert "artifact_name: draftomen-windows-unsigned-development" in build_job_text
+    assert "name: draftomen-windows-msixupload" in build_job_text
 
 
 def _workflow_step(workflow_text: str, name: str) -> str:

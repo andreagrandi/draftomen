@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- Windows releases now ship only through the Microsoft Store. Stable GitHub
+  Releases and the rolling development prerelease no longer publish the
+  unsigned Windows `.exe`, and their checksum files list only the macOS DMGs.
+  The Windows job still builds and smoke-tests the executable and the MSIX,
+  and uploads both as Actions artifacts for testing and Store submission. The
+  README, release guide, desktop bundle guide and release skills now point
+  Windows users to the Store listing. `docs/microsoft-store.md` adds a table
+  for the manual install and update check on a Windows 11 device. (#330)
 - `docs/microsoft-store.md` now explains how to publish each release to the
   Microsoft Store by hand in Partner Center. Store updates stay manual because
   the Store Developer CLI needs a Microsoft Entra tenant, and Microsoft's
