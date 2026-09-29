@@ -5,7 +5,9 @@ Keep Arena log knowledge isolated in a pure line-consumer layer.
 from __future__ import annotations
 
 import json
+import logging
 import re
+from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, TypeAlias
@@ -19,6 +21,8 @@ from draftomen.draft_format import (
     detect_draft_format,
     rules_for_format,
 )
+
+logger = logging.getLogger(__name__)
 
 EXPECTED_PACK_COUNT = QUICK_RULES.pack_count
 EXPECTED_PICKS_PER_PACK = QUICK_RULES.picks_per_pack
@@ -34,6 +38,9 @@ _THREAD_PREFIX = re.compile(
     r"^\[(?!UnityCrossThreadLogger\])[^\[\]]+\]\s+(?=\[UnityCrossThreadLogger\]|<==|==>|\{)"
 )
 _RESPONSE_MARKER = re.compile(r"^<==\s+(?P<token>[^()]+)\(")
+_RESPONSE_ID = re.compile(r"^<==\s+(?P<token>[^()\s]+)\((?P<id>[^()]*)\)")
+_MAKE_PICK_TOKEN = "EventPlayerDraftMakePick"
+_COMPLETE_DRAFT_TOKEN = "DraftCompleteDraft"
 _LOGIN_DISPLAY_NAME = re.compile(
     r"\[Accounts - Login\]\s+Logged in successfully\.\s+"
     r"Display Name:\s+(?P<screen_name>.+?)\s*$"
@@ -155,6 +162,24 @@ class _DraftContext:
     rules: DraftRules
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingPick:
+    request_id: str
+    draft_id: str
+    coordinate: tuple[int, int]
+    cards: tuple[int, ...]
+    context: _DraftContext
+    account_id: str | None
+
+
+@dataclass(slots=True)
+class _HumanDraftRecord:
+    # draft_id is None when the draft was only seen through its completion.
+    draft_id: str | None
+    picks: dict[tuple[int, int], tuple[int, ...]] = field(default_factory=dict)
+    completed: bool = False
+
+
 @dataclass(slots=True)
 class _ParserState:
     account_id: str | None = None
@@ -165,6 +190,15 @@ class _ParserState:
     # Draft.Notify carries no event name, so packs use the last event Arena joined.
     draft_context: _DraftContext | None = None
     last_notify: tuple[str, int, int, tuple[int, ...]] | None = None
+    # A human-draft pick waits for its response, and the response body arrives on
+    # the line after its "<== token(id)" marker.
+    pending_pick: _PendingPick | None = None
+    expected_body: tuple[str, str] | None = None
+    human_draft: _HumanDraftRecord | None = None
+    seen_pick_request_ids: set[str] = field(default_factory=set)
+    emitted_pick_requests: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # Events produced while a line changes state, yielded before that line's own events.
+    outbox: list[DraftEvent] = field(default_factory=list)
 
 
 class DraftLogParser:
@@ -183,6 +217,13 @@ class DraftLogParser:
         for raw_line in lines:
             line = raw_line.rstrip("\r\n")
             yield from _parse_line(line=line, state=self._state)
+
+    def flush(self) -> tuple[DraftEvent, ...]:
+        """Return the human-draft pick still waiting for a response.
+        Call it after the last line of a finite log so that pick is not lost.
+        """
+
+        return _flush_pending_pick(state=self._state)
 
     @property
     def pending_login_screen_name(self) -> str | None:
@@ -216,6 +257,7 @@ def parse_events(lines: Iterable[str]) -> Iterator[DraftEvent]:
 
     parser = DraftLogParser()
     yield from parser.parse_lines(lines=lines)
+    yield from parser.flush()
 
 
 def _parse_line(line: str, state: _ParserState) -> tuple[DraftEvent, ...]:
@@ -223,6 +265,25 @@ def _parse_line(line: str, state: _ParserState) -> tuple[DraftEvent, ...]:
     if not stripped:
         return ()
 
+    human_events = _parse_human_draft_line(stripped=stripped, state=state)
+    if human_events is not None:
+        return human_events
+
+    events = _parse_general_line(line=line, stripped=stripped, state=state)
+    if events:
+        state.outbox.extend(_flush_pending_pick(state=state))
+
+    queued = tuple(state.outbox)
+    state.outbox.clear()
+    return (*queued, *events)
+
+
+def _parse_general_line(
+    *,
+    line: str,
+    stripped: str,
+    state: _ParserState,
+) -> tuple[DraftEvent, ...]:
     if "BotDraft_Draft" in stripped:
         _raise(
             "Unsupported Quick Draft token; expected current BotDraftDraft* format",
@@ -231,6 +292,10 @@ def _parse_line(line: str, state: _ParserState) -> tuple[DraftEvent, ...]:
 
     login_match = _LOGIN_DISPLAY_NAME.search(stripped)
     if login_match is not None:
+        state.outbox.extend(_flush_pending_pick(state=state))
+        state.human_draft = None
+        state.seen_pick_request_ids.clear()
+        state.emitted_pick_requests.clear()
         state.account_id = None
         state.pending_login_screen_name = login_match.group("screen_name").strip()
         state.screen_names_by_client_id.clear()
@@ -415,6 +480,8 @@ def _remember_draft_event(*, event_name: str, state: _ParserState) -> None:
     if context is not None and context.event_name == event_name:
         return
 
+    state.outbox.extend(_flush_pending_pick(state=state))
+    state.human_draft = None
     state.draft_context = _DraftContext(
         event_name=event_name,
         set_code=parts[1],
@@ -459,14 +526,22 @@ def _parse_draft_notify(*, body: str, state: _ParserState) -> tuple[DraftEvent, 
         return ()
 
     state.last_notify = notify_key
+    # The pool store checks each pack's pool against the picks it has seen, so the
+    # pick for the previous coordinate must be recorded and yielded first.
+    pick_events = _flush_pending_pick(state=state)
+    record = state.human_draft
+    pool_grp_ids = _recorded_cards(
+        record=record if record is not None and record.draft_id == draft_id else None
+    )
     return (
+        *pick_events,
         PackOfferedEvent(
             event_name=context.event_name,
             set_code=context.set_code,
             pack_number=pack - 1,
             pick_number=pick - 1,
             offered_grp_ids=offered_grp_ids,
-            pool_grp_ids=(),
+            pool_grp_ids=pool_grp_ids,
             account_id=state.account_id,
             picks_per_pack=rules.picks_per_pack,
             draft_format=rules.draft_format,
@@ -488,6 +563,313 @@ def _notify_card_ids(value: Any) -> tuple[int, ...] | None:
         return None
 
     return tuple(int(part) for part in parts)
+
+
+def _parse_human_draft_line(
+    *,
+    stripped: str,
+    state: _ParserState,
+) -> tuple[DraftEvent, ...] | None:
+    # Human-draft lines come from untrusted logs, so nothing here raises. None
+    # means the line is not a human-draft line and the general parser takes it.
+    expected = state.expected_body
+    state.expected_body = None
+    if expected is not None:
+        body_events = _parse_response_body(expected=expected, text=stripped, state=state)
+        if body_events is not None:
+            return body_events
+
+    request_match = _REQUEST_LINE.match(stripped)
+    if request_match is not None:
+        token = request_match.group("token")
+        body = request_match.group("body")
+        if token == _MAKE_PICK_TOKEN:
+            return _parse_pick_request(body=body, state=state)
+
+        if token == _COMPLETE_DRAFT_TOKEN:
+            return _parse_complete_request(body=body, state=state)
+
+        return None
+
+    marker_match = _RESPONSE_ID.match(stripped)
+    if marker_match is not None and marker_match.group("token") in {
+        _MAKE_PICK_TOKEN,
+        _COMPLETE_DRAFT_TOKEN,
+    }:
+        state.expected_body = (marker_match.group("token"), marker_match.group("id"))
+        return ()
+
+    return None
+
+
+def _human_context(*, state: _ParserState) -> _DraftContext | None:
+    context = state.draft_context
+    if context is None or context.rules.draft_format is DraftFormat.QUICK:
+        return None
+
+    return context
+
+
+def _human_request(*, body: str) -> tuple[str, dict[str, Any]] | None:
+    try:
+        envelope = json.loads(body)
+        request_id = envelope["id"]
+        payload = json.loads(envelope["request"])
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+    if not isinstance(request_id, str) or request_id == "" or not isinstance(payload, dict):
+        return None
+
+    return request_id, payload
+
+
+def _parse_pick_request(*, body: str, state: _ParserState) -> tuple[DraftEvent, ...]:
+    context = _human_context(state=state)
+    request = _human_request(body=body)
+    if context is None or request is None:
+        return ()
+
+    request_id, payload = request
+    draft_id = payload.get("DraftId")
+    pack = payload.get("Pack")
+    pick = payload.get("Pick")
+    cards = payload.get("GrpIds")
+    rules = context.rules
+    if (
+        not isinstance(draft_id, str)
+        or draft_id == ""
+        or not _is_plain_int(pack)
+        or not 1 <= pack <= rules.pack_count
+        or not _is_plain_int(pick)
+        or not 1 <= pick <= rules.picks_per_pack
+        or not isinstance(cards, list)
+        or not cards
+        or not all(_is_plain_int(card) and card > 0 for card in cards)
+    ):
+        return ()
+
+    coordinate = (pack - 1, pick - 1)
+    pending = state.pending_pick
+    record = state.human_draft
+    if request_id in state.seen_pick_request_ids:
+        return ()
+
+    if pending is not None and (pending.draft_id, pending.coordinate) == (draft_id, coordinate):
+        return ()
+
+    if record is not None and record.draft_id == draft_id:
+        if record.completed or coordinate in record.picks:
+            return ()
+
+    events = _flush_pending_pick(state=state)
+    state.seen_pick_request_ids.add(request_id)
+    state.pending_pick = _PendingPick(
+        request_id=request_id,
+        draft_id=draft_id,
+        coordinate=coordinate,
+        cards=tuple(cards),
+        context=context,
+        account_id=state.account_id,
+    )
+    return events
+
+
+def _flush_pending_pick(*, state: _ParserState) -> tuple[DraftEvent, ...]:
+    pending = state.pending_pick
+    if pending is None:
+        return ()
+
+    state.pending_pick = None
+    record = state.human_draft
+    if record is None or record.draft_id != pending.draft_id:
+        record = _HumanDraftRecord(draft_id=pending.draft_id)
+        state.human_draft = record
+
+    if record.completed or pending.coordinate in record.picks:
+        return ()
+
+    rules = pending.context.rules
+    pack_number, pick_number = pending.coordinate
+    if len(pending.cards) != rules.cards_per_pick:
+        # The format decides the pick shape; the cards stay exactly as logged.
+        logger.warning(
+            "Pick in %s at pack %d pick %d has %d cards, expected %d for %s",
+            pending.context.event_name,
+            pack_number,
+            pick_number,
+            len(pending.cards),
+            rules.cards_per_pick,
+            rules.draft_format.value,
+        )
+
+    record.picks[pending.coordinate] = pending.cards
+    state.emitted_pick_requests[pending.request_id] = pending.coordinate
+    return (
+        PickMadeEvent(
+            event_name=pending.context.event_name,
+            set_code=pending.context.set_code,
+            pack_number=pack_number,
+            pick_number=pick_number,
+            selected_grp_ids=pending.cards,
+            account_id=pending.account_id,
+        ),
+    )
+
+
+def _parse_complete_request(*, body: str, state: _ParserState) -> tuple[DraftEvent, ...]:
+    context = _human_context(state=state)
+    request = _human_request(body=body)
+    if context is None or request is None:
+        return ()
+
+    _, payload = request
+    events = _flush_pending_pick(state=state)
+    if payload.get("EventName") != context.event_name or payload.get("IsBotDraft") is not False:
+        return events
+
+    return (*events, *_complete_human_draft(state=state, card_pool=None, draft_id=None))
+
+
+def _parse_response_body(
+    *,
+    expected: tuple[str, str],
+    text: str,
+    state: _ParserState,
+) -> tuple[DraftEvent, ...] | None:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    token, response_id = expected
+    if token == _MAKE_PICK_TOKEN:
+        if "IsPickSuccessful" not in data and "IsPickingCompleted" not in data:
+            return None
+
+        return _parse_pick_response(response_id=response_id, data=data, state=state)
+
+    if "InternalEventName" not in data and "CardPool" not in data:
+        return None
+
+    return _parse_complete_response(data=data, state=state)
+
+
+def _parse_pick_response(
+    *,
+    response_id: str,
+    data: dict[str, Any],
+    state: _ParserState,
+) -> tuple[DraftEvent, ...]:
+    context = _human_context(state=state)
+    if context is None:
+        return ()
+
+    failed = data.get("IsPickSuccessful") is False
+    pending = state.pending_pick
+    events: tuple[DraftEvent, ...] = ()
+    if pending is not None and pending.request_id == response_id:
+        if failed:
+            state.pending_pick = None
+            return ()
+
+        events = _flush_pending_pick(state=state)
+    elif failed and response_id in state.emitted_pick_requests:
+        # The pick already left the parser, so it cannot be taken back.
+        pack_number, pick_number = state.emitted_pick_requests[response_id]
+        logger.warning(
+            "Arena rejected a pick in %s at pack %d pick %d after it was recorded",
+            context.event_name,
+            pack_number,
+            pick_number,
+        )
+
+    if data.get("IsPickingCompleted") is True and not failed:
+        events = (*events, *_complete_human_draft(state=state, card_pool=None, draft_id=None))
+
+    return events
+
+
+def _parse_complete_response(
+    *,
+    data: dict[str, Any],
+    state: _ParserState,
+) -> tuple[DraftEvent, ...]:
+    context = _human_context(state=state)
+    if context is None or data.get("InternalEventName") != context.event_name:
+        return ()
+
+    pool = data.get("CardPool")
+    card_pool: tuple[int, ...] | None = None
+    if isinstance(pool, list) and all(_is_plain_int(card) for card in pool):
+        card_pool = tuple(pool)
+
+    draft_id = data.get("DraftId")
+    return _complete_human_draft(
+        state=state,
+        card_pool=card_pool,
+        draft_id=draft_id if isinstance(draft_id, str) and draft_id != "" else None,
+    )
+
+
+def _recorded_cards(*, record: _HumanDraftRecord | None) -> tuple[int, ...]:
+    if record is None:
+        return ()
+
+    return tuple(card for _, cards in sorted(record.picks.items()) for card in cards)
+
+
+def _complete_human_draft(
+    *,
+    state: _ParserState,
+    card_pool: tuple[int, ...] | None,
+    draft_id: str | None,
+) -> tuple[DraftEvent, ...]:
+    context = _human_context(state=state)
+    if context is None:
+        return ()
+
+    events = _flush_pending_pick(state=state)
+    rules = context.rules
+    record = state.human_draft
+    if record is None:
+        record = _HumanDraftRecord(draft_id=draft_id)
+        state.human_draft = record
+
+    recorded_cards = _recorded_cards(record=record)
+    if not record.completed:
+        # A gap in the picks stays a gap; the card pool only stands in when no
+        # pick was recorded at all.
+        picked_grp_ids = recorded_cards or card_pool or ()
+        if picked_grp_ids:
+            record.completed = True
+            events = (
+                *events,
+                DraftCompletedEvent(
+                    event_name=context.event_name,
+                    set_code=context.set_code,
+                    pack_number=rules.pack_count - 1,
+                    pick_number=rules.picks_per_pack - 1,
+                    picked_grp_ids=picked_grp_ids,
+                    inferred=False,
+                    account_id=state.account_id,
+                ),
+            )
+
+    if card_pool is not None and record.picks and Counter(card_pool) != Counter(recorded_cards):
+        logger.warning(
+            "Card pool of %s has %d cards but %d were recorded from %d of %d picks",
+            context.event_name,
+            len(card_pool),
+            len(recorded_cards),
+            len(record.picks),
+            rules.total_picks,
+        )
+
+    return events
 
 
 def _request_payload(*, body: str, raw_line: str) -> dict[str, Any]:
