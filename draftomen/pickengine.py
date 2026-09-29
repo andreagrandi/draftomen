@@ -18,6 +18,7 @@ from draftomen.augmented_artifact import (
 )
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, PICK_ENGINE, SPLASH, PickEngineConfig
+from draftomen.draft_format import event_format_label
 from draftomen.events import EXPECTED_PACK_COUNT, EXPECTED_PICKS_PER_PACK
 from draftomen.pool_ledger import (
     FIXING_ROLES,
@@ -38,7 +39,6 @@ from draftomen.set_profile import (
 from draftomen.seventeen import (
     FORMAT_RATING_SOURCE,
     NEUTRAL_PRIOR_SOURCE,
-    PREMIER_DRAFT_FORMAT,
     QUICK_DRAFT_FORMAT,
     RatingSampleCounts,
     RatingSourceMetadata,
@@ -375,6 +375,7 @@ def _resolved_profile_rating(
     card: CardInfo,
     profile: SetProfile,
     card_rating: CardRating,
+    requested_format: str,
 ) -> ResolvedCardRating:
     gih_rate = card_rating.gih_win_rate
     if gih_rate.samples == 0:
@@ -387,6 +388,12 @@ def _resolved_profile_rating(
         evidence = gih_rate.aggregate_evidence
         source_format = None if evidence is None else evidence.source_format
         fallback_reason = None if evidence is None else evidence.fallback_reason
+    if (
+        fallback_reason is None
+        and source_format is not None
+        and source_format.casefold() != requested_format.casefold()
+    ):
+        fallback_reason = "format-fallback"
     return ResolvedCardRating(
         grp_id=card.grp_id,
         name=card.name,
@@ -406,7 +413,7 @@ def _resolved_profile_rating(
         letter_grade=None,
         neutral_prior_score=None,
         metadata=RatingSourceMetadata(
-            requested_format=profile.event_format,
+            requested_format=requested_format.casefold(),
             source=PROFILE_RATING_SOURCE,
             source_format=source_format,
             fallback_reason=fallback_reason,
@@ -418,6 +425,7 @@ def _profile_rating_lookup(
     *,
     profile: SetProfile | None,
     card_database: CardDatabase,
+    requested_format: str = QUICK_DRAFT_FORMAT,
 ) -> _ProfileRatingLookup:
     if not _is_empirical_profile(profile=profile):
         return _ProfileRatingLookup(ratings_by_grp_id={}, distribution=())
@@ -442,6 +450,7 @@ def _profile_rating_lookup(
             card=card,
             profile=profile,
             card_rating=card_rating,
+            requested_format=requested_format,
         )
         if card_key not in matched_keys:
             distribution.append(card_rating.gih_win_rate.value)
@@ -854,9 +863,11 @@ class PickEngine:
         set_profile: SetProfile | None = None,
         scoring_context: PickScoringContext | None = None,
         augmented_artifact: AugmentedArtifact | None = None,
+        requested_format: str = QUICK_DRAFT_FORMAT,
     ) -> None:
         scoring_context = _normalize_scoring_context(scoring_context)
         self.ratings_data = ratings_data
+        self.requested_format = requested_format
         self.config = config
         self.splash_enabled = splash_enabled
         self.contextual_adjustments_enabled = contextual_adjustments_enabled
@@ -903,6 +914,7 @@ class PickEngine:
         profile_lookup = _profile_rating_lookup(
             profile=active_profile,
             card_database=card_database,
+            requested_format=self.requested_format,
         )
         normalization = _normalization_from_data(
             ratings_data=self.ratings_data,
@@ -1209,6 +1221,7 @@ class PickEngine:
             profile=profile,
             commitment=commitment,
             profile_lookup=profile_lookup,
+            requested_format=self.requested_format,
         )
         base_rating = (
             normalization.lower_rating
@@ -2689,6 +2702,7 @@ def _rating_for(
     commitment: ColorCommitment | None = None,
     profile: SetProfile | None = None,
     profile_lookup: _ProfileRatingLookup | None = None,
+    requested_format: str = QUICK_DRAFT_FORMAT,
 ) -> ResolvedCardRating:
     if profile_lookup is not None:
         profile_rating = profile_lookup.rating_for(grp_id=grp_id)
@@ -2696,7 +2710,11 @@ def _rating_for(
             return profile_rating
 
     if ratings_data is None:
-        return _neutral_rating(grp_id=grp_id, config=config)
+        return _neutral_rating(
+            grp_id=grp_id,
+            config=config,
+            requested_format=requested_format,
+        )
 
     if commitment is not None and commitment.locked and commitment.inferred_pair is not None:
         pair = commitment.inferred_pair
@@ -2751,7 +2769,12 @@ def _effective_base_rating_for(
     )
 
 
-def _neutral_rating(*, grp_id: int, config: PickEngineConfig) -> ResolvedCardRating:
+def _neutral_rating(
+    *,
+    grp_id: int,
+    config: PickEngineConfig,
+    requested_format: str,
+) -> ResolvedCardRating:
     return ResolvedCardRating(
         grp_id=grp_id,
         name=f"Unknown card {grp_id}",
@@ -2771,7 +2794,7 @@ def _neutral_rating(*, grp_id: int, config: PickEngineConfig) -> ResolvedCardRat
         letter_grade=None,
         neutral_prior_score=config.neutral_prior_score,
         metadata=RatingSourceMetadata(
-            requested_format=QUICK_DRAFT_FORMAT,
+            requested_format=requested_format,
             source=NEUTRAL_PRIOR_SOURCE,
             source_format=None,
             fallback_reason="ratings-unavailable",
@@ -2836,21 +2859,37 @@ def _augmented_total(*, basic_score: int, augmentation_delta: float) -> float:
 
 
 def _source_label(*, rating: ResolvedCardRating) -> str:
-    if rating.metadata.source == PROFILE_RATING_SOURCE:
-        return PROFILE_SOURCE_LABEL
-    if rating.metadata.source == NEUTRAL_PRIOR_SOURCE:
+    """Name the format that supplied a rating, starred when it is a fallback.
+    Profile cards without samples keep the plain profile label.
+    """
+
+    metadata = rating.metadata
+    if metadata.source == NEUTRAL_PRIOR_SOURCE:
         return "Prior*"
 
-    if rating.metadata.source != FORMAT_RATING_SOURCE:
+    if metadata.source not in {PROFILE_RATING_SOURCE, FORMAT_RATING_SOURCE}:
         return "Unknown"
 
-    if rating.metadata.source_format == QUICK_DRAFT_FORMAT:
-        return "Quick"
+    if metadata.source_format is None:
+        return (
+            PROFILE_SOURCE_LABEL
+            if metadata.source == PROFILE_RATING_SOURCE
+            else "Unknown"
+        )
 
-    if rating.metadata.source_format == PREMIER_DRAFT_FORMAT:
-        return "Premier"
+    label = event_format_label(event_format=metadata.source_format)
+    if _is_format_fallback(rating=rating):
+        return f"{label}*"
 
-    return rating.metadata.source_format or "Unknown"
+    return label
+
+
+def _is_format_fallback(*, rating: ResolvedCardRating) -> bool:
+    source_format = rating.metadata.source_format
+    return (
+        source_format is not None
+        and source_format.casefold() != rating.metadata.requested_format.casefold()
+    )
 
 
 def _is_freely_available_basic_land(*, card: CardInfo) -> bool:
@@ -2864,19 +2903,40 @@ def _source_summary(*, cards: tuple[ScoredCard, ...]) -> str:
     if not cards:
         return "none"
 
-    uses_profile = any(card.source_label == PROFILE_SOURCE_LABEL for card in cards)
-    uses_quick = any(card.source_label == "Quick" for card in cards)
-    uses_premier = any(card.source_label == "Premier" for card in cards)
+    rated_cards = tuple(
+        card
+        for card in cards
+        if not card.freely_available_basic
+        and card.rating.metadata.source
+        in {PROFILE_RATING_SOURCE, FORMAT_RATING_SOURCE}
+    )
+    uses_profile = any(
+        card.rating.metadata.source == PROFILE_RATING_SOURCE for card in rated_cards
+    )
+    exact_formats = sorted(
+        {
+            card.rating.metadata.source_format
+            for card in rated_cards
+            if card.rating.metadata.source == FORMAT_RATING_SOURCE
+            and card.rating.metadata.source_format is not None
+            and not _is_format_fallback(rating=card.rating)
+        }
+    )
+    fallback_labels = sorted(
+        {
+            event_format_label(event_format=card.rating.metadata.source_format)
+            for card in rated_cards
+            if card.rating.metadata.source_format is not None
+            and _is_format_fallback(rating=card.rating)
+        }
+    )
     uses_prior = any(card.no_data for card in cards)
     uses_basic_policy = any(card.freely_available_basic for card in cards)
     parts: list[str] = []
     if uses_profile:
         parts.append("set profile")
-    if uses_quick:
-        parts.append("QuickDraft")
-
-    if uses_premier:
-        parts.append("Premier fallback")
+    parts.extend(exact_formats)
+    parts.extend(f"{label} fallback" for label in fallback_labels)
 
     if uses_prior:
         parts.append("neutral prior")

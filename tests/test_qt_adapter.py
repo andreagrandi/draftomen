@@ -2763,6 +2763,7 @@ def test_live_adapter_loads_the_available_augmentation_model_off_gui_thread(
             "status": "available",
             "set_code": "MSH",
             "enabled": False,
+            "unavailable_format": None,
         }
     finally:
         adapter.shutdown()
@@ -4130,6 +4131,7 @@ def test_live_adapter_loads_augmented_model_for_manual_test_draft_offer(
             "status": "available",
             "set_code": "HOB",
             "enabled": True,
+            "unavailable_format": None,
         }
         assert client.requested_set_codes == ["HOB"]
         assert all(thread_id != gui_thread_id for thread_id in client.thread_ids)
@@ -4250,6 +4252,7 @@ def test_live_adapter_keeps_manual_draft_on_basic_do_when_augmented_model_unavai
             "status": "unavailable",
             "set_code": "HOB",
             "enabled": False,
+            "unavailable_format": None,
         }
         assert adapter.state["test_draft"]["phase"] == "drafting"
         assert adapter.state["test_draft"]["error"] is None

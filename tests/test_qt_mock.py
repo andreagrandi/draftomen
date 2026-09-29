@@ -49,6 +49,7 @@ def test_qt_translation_publishes_plain_values_without_domain_payloads() -> None
         "status": "unavailable",
         "set_code": None,
         "enabled": False,
+        "unavailable_format": None,
     }
     assert values["augmentation_message"] == "Augmented Intelligence is unavailable."
     assert values["build"]["average_mana_value"] == pytest.approx(expected_average)

@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+- The live session now loads set profiles and ratings for the detected draft
+  format instead of always asking for QuickDraft. Quick uses `QuickDraft`,
+  Premier uses `PremierDraft`, Traditional tries `TradDraft` then
+  `PremierDraft`, and Pick-Two tries `PickTwoDraft` then `PremierDraft`. The
+  local cache and the hosted refresh both follow that order, and an exact
+  profile replaces a fallback one when it appears. Snapshots expose the
+  detected format, and the contextual evidence status reports a fallback.
+  Rating labels name the format that supplied the rating, such as `Trad`, and
+  add `*` to a fallback, such as `Premier*`, so Quick Draft cards now read
+  `Quick` instead of `Profile`. An augmented model is used only when it was
+  trained on the draft's own format or on PremierDraft; otherwise Augmented
+  Intelligence reports it as unavailable for that format. (#770)
 - The log parser now reads human-draft picks and completion for Premier,
   Traditional and Pick-Two drafts. Each successful `EventPlayerDraftMakePick`
   request becomes one pick with 0-based pack and pick numbers, holding one card

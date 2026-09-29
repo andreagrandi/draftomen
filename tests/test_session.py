@@ -33,6 +33,7 @@ from draftomen.backtest import (
 )
 from draftomen.card_data_client import CardDataClient
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.draft_format import DraftFormat
 from draftomen.cardimages import CardImageError, CardImageService
 from draftomen.events import (
     EXPECTED_PICKS_PER_PACK,
@@ -258,6 +259,7 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     assert session_module._contextual_evidence_for_profile(
         profile=empirical_profile,
         enabled=True,
+        requested_format=QUICK_DRAFT_FORMAT,
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.EXACT,
         source_formats=("quickdraft",),
@@ -267,6 +269,7 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     assert session_module._contextual_evidence_for_profile(
         profile=exact_profile,
         enabled=True,
+        requested_format=QUICK_DRAFT_FORMAT,
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.EXACT,
         source_formats=("quickdraft",),
@@ -275,6 +278,7 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     assert session_module._contextual_evidence_for_profile(
         profile=fallback_profile,
         enabled=True,
+        requested_format=QUICK_DRAFT_FORMAT,
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.FALLBACK,
         source_formats=("premierdraft",),
@@ -283,6 +287,7 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     assert session_module._contextual_evidence_for_profile(
         profile=mixed_profile,
         enabled=True,
+        requested_format=QUICK_DRAFT_FORMAT,
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.FALLBACK,
         source_formats=("premierdraft", "quickdraft"),
@@ -291,6 +296,7 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     assert session_module._contextual_evidence_for_profile(
         profile=pair_only_profile,
         enabled=True,
+        requested_format=QUICK_DRAFT_FORMAT,
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.EXACT,
         source_formats=("quickdraft",),
@@ -299,6 +305,7 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
     assert session_module._contextual_evidence_for_profile(
         profile=pair_fallback_profile,
         enabled=True,
+        requested_format=QUICK_DRAFT_FORMAT,
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.FALLBACK,
         source_formats=("premierdraft",),
@@ -314,10 +321,12 @@ def test_contextual_evidence_classifier_publishes_selected_sources() -> None:
         assert session_module._contextual_evidence_for_profile(
             profile=profile,
             enabled=True,
+            requested_format=QUICK_DRAFT_FORMAT,
         ) == ContextualEvidenceState()
     assert session_module._contextual_evidence_for_profile(
         profile=fallback_profile,
         enabled=False,
+        requested_format=QUICK_DRAFT_FORMAT,
     ) == ContextualEvidenceState(
         status=ContextualEvidenceStatus.DISABLED,
         message="Contextual · disabled",
@@ -2035,6 +2044,351 @@ class _ProfileClientStub:
         return SimpleNamespace(profile=profile, source=source)
 
 
+class _FormatProfileClientStub(_ProfileClientStub):
+    """Serve cached profiles keyed by set code and 17Lands event format."""
+
+    def __init__(self, profiles: dict[tuple[str, str], SetProfile]) -> None:
+        super().__init__({})
+        self.format_profiles = profiles
+
+    def load_cached(self, set_code: str, event_format: str, **kwargs):
+        del kwargs
+        self.load_calls.append((set_code, event_format))
+        profile = self.format_profiles.get((set_code, event_format.casefold()))
+        if profile is None:
+            return SimpleNamespace(
+                profile=SetProfile.generic(
+                    set_code=set_code,
+                    event_format=event_format,
+                ),
+                source="generic",
+            )
+        return SimpleNamespace(
+            profile=profile,
+            source=f"local-{profile.maturity.value}",
+        )
+
+
+FORMAT_EVENT_NAMES = {
+    DraftFormat.QUICK: "QuickDraft_TST_20260823",
+    DraftFormat.PREMIER: "PremierDraft_TST_20260823",
+    DraftFormat.TRADITIONAL: "TradDraft_TST_20260823",
+    DraftFormat.PICK_TWO: "PickTwoDraft_TST_20260823",
+}
+
+
+def _profile_for_format(*, event_format: str) -> SetProfile:
+    return replace(_fixture_empirical_profile(), event_format=event_format.casefold())
+
+
+def _activate_format(*, session: LiveSession, draft_format: DraftFormat) -> None:
+    session._set_active_set_code(
+        set_code="TST",
+        lifecycle_identity=(
+            "account-1",
+            FORMAT_EVENT_NAMES[draft_format],
+            None,
+            False,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("draft_format", "event_format"),
+    [
+        (DraftFormat.QUICK, "QuickDraft"),
+        (DraftFormat.PREMIER, "PremierDraft"),
+        (DraftFormat.TRADITIONAL, "TradDraft"),
+        (DraftFormat.PICK_TWO, "PickTwoDraft"),
+    ],
+)
+def test_live_session_loads_and_refreshes_the_detected_format_profile(
+    tmp_path: Path,
+    draft_format: DraftFormat,
+    event_format: str,
+) -> None:
+    profile = _profile_for_format(event_format=event_format)
+    client = _FormatProfileClientStub({("TST", event_format.casefold()): profile})
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=client,
+    )
+
+    _activate_format(session=session, draft_format=draft_format)
+
+    snapshot = session.snapshot
+    request = session.profile_refresh_request()
+    assert client.load_calls == [("TST", event_format)]
+    assert snapshot.draft_format is draft_format
+    assert snapshot.set_profile.event_format == event_format
+    assert snapshot.set_profile.source == "local-mature"
+    assert snapshot.ratings.phase is DataLoadPhase.READY
+    assert snapshot.contextual_evidence.status is ContextualEvidenceStatus.EXACT
+    assert request is not None
+    assert request.event_format == event_format
+
+
+@pytest.mark.parametrize(
+    ("draft_format", "expected_calls", "expected_format", "evidence"),
+    [
+        (
+            DraftFormat.QUICK,
+            [("TST", "QuickDraft")],
+            "QuickDraft",
+            ContextualEvidenceStatus.UNAVAILABLE,
+        ),
+        (
+            DraftFormat.PREMIER,
+            [("TST", "PremierDraft")],
+            "PremierDraft",
+            ContextualEvidenceStatus.EXACT,
+        ),
+        (
+            DraftFormat.TRADITIONAL,
+            [("TST", "TradDraft"), ("TST", "PremierDraft")],
+            "PremierDraft",
+            ContextualEvidenceStatus.FALLBACK,
+        ),
+        (
+            DraftFormat.PICK_TWO,
+            [("TST", "PickTwoDraft"), ("TST", "PremierDraft")],
+            "PremierDraft",
+            ContextualEvidenceStatus.FALLBACK,
+        ),
+    ],
+)
+def test_live_session_applies_the_fallback_table_when_the_exact_profile_is_missing(
+    tmp_path: Path,
+    draft_format: DraftFormat,
+    expected_calls: list[tuple[str, str]],
+    expected_format: str,
+    evidence: ContextualEvidenceStatus,
+) -> None:
+    premier = _profile_for_format(event_format="PremierDraft")
+    client = _FormatProfileClientStub({("TST", "premierdraft"): premier})
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=client,
+    )
+
+    _activate_format(session=session, draft_format=draft_format)
+
+    snapshot = session.snapshot
+    assert client.load_calls == expected_calls
+    assert snapshot.set_profile.event_format == expected_format
+    assert snapshot.contextual_evidence.status is evidence
+    if evidence is ContextualEvidenceStatus.FALLBACK:
+        assert snapshot.contextual_evidence.message == (
+            "Contextual · PremierDraft fallback"
+        )
+        assert session._set_profile == premier
+    if draft_format is DraftFormat.QUICK:
+        assert snapshot.set_profile.maturity == "generic"
+        assert session._set_profile is None
+
+
+@pytest.mark.parametrize(
+    ("draft_format", "fallback_format"),
+    [
+        (DraftFormat.QUICK, None),
+        (DraftFormat.PREMIER, None),
+        (DraftFormat.TRADITIONAL, "PremierDraft"),
+        (DraftFormat.PICK_TWO, "PremierDraft"),
+    ],
+)
+def test_live_session_refreshes_the_fallback_format_after_a_missing_profile(
+    tmp_path: Path,
+    draft_format: DraftFormat,
+    fallback_format: str | None,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_set_card_database(set_code="TST"),
+        profile_client=_FormatProfileClientStub({}),
+    )
+    _activate_format(session=session, draft_format=draft_format)
+    exact = session.profile_refresh_request()
+    assert exact is not None
+
+    session.complete_profile_refresh(
+        request=exact,
+        result=ProfileRefreshResult(
+            profile=SetProfile.generic(
+                set_code="TST",
+                event_format=exact.event_format,
+            ),
+            outcome=ProfileRefreshOutcome.MISSING,
+        ),
+    )
+
+    fallback = session.profile_refresh_request()
+    if fallback_format is None:
+        assert fallback is None
+        assert session.snapshot.set_profile.refresh_outcome == "missing"
+        return
+    assert fallback == replace(exact, event_format=fallback_format)
+    premier = _profile_for_format(event_format=fallback_format)
+    session.complete_profile_refresh(
+        request=fallback,
+        result=ProfileRefreshResult(
+            profile=premier,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+
+    snapshot = session.snapshot
+    assert session.profile_refresh_request() is None
+    assert session._set_profile == premier
+    assert snapshot.set_profile.event_format == fallback_format
+    assert snapshot.set_profile.source == "remote"
+    assert snapshot.contextual_evidence.status is ContextualEvidenceStatus.FALLBACK
+
+
+def test_live_session_exact_format_profile_replaces_a_fallback_profile(
+    tmp_path: Path,
+) -> None:
+    premier = _profile_for_format(event_format="PremierDraft")
+    client = _FormatProfileClientStub({("TST", "premierdraft"): premier})
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_set_card_database(set_code="TST"),
+        profile_client=client,
+    )
+    _activate_format(session=session, draft_format=DraftFormat.TRADITIONAL)
+    exact = session.profile_refresh_request()
+    assert exact is not None
+    assert exact.event_format == "TradDraft"
+
+    trad = replace(
+        _profile_for_format(event_format="TradDraft"),
+        generated_at="2026-08-01T00:00:00+00:00",
+    )
+    session.complete_profile_refresh(
+        request=exact,
+        result=ProfileRefreshResult(
+            profile=trad,
+            outcome=ProfileRefreshOutcome.UPDATED,
+        ),
+    )
+
+    assert session._set_profile == trad
+    assert session.snapshot.set_profile.event_format == "TradDraft"
+    assert session.snapshot.contextual_evidence.status is (
+        ContextualEvidenceStatus.EXACT
+    )
+
+
+def test_live_session_reloads_profiles_when_the_draft_format_changes(
+    tmp_path: Path,
+) -> None:
+    quick = _profile_for_format(event_format="QuickDraft")
+    premier = _profile_for_format(event_format="PremierDraft")
+    client = _FormatProfileClientStub(
+        {("TST", "quickdraft"): quick, ("TST", "premierdraft"): premier}
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        profile_client=client,
+    )
+
+    _activate_format(session=session, draft_format=DraftFormat.QUICK)
+    assert session._set_profile == quick
+    _activate_format(session=session, draft_format=DraftFormat.PREMIER)
+
+    assert client.load_calls == [("TST", "QuickDraft"), ("TST", "PremierDraft")]
+    assert session._set_profile == premier
+    assert session.snapshot.draft_format is DraftFormat.PREMIER
+    assert session.snapshot.set_profile.event_format == "PremierDraft"
+
+
+@pytest.mark.parametrize(
+    ("draft_format", "trained_format", "available", "message"),
+    [
+        (
+            DraftFormat.QUICK,
+            "PremierDraft",
+            True,
+            "Augmented Intelligence is available for TST.",
+        ),
+        (
+            DraftFormat.QUICK,
+            "TradDraft",
+            False,
+            "Augmented Intelligence is unavailable for TST QuickDraft.",
+        ),
+        (
+            DraftFormat.PREMIER,
+            "PremierDraft",
+            True,
+            "Augmented Intelligence is available for TST.",
+        ),
+        (
+            DraftFormat.PREMIER,
+            "QuickDraft",
+            False,
+            "Augmented Intelligence is unavailable for TST PremierDraft.",
+        ),
+        (
+            DraftFormat.TRADITIONAL,
+            "TradDraft",
+            True,
+            "Augmented Intelligence is available for TST.",
+        ),
+        (
+            DraftFormat.PICK_TWO,
+            "PremierDraft",
+            True,
+            "Augmented Intelligence is available for TST.",
+        ),
+        (
+            DraftFormat.PICK_TWO,
+            "QuickDraft",
+            False,
+            "Augmented Intelligence is unavailable for TST PickTwoDraft.",
+        ),
+    ],
+)
+def test_live_session_augmented_model_follows_the_detected_format(
+    tmp_path: Path,
+    draft_format: DraftFormat,
+    trained_format: str,
+    available: bool,
+    message: str,
+) -> None:
+    app_dir = tmp_path / "app"
+    artifact_json = _augmented_tst_artifact_json()
+    source = artifact_json["source"]
+    assert isinstance(source, dict)
+    artifact_json["source"] = {**source, "event_type": trained_format}
+    _write_augmented_cache(
+        app_dir=app_dir,
+        set_code="TST",
+        payload=canonical_gzip_bytes(artifact_json),
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=_augmented_card_database(),
+        augmented_model_client=_augmented_client(app_dir=app_dir),
+    )
+
+    _activate_format(session=session, draft_format=draft_format)
+
+    status = (
+        AugmentationStatus.AVAILABLE if available else AugmentationStatus.UNAVAILABLE
+    )
+    assert session.snapshot.augmentation.status is status
+    assert session.snapshot.augmentation_message == message
+    assert session.augmented_model_request() is None
+    enabled = session.dispatch(command=ChangeAugmentation(enabled=True))
+    assert enabled.augmentation.enabled is available
+
+
 
 
 def test_live_session_cold_start_loads_bundled_profile_without_network(
@@ -2115,7 +2469,7 @@ def test_live_session_profile_activation_is_local_first_and_queues_one_request(
         recommendation.card.grp_id for recommendation in snapshot.recommendations.cards
     ] == [104894, 104976]
     assert all(
-        recommendation.source_label == "Profile"
+        recommendation.source_label == "Quick"
         for recommendation in snapshot.recommendations.cards
     )
     assert {
@@ -2404,7 +2758,7 @@ def test_live_session_non_empirical_profiles_use_deterministic_offline_fallbacks
     assert all(
         recommendation.no_data
         and recommendation.win_rate is None
-        and recommendation.source_label != "Profile"
+        and recommendation.source_label != "Quick"
         for recommendation in snapshot.recommendations.cards
     )
     assert opener_calls == []
@@ -2452,7 +2806,7 @@ def test_live_session_without_profile_client_uses_generic_fallback_offline(
     assert all(
         recommendation.no_data
         and recommendation.win_rate is None
-        and recommendation.source_label != "Profile"
+        and recommendation.source_label != "Quick"
         for recommendation in snapshot.recommendations.cards
     )
     assert provider_calls == []
@@ -2705,7 +3059,12 @@ def test_live_session_stale_prepared_profile_cannot_replace_newer_cached_profile
     resume_preparation = threading.Event()
     tst_preparation_count = 0
 
-    def controlled_profile_load(*, set_code: str) -> tuple[SetProfile, str]:
+    def controlled_profile_load(
+        *,
+        set_code: str,
+        draft_format: DraftFormat,
+    ) -> tuple[SetProfile, str]:
+        del draft_format
         nonlocal tst_preparation_count
         if set_code == "TST":
             tst_preparation_count += 1
@@ -4267,13 +4626,13 @@ def test_live_session_cached_profile_scores_all_ranking_modes_and_audits_choice(
     )
     recommendations = session.snapshot.recommendations.cards
     assert {card.source_label for card in recommendations} == {
-        "Profile",
+        "Quick",
         "Prior*",
     }
     profile_recommendations = tuple(
         recommendation
         for recommendation in recommendations
-        if recommendation.source_label == "Profile"
+        if recommendation.source_label == "Quick"
     )
     initial_concise_explanations = {
         recommendation.card.grp_id: recommendation.concise_explanation
@@ -4337,9 +4696,9 @@ def test_live_session_cached_profile_scores_all_ranking_modes_and_audits_choice(
         recommendation["grp_id"]
     ]["scoring"]["source_label"]
     assert candidates[104894]["rating"]["gih_win_rate"] == 0.90
-    assert candidates[104894]["scoring"]["source_label"] == "Profile"
+    assert candidates[104894]["scoring"]["source_label"] == "Quick"
     assert candidates[104976]["rating"]["gih_win_rate"] == 0.10
-    assert candidates[104976]["scoring"]["source_label"] == "Profile"
+    assert candidates[104976]["scoring"]["source_label"] == "Quick"
     assert provider_calls == []
 
 
@@ -4396,7 +4755,7 @@ def test_live_session_locked_pair_scoring_uses_cached_profile_without_provider_a
     } == {104894: 0.90, 104976: 0.10}
     assert tuple(
         recommendation.source_label for recommendation in recommendations
-    ) == ("Profile", "Profile")
+    ) == ("Quick", "Quick")
     assert provider_calls == []
 
 

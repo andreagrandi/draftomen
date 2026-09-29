@@ -40,6 +40,12 @@ from draftomen.deckbuilder import (
     SpellSelection,
     build_deck_from_pool,
 )
+from draftomen.draft_format import (
+    DraftFormat,
+    augmented_model_formats,
+    detect_draft_format,
+    ratings_formats,
+)
 from draftomen.events import (
     EXPECTED_PACK_COUNT,
     EXPECTED_PICKS_PER_PACK,
@@ -92,7 +98,6 @@ from draftomen.set_profile import (
     SetProfileError,
     load_scoring_profile,
 )
-from draftomen.seventeen import QUICK_DRAFT_FORMAT
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +355,8 @@ class AugmentationState:
     status: AugmentationStatus = AugmentationStatus.UNAVAILABLE
     set_code: str | None = None
     enabled: bool = False
+    # The draft's 17Lands format when the set's model was trained for another one.
+    unavailable_format: str | None = None
 
     def __post_init__(self) -> None:
         if self.enabled and self.status is not AugmentationStatus.AVAILABLE:
@@ -593,6 +600,7 @@ class LiveSessionSnapshot:
     accounts: tuple[AccountIdentity, ...] = ()
     active_account: AccountIdentity | None = None
     draft: DraftIdentity | None = None
+    draft_format: DraftFormat | None = None
     card_data: CardDataState = field(default_factory=CardDataState)
     ratings: RatingsState = field(default_factory=RatingsState)
     set_profile: SetProfileState = field(default_factory=SetProfileState)
@@ -616,8 +624,11 @@ def _contextual_evidence_for_profile(
     *,
     profile: SetProfile | None,
     enabled: bool,
+    requested_format: str,
 ) -> ContextualEvidenceState:
-    """Classify contextual evidence for the selected profile."""
+    """Classify contextual evidence for the selected profile.
+    Evidence from a format other than the draft's own counts as a fallback.
+    """
 
     if not enabled:
         return ContextualEvidenceState(
@@ -643,12 +654,13 @@ def _contextual_evidence_for_profile(
         if pair.performance is not None and pair.performance.samples > 0
     )
 
+    requested = requested_format.casefold()
     sources: set[str] = set()
     fallback_sources: set[str] = set()
     for rate in rates:
         if profile.schema_version == 1:
             source_format = profile.event_format
-            is_fallback = False
+            is_fallback = source_format != requested
         else:
             evidence = rate.aggregate_evidence
             if evidence is None:
@@ -656,7 +668,7 @@ def _contextual_evidence_for_profile(
             source_format = evidence.source_format
             is_fallback = (
                 evidence.fallback_reason is not None
-                or source_format != profile.event_format
+                or source_format != requested
             )
         sources.add(source_format)
         if is_fallback:
@@ -694,6 +706,8 @@ def augmentation_status_message(*, state: AugmentationState) -> str:
 
     set_suffix = "" if state.set_code is None else f" for {state.set_code}"
     if state.status is not AugmentationStatus.AVAILABLE:
+        if state.unavailable_format is not None:
+            set_suffix = f"{set_suffix} {state.unavailable_format}"
         return f"Augmented Intelligence is unavailable{set_suffix}."
     if state.enabled:
         return f"Augmented Intelligence is on{set_suffix}."
@@ -902,6 +916,7 @@ class LiveSession:
         self._augmented_model_request: AugmentedModelRequest | None = None
         self._contextual_evidence_cached_profile: SetProfile | None = None
         self._contextual_evidence_cached_enabled: bool | None = None
+        self._contextual_evidence_cached_format: DraftFormat | None = None
         self._contextual_evidence_cached_state: ContextualEvidenceState | None = None
         self._set_profiles_by_set: dict[str, SetProfile | None] = {}
         self._set_profile_states_by_set: dict[str, SetProfileState] = {}
@@ -910,6 +925,7 @@ class LiveSession:
         self._ratings_state_by_set: dict[str, RatingsState] = {}
         self._ratings_errors_by_set: dict[str, SessionError] = {}
         self._active_set_code_value: str | None = None
+        self._active_draft_format = DraftFormat.QUICK
         self._transition_generation = 0
         self._profile_refresh_generation = 0
         self._profile_refresh_request: ProfileRefreshRequest | None = None
@@ -1095,6 +1111,11 @@ class LiveSession:
             active_set_code = self._active_set_code_value
             if active_set_code is None:
                 return
+            if (
+                outcome == ProfileRefreshOutcome.MISSING.value
+                and self._queue_fallback_profile_refresh_locked(request=request)
+            ):
+                return
 
             if (
                 profile.set_code.upper() != active_set_code
@@ -1131,6 +1152,7 @@ class LiveSession:
                         profile=profile,
                         current_profile=candidate,
                         outcome=outcome,
+                        format_order=self._active_ratings_formats(),
                     )
                     for candidate in current_profiles
                 )
@@ -2352,6 +2374,7 @@ class LiveSession:
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
             set_profile=self._set_profile,
             augmented_artifact=self._effective_augmented_artifact_locked(),
+            requested_format=self._active_ratings_formats()[0],
         )
         global_pick_index = _draft_pick_index(event=event)
         scored_pack = engine.score_pack(
@@ -3238,11 +3261,15 @@ class LiveSession:
         self,
         *,
         set_code: str,
+        draft_format: DraftFormat,
     ) -> tuple[SetProfile, str]:
         normalized_set_code = set_code.upper()
         if self._configured_set_profile is not None:
             return self._configured_set_profile, "injected"
-        return self._load_local_profile_for_set(set_code=normalized_set_code)
+        return self._load_local_profile_for_set(
+            set_code=normalized_set_code,
+            draft_format=draft_format,
+        )
 
     def _cached_augmented_artifact_for_set(
         self, *, set_code: str
@@ -3358,9 +3385,18 @@ class LiveSession:
         set_code: str,
         lifecycle_identity: _ProfileLifecycleIdentity | None,
         prepared_profile: tuple[SetProfile, str],
+        draft_format: DraftFormat,
         force_lifecycle_change: bool = False,
     ) -> tuple[bool, SetProfileState | None, RatingsState | None]:
         normalized_set_code = set_code.upper()
+        if draft_format is not self._active_draft_format:
+            # Memoized profiles and ratings belong to the previous format.
+            self._active_draft_format = draft_format
+            self._set_profiles_by_set.clear()
+            self._set_profile_states_by_set.clear()
+            self._ratings_state_by_set.clear()
+            self._ratings_errors_by_set.clear()
+            self._active_set_code_value = None
         set_changed = normalized_set_code != self._active_set_code_value
         lifecycle_changed = force_lifecycle_change
         if lifecycle_identity is not None:
@@ -3395,7 +3431,7 @@ class LiveSession:
                 ):
                     profile = SetProfile.generic(
                         set_code=normalized_set_code,
-                        event_format=QUICK_DRAFT_FORMAT,
+                        event_format=self._active_ratings_formats()[0],
                     )
                     source = "generic"
                     authoritative_state = self._set_profile_states_by_set.get(
@@ -3449,9 +3485,34 @@ class LiveSession:
         self._profile_refresh_request = ProfileRefreshRequest(
             generation=self._profile_refresh_generation,
             set_code=self._active_set_code_value,
-            event_format=QUICK_DRAFT_FORMAT,
+            event_format=self._active_ratings_formats()[0],
             force=force,
         )
+
+    def _queue_fallback_profile_refresh_locked(
+        self,
+        *,
+        request: ProfileRefreshRequest,
+    ) -> bool:
+        """Queue a refresh for the next fallback format after a missing profile.
+        Returns False once the draft format has no fallback left to try.
+        """
+
+        formats = self._active_ratings_formats()
+        next_rank = (
+            _format_rank(event_format=request.event_format, format_order=formats)
+            + 1
+        )
+        if next_rank >= len(formats):
+            return False
+        self._profile_refresh_request = replace(
+            request,
+            event_format=formats[next_rank],
+        )
+        return True
+
+    def _active_ratings_formats(self) -> tuple[str, ...]:
+        return ratings_formats(draft_format=self._active_draft_format)
 
     def _queue_augmented_model_request_locked(self, *, force: bool = False) -> None:
         if (
@@ -3459,7 +3520,7 @@ class LiveSession:
             or self._active_set_code_value is None
         ):
             return
-        if self._active_augmented_artifact_locked() is not None and not force:
+        if self._set_augmented_artifact_locked() is not None and not force:
             return
         if self._augmented_model_request is not None and not force:
             return
@@ -3490,7 +3551,15 @@ class LiveSession:
                 self._publish(snapshot=candidate_snapshot)
             return
 
-        prepared_profile = self._prepare_set_profile(set_code=normalized_set_code)
+        draft_format = (
+            self._active_draft_format
+            if lifecycle_identity is None or lifecycle_identity[1] is None
+            else _draft_format_for_event(event_name=lifecycle_identity[1])
+        )
+        prepared_profile = self._prepare_set_profile(
+            set_code=normalized_set_code,
+            draft_format=draft_format,
+        )
         cached_augmented_attempted, cached_augmented_artifact = (
             self._cached_augmented_artifact_for_set(set_code=normalized_set_code)
         )
@@ -3500,6 +3569,7 @@ class LiveSession:
                     set_code=normalized_set_code,
                     lifecycle_identity=lifecycle_identity,
                     prepared_profile=prepared_profile,
+                    draft_format=draft_format,
                 )
             )
             if transitioned:
@@ -3529,51 +3599,61 @@ class LiveSession:
         self,
         *,
         set_code: str,
+        draft_format: DraftFormat,
     ) -> tuple[SetProfile, str]:
-        cached_profile = self._set_profiles_by_set.get(set_code)
-        if set_code in self._set_profiles_by_set and cached_profile is not None:
+        """Load the first usable local profile in the draft's format order.
+        Without one, the exact format's result or a generic profile is returned.
+        """
+
+        formats = ratings_formats(draft_format=draft_format)
+        generic = (
+            SetProfile.generic(set_code=set_code, event_format=formats[0]),
+            "generic",
+        )
+        # The memo belongs to the active format; another format reads from disk.
+        if (
+            draft_format is self._active_draft_format
+            and set_code in self._set_profiles_by_set
+        ):
+            cached_profile = self._set_profiles_by_set[set_code]
+            if cached_profile is None:
+                return generic
             return cached_profile, f"local-{cached_profile.maturity.value}"
 
-        if set_code in self._set_profiles_by_set and cached_profile is None:
-            return (
-                SetProfile.generic(
-                    set_code=set_code,
-                    event_format=QUICK_DRAFT_FORMAT,
-                ),
-                "generic",
+        exact: tuple[SetProfile, str] | None = None
+        for event_format in formats:
+            loaded = self._load_local_profile_for_format(
+                set_code=set_code,
+                event_format=event_format,
             )
+            if loaded is None:
+                continue
+            if loaded[0].maturity is not ProfileMaturity.GENERIC:
+                return loaded
+            if exact is None and event_format == formats[0]:
+                exact = loaded
+        return exact or generic
 
+    def _load_local_profile_for_format(
+        self,
+        *,
+        set_code: str,
+        event_format: str,
+    ) -> tuple[SetProfile, str] | None:
         if self._profile_client is not None:
             try:
-                loaded = self._profile_client.load_cached(
-                    set_code,
-                    QUICK_DRAFT_FORMAT,
-                )
+                loaded = self._profile_client.load_cached(set_code, event_format)
             except (OSError, SetProfileError):
-                return (
-                    SetProfile.generic(
-                        set_code=set_code,
-                        event_format=QUICK_DRAFT_FORMAT,
-                    ),
-                    "generic",
-                )
-            profile = loaded.profile
-            source = str(loaded.source)
-            return profile, source
+                return None
+            return loaded.profile, str(loaded.source)
 
         profile = load_scoring_profile(
             set_code,
-            QUICK_DRAFT_FORMAT,
+            event_format,
             app_dir=self.store.root.parent,
         )
         if profile is None:
-            return (
-                SetProfile.generic(
-                    set_code=set_code,
-                    event_format=QUICK_DRAFT_FORMAT,
-                ),
-                "generic",
-            )
+            return None
         return profile, f"local-{profile.maturity.value}"
 
     @staticmethod
@@ -3602,11 +3682,15 @@ class LiveSession:
             request == self._profile_refresh_request
             and request.generation == self._profile_refresh_generation
             and request.set_code == self._active_set_code_value
-            and request.event_format.casefold() == QUICK_DRAFT_FORMAT.casefold()
+            and _format_rank(
+                event_format=request.event_format,
+                format_order=self._active_ratings_formats(),
+            )
+            < len(self._active_ratings_formats())
         )
 
-    @staticmethod
     def _profile_state_for_profile(
+        self,
         *,
         profile: SetProfile,
         set_code: str,
@@ -3614,6 +3698,10 @@ class LiveSession:
         phase: DataLoadPhase,
         refresh_outcome: str | None = None,
     ) -> SetProfileState:
+        formats = self._active_ratings_formats()
+        rank = _format_rank(event_format=profile.event_format, format_order=formats)
+        # Name the format that supplied the profile, or the exact one for others.
+        event_format = formats[rank] if rank < len(formats) else formats[0]
         maturity = profile.maturity.value
         resolved_source = source or (
             "generic" if profile.maturity is ProfileMaturity.GENERIC else f"local-{maturity}"
@@ -3635,7 +3723,7 @@ class LiveSession:
             message = f"Using the cached {maturity} set profile for {set_code}."
         return SetProfileState(
             set_code=set_code,
-            event_format=QUICK_DRAFT_FORMAT,
+            event_format=event_format,
             maturity=maturity,
             profile_version=profile.profile_version,
             source=resolved_source,
@@ -3975,7 +4063,11 @@ class LiveSession:
                 return
 
     def _consume_accountless_event(self, *, event: DraftEvent) -> None:
-        prepared_profile = self._prepare_set_profile(set_code=event.set_code)
+        draft_format = _draft_format_for_event(event_name=event.event_name)
+        prepared_profile = self._prepare_set_profile(
+            set_code=event.set_code,
+            draft_format=draft_format,
+        )
         account_id = event.account_id or self._log_account_id
         lifecycle_identity = (
             account_id,
@@ -4022,6 +4114,7 @@ class LiveSession:
                     set_code=event.set_code,
                     lifecycle_identity=lifecycle_identity,
                     prepared_profile=prepared_profile,
+                    draft_format=draft_format,
                 )
             )
             transition_generation = self._transition_generation
@@ -4150,7 +4243,11 @@ class LiveSession:
         if new_lifecycle:
             self._card_data_network_open = True
             self._card_data_local_lookup_attempted = False
-        prepared_profile = self._prepare_set_profile(set_code=normalized_set_code)
+        draft_format = _draft_format_for_event(event_name=event.event_name)
+        prepared_profile = self._prepare_set_profile(
+            set_code=normalized_set_code,
+            draft_format=draft_format,
+        )
         account_id = event.account_id or self._log_account_id
         active_account = self._identity_for(account_id=account_id)
         with self._state_lock:
@@ -4167,6 +4264,7 @@ class LiveSession:
                         False,
                     ),
                     prepared_profile=prepared_profile,
+                    draft_format=draft_format,
                     force_lifecycle_change=new_lifecycle,
                 )
             )
@@ -4284,7 +4382,11 @@ class LiveSession:
         message: str | None = None,
         current_pack_event: PackOfferedEvent | None = None,
     ) -> int | None:
-        prepared_profile = self._prepare_set_profile(set_code=state.set_code)
+        draft_format = _draft_format_for_event(event_name=state.event_name)
+        prepared_profile = self._prepare_set_profile(
+            set_code=state.set_code,
+            draft_format=draft_format,
+        )
         self._remember_state(state=state)
         self.store.set_active_account(
             account_id=state.account_id,
@@ -4322,6 +4424,7 @@ class LiveSession:
                         True,
                     ),
                     prepared_profile=prepared_profile,
+                    draft_format=draft_format,
                 )
             )
             transition_generation = self._transition_generation
@@ -4559,29 +4662,54 @@ class LiveSession:
     def _current_contextual_evidence_locked(self) -> ContextualEvidenceState:
         profile = self._set_profile
         enabled = self._contextual_adjustments_enabled
+        draft_format = self._active_draft_format
         cached_state = self._contextual_evidence_cached_state
         if (
             cached_state is not None
             and profile is self._contextual_evidence_cached_profile
             and enabled == self._contextual_evidence_cached_enabled
+            and draft_format is self._contextual_evidence_cached_format
         ):
             return cached_state
 
         state = _contextual_evidence_for_profile(
             profile=profile,
             enabled=enabled,
+            requested_format=self._active_ratings_formats()[0],
         )
         self._contextual_evidence_cached_profile = profile
         self._contextual_evidence_cached_enabled = enabled
+        self._contextual_evidence_cached_format = draft_format
         self._contextual_evidence_cached_state = state
         return state
 
 
     def _active_augmented_artifact_locked(self) -> AugmentedArtifact | None:
+        artifact = self._set_augmented_artifact_locked()
+        if artifact is None or not self._augmented_artifact_fits_format_locked(
+            artifact=artifact
+        ):
+            return None
+        return artifact
+
+    def _set_augmented_artifact_locked(self) -> AugmentedArtifact | None:
         set_code = self._active_set_code_value
         if set_code is None:
             return None
         return self._augmented_artifacts_by_set.get(set_code)
+
+    def _augmented_artifact_fits_format_locked(
+        self,
+        *,
+        artifact: AugmentedArtifact,
+    ) -> bool:
+        trained_format = artifact.source.event_type.casefold()
+        return any(
+            event_format.casefold() == trained_format
+            for event_format in augmented_model_formats(
+                draft_format=self._active_draft_format
+            )
+        )
 
     def _effective_augmented_artifact_locked(self) -> AugmentedArtifact | None:
         """Return the artifact scoring must apply, or None for the Basic DO score."""
@@ -4593,7 +4721,13 @@ class LiveSession:
     def _current_augmentation_state_locked(self) -> AugmentationState:
         set_code = self._active_set_code_value
         if self._active_augmented_artifact_locked() is None:
-            return AugmentationState(set_code=set_code)
+            unsupported = self._set_augmented_artifact_locked() is not None
+            return AugmentationState(
+                set_code=set_code,
+                unavailable_format=(
+                    self._active_ratings_formats()[0] if unsupported else None
+                ),
+            )
         return AugmentationState(
             status=AugmentationStatus.AVAILABLE,
             set_code=set_code,
@@ -4609,6 +4743,11 @@ class LiveSession:
                 contextual_evidence=self._current_contextual_evidence_locked(),
                 augmentation=augmentation,
                 augmentation_message=augmentation_status_message(state=augmentation),
+                draft_format=(
+                    None
+                    if self._active_set_code_value is None
+                    else self._active_draft_format
+                ),
                 current_pack_event=self._current_pack_event,
                 current_scored_pack=self._current_scored_pack,
                 errors=self._project_ratings_errors_locked(errors=snapshot.errors),
@@ -4694,13 +4833,15 @@ def _profile_refresh_profile_is_adoptable(
     profile: SetProfile,
     current_profile: SetProfile | None,
     outcome: str,
+    format_order: tuple[str, ...],
 ) -> bool:
     """Accept only a non-regressing profile from an adapter refresh.
 
     Cached and unchanged results can carry a cache entry installed by another
     client, so they are eligible when their validated content is genuinely
     newer.  An explicit updated result may also replace a same-timestamp
-    profile version.
+    profile version.  A profile for a format earlier in format_order always
+    replaces a fallback format, and never the other way round.
     """
 
     if profile.maturity in {
@@ -4713,6 +4854,14 @@ def _profile_refresh_profile_is_adoptable(
         ProfileMaturity.SEMANTIC_ONLY,
     }:
         return True
+    if profile.event_format.casefold() != current_profile.event_format.casefold():
+        return _format_rank(
+            event_format=profile.event_format,
+            format_order=format_order,
+        ) < _format_rank(
+            event_format=current_profile.event_format,
+            format_order=format_order,
+        )
 
     maturity_rank = {
         ProfileMaturity.MATURE: 0,
@@ -4742,6 +4891,24 @@ def _profile_refresh_profile_is_adoptable(
     if candidate_time == current_time:
         return outcome == ProfileRefreshOutcome.UPDATED.value
     return True
+
+
+def _format_rank(*, event_format: str, format_order: tuple[str, ...]) -> int:
+    """Return where a 17Lands format sits in a draft's ratings fallback order.
+    Formats outside the order rank after every listed one.
+    """
+
+    folded = tuple(item.casefold() for item in format_order)
+    normalized = event_format.casefold()
+    return folded.index(normalized) if normalized in folded else len(folded)
+
+
+def _draft_format_for_event(*, event_name: str) -> DraftFormat:
+    """Return the draft format of an Arena event name.
+    Names without a known prefix keep the Quick Draft behaviour.
+    """
+
+    return detect_draft_format(event_name=event_name) or DraftFormat.QUICK
 
 
 def _last_successful_update(*, database: CardDatabase) -> str | None:

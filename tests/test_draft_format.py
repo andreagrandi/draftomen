@@ -10,7 +10,10 @@ from draftomen.draft_format import (
     TRADITIONAL_RULES,
     DraftFormat,
     DraftRules,
+    augmented_model_formats,
     detect_draft_format,
+    event_format_label,
+    ratings_formats,
     rules_for_format,
 )
 
@@ -103,3 +106,49 @@ def test_rules_reject_non_positive_values(
             cards_per_pick=cards_per_pick,
         )
 
+
+
+@pytest.mark.parametrize(
+    ("draft_format", "expected"),
+    [
+        (DraftFormat.QUICK, ("QuickDraft",)),
+        (DraftFormat.PREMIER, ("PremierDraft",)),
+        (DraftFormat.TRADITIONAL, ("TradDraft", "PremierDraft")),
+        (DraftFormat.PICK_TWO, ("PickTwoDraft", "PremierDraft")),
+    ],
+)
+def test_ratings_formats_list_exact_format_then_fallbacks(
+    draft_format: DraftFormat,
+    expected: tuple[str, ...],
+) -> None:
+    assert ratings_formats(draft_format=draft_format) == expected
+
+
+@pytest.mark.parametrize(
+    ("draft_format", "expected"),
+    [
+        (DraftFormat.QUICK, ("QuickDraft", "PremierDraft")),
+        (DraftFormat.PREMIER, ("PremierDraft",)),
+        (DraftFormat.TRADITIONAL, ("TradDraft", "PremierDraft")),
+        (DraftFormat.PICK_TWO, ("PickTwoDraft", "PremierDraft")),
+    ],
+)
+def test_augmented_model_formats_always_accept_premier_models(
+    draft_format: DraftFormat,
+    expected: tuple[str, ...],
+) -> None:
+    assert augmented_model_formats(draft_format=draft_format) == expected
+
+
+@pytest.mark.parametrize(
+    ("event_format", "label"),
+    [
+        ("QuickDraft", "Quick"),
+        ("premierdraft", "Premier"),
+        ("TradDraft", "Trad"),
+        ("picktwodraft", "Pick-Two"),
+        ("CubeDraft", "CubeDraft"),
+    ],
+)
+def test_event_format_label_names_known_formats(event_format: str, label: str) -> None:
+    assert event_format_label(event_format=event_format) == label
