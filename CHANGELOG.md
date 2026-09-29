@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Errors the live session shows, such as a failed ratings or card data
+  download, a failed deck build or a failed backtest, are now written to
+  `~/.draftomen/logs/draftomen.log` with their code, id and message. Each error
+  is logged once when it first appears. Recoverable errors log at WARNING and
+  others at ERROR. (#796)
 - Settings has a Troubleshooting card with an "Open logs folder" button. It
   creates `~/.draftomen/logs` if it is missing and opens it in the file
   manager. If the folder cannot be opened, Settings shows the folder path in
