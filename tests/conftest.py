@@ -38,7 +38,14 @@ def _isolated_application_log(
     Restore the exception hooks and root logger that configure_logging changes.
     """
 
-    monkeypatch.setattr(applog, "default_logs_dir", lambda: app_logs_dir)
+    real_default_logs_dir = applog.default_logs_dir
+
+    def isolated_default_logs_dir(*, app_dir: str | os.PathLike[str] | None = None) -> Path:
+        if app_dir is None:
+            return app_logs_dir
+        return real_default_logs_dir(app_dir=app_dir)
+
+    monkeypatch.setattr(applog, "default_logs_dir", isolated_default_logs_dir)
     # Tests that start the CLI or the app in a subprocess inherit this home folder,
     # so those runs do not write to the real ~/.draftomen/logs either.
     monkeypatch.setenv("HOME", str(app_logs_dir.parent / f"{app_logs_dir.name}-home"))

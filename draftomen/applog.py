@@ -9,6 +9,7 @@ import platform
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
+from os import PathLike
 from pathlib import Path
 from types import TracebackType
 
@@ -27,12 +28,13 @@ _previous_excepthook = sys.excepthook
 _previous_threading_excepthook = threading.excepthook
 
 
-def default_logs_dir() -> Path:
+def default_logs_dir(*, app_dir: str | PathLike[str] | None = None) -> Path:
     """Return the folder that holds the application log.
-    It sits inside the per-user app data directory.
+    It sits inside the per-user app data directory, or inside app_dir when given.
     """
 
-    return Path(str(paths.app_data_dir())) / "logs"
+    root = Path(paths.app_data_dir() if app_dir is None else app_dir).expanduser()
+    return root / "logs"
 
 
 def configure_logging(*, logs_dir: Path | None = None) -> Path | None:

@@ -51,6 +51,10 @@ def test_default_logs_dir_sits_inside_the_app_data_dir(
     assert applog.default_logs_dir() == tmp_path / ".draftomen" / "logs"
 
 
+def test_default_logs_dir_uses_the_given_app_dir(tmp_path: Path) -> None:
+    assert applog.default_logs_dir(app_dir=tmp_path) == tmp_path / "logs"
+
+
 def test_configure_logging_twice_keeps_a_single_file_handler(tmp_path: Path) -> None:
     applog.configure_logging(logs_dir=tmp_path / "first")
     applog.configure_logging(logs_dir=tmp_path / "second")

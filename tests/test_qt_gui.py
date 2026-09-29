@@ -8895,6 +8895,215 @@ del engine
     assert completed.returncode == 0, completed.stderr
 
 
+class _RecordingDesktopServices:
+    opened_urls: list[str] = []
+    result = True
+
+    @classmethod
+    def openUrl(cls, url: object) -> bool:
+        cls.opened_urls.append(url.toString())  # type: ignore[attr-defined]
+        return cls.result
+
+
+@pytest.fixture
+def recording_desktop_services(monkeypatch: pytest.MonkeyPatch) -> type[_RecordingDesktopServices]:
+    _RecordingDesktopServices.opened_urls = []
+    _RecordingDesktopServices.result = True
+    monkeypatch.setattr("draftomen.qt_adapter.QDesktopServices", _RecordingDesktopServices)
+    return _RecordingDesktopServices
+
+
+def test_open_logs_folder_opens_the_logs_folder_file_url(
+    tmp_path: Path,
+    recording_desktop_services: type[_RecordingDesktopServices],
+) -> None:
+    preferences = GuiPreferencesAdapter(app_dir=tmp_path)
+    try:
+        preferences.openLogsFolder()
+        logs_folder = tmp_path / "logs"
+
+        assert preferences.logsFolder == str(logs_folder)
+        assert recording_desktop_services.opened_urls == [logs_folder.as_uri()]
+        assert preferences.logsFolderError == ""
+    finally:
+        preferences.shutdown()
+
+
+def test_open_logs_folder_uses_the_default_logs_dir_without_an_app_dir(
+    app_logs_dir: Path,
+    recording_desktop_services: type[_RecordingDesktopServices],
+) -> None:
+    preferences = GuiPreferencesAdapter()
+    try:
+        preferences.openLogsFolder()
+
+        assert preferences.logsFolder == str(app_logs_dir)
+        assert recording_desktop_services.opened_urls == [app_logs_dir.as_uri()]
+    finally:
+        preferences.shutdown()
+
+
+def test_open_logs_folder_creates_a_missing_folder_before_opening_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logs_folder = tmp_path / "app" / "logs"
+    existed_when_opened: list[bool] = []
+
+    class InspectingDesktopServices:
+        @staticmethod
+        def openUrl(url: object) -> bool:
+            existed_when_opened.append(logs_folder.is_dir())
+            return True
+
+    monkeypatch.setattr("draftomen.qt_adapter.QDesktopServices", InspectingDesktopServices)
+    preferences = GuiPreferencesAdapter(app_dir=tmp_path / "app")
+    try:
+        assert not logs_folder.exists()
+
+        preferences.openLogsFolder()
+
+        assert existed_when_opened == [True]
+    finally:
+        preferences.shutdown()
+
+
+def test_open_logs_folder_reports_the_path_when_the_desktop_cannot_open_it(
+    tmp_path: Path,
+    recording_desktop_services: type[_RecordingDesktopServices],
+) -> None:
+    preferences = GuiPreferencesAdapter(app_dir=tmp_path)
+    changes: list[None] = []
+    preferences.logsFolderErrorChanged.connect(lambda: changes.append(None))
+    try:
+        recording_desktop_services.result = False
+        preferences.openLogsFolder()
+
+        assert str(tmp_path / "logs") in preferences.logsFolderError
+        assert len(changes) == 1
+
+        recording_desktop_services.result = True
+        preferences.openLogsFolder()
+
+        assert preferences.logsFolderError == ""
+        assert len(changes) == 2
+    finally:
+        preferences.shutdown()
+
+
+def test_open_logs_folder_reports_the_path_when_the_folder_cannot_be_created(
+    tmp_path: Path,
+    recording_desktop_services: type[_RecordingDesktopServices],
+) -> None:
+    (tmp_path / "logs").write_text("not a folder", encoding="utf-8")
+    preferences = GuiPreferencesAdapter(app_dir=tmp_path)
+    try:
+        preferences.openLogsFolder()
+
+        assert str(tmp_path / "logs") in preferences.logsFolderError
+        assert recording_desktop_services.opened_urls == []
+    finally:
+        preferences.shutdown()
+
+
+def test_qml_settings_open_logs_folder_button_opens_folder_and_shows_errors_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl, Qt, Slot
+from PySide6.QtGui import QAccessible, QDesktopServices, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class UrlHandler(QObject):
+    def __init__(self) -> None:
+        super().__init__()
+        self.urls: list[str] = []
+
+    @Slot(QUrl)
+    def openUrl(self, url: QUrl) -> None:
+        self.urls.append(url.toString())
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = MockSessionAdapter(session=MockLiveSession(scenario="ready"))
+preferences_dir = TemporaryDirectory()
+logs_folder = Path(preferences_dir.name) / "logs"
+preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "settings")
+context.setContextProperty("initialWindowWidth", 900)
+context.setContextProperty("initialWindowHeight", 760)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+button = root.findChild(QObject, "settingsOpenLogsFolderButton")
+error_label = root.findChild(QObject, "settingsLogsFolderError")
+assert button is not None
+assert error_label is not None
+assert button.isVisible()
+assert button.property("text") == "Open logs folder"
+accessible = QAccessible.queryAccessibleInterface(button)
+assert accessible is not None
+assert accessible.text(QAccessible.Text.Name) == "Open logs folder"
+assert error_label.property("visible") is False
+
+def press_button() -> None:
+    button.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    application.processEvents()
+
+url_handler = UrlHandler()
+QDesktopServices.setUrlHandler("file", url_handler, "openUrl")
+try:
+    assert not logs_folder.exists()
+    press_button()
+    assert logs_folder.is_dir()
+    assert url_handler.urls == [QUrl.fromLocalFile(str(logs_folder)).toString()]
+    assert error_label.property("visible") is False
+
+    logs_folder.rmdir()
+    logs_folder.write_text("not a folder", encoding="utf-8")
+    press_button()
+    assert len(url_handler.urls) == 1
+    assert error_label.property("visible") is True
+    assert str(logs_folder) in error_label.property("text")
+
+    logs_folder.unlink()
+    press_button()
+    assert len(url_handler.urls) == 2
+    assert error_label.property("visible") is False
+finally:
+    QDesktopServices.unsetUrlHandler("file")
+
+preferences.shutdown()
+del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_qml_test_draft_dialog_offers_supported_sets_and_modes_offscreen() -> None:
     probe = """
 from pathlib import Path
