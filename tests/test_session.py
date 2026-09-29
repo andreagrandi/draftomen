@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import io
 import json
+import logging
 import threading
 import urllib.error
 from dataclasses import FrozenInstanceError, replace
@@ -5376,6 +5377,142 @@ def test_live_session_ratings_errors_follow_active_set_does_not_resurrect_dismis
     assert _ratings_error_ids(snapshot=session.snapshot) == ()
     with pytest.raises(ValueError):
         session.dispatch(command=RetryError(error_id="ratings:TST"))
+
+
+def _failed_ratings_session(*, tmp_path: Path) -> LiveSession:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        profile_client=_ProfileClientStub({"TST": _fixture_empirical_profile()}),
+    )
+    session._consume_detected_event(
+        event=QuickDraftDetectedEvent(
+            event_name="QuickDraft_TST_20260823",
+            set_code="TST",
+            account_id="account-a",
+        )
+    )
+    return session
+
+
+def _fail_ratings_download(*, session: LiveSession) -> None:
+    session.dispatch(command=RequestRatingsDownload(set_code="TST"))
+    request = session.profile_refresh_request()
+    assert request is not None
+    session.fail_profile_refresh(request=request)
+
+
+def _session_error_records(
+    *,
+    caplog: pytest.LogCaptureFixture,
+) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == "draftomen.session"
+        and record.getMessage().startswith("Session error ")
+    ]
+
+
+def test_live_session_logs_new_error_with_code_id_and_message(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _failed_ratings_session(tmp_path=tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="draftomen.session"):
+        _fail_ratings_download(session=session)
+
+    records = _session_error_records(caplog=caplog)
+    assert [record.getMessage() for record in records] == [
+        "Session error ratings_unavailable (ratings:TST): "
+        "17Lands ratings failed for TST: hosted profile refresh failed."
+    ]
+
+
+def test_live_session_does_not_log_error_again_while_it_stays_in_snapshots(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _failed_ratings_session(tmp_path=tmp_path)
+    _fail_ratings_download(session=session)
+    other_error = SessionError(
+        error_id="other:1",
+        code="other_failure",
+        message="Another failure.",
+        recoverable=True,
+    )
+
+    caplog.clear()
+
+    with caplog.at_level(logging.DEBUG, logger="draftomen.session"):
+        session._publish(
+            snapshot=replace(
+                session.snapshot,
+                errors=(*session.snapshot.errors, other_error),
+            )
+        )
+        session._publish(
+            snapshot=replace(session.snapshot, errors=session.snapshot.errors)
+        )
+
+    assert _ratings_error_ids(snapshot=session.snapshot) == ("ratings:TST",)
+    messages = [
+        record.getMessage() for record in _session_error_records(caplog=caplog)
+    ]
+    assert messages == ["Session error other_failure (other:1): Another failure."]
+
+
+def test_live_session_logs_dismissed_error_again_when_it_is_raised_again(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _failed_ratings_session(tmp_path=tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="draftomen.session"):
+        _fail_ratings_download(session=session)
+        session.dispatch(command=DismissError(error_id="ratings:TST"))
+        assert _ratings_error_ids(snapshot=session.snapshot) == ()
+        _fail_ratings_download(session=session)
+
+    assert _ratings_error_ids(snapshot=session.snapshot) == ("ratings:TST",)
+    assert len(_session_error_records(caplog=caplog)) == 2
+
+
+@pytest.mark.parametrize(
+    ("recoverable", "level"),
+    ((True, logging.WARNING), (False, logging.ERROR)),
+)
+def test_live_session_logs_error_at_level_matching_recoverability(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    recoverable: bool,
+    level: int,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="draftomen.session"):
+        session._publish(
+            snapshot=replace(
+                session.snapshot,
+                errors=(
+                    SessionError(
+                        error_id="probe:1",
+                        code="probe_failure",
+                        message="Probe failed.",
+                        recoverable=recoverable,
+                    ),
+                ),
+            )
+        )
+
+    records = _session_error_records(caplog=caplog)
+    assert [record.levelno for record in records] == [level]
 
 
 def test_live_session_ratings_errors_follow_active_set_preserves_unrelated_errors(

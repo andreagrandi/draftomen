@@ -4,6 +4,7 @@ Frontend adapters consume this contract without importing presentation framework
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -92,6 +93,8 @@ from draftomen.set_profile import (
     load_scoring_profile,
 )
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
+
+logger = logging.getLogger(__name__)
 
 PathInput: TypeAlias = str | PathLike[str]
 SnapshotPublisher: TypeAlias = Callable[["LiveSessionSnapshot"], None]
@@ -4622,9 +4625,34 @@ class LiveSession:
             if snapshot == self._snapshot:
                 return
 
+            self._log_new_errors(
+                previous=self._snapshot.errors,
+                current=snapshot.errors,
+            )
             self._snapshot = snapshot
             if self._snapshot_publisher is not None:
                 self._snapshot_publisher(snapshot)
+
+    @staticmethod
+    def _log_new_errors(
+        *,
+        previous: tuple[SessionError, ...],
+        current: tuple[SessionError, ...],
+    ) -> None:
+        """Write each error that was not in the previous snapshot to the app log.
+        Errors that stay in later snapshots are not logged again.
+        """
+        previous_ids = {error.error_id for error in previous}
+        for error in current:
+            if error.error_id in previous_ids:
+                continue
+            logger.log(
+                logging.WARNING if error.recoverable else logging.ERROR,
+                "Session error %s (%s): %s",
+                error.code,
+                error.error_id,
+                error.message,
+            )
 
     def _publish_event(self, *, event: DraftEvent) -> None:
         if self._event_publisher is None:
