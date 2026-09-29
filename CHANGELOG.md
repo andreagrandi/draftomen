@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- The website's Windows button now opens the Microsoft Store listing in place
+  of the unsigned `.exe` release asset, and the install note says Windows
+  installs come from the Store. The home page shows one button per platform:
+  macOS for Apple Silicon and Windows for the Store. The Intel macOS build
+  moves to a text link below the buttons. The release output check fails if
+  the Windows button points anywhere else or if any page links to a `.exe`.
+  (#761)
 - Draft Omen 0.4.2 is live in the Microsoft Store:
   https://apps.microsoft.com/detail/9NPCD3VLZQMX. `docs/microsoft-store.md`
   records the published package, its checksum and the certification history.

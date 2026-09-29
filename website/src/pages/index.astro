@@ -7,7 +7,7 @@ const releaseTag = `v${packageMetadata.version}`;
 const releaseAssetBaseUrl = `${repositoryUrl}/releases/download/${releaseTag}`;
 const macosArm64DownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-macos-arm64.dmg`;
 const macosX8664DownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-macos-x86_64.dmg`;
-const windowsDownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsigned-windows.exe`;
+const windowsStoreUrl = 'https://apps.microsoft.com/detail/9NPCD3VLZQMX';
 ---
 
 <BaseLayout
@@ -29,17 +29,14 @@ const windowsDownloadUrl = `${releaseAssetBaseUrl}/draftomen-${releaseTag}-unsig
             <span aria-hidden="true">⌘</span>
             <span>Download for macOS<small>{releaseTag} · Apple Silicon · .dmg</small></span>
           </a>
-          <a class="btn btn-secondary download-button" href={macosX8664DownloadUrl}>
-            <span aria-hidden="true">⌘</span>
-            <span>Download for macOS<small>{releaseTag} · Intel · .dmg</small></span>
-          </a>
-          <a class="btn btn-secondary download-button" href={windowsDownloadUrl}>
+          <a class="btn btn-secondary download-button" href={windowsStoreUrl}>
             <span aria-hidden="true">⊞</span>
-            <span>Download for Windows<small>{releaseTag} · unsigned .exe</small></span>
+            <span>Download for Windows<small>Microsoft Store</small></span>
           </a>
         </div>
         <p class="install-note">
-          The macOS builds are signed and notarized. The Windows build is not signed yet. Prefer the terminal? See the{" "}
+          Intel Mac? <a href={macosX8664DownloadUrl}>Download the Intel build</a> ({releaseTag} · .dmg).<br />
+          The macOS builds are signed and notarized. On Windows, install Draft Omen from the Microsoft Store. Prefer the terminal? See the{" "}
           <a href="/docs/">setup and mechanism docs</a>.
         </p>
       </div>
