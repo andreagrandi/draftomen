@@ -422,6 +422,25 @@ both journey summary lines.
 
 Live recommendations currently support Quick Draft. Windows support is best-effort.
 
+## Troubleshooting
+
+When you report a bug, attach these files:
+
+- The application log folder. It is `~/.draftomen/logs` on macOS and
+  `%USERPROFILE%\.draftomen\logs` on Windows. In the desktop app, Settings >
+  Open logs folder opens it. Send `draftomen.log` and any older
+  `draftomen.log.N` files.
+- The draft audit logs for the draft that went wrong. They are under
+  `~/.draftomen/audit/drafts/` on macOS and
+  `%USERPROFILE%\.draftomen\audit\drafts\` on Windows.
+- Arena's own `Player.log`. It is at
+  `~/Library/Logs/Wizards Of The Coast/MTGA/Player.log` on macOS and
+  `%USERPROFILE%\AppData\LocalLow\Wizards Of The Coast\MTGA\Player.log` on
+  Windows.
+
+These files contain your Arena account id and screen name. Remove those details
+before you post the files anywhere public.
+
 ## Local draft audit data
 
 Live sessions started with `draftomen-tui`, including `watch --plain`, keep an

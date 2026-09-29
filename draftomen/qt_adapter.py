@@ -4,6 +4,7 @@ Keep blocking session work in adapter-owned workers and QML values presentation-
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, fields, is_dataclass, replace
@@ -27,8 +28,9 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QFontInfo, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QFontInfo, QGuiApplication
 
+from draftomen import applog
 from draftomen.augmented_model_client import (
     AugmentedModelClient,
     AugmentedModelLoad,
@@ -73,6 +75,8 @@ from draftomen.test_draft import (
     default_test_draft_bulk_file,
     default_test_draft_checkout_dir,
 )
+
+_logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[[SnapshotPublisher], LiveSession]
 
@@ -391,6 +395,7 @@ class GuiPreferencesAdapter(QObject):
     augmentedIntelligenceEnabledChanged = Signal(bool)
     mockedDraftEnabledChanged = Signal(bool)
     mockedDraftSourcesChanged = Signal()
+    logsFolderErrorChanged = Signal()
 
     def __init__(
         self,
@@ -413,6 +418,7 @@ class GuiPreferencesAdapter(QObject):
         self._save_generation = 0
         self._save_thread: _GuiPreferencesSaveThread | None = None
         self._closing = False
+        self._logs_folder_error = ""
 
         application = QCoreApplication.instance()
         if application is not None:
@@ -506,6 +512,14 @@ class GuiPreferencesAdapter(QObject):
             else _DEFAULT_APPLICATION_FONT_PIXEL_SIZE
         )
 
+    @Property(str, constant=True)
+    def logsFolder(self) -> str:
+        return str(self._logs_folder())
+
+    @Property(str, notify=logsFolderErrorChanged)
+    def logsFolderError(self) -> str:
+        return self._logs_folder_error
+
     @Property(str, notify=persistenceChanged)
     def persistenceMessage(self) -> str:
         return self._persistence_message or "Saved"
@@ -557,6 +571,30 @@ class GuiPreferencesAdapter(QObject):
     @Slot(str)
     def setMockedDraftScryfallBulkFile(self, value: str) -> None:
         self._replace_preferences(mocked_draft_scryfall_bulk_file=value.strip())
+
+    @Slot()
+    def openLogsFolder(self) -> None:
+        folder = self._logs_folder()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            _logger.warning("Could not create the logs folder %s: %s", folder, error)
+            self._set_logs_folder_error(f"Could not create the logs folder {folder}: {error}")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            _logger.warning("The desktop could not open the logs folder %s", folder)
+            self._set_logs_folder_error(f"Could not open the logs folder {folder}")
+            return
+        self._set_logs_folder_error("")
+
+    def _logs_folder(self) -> Path:
+        return applog.default_logs_dir(app_dir=self._app_dir)
+
+    def _set_logs_folder_error(self, message: str) -> None:
+        if message == self._logs_folder_error:
+            return
+        self._logs_folder_error = message
+        self.logsFolderErrorChanged.emit()
 
     @Slot()
     def shutdown(self) -> None:

@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Settings has a Troubleshooting card with an "Open logs folder" button. It
+  creates `~/.draftomen/logs` if it is missing and opens it in the file
+  manager. If the folder cannot be opened, Settings shows the folder path in
+  an error message. The README now has a Troubleshooting section that lists
+  the files to attach to a bug report and where they live on macOS and
+  Windows. (#792)
 - Draft Omen now writes a rotating application log to
   `~/.draftomen/logs/draftomen.log`. The desktop app and `draftomen-tui` share
   the file. Each run starts with a line holding the app version, the OS and

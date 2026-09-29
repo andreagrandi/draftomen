@@ -440,6 +440,49 @@ Item {
             }
             Rectangle {
                 Layout.fillWidth: true
+                Layout.preferredHeight: troubleshootingLayout.implicitHeight + 32
+                color: Theme.surfaceLow
+                border.color: Theme.outline
+                border.width: 1
+                radius: Theme.radius
+
+                ColumnLayout {
+                    id: troubleshootingLayout
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 12
+                    Label { text: "TROUBLESHOOTING"; color: Theme.primary; font.pixelSize: Theme.textPixelSize(10); font.bold: true; font.letterSpacing: 1.1 }
+                    DimensionalButton {
+                        objectName: "settingsOpenLogsFolderButton"
+                        text: qsTr("Open logs folder")
+                        Accessible.name: qsTr("Open logs folder")
+                        Accessible.description: qsTr("Opens the folder that holds the Draft Omen application log.")
+                        onClicked: root.displayPreferences.openLogsFolder()
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr(
+                            "Attach draftomen.log and any older draftomen.log.N files to your bug report. "
+                                + "They include your Arena account id and screen name."
+                        )
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.textPixelSize(11)
+                        wrapMode: Text.WordWrap
+                    }
+                    Label {
+                        objectName: "settingsLogsFolderError"
+                        Layout.fillWidth: true
+                        visible: root.displayPreferences.logsFolderError.length > 0
+                        text: root.displayPreferences.logsFolderError
+                        color: Theme.error
+                        wrapMode: Text.WrapAnywhere
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
+                    }
+                }
+            }
+            Rectangle {
+                Layout.fillWidth: true
                 Layout.preferredHeight: developerLayout.implicitHeight + 32
                 color: Theme.surfaceLow
                 border.color: Theme.outline
