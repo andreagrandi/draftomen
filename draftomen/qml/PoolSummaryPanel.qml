@@ -24,6 +24,14 @@ Rectangle {
         return largest
     }
 
+    // Panel height that shows everything down to the mana curve bars and
+    // their labels; the recent picks below stay reachable by scrolling.
+    readonly property real manaCurveRequiredHeight: root.hasPool
+        ? Theme.panelPadding * 2 + poolHeader.implicitHeight
+            + poolColumn.spacing + poolContent.implicitHeight
+            - recentPicksGallery.implicitHeight - poolContent.spacing
+        : 0
+
     color: Theme.surfaceLow
     border.color: Theme.outline
     border.width: 1
@@ -111,6 +119,7 @@ Rectangle {
             spacing: 12
 
             RowLayout {
+                id: poolHeader
                 Layout.fillWidth: true
 
                 Label {
@@ -164,6 +173,7 @@ Rectangle {
             }
 
             ColumnLayout {
+                id: poolContent
                 visible: root.hasPool
                 Layout.fillWidth: true
                 spacing: 8
@@ -266,6 +276,7 @@ Rectangle {
                 }
 
                 RowLayout {
+                    objectName: "poolManaCurveChart"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 94
                     spacing: 5
@@ -309,6 +320,7 @@ Rectangle {
                 }
 
                 RecentPicksGallery {
+                    id: recentPicksGallery
                     objectName: "recentPicksGallery"
                     Layout.fillWidth: true
                     pool: root.pool

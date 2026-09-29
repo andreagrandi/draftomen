@@ -24,13 +24,29 @@ Item {
 
     // Keep the documented 1440px layout wide while making room for the
     // larger details pane; the recommendation list remains scrollable.
+    // As the window narrows, the list shrinks to its minimum first, then the
+    // details pane shrinks from its full width to its minimum. Below both
+    // minimums the view falls back to the stacked layout.
     readonly property int wideCardDetailsWidth: 550
+    readonly property int wideCardDetailsMinimumWidth: 350
     readonly property int wideRecommendationsMinimumListWidth: 662
     readonly property int wideRecommendationsMinimumWidth:
         root.wideRecommendationsMinimumListWidth
-            + root.wideCardDetailsWidth + Theme.gutter
-    readonly property int wideCardPreviewMinimumHeight: 410
-    readonly property int widePoolDetailsMinimumHeight: 180
+            + root.wideCardDetailsMinimumWidth + Theme.gutter
+    readonly property int wideCardDetailsCurrentWidth: Math.max(
+        root.wideCardDetailsMinimumWidth,
+        Math.min(
+            root.wideCardDetailsWidth,
+            root.width - root.wideRecommendationsMinimumListWidth
+                - Theme.gutter
+        )
+    )
+    // The pool keeps enough height for the whole mana curve, so the preview
+    // gives up height first, down to the smallest size that fits its image
+    // frame and stats.
+    readonly property int wideCardPreviewPreferredHeight: 430
+    readonly property int wideCardPreviewMinimumHeight: 290
+    readonly property int widePoolDetailsMinimumHeight: 270
     readonly property int wideRecommendationsMinimumHeight:
         root.wideCardPreviewMinimumHeight + Theme.gutter
             + root.widePoolDetailsMinimumHeight
@@ -472,16 +488,25 @@ Item {
             }
 
             ColumnLayout {
-                Layout.preferredWidth: root.wideCardDetailsWidth
+                id: wideCardDetailsColumn
+                objectName: "wideCardDetailsColumn"
+                Layout.preferredWidth: root.wideCardDetailsCurrentWidth
                 Layout.maximumWidth: root.wideCardDetailsWidth
                 Layout.fillHeight: true
-                Layout.minimumWidth: 350
+                Layout.minimumWidth: root.wideCardDetailsMinimumWidth
                 spacing: Theme.gutter
 
                 CardPreview {
                     objectName: "wideLiveCardPreview"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 430
+                    Layout.preferredHeight: Math.max(
+                        root.wideCardPreviewMinimumHeight,
+                        Math.min(
+                            root.wideCardPreviewPreferredHeight,
+                            wideCardDetailsColumn.height - Theme.gutter
+                                - widePoolDetails.manaCurveRequiredHeight
+                        )
+                    )
                     Layout.minimumHeight: root.wideCardPreviewMinimumHeight
                     recommendation: root.selectedRecommendation
                     detailedIntel: true
@@ -493,6 +518,7 @@ Item {
                 }
 
                 PoolSummaryPanel {
+                    id: widePoolDetails
                     objectName: "wideLivePoolDetails"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
