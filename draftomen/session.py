@@ -42,13 +42,13 @@ from draftomen.deckbuilder import (
 )
 from draftomen.draft_format import (
     DraftFormat,
+    QUICK_RULES,
     augmented_model_formats,
     detect_draft_format,
     ratings_formats,
+    rules_for_format,
 )
 from draftomen.events import (
-    EXPECTED_PACK_COUNT,
-    EXPECTED_PICKS_PER_PACK,
     AccountEvent,
     DraftCompletedEvent,
     DraftEvent,
@@ -446,7 +446,7 @@ class PoolState:
     color_distribution: tuple[tuple[str, int], ...] = ()
     mana_curve: tuple[int, ...] = ()
     average_mana_value: float | None = None
-    target_cards: int = 42
+    target_cards: int = QUICK_RULES.total_cards
     current_colors: tuple[str, ...] = ()
     role_ledger: PoolRoleLedger | None = None
 
@@ -927,6 +927,9 @@ class LiveSession:
         self._ratings_errors_by_set: dict[str, SessionError] = {}
         self._active_set_code_value: str | None = None
         self._active_draft_format = DraftFormat.QUICK
+        self._active_picks_per_pack = rules_for_format(
+            draft_format=self._active_draft_format,
+        ).picks_per_pack
         self._transition_generation = 0
         self._profile_refresh_generation = 0
         self._profile_refresh_request: ProfileRefreshRequest | None = None
@@ -2412,6 +2415,7 @@ class LiveSession:
             requested_format=self._active_ratings_formats()[0],
         )
         global_pick_index = _draft_pick_index(event=event)
+        draft_rules = rules_for_format(draft_format=event.draft_format)
         scored_pack = engine.score_pack(
             offered_grp_ids=event.offered_grp_ids,
             card_database=database,
@@ -2422,9 +2426,10 @@ class LiveSession:
             global_pick_index=global_pick_index,
             estimated_remaining_picks=max(
                 0,
-                EXPECTED_PACK_COUNT * event.picks_per_pack - global_pick_index,
+                draft_rules.pack_count * event.picks_per_pack - global_pick_index,
             ),
             picks_per_pack=event.picks_per_pack,
+            draft_rules=draft_rules,
         )
         self._current_scored_pack = scored_pack
         recommendations = self._recommendation_state(scored_pack=scored_pack)
@@ -3447,6 +3452,9 @@ class LiveSession:
         transitioned = set_changed or lifecycle_changed
         if transitioned:
             self._transition_generation += 1
+            self._active_picks_per_pack = rules_for_format(
+                draft_format=draft_format,
+            ).picks_per_pack
             self._retire_profile_refresh_locked()
             self._retire_augmented_model_request_locked()
             self._current_pack_event = None
@@ -3903,10 +3911,16 @@ class LiveSession:
             else tuple(inferred_pair or ())
         )
         database = self._card_database
+        draft_rules = rules_for_format(draft_format=self._active_draft_format)
+        target_cards = (
+            draft_rules.pack_count
+            * self._active_picks_per_pack
+            * draft_rules.cards_per_pick
+        )
         if database is None:
             return PoolState(
                 total_cards=len(pool_grp_ids),
-                target_cards=42,
+                target_cards=target_cards,
                 current_colors=current_colors,
                 role_ledger=role_ledger,
             )
@@ -3929,7 +3943,7 @@ class LiveSession:
             cards=cards,
             recent_picks=recent_picks,
             total_cards=len(pool_grp_ids),
-            target_cards=42,
+            target_cards=target_cards,
             inferred_pair=inferred_pair,
             current_colors=current_colors,
             commitment=(
@@ -4164,6 +4178,7 @@ class LiveSession:
                 if self._transition_generation != transition_generation:
                     return
                 self._current_pack_event = event
+                self._active_picks_per_pack = event.picks_per_pack
                 self._current_scored_pack = None
             if self._transition_generation != transition_generation:
                 return
@@ -4488,6 +4503,17 @@ class LiveSession:
                     )
                 )
                 self._current_scored_pack = None
+                if self._current_pack_event is not None:
+                    self._active_picks_per_pack = self._current_pack_event.picks_per_pack
+                elif "_Draftmancer_" in state.event_name and state.picks:
+                    latest_pick = max(state.picks, key=lambda pick: pick.coordinate)
+                    self._active_picks_per_pack = (
+                        max(pick.pick_number for pick in state.picks) + 1
+                        if state.completed
+                        else _recovered_picks_per_pack(
+                            state=state, pending_pick=latest_pick,
+                        )
+                    )
             if self._transition_generation != transition_generation:
                 return None
             if transitioned:
@@ -5034,6 +5060,7 @@ def _pending_pack_event(*, state: DraftState) -> PackOfferedEvent | None:
         if pending_pick.pool_before_pick is None
         else pending_pick.pool_before_pick
     )
+    draft_format = _draft_format_for_event(event_name=state.event_name)
     return PackOfferedEvent(
         event_name=state.event_name,
         set_code=state.set_code,
@@ -5043,14 +5070,21 @@ def _pending_pack_event(*, state: DraftState) -> PackOfferedEvent | None:
         pool_grp_ids=pool_grp_ids,
         account_id=state.account_id,
         picks_per_pack=_recovered_picks_per_pack(state=state, pending_pick=pending_pick),
+        draft_format=draft_format,
+        cards_per_pick=rules_for_format(draft_format=draft_format).cards_per_pick,
     )
 
 
 def _recovered_picks_per_pack(*, state: DraftState, pending_pick: DraftPick) -> int:
     """Infer the pack size of a recovered draft from the picks already saved.
-    A finished earlier pack gives the exact size; otherwise Arena's 14 is the floor.
+    Mocked Draft uses saved pack sizes; Arena drafts use their format rules.
     """
 
+    rules = rules_for_format(
+        draft_format=_draft_format_for_event(event_name=state.event_name),
+    )
+    if "_Draftmancer_" not in state.event_name:
+        return rules.picks_per_pack
     earlier_pick_numbers = tuple(
         pick.pick_number
         for pick in state.picks
@@ -5058,7 +5092,7 @@ def _recovered_picks_per_pack(*, state: DraftState, pending_pick: DraftPick) -> 
     )
     if earlier_pick_numbers:
         return max(earlier_pick_numbers) + 1
-    return max(EXPECTED_PICKS_PER_PACK, pending_pick.pick_number + 1)
+    return max(rules.picks_per_pack, pending_pick.pick_number + 1)
 
 
 def _draft_pick_index(*, event: PackOfferedEvent) -> int:
@@ -5207,3 +5241,4 @@ def _account_screen_name_match_key(*, screen_name: str) -> str:
         normalized = name
 
     return normalized.casefold()
+

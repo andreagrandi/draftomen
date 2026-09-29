@@ -35,7 +35,7 @@ from draftomen.backtest import (
 )
 from draftomen.card_data_client import CardDataClient
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.draft_format import DraftFormat
+from draftomen.draft_format import DraftFormat, rules_for_format
 from draftomen.cardimages import CardImageError, CardImageService
 from draftomen.events import (
     EXPECTED_PICKS_PER_PACK,
@@ -9297,7 +9297,10 @@ def test_recovered_pending_pack_infers_pack_size_from_saved_picks(
     assert event.picks_per_pack == expected
 
 
-def test_recovered_pending_pack_keeps_every_card_of_a_multi_card_pick() -> None:
+@pytest.mark.parametrize("pending_pack_number", [0, 1, 2])
+def test_recovered_pending_pack_keeps_every_card_of_a_multi_card_pick(
+    pending_pack_number: int,
+) -> None:
     state = DraftState(
         account_id="account-1",
         draft_id="draft-1",
@@ -9316,7 +9319,7 @@ def test_recovered_pending_pack_keeps_every_card_of_a_multi_card_pick() -> None:
                 pool_before_pick=(),
                 selected_grp_ids=(100, 101),
             ),
-            DraftPick(pack_number=0, pick_number=1, offered_grp_ids=(200, 201)),
+            DraftPick(pack_number=pending_pack_number, pick_number=1, offered_grp_ids=(200, 201)),
         ),
         pool_grp_ids=(100, 101),
     )
@@ -9324,9 +9327,237 @@ def test_recovered_pending_pack_keeps_every_card_of_a_multi_card_pick() -> None:
     event = _pending_pack_event(state=state)
 
     assert event is not None
-    assert (event.pack_number, event.pick_number) == (0, 1)
+    assert (event.pack_number, event.pick_number) == (pending_pack_number, 1)
     assert event.offered_grp_ids == (200, 201)
     assert event.pool_grp_ids == (100, 101)
+    assert event.draft_format is DraftFormat.PICK_TWO
+    assert event.picks_per_pack == 7
+    assert event.cards_per_pick == 2
+
+
+@pytest.mark.parametrize(
+    ("prefix", "draft_format", "picks_per_pack"),
+    (
+        ("QuickDraft", DraftFormat.QUICK, 14),
+        ("PremierDraft", DraftFormat.PREMIER, 14),
+        ("TradDraft", DraftFormat.TRADITIONAL, 14),
+        ("PickTwoDraft", DraftFormat.PICK_TWO, 7),
+        ("QuickDraft", DraftFormat.QUICK, 13),
+        ("QuickDraft", DraftFormat.QUICK, 15),
+    ),
+)
+@pytest.mark.parametrize("with_account", [True, False])
+def test_live_progress_and_pool_totals_follow_the_active_rules(
+    tmp_path: Path,
+    prefix: str,
+    draft_format: DraftFormat,
+    picks_per_pack: int,
+    with_account: bool,
+) -> None:
+    rules = rules_for_format(draft_format=draft_format)
+    event_name = (
+        f"{prefix}_TST_Draftmancer_session" if picks_per_pack in (13, 15)
+        else f"{prefix}_TST_20260929"
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_set_card_database(set_code="TST"),
+    )
+    pool: tuple[int, ...] = ()
+    for index in range(rules.pack_count * picks_per_pack):
+        pack_number, pick_number = divmod(index, picks_per_pack)
+        snapshot = session.process_events(
+            events=(
+                PackOfferedEvent(
+                    event_name=event_name,
+                    set_code="TST",
+                    pack_number=pack_number,
+                    pick_number=pick_number,
+                    offered_grp_ids=(104894, 104976),
+                    pool_grp_ids=pool,
+                    account_id="account" if with_account else None,
+                    picks_per_pack=picks_per_pack,
+                    draft_format=draft_format,
+                    cards_per_pick=rules.cards_per_pick,
+                ),
+            ),
+        )
+        assert snapshot.current_pack_event is not None
+        assert (snapshot.current_pack_event.pack_number, snapshot.current_pack_event.pick_number) == (
+            pack_number, pick_number,
+        )
+        assert snapshot.pool.target_cards == rules.pack_count * picks_per_pack * rules.cards_per_pick
+        ledger = snapshot.pool.role_ledger
+        assert ledger is not None
+        assert ledger.stage is not None
+        assert ledger.stage.draft_rules == rules
+        assert ledger.stage.global_pick_index == index + 1
+        assert ledger.stage.total_picks == rules.pack_count * picks_per_pack
+        assert ledger.stage.total_cards == snapshot.pool.target_cards
+        assert ledger.remaining_picks == rules.pack_count * picks_per_pack - index - 1
+        selected = (104894, 104976)[:rules.cards_per_pick]
+        pool += selected
+        snapshot = session.process_events(
+            events=(
+                PickMadeEvent(
+                    event_name=event_name,
+                    set_code="TST",
+                    pack_number=pack_number,
+                    pick_number=pick_number,
+                    selected_grp_ids=selected,
+                    account_id="account" if with_account else None,
+                ),
+            ),
+        )
+        assert snapshot.pool.total_cards == len(pool)
+        if with_account:
+            state = session._active_draft_state()
+            assert state is not None
+            assert state.chosen_pick_count == index + 1
+            assert state.selected_card_count == len(pool)
+    snapshot = session.process_events(events=(
+        DraftCompletedEvent(
+            event_name=event_name,
+            set_code="TST",
+            pack_number=rules.pack_count - 1,
+            pick_number=picks_per_pack - 1,
+            picked_grp_ids=pool,
+            inferred=False,
+            account_id="account" if with_account else None,
+        ),
+    ))
+    assert snapshot.pool.target_cards == len(pool)
+
+
+def _complete_pick_two_session_lines(*, with_account: bool = True) -> list[str]:
+    lines = _human_draft_lines(
+        event_name="PickTwoDraft_TST_20260929", with_account=with_account,
+    )[:-1]
+    for pack in range(1, 4):
+        for pick in range(1, 8):
+            notify = json.dumps({
+                "draftId": "00000000-0000-4000-8000-000000000801",
+                "SelfPack": pack,
+                "SelfPick": pick,
+                "PackCards": ",".join(["104894", "104976"] * (8 - pick)),
+            })
+            lines.append(f"[UnityCrossThreadLogger]Draft.Notify {notify}")
+            request_id = f"pick-{pack}-{pick}"
+            request = json.dumps({
+                "DraftId": "00000000-0000-4000-8000-000000000801",
+                "Pack": pack,
+                "Pick": pick,
+                "GrpIds": [104894, 104976],
+            })
+            body = json.dumps({"id": request_id, "request": request})
+            lines.extend([
+                f"[UnityCrossThreadLogger]==> EventPlayerDraftMakePick {body}",
+                "[UnityCrossThreadLogger]9/29/2026 10:00:00 AM",
+                f"<== EventPlayerDraftMakePick({request_id})",
+                json.dumps({
+                    "IsPickSuccessful": True,
+                    "IsPickingCompleted": (pack, pick) == (3, 7),
+                }),
+            ])
+    return lines
+
+
+@pytest.mark.parametrize("with_account", [True, False])
+def test_pick_two_log_completes_with_21_logical_picks_and_42_cards(
+    tmp_path: Path, with_account: bool,
+) -> None:
+    published: list[LiveSessionEvent] = []
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_set_card_database(set_code="TST"),
+        event_publisher=published.append,
+    )
+    snapshot = session.process_lines(
+        lines=_complete_pick_two_session_lines(with_account=with_account),
+    )
+    picks = [item for item in published if isinstance(item.event, PickMadeEvent)]
+    assert len(picks) == 21
+    assert all(len(item.event.selected_grp_ids) == 2 for item in picks)
+    assert snapshot.status.phase is ApplicationPhase.DRAFT_COMPLETE
+    assert snapshot.pool.total_cards == 42
+    assert snapshot.pool.target_cards == 42
+    if with_account:
+        assert snapshot.draft is not None
+        assert (snapshot.draft.pack_number, snapshot.draft.pick_number) == (2, 6)
+        state = session._active_draft_state()
+        assert state is not None
+        assert state.completed is True
+        assert state.chosen_pick_count == 21
+        assert state.selected_card_count == 42
+
+
+def test_pick_two_pending_recovery_restores_rules_and_all_selected_cards(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    database = _fixture_set_card_database(set_code="TST")
+    session = LiveSession(
+        log_path=tmp_path / "Player.log", app_dir=app_dir, card_database=database,
+    )
+    lines = _complete_pick_two_session_lines()
+    session.process_lines(lines=lines[:8])
+    before = session.snapshot
+    assert before.pool.total_cards == 2
+    assert before.current_pack_event is not None
+    recovered = LiveSession(
+        log_path=tmp_path / "Player.log", app_dir=app_dir, card_database=database,
+    )
+    snapshot = recovered.process_lines(lines=(lines[0],))
+    assert snapshot.current_pack_event == before.current_pack_event
+    assert snapshot.draft is not None
+    assert (snapshot.draft.pack_number, snapshot.draft.pick_number) == (0, 1)
+    assert snapshot.draft_format is DraftFormat.PICK_TWO
+    assert snapshot.pool.total_cards == 2
+    assert snapshot.pool.role_ledger == before.pool.role_ledger
+    ledger = snapshot.pool.role_ledger
+    assert ledger is not None
+    assert ledger.stage is not None
+    assert ledger.stage.total_picks == 21
+    assert ledger.remaining_picks == 19
+
+
+def test_plain_watch_cli_finishes_pick_two_with_21_choices_and_42_cards(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    cache = app_dir / "card-data" / "tst.json.gz"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(SetCardData.from_card_database(
+        database=_fixture_set_card_database(set_code="TST"),
+        set_code="tst",
+        set_name="Test Set",
+    ).to_gzip_bytes())
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        "\n".join(_complete_pick_two_session_lines()) + "\n", encoding="utf-8",
+    )
+    result = subprocess.run(
+        args=[
+            sys.executable, "-m", "draftomen.cli", "watch", "--plain", "--once",
+            "--log-path", str(log_path), "--app-dir", str(app_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("Chosen card:") == 21
+    assert "Pack 3 Pick 7" in result.stdout
+    assert "Pack 3 Pick 8" not in result.stdout
+    assert "Draft complete: 42 cards" in result.stdout
+    states = session_module.list_draft_states(app_dir=app_dir)
+    assert len(states) == 1
+    assert states[0].completed is True
+    assert states[0].chosen_pick_count == 21
+    assert states[0].pool_grp_ids == (104894, 104976) * 21
 
 
 def test_live_session_msh_replay_with_cached_early_profile_reports_ready_ratings(
@@ -9385,3 +9616,4 @@ def test_live_session_adopts_a_profile_refresh_that_lands_after_the_msh_replay_c
 
     assert session.snapshot.ratings.phase is DataLoadPhase.READY
     assert session.snapshot.ratings.message == "Profile ratings are ready for MSH."
+

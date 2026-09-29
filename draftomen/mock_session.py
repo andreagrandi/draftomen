@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Literal, TypeAlias
 
+from draftomen.draft_format import QUICK_RULES
 from draftomen.session import (
     AccountIdentity,
     ApplicationPhase,
@@ -229,7 +230,7 @@ def _pool() -> PoolState:
         cards=pool_cards,
         recent_picks=recent_picks,
         total_cards=24,
-        target_cards=42,
+        target_cards=QUICK_RULES.total_cards,
         inferred_pair="White · Green",
         current_colors=("W", "G"),
         commitment=0.64,
@@ -378,7 +379,7 @@ def _backtest() -> BacktestResult:
         set_code="OTJ",
         event_name="Quick Draft",
         completed=True,
-        chosen_pick_count=42,
+        chosen_pick_count=QUICK_RULES.total_picks,
     )
 
 
