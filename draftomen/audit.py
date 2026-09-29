@@ -37,7 +37,8 @@ AuditRecord: TypeAlias = dict[str, Any]
 
 AUDIT_DIRECTORY_NAME = "audit"
 DRAFT_AUDIT_DIRECTORY_NAME = "drafts"
-DRAFT_AUDIT_SCHEMA_VERSION = 1
+DRAFT_AUDIT_SCHEMA_VERSION = 2
+SUPPORTED_DRAFT_AUDIT_SCHEMA_VERSIONS = frozenset({1, DRAFT_AUDIT_SCHEMA_VERSION})
 
 
 class DraftAuditError(RuntimeError):
@@ -105,10 +106,11 @@ def load_draft_audit_records(
             )
 
         schema_version = value.get("schema_version")
-        if schema_version != DRAFT_AUDIT_SCHEMA_VERSION:
+        if schema_version not in SUPPORTED_DRAFT_AUDIT_SCHEMA_VERSIONS:
             raise DraftAuditError(
                 f"Unsupported draft audit schema {schema_version!r} in {path} "
-                f"at line {line_number}; expected {DRAFT_AUDIT_SCHEMA_VERSION}."
+                f"at line {line_number}; expected one of "
+                f"{sorted(SUPPORTED_DRAFT_AUDIT_SCHEMA_VERSIONS)}."
             )
 
         record_id = value.get("record_id")
@@ -237,12 +239,7 @@ class DraftAuditStore:
         The choice links to the most recent persisted evaluation when available.
         """
 
-        if len(event.selected_grp_ids) > 1:
-            raise ValueError(
-                "record_choice does not support multi-card picks; "
-                f"got {event.selected_grp_ids!r}."
-            )
-        chosen_grp_id = event.selected_grp_ids[0]
+        selected_grp_ids = list(event.selected_grp_ids)
         mode = validate_ranking_mode(ranking_mode=ranking_mode)
         path = self.path_for(state=state)
         self._ensure_index(path=path)
@@ -263,21 +260,21 @@ class DraftAuditStore:
             ),
             "pack_number": event.pack_number,
             "pick_number": event.pick_number,
-            "chosen_grp_id": chosen_grp_id,
+            "selected_grp_ids": selected_grp_ids,
             "ranking_mode": mode,
             "recommended_grp_id": recommended_grp_id,
             "recommendation_followed": (
                 None
                 if recommended_grp_id is None
-                else recommended_grp_id == chosen_grp_id
+                else recommended_grp_id in selected_grp_ids
             ),
         }
         record_id = _record_id(
             prefix="choice",
-            value={
-                "decision_id": decision_id,
-                "chosen_grp_id": chosen_grp_id,
-            },
+            value=_choice_identity(
+                decision_id=decision_id,
+                selected_grp_ids=selected_grp_ids,
+            ),
         )
         return self._append(
             state=state,
@@ -720,6 +717,20 @@ def _decision_id(
             "pick_number": pick_number,
         },
     )
+
+
+def _choice_identity(
+    *,
+    decision_id: str,
+    selected_grp_ids: list[int],
+) -> AuditRecord:
+    """Hash single-card picks the way schema 1 did so rescans stay idempotent.
+    Multi-card picks have no schema 1 record and hash the full card list.
+    """
+
+    if len(selected_grp_ids) == 1:
+        return {"decision_id": decision_id, "chosen_grp_id": selected_grp_ids[0]}
+    return {"decision_id": decision_id, "selected_grp_ids": selected_grp_ids}
 
 
 def _recommended_grp_id(

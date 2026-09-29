@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -120,7 +121,7 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
         "draft_completed",
     ]
     decision = records[1]
-    assert decision["schema_version"] == 1
+    assert decision["schema_version"] == 2
     assert decision["app_version"] == "1.2.3"
     assert decision["recorded_at"] == "2026-07-27T10:30:00+00:00"
     assert decision["offered_grp_ids"] == [101, 102]
@@ -191,7 +192,8 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
 
     choice = records[2]
     assert choice["evaluation_id"] == decision["evaluation_id"]
-    assert choice["chosen_grp_id"] == 102
+    assert choice["selected_grp_ids"] == [102]
+    assert "chosen_grp_id" not in choice
     assert choice["ranking_mode"] == "mv"
     assert choice["recommended_grp_id"] == 102
     assert choice["recommendation_followed"] is True
@@ -202,16 +204,173 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
     assert completion["inferred"] is False
 
 
-def test_audit_record_choice_rejects_multi_card_pick(tmp_path: Path) -> None:
+def test_audit_multi_card_pick_writes_one_choice_with_every_selected_card(
+    tmp_path: Path,
+) -> None:
     state = _draft_state()
     store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
-    multi_card_event = replace(_pick_event(), selected_grp_ids=(102, 103))
 
-    with pytest.raises(ValueError, match="multi-card"):
-        store.record_choice(
-            state=state,
-            event=multi_card_event,
-            ranking_mode="mv",
+    store.record_choice(
+        state=state,
+        event=_pick_event(selected_grp_ids=(102, 101)),
+        ranking_mode="score",
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert len(records) == 1
+    choice = records[0]
+    assert choice["record_type"] == "choice_made"
+    assert choice["schema_version"] == 2
+    assert choice["selected_grp_ids"] == [102, 101]
+    assert "chosen_grp_id" not in choice
+    assert choice["recommended_grp_id"] is None
+    assert choice["recommendation_followed"] is None
+
+
+@pytest.mark.parametrize(
+    ("selected_grp_ids", "expected_followed"),
+    (
+        ((102, 101), True),
+        ((102, 103), False),
+    ),
+)
+def test_audit_multi_card_pick_follows_recommendation_when_it_is_selected(
+    tmp_path: Path,
+    selected_grp_ids: tuple[int, ...],
+    expected_followed: bool,
+) -> None:
+    state = _draft_state()
+    offer = _pack_event(offered_grp_ids=(101, 102, 103))
+    engine = PickEngine()
+    scored_pack = engine.score_pack(
+        offered_grp_ids=offer.offered_grp_ids,
+        card_database=_card_database(),
+        pool_grp_ids=offer.pool_grp_ids,
+        pick_index=1,
+    )
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.record_decision(
+        state=state,
+        event=offer,
+        scored_pack=scored_pack,
+        config=engine.config,
+        ratings_data=None,
+    )
+
+    store.record_choice(
+        state=state,
+        event=_pick_event(selected_grp_ids=selected_grp_ids),
+        ranking_mode="score",
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    choice = records[-1]
+    assert choice["record_type"] == "choice_made"
+    assert choice["recommended_grp_id"] == 101
+    assert choice["selected_grp_ids"] == list(selected_grp_ids)
+    assert choice["recommendation_followed"] is expected_followed
+
+
+def test_audit_replayed_multi_card_pick_adds_no_record(tmp_path: Path) -> None:
+    state = _draft_state()
+    pick = _pick_event(selected_grp_ids=(102, 101))
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.record_choice(state=state, event=pick, ranking_mode="score")
+    store.record_choice(state=state, event=pick, ranking_mode="score")
+
+    restarted_store = DraftAuditStore(app_dir=tmp_path, clock=_later_clock)
+    restarted_store.record_choice(state=state, event=pick, ranking_mode="score")
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert [record["record_type"] for record in records] == ["choice_made"]
+    assert records[0]["recorded_at"] == "2026-07-27T10:30:00+00:00"
+
+
+def test_audit_rescan_does_not_duplicate_a_schema_one_choice(
+    tmp_path: Path,
+) -> None:
+    state = _draft_state()
+    legacy_choice = _schema_one_choice_line(pick_number=0, chosen_grp_id=102)
+    path = draft_audit_path(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(legacy_choice) + "\n", encoding="utf-8")
+
+    store = DraftAuditStore(app_dir=tmp_path, clock=_later_clock)
+    store.record_choice(state=state, event=_pick_event(), ranking_mode="score")
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert records == (legacy_choice,)
+
+
+def test_audit_loads_a_log_that_mixes_schema_one_and_schema_two_lines(
+    tmp_path: Path,
+) -> None:
+    state = _draft_state()
+    legacy_choice = _schema_one_choice_line(pick_number=0, chosen_grp_id=102)
+    path = draft_audit_path(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(legacy_choice) + "\n", encoding="utf-8")
+
+    store = DraftAuditStore(app_dir=tmp_path, clock=_later_clock)
+    store.record_choice(state=state, event=_pick_event(), ranking_mode="score")
+    store.record_choice(
+        state=state,
+        event=_pick_event(pick_number=1, selected_grp_ids=(103, 104)),
+        ranking_mode="score",
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert [record["schema_version"] for record in records] == [1, 2]
+    assert records[0] == legacy_choice
+    assert records[1]["selected_grp_ids"] == [103, 104]
+    assert records[1]["pick_number"] == 1
+
+
+def test_audit_loader_rejects_an_unknown_schema_version(tmp_path: Path) -> None:
+    path = draft_audit_path(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"schema_version": 3, "record_id": "future"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DraftAuditError, match="Unsupported draft audit schema 3"):
+        load_draft_audit_records(
+            account_id=ACCOUNT_ID,
+            draft_id=DRAFT_ID,
+            app_dir=tmp_path,
         )
 
 
@@ -604,7 +763,7 @@ def test_audit_restart_preserves_identity_for_historical_records_without_rationa
         app_dir=tmp_path,
     )
     historical = json.loads(path.read_text(encoding="utf-8"))
-    assert historical["schema_version"] == 1
+    historical["schema_version"] = 1
     for field in ("rationale", "concise_explanation", "explanation"):
         historical["recommendation"].pop(field, None)
         for candidate in historical["candidates"]:
@@ -813,15 +972,66 @@ def _pack_event(
     )
 
 
-def _pick_event() -> PickMadeEvent:
+def _pick_event(
+    *,
+    pick_number: int = 0,
+    selected_grp_ids: tuple[int, ...] = (102,),
+) -> PickMadeEvent:
     return PickMadeEvent(
         event_name=EVENT_NAME,
         set_code=SET_CODE,
         pack_number=0,
-        pick_number=0,
-        selected_grp_ids=(102,),
+        pick_number=pick_number,
+        selected_grp_ids=selected_grp_ids,
         account_id=ACCOUNT_ID,
     )
+
+
+def _schema_one_choice_line(*, pick_number: int, chosen_grp_id: int) -> dict[str, object]:
+    """Build a choice_made record exactly as audit schema 1 wrote it.
+    Ids are hashed here so the test does not depend on the writer's helpers.
+    """
+
+    def schema_one_id(*, prefix: str, value: dict[str, object]) -> str:
+        canonical = json.dumps(
+            value,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return f"{prefix}:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+    decision_id = schema_one_id(
+        prefix="decision",
+        value={
+            "account_id": ACCOUNT_ID,
+            "draft_id": DRAFT_ID,
+            "pack_number": 0,
+            "pick_number": pick_number,
+        },
+    )
+    return {
+        "schema_version": 1,
+        "record_id": schema_one_id(
+            prefix="choice",
+            value={"decision_id": decision_id, "chosen_grp_id": chosen_grp_id},
+        ),
+        "record_type": "choice_made",
+        "recorded_at": "2026-07-27T10:30:00+00:00",
+        "app_version": "0.4.2",
+        "account_id": ACCOUNT_ID,
+        "draft_id": DRAFT_ID,
+        "event_name": EVENT_NAME,
+        "set_code": SET_CODE,
+        "decision_id": decision_id,
+        "evaluation_id": None,
+        "pack_number": 0,
+        "pick_number": pick_number,
+        "chosen_grp_id": chosen_grp_id,
+        "ranking_mode": "score",
+        "recommended_grp_id": None,
+        "recommendation_followed": None,
+    }
 
 
 def _completed_event() -> DraftCompletedEvent:

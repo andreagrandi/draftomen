@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- The draft audit log now records multi-card picks. `choice_made` records
+  store a `selected_grp_ids` list in place of `chosen_grp_id`, and the audit
+  schema moves to version 2. `recommendation_followed` is true when the
+  recommended card is one of the selected cards. Existing schema 1 logs stay
+  readable without being rewritten, and a rescan does not duplicate their
+  choices. `docs/draft-audit-log.md` describes the schema 2 record. (#783)
 - Windows releases now ship only through the Microsoft Store. Stable GitHub
   Releases and the rolling development prerelease no longer publish the
   unsigned Windows `.exe`, and their checksum files list only the macOS DMGs.

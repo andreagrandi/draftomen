@@ -790,7 +790,7 @@ def test_repeated_confirmation_submits_and_records_one_pick(tmp_path: Path) -> N
         )
         if record["record_type"] == "choice_made"
     )
-    assert [record["chosen_grp_id"] for record in choices] == [chosen]
+    assert [record["selected_grp_ids"] for record in choices] == [[chosen]]
     controller.close()
 
 
