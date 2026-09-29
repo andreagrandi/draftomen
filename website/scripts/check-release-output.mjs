@@ -1,8 +1,9 @@
-import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const [releaseTag, ...unexpectedArguments] = process.argv.slice(2);
+const windowsStoreUrl = 'https://apps.microsoft.com/detail/9NPCD3VLZQMX';
 
 function fail(message) {
   throw new Error(`Release output validation failed: ${message}`);
@@ -21,6 +22,25 @@ function visibleText(html) {
     .replace(/&#39;|&#x27;/gi, "'");
 }
 
+function anchors(html) {
+  return [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].map(([, attributes, body]) => ({
+    href: attributes.match(/\bhref\s*=\s*["']([^"']*)["']/i)?.[1] ?? '',
+    text: visibleText(body).replace(/\s+/g, ' ').trim(),
+  }));
+}
+
+async function htmlFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return htmlFiles(path);
+    }
+    return entry.name.endsWith('.html') ? [path] : [];
+  }));
+  return nested.flat();
+}
+
 async function main() {
   if (!releaseTag || unexpectedArguments.length > 0) {
     fail(
@@ -36,12 +56,8 @@ async function main() {
     );
   }
 
-  const outputPath = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    '..',
-    'dist',
-    'index.html',
-  );
+  const distPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
+  const outputPath = join(distPath, 'index.html');
   let html;
   try {
     html = await readFile(outputPath, 'utf8');
@@ -53,7 +69,6 @@ async function main() {
   const expectedUrls = [
     `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-macos-arm64.dmg`,
     `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-macos-x86_64.dmg`,
-    `https://github.com/andreagrandi/draftomen/releases/download/${releaseTag}/draftomen-${releaseTag}-unsigned-windows.exe`,
   ];
   const missingChecks = [];
   if (!visibleText(html).includes(releaseTag)) {
@@ -67,11 +82,38 @@ async function main() {
   if (/unsigned\s*\.dmg/i.test(visibleText(html))) {
     missingChecks.push('macOS download labels without "unsigned"');
   }
+  const windowsButtons = anchors(html).filter(({ text }) => text.includes('Download for Windows'));
+  if (windowsButtons.length !== 1 || windowsButtons[0].href !== windowsStoreUrl) {
+    missingChecks.push(`one Windows download button linking to ${windowsStoreUrl}`);
+  }
+
+  const forbiddenContent = [];
+  // The Microsoft Store is the only supported Windows install, so no page may
+  // offer a Windows executable or describe an unsigned Windows build.
+  for (const path of await htmlFiles(distPath)) {
+    const pageHtml = await readFile(path, 'utf8');
+    const page = relative(distPath, path);
+    for (const { href } of anchors(pageHtml)) {
+      if (/\.exe(?:[?#]|$)/i.test(href)) {
+        forbiddenContent.push(`a Windows executable link to ${href} in ${page}`);
+      }
+    }
+    if (/\b(?:unsigned|not signed)\b[^.]*\bWindows\b|\bWindows\b[^.]*\b(?:unsigned|not signed)\b/i.test(visibleText(pageHtml))) {
+      forbiddenContent.push(`text about an unsigned Windows build in ${page}`);
+    }
+  }
 
   if (missingChecks.length > 0) {
     fail(
       `website/dist/index.html is missing ${missingChecks.join('; ')}. `
-        + 'Ensure the homepage renders the tagged release links and rebuild the website.',
+        + 'Ensure the homepage renders the tagged release links and the Microsoft Store '
+        + 'link, then rebuild the website.',
+    );
+  }
+  if (forbiddenContent.length > 0) {
+    fail(
+      `website/dist contains ${forbiddenContent.join('; ')}. `
+        + 'Windows installs come only from the Microsoft Store.',
     );
   }
 
