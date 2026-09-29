@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Mapping, TypeAlias
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, DECK_BUILDER, SPLASH
-from draftomen.events import EXPECTED_PACK_COUNT, EXPECTED_PICKS_PER_PACK, EXPECTED_TOTAL_PICKS
+from draftomen.draft_format import DraftRules, QUICK_RULES
 from draftomen.semantic_roles import Role, RoleAssignment, resolve_card_roles
 from draftomen.seventeen import SeventeenLandsData
 from draftomen.splash import (
@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 
 LedgerNumber: TypeAlias = float
 LedgerPairs: TypeAlias = tuple[tuple[str, LedgerNumber], ...]
-TOTAL_DRAFT_PICKS = EXPECTED_TOTAL_PICKS
-PICKS_PER_PACK = EXPECTED_PICKS_PER_PACK
+TOTAL_DRAFT_PICKS = QUICK_RULES.total_picks
+PICKS_PER_PACK = QUICK_RULES.picks_per_pack
 
 ProjectionUnit: TypeAlias = tuple[int, CardInfo, tuple[RoleAssignment, ...]]
 
@@ -154,9 +154,12 @@ class LedgerStage:
     estimated_remaining_picks: int
     # Arena packs hold 14 picks; Mocked Draft packs from Draftmancer can hold
     # 13 or 15 depending on the set's booster layout.
-    picks_per_pack: int = PICKS_PER_PACK
+    picks_per_pack: int | None = None
+    draft_rules: DraftRules = QUICK_RULES
 
     def __post_init__(self) -> None:
+        if self.picks_per_pack is None:
+            object.__setattr__(self, "picks_per_pack", self.draft_rules.picks_per_pack)
         values = (
             self.pack_number,
             self.pick_number,
@@ -168,9 +171,9 @@ class LedgerStage:
             raise ValueError("Ledger stage coordinates must be integers.")
         if self.picks_per_pack < 1:
             raise ValueError("Ledger picks_per_pack must be positive.")
-        if not 0 <= self.pack_number < EXPECTED_PACK_COUNT:
+        if not 0 <= self.pack_number < self.draft_rules.pack_count:
             raise ValueError(
-                f"Ledger pack_number must be within {EXPECTED_PACK_COUNT} draft packs."
+                f"Ledger pack_number must be within {self.draft_rules.pack_count} draft packs."
             )
         if not 0 <= self.pick_number < self.picks_per_pack:
             raise ValueError(
@@ -192,7 +195,15 @@ class LedgerStage:
     def total_picks(self) -> int:
         """Return the number of picks in the whole draft for this pack size."""
 
-        return EXPECTED_PACK_COUNT * self.picks_per_pack
+        return self.draft_rules.pack_count * self.picks_per_pack
+
+    @property
+    def total_cards(self) -> int:
+        """Return the pool size for a complete draft.
+        Multi-card picks contribute every selected card.
+        """
+
+        return self.total_picks * self.draft_rules.cards_per_pick
 
     @property
     def pack(self) -> int:
@@ -711,7 +722,8 @@ def project_pool_role_ledger(
     ratings_data: SeventeenLandsData | None = None,
     set_profile: SetProfile | None = None,
     likely_pair: str | None = None,
-    picks_per_pack: int = PICKS_PER_PACK,
+    picks_per_pack: int | None = None,
+    draft_rules: DraftRules = QUICK_RULES,
 ) -> PoolRoleLedger:
     """Evaluate only an authoritative saved/event pool before the current pick.
     Future offered picks and final-pool state are intentionally not accepted.
@@ -723,6 +735,7 @@ def project_pool_role_ledger(
         global_pick_index=global_pick_index,
         estimated_remaining_picks=estimated_remaining_picks,
         picks_per_pack=picks_per_pack,
+        draft_rules=draft_rules,
     )
     return _evaluate_pool(
         pool_grp_ids=pool_before_pick,
@@ -1082,3 +1095,4 @@ def _clamp(value: float) -> float:
 
 def _round(value: float) -> float:
     return float(f"{value:.6f}")
+

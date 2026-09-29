@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Live draft progress and pool ledger totals follow the active draft rules.
+  Pick-Two records 21 logical picks and 42 cards, and pending recovery keeps
+  its format, coordinates and selected cards. Mocked Draft keeps its 13 or 15
+  picks per pack. (#771)
 - Live Premier, Traditional and Pick-Two drafts load card data on the first
   offered pack, so recommendations and `watch --plain` scored rows appear
   without a restart. The load permits networking as Quick Draft detection
@@ -1436,3 +1440,4 @@
 - Renamed the project, Python package, CLI, GUI commands, and release artifacts to Draft Omen and `draftomen`.
 
 - Maintain changelog-backed development updates and stable GitHub release notes.
+

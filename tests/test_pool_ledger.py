@@ -6,6 +6,7 @@ import pytest
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import DECK_BUILDER
+from draftomen.draft_format import DraftFormat, rules_for_format
 from draftomen.pickengine import PickEngine
 from draftomen.pool_ledger import (
     COMPLETED_POOL,
@@ -50,6 +51,26 @@ def test_canonical_stage_coordinates_and_remaining_boundary() -> None:
             estimated_remaining_picks=1,
             card_database=database,
         )
+
+
+@pytest.mark.parametrize("draft_format", list(DraftFormat))
+def test_ledger_uses_format_rules_for_logical_picks_and_card_totals(
+    draft_format: DraftFormat,
+) -> None:
+    rules = rules_for_format(draft_format=draft_format)
+    ledger = project_pool_role_ledger(
+        pool_before_pick=(1, 1),
+        pack_number=rules.pack_count - 1,
+        pick_number=rules.picks_per_pack - 1,
+        global_pick_index=rules.total_picks,
+        estimated_remaining_picks=0,
+        card_database=_database(_card(1, colors=("W",))),
+        draft_rules=rules,
+    )
+    assert ledger.stage is not None
+    assert ledger.stage.total_picks == rules.total_picks
+    assert ledger.stage.total_cards == rules.total_cards
+    assert ledger.remaining_picks == 0
 
 
 def test_projection_selects_a_bounded_deck_shape() -> None:
@@ -580,3 +601,4 @@ def test_ledger_stage_rejects_a_pick_beyond_its_pack_size() -> None:
             global_pick_index=15,
             estimated_remaining_picks=27,
         )
+

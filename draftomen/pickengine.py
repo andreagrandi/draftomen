@@ -18,8 +18,7 @@ from draftomen.augmented_artifact import (
 )
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS, PICK_ENGINE, SPLASH, PickEngineConfig
-from draftomen.draft_format import event_format_label
-from draftomen.events import EXPECTED_PACK_COUNT, EXPECTED_PICKS_PER_PACK
+from draftomen.draft_format import DraftRules, QUICK_RULES, event_format_label
 from draftomen.pool_ledger import (
     FIXING_ROLES,
     LedgerStage,
@@ -896,6 +895,7 @@ class PickEngine:
         estimated_remaining_picks: int | None = None,
         scoring_context: PickScoringContext | None = None,
         picks_per_pack: int | None = None,
+        draft_rules: DraftRules | None = None,
     ) -> ScoredPack:
         """Return offered cards in recommendation order.
 
@@ -929,6 +929,7 @@ class PickEngine:
             estimated_remaining_picks=estimated_remaining_picks,
             scoring_context=candidate_context,
             picks_per_pack=picks_per_pack,
+            draft_rules=draft_rules,
         )
         if resolved_stage is not None:
             resolved_pick_index = resolved_stage.global_pick_index
@@ -984,6 +985,7 @@ class PickEngine:
                 set_profile=active_profile,
                 likely_pair=commitment.inferred_pair,
                 picks_per_pack=resolved_stage.picks_per_pack,
+                draft_rules=resolved_stage.draft_rules,
             )
         require_material_rate_margin = _is_empirical_profile(
             profile=active_profile,
@@ -1716,6 +1718,7 @@ def score_pack(
     contextual_adjustments_enabled: bool = True,
     set_profile: SetProfile | None = None,
     scoring_context: PickScoringContext | None = None,
+    draft_rules: DraftRules | None = None,
     pack_number: int | None = None,
     pick_number: int | None = None,
     global_pick_index: int | None = None,
@@ -1742,6 +1745,7 @@ def score_pack(
         global_pick_index=global_pick_index,
         estimated_remaining_picks=estimated_remaining_picks,
         picks_per_pack=picks_per_pack,
+        draft_rules=draft_rules,
     )
 
 
@@ -1769,6 +1773,8 @@ def build_pick_scoring_context(
     global_pick_index: int | None = None,
     estimated_remaining_picks: int | None = None,
     scoring_context: PickScoringContext | None = None,
+    picks_per_pack: int | None = None,
+    draft_rules: DraftRules | None = None,
 ) -> PickScoringContext | None:
     """Build validated pre-pick context from authoritative inputs."""
 
@@ -1781,6 +1787,8 @@ def build_pick_scoring_context(
         global_pick_index=global_pick_index,
         estimated_remaining_picks=estimated_remaining_picks,
         scoring_context=scoring_context,
+        picks_per_pack=picks_per_pack,
+        draft_rules=draft_rules,
     )
     if scoring_context is not None:
         return scoring_context
@@ -1833,6 +1841,7 @@ def _build_pick_scoring_context(
         set_profile=set_profile,
         likely_pair=likely_pair,
         picks_per_pack=stage.picks_per_pack,
+        draft_rules=stage.draft_rules,
     )
     return PickScoringContext(set_profile=set_profile, role_ledger=role_ledger)
 
@@ -1846,6 +1855,7 @@ def _resolve_pre_pick_stage(
     estimated_remaining_picks: int | None,
     scoring_context: PickScoringContext | None,
     picks_per_pack: int | None = None,
+    draft_rules: DraftRules | None = None,
 ) -> LedgerStage | None:
     explicit_indices = tuple(
         index
@@ -1856,6 +1866,8 @@ def _resolve_pre_pick_stage(
         raise ValueError("pick_index and global_pick_index conflict.")
     if scoring_context is not None:
         context_stage = scoring_context.stage
+        if draft_rules is not None and draft_rules != context_stage.draft_rules:
+            raise ValueError("Explicit draft_rules conflicts with PickScoringContext.stage.")
         if (
             explicit_indices
             and explicit_indices[0] != context_stage.global_pick_index
@@ -1867,6 +1879,7 @@ def _resolve_pre_pick_stage(
         for coordinate_name, explicit_value, context_value in (
             ("pack_number", pack_number, context_stage.pack_number),
             ("pick_number", pick_number, context_stage.pick_number),
+            ("picks_per_pack", picks_per_pack, context_stage.picks_per_pack),
             (
                 "estimated_remaining_picks",
                 estimated_remaining_picks,
@@ -1885,8 +1898,10 @@ def _resolve_pre_pick_stage(
         global_pick_index,
         estimated_remaining_picks,
     )
+    if draft_rules is None:
+        draft_rules = QUICK_RULES
     if picks_per_pack is None:
-        picks_per_pack = EXPECTED_PICKS_PER_PACK
+        picks_per_pack = draft_rules.picks_per_pack
     if all(value is None for value in explicit):
         if pick_index is None:
             return None
@@ -1895,7 +1910,7 @@ def _resolve_pre_pick_stage(
         global_pick_index = pick_index
         estimated_remaining_picks = max(
             0,
-            EXPECTED_PACK_COUNT * picks_per_pack - pick_index,
+            draft_rules.pack_count * picks_per_pack - pick_index,
         )
     elif any(value is None for value in explicit):
         raise ValueError(
@@ -1910,6 +1925,7 @@ def _resolve_pre_pick_stage(
         global_pick_index=global_pick_index,
         estimated_remaining_picks=estimated_remaining_picks,
         picks_per_pack=picks_per_pack,
+        draft_rules=draft_rules,
     )
 
 
@@ -3171,3 +3187,4 @@ def _percentile(*, values: tuple[float, ...], percentile: float) -> float | None
 
 def _clamp(*, value: float, lower: float, upper: float) -> float:
     return min(max(value, lower), upper)
+
