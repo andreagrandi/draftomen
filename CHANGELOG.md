@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Live Draft keeps the two-column layout on laptop screens such as 1352x799.
+  The card details column shrinks from 550 px to 350 px before the view
+  switches to stacked tabs, and the card preview gives up height before the
+  pool summary, so the whole mana curve stays visible. Windows narrower than
+  about 1240 px or shorter than about 770 px still use stacked tabs. (#242)
 - Errors the live session shows, such as a failed ratings or card data
   download, a failed deck build or a failed backtest, are now written to
   `~/.draftomen/logs/draftomen.log` with their code, id and message. Each error

@@ -4923,12 +4923,16 @@ wide_card_details_width = int(
     live_view.property("wideCardDetailsWidth")
 )
 assert wide_card_details_width == 550
+wide_card_details_minimum_width = int(
+    live_view.property("wideCardDetailsMinimumWidth")
+)
+assert wide_card_details_minimum_width == 350
 wide_recommendation_list_width = int(
     live_view.property("wideRecommendationsMinimumListWidth")
 )
 assert wide_recommendation_list_width == 662
 assert int(live_view.property("wideRecommendationsMinimumWidth")) == (
-    wide_recommendation_list_width + wide_card_details_width + 12
+    wide_recommendation_list_width + wide_card_details_minimum_width + 12
 )
 
 ranking = root.findChild(QObject, "rankingSelector")
@@ -5212,6 +5216,11 @@ wide_details = find_visual_item(wide_preview, "cardPreviewDetails")
 assert wide_frame is not None and wide_frame.isVisible()
 assert wide_details is not None and wide_details.isVisible()
 assert wide_preview.width() == wide_card_details_width
+# The warning banner takes height from the details column. A taller window
+# leaves the preview at its full preferred height for the frame size checks.
+root.resize(1440, 1000)
+application.processEvents()
+assert wide_preview.height() == 430
 assert wide_row.width() > wide_preview.width()
 assert wide_frame.width() == 250
 assert wide_frame.height() == 350
@@ -5241,6 +5250,8 @@ wide_preview_left = wide_preview.mapToItem(
     root.contentItem(), QPointF(0, 0)
 ).x()
 assert wide_row_right <= wide_preview_left
+root.resize(1440, 900)
+application.processEvents()
 confidence = root.findChild(QObject, "recommendationConfidenceSummary")
 assert confidence is not None
 state_without_confidence = dict(provider.state)
@@ -5354,13 +5365,93 @@ wide_content_threshold = int(
     live_view.property("wideRecommendationsMinimumWidth")
 )
 assert wide_content_threshold == (
-    wide_recommendation_list_width + wide_card_details_width + 12
+    wide_recommendation_list_width + wide_card_details_minimum_width + 12
 )
 window_threshold_width = root.width() + wide_content_threshold - live_view.width()
 root.resize(window_threshold_width, 900)
 application.processEvents()
 assert live_view.property("wideRecommendations") is True
 assert find_visual_item(root.contentItem(), "wideRecommendationRow1").isVisible()
+threshold_details = find_visual_item(root.contentItem(), "wideCardDetailsColumn")
+threshold_preview = find_visual_item(root.contentItem(), "wideLiveCardPreview")
+threshold_pool = find_visual_item(root.contentItem(), "wideLivePoolDetails")
+assert threshold_details is not None and threshold_details.isVisible()
+assert abs(threshold_details.width() - wide_card_details_minimum_width) <= 1
+assert threshold_preview is not None and threshold_preview.isVisible()
+assert threshold_pool is not None and threshold_pool.isVisible()
+assert threshold_preview.width() >= wide_card_details_minimum_width - 1
+assert threshold_pool.width() >= wide_card_details_minimum_width - 1
+assert (
+    threshold_pool.y() + threshold_pool.height()
+    <= threshold_details.height() + 1
+)
+# The warning banner takes about 75 px from the details column. Drop it for
+# the laptop checks, which describe the normal ready state.
+state_with_banner = provider.state
+state_without_banner = dict(state_with_banner)
+ratings_ready = dict(state_with_banner["ratings"])
+ratings_ready["phase"] = "ready"
+state_without_banner["ratings"] = ratings_ready
+provider._replace_state(state=state_without_banner)
+application.processEvents()
+assert find_visual_item(root.contentItem(), "liveStateBanner").isVisible() is False
+root.resize(1280, 720)
+application.processEvents()
+assert live_view.property("wideRecommendations") is False
+root.resize(1352, 799)
+application.processEvents()
+assert live_view.property("wideRecommendations") is True
+laptop_details = find_visual_item(root.contentItem(), "wideCardDetailsColumn")
+laptop_preview = find_visual_item(root.contentItem(), "wideLiveCardPreview")
+laptop_pool = find_visual_item(root.contentItem(), "wideLivePoolDetails")
+assert laptop_preview is not None and laptop_preview.isVisible()
+assert laptop_pool is not None and laptop_pool.isVisible()
+assert abs(
+    laptop_details.width()
+    - (live_view.width() - wide_recommendation_list_width - 12)
+) <= 1
+assert wide_card_details_minimum_width < laptop_details.width() < wide_card_details_width
+assert laptop_preview.height() >= int(
+    live_view.property("wideCardPreviewMinimumHeight")
+) - 1
+assert laptop_pool.height() >= int(
+    live_view.property("widePoolDetailsMinimumHeight")
+) - 1
+assert (
+    laptop_pool.y() + laptop_pool.height() <= laptop_details.height() + 1
+)
+
+
+def assert_mana_curve_fully_visible(pool: QQuickItem) -> None:
+    chart = find_visual_item(pool, "poolManaCurveChart")
+    flickable = find_visual_item(pool, "poolSummaryFlickable")
+    assert chart is not None and chart.isVisible()
+    assert flickable is not None
+    chart_bottom = chart.mapToScene(QPointF(0, chart.height())).y()
+    chart_top = chart.mapToScene(QPointF(0, 0)).y()
+    flickable_top = flickable.mapToScene(QPointF(0, 0)).y()
+    flickable_bottom = flickable.mapToScene(
+        QPointF(0, flickable.height())
+    ).y()
+    assert chart.height() > 0
+    assert chart_top >= flickable_top - 1
+    assert chart_bottom <= flickable_bottom + 1
+
+
+assert_mana_curve_fully_visible(laptop_pool)
+root.resize(1240, 799)
+application.processEvents()
+assert live_view.property("wideRecommendations") is True
+narrow_details_pool = find_visual_item(root.contentItem(), "wideLivePoolDetails")
+assert_mana_curve_fully_visible(narrow_details_pool)
+provider._replace_state(state=state_with_banner)
+root.resize(1440, 900)
+application.processEvents()
+assert live_view.property("wideRecommendations") is True
+assert abs(
+    find_visual_item(root.contentItem(), "wideCardDetailsColumn").width()
+    - wide_card_details_width
+) <= 1
 root.resize(window_threshold_width - 1, 900)
 application.processEvents()
 assert live_view.property("wideRecommendations") is False
