@@ -7,6 +7,8 @@ import http.client
 import io
 import json
 import logging
+import subprocess
+import sys
 import threading
 import urllib.error
 from dataclasses import FrozenInstanceError, replace
@@ -6140,6 +6142,246 @@ def test_live_session_avoids_duplicate_card_load_and_reloads_on_set_change(
 
     assert calls == [("TST", True), ("MSH", True)]
     assert session.card_database is database_by_set["MSH"]
+
+
+def _human_draft_lines(
+    *,
+    event_name: str,
+    with_account: bool = True,
+    response_only: bool = False,
+    pick: int = 1,
+) -> list[str]:
+    lines: list[str] = []
+    if with_account:
+        lines.append(json.dumps({"authenticateResponse": {"clientId": "human-account"}}))
+    if response_only:
+        lines.extend(
+            [
+                "<== EventJoin(human-join)",
+                json.dumps(
+                    {
+                        "Course": {
+                            "CourseId": "human-course",
+                            "InternalEventName": event_name,
+                            "CurrentModule": "PlayerDraft",
+                            "ModulePayload": "",
+                        }
+                    }
+                ),
+            ]
+        )
+    else:
+        request = json.dumps({"EventName": event_name, "EntryCurrencyType": "Gem"})
+        body = json.dumps({"id": "human-join", "request": request})
+        lines.append(f"[UnityCrossThreadLogger]==> EventJoin {body}")
+    notify = json.dumps(
+        {
+            "draftId": "00000000-0000-4000-8000-000000000801",
+            "SelfPick": pick,
+            "SelfPack": 1,
+            "PackCards": "104894,104976",
+        }
+    )
+    lines.append(f"[UnityCrossThreadLogger]Draft.Notify {notify}")
+    return lines
+
+
+@pytest.mark.parametrize(
+    "prefix", ["PremierDraft", "TradDraft", "PickTwoDraft", "PickTwoTradDraft"]
+)
+@pytest.mark.parametrize("with_account", [True, False])
+@pytest.mark.parametrize("response_only", [True, False])
+def test_live_human_draft_scores_first_pack_from_cached_card_data(
+    tmp_path: Path,
+    prefix: str,
+    with_account: bool,
+    response_only: bool,
+) -> None:
+    app_dir = tmp_path / "app"
+    cache = app_dir / "card-data" / "tst.json.gz"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(
+        SetCardData.from_card_database(
+            database=_fixture_set_card_database(set_code="TST"),
+            set_code="tst",
+            set_name="Test Set",
+        ).to_gzip_bytes()
+    )
+
+    def fail_opener(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a cached human draft must not open the network")
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        set_card_data_loader=CardDataClient(app_dir=app_dir, opener=fail_opener).load,
+    )
+    snapshot = session.process_lines(
+        lines=_human_draft_lines(
+            event_name=f"{prefix}_TST_20260929",
+            with_account=with_account,
+            response_only=response_only,
+        )
+    )
+
+    assert snapshot.card_data.phase is DataLoadPhase.READY
+    assert {card.card.grp_id for card in snapshot.recommendations.cards} == {
+        104894,
+        104976,
+    }
+    assert snapshot.current_scored_pack is not None
+    assert snapshot.errors == ()
+    assert session._card_data_network_open is False
+
+
+@pytest.mark.parametrize("prefix", ["PremierDraft", "TradDraft", "PickTwoDraft"])
+def test_live_human_draft_load_allows_network_once_and_retry_is_local(
+    tmp_path: Path,
+    prefix: str,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def loader(set_code: str, *, allow_network: bool) -> CardDatabase:
+        calls.append((set_code, allow_network))
+        if len(calls) == 1:
+            raise RuntimeError("card data unavailable")
+        return _fixture_set_card_database(set_code=set_code)
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        set_card_data_loader=loader,
+    )
+    event_name = f"{prefix}_TST_20260929"
+    session.process_lines(lines=_human_draft_lines(event_name=event_name))
+    assert calls == [("TST", True)]
+    assert session.snapshot.card_data.phase is DataLoadPhase.FAILED
+
+    session.process_lines(lines=_human_draft_lines(event_name=event_name, pick=2)[-1:])
+    assert calls == [("TST", True)]
+    snapshot = session.dispatch(command=RetryError(error_id="card-data"))
+    assert calls == [("TST", True), ("TST", False)]
+    assert snapshot.card_data.phase is DataLoadPhase.READY
+    assert snapshot.recommendations.cards
+
+
+def test_live_human_draft_reopens_card_network_after_quick_draft_set_change(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def loader(set_code: str, *, allow_network: bool) -> CardDatabase:
+        calls.append((set_code, allow_network))
+        return _fixture_set_card_database(set_code=set_code)
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        set_card_data_loader=loader,
+    )
+    session.process_events(
+        events=(
+            QuickDraftDetectedEvent(
+                event_name="QuickDraft_MSH_20260929",
+                set_code="MSH",
+                account_id=None,
+            ),
+            DraftStartedEvent(
+                event_name="QuickDraft_MSH_20260929",
+                set_code="MSH",
+                course_id="quick-course",
+                account_id=None,
+            ),
+        )
+    )
+    assert session._card_data_network_open is False
+
+    event_name = "PremierDraft_TST_20260929"
+    session.process_lines(lines=_human_draft_lines(event_name=event_name))
+    snapshot = session.process_lines(
+        lines=_human_draft_lines(event_name=event_name, pick=2)[-1:]
+    )
+
+    assert calls == [("MSH", True), ("TST", True)]
+    assert {card.card.grp_id for card in snapshot.recommendations.cards} == {
+        104894,
+        104976,
+    }
+    assert session._card_data_network_open is False
+
+
+def test_live_human_card_load_does_not_continue_after_stop(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def loader(set_code: str, *, allow_network: bool) -> CardDatabase:
+        calls.append((set_code, allow_network))
+        return _fixture_set_card_database(set_code=set_code)
+
+    def publish(snapshot: LiveSessionSnapshot) -> None:
+        if snapshot.card_data.phase is DataLoadPhase.LOADING:
+            session.stop()
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        set_card_data_loader=loader,
+        snapshot_publisher=publish,
+    )
+    snapshot = session.process_lines(
+        lines=_human_draft_lines(event_name="PremierDraft_TST_20260929")
+    )
+
+    assert calls == []
+    assert snapshot.status.phase is ApplicationPhase.STOPPED
+    assert snapshot.recommendations.cards == ()
+
+
+@pytest.mark.parametrize("prefix", ["PremierDraft", "TradDraft", "PickTwoDraft"])
+def test_plain_watch_cli_scores_first_human_pack_without_restart(
+    tmp_path: Path,
+    prefix: str,
+) -> None:
+    app_dir = tmp_path / "app"
+    cache = app_dir / "card-data" / "tst.json.gz"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(
+        SetCardData.from_card_database(
+            database=_fixture_set_card_database(set_code="TST"),
+            set_code="tst",
+            set_name="Test Set",
+        ).to_gzip_bytes()
+    )
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        "\n".join(_human_draft_lines(event_name=f"{prefix}_TST_20260929")) + "\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        args=[
+            sys.executable,
+            "-m",
+            "draftomen.cli",
+            "watch",
+            "--plain",
+            "--once",
+            "--log-path",
+            str(log_path),
+            "--app-dir",
+            str(app_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Pack 1 Pick 1" in result.stdout
+    assert "(grpId 104894)" in result.stdout
+    assert "(grpId 104976)" in result.stdout
+    assert "Shared live session did not score" not in result.stderr
 
 
 def test_live_session_late_card_recovery_is_local_and_pack_never_loads(
