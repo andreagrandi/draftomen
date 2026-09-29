@@ -3692,3 +3692,15 @@ def test_generate_profile_refresh_batch_cli_is_deterministic_and_preserves_parti
         assert b"Support Creature" not in payload
         assert b"fixture-secret" not in payload
         assert b"https://" not in payload
+
+
+def test_tui_writes_to_the_application_log(
+    app_logs_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(argv=["--version"])
+
+    capsys.readouterr()
+    assert exit_code == 0
+    contents = (app_logs_dir / "draftomen.log").read_text(encoding="utf-8")
+    assert f"Draft Omen {__version__} starting on " in contents

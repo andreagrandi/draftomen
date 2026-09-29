@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+- Draft Omen now writes a rotating application log to
+  `~/.draftomen/logs/draftomen.log`. The desktop app and `draftomen-tui` share
+  the file. Each run starts with a line holding the app version, the OS and
+  the Python version. The log records unhandled exceptions from the main
+  thread and worker threads with their tracebacks, Qt warnings, and the errors
+  the desktop app also prints to stderr. The file rotates at 1 MB and keeps
+  three older files. If the logs folder cannot be created, the app still
+  starts and prints the reason to stderr. The log never copies `Player.log`
+  lines. (#791)
 - The draft audit log now records multi-card picks. `choice_made` records
   store a `selected_grp_ids` list in place of `chosen_grp_id`, and the audit
   schema moves to version 2. `recommendation_followed` is true when the
