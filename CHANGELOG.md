@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Draft Omen 0.4.2 is live in the Microsoft Store:
+  https://apps.microsoft.com/detail/9NPCD3VLZQMX. `docs/microsoft-store.md`
+  records the published package, its checksum and the certification history.
+  (#328)
 - Draft state files now store each pick's cards as a `selected_grp_ids` list,
   so a Pick-Two pick keeps both cards at one pack/pick coordinate and adds both
   to the pool once. The state schema moves to version 2. Version 1 files load
