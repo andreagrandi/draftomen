@@ -163,19 +163,26 @@ Network use: the app downloads set rating profiles from www.draftomen.com and ca
 
 ## Publication record
 
-Fill this in as the submission moves through Partner Center.
-
 | Field | Value |
 |---|---|
-| Release tag | |
-| GitHub Actions run | |
-| Package version | |
-| `.msix` SHA-256 | |
-| Submitted on | |
-| Certification result | |
-| Reached **In the Store** on | |
-| Signed by Microsoft | |
+| Release tag | None. The package came from a branch build of the code merged in #766. |
+| GitHub Actions run | [36426796886](https://github.com/andreagrandi/draftomen/actions/runs/36426796886), branch `msix-nuitka-standalone` |
+| Package version | `0.4.2.0` |
+| `.msix` SHA-256 | `3c374f47e0177e0fcea32481b56e60499861e3751494ad82c98891533e1791f7` |
+| Submitted on | 2026-09-28 |
+| Certification result | Passed on the third attempt. See below. |
+| Reached **In the Store** on | 2026-09-29 |
+| Signed by Microsoft | Yes. The Store signs every package it publishes. |
 | Public Store URL | `https://apps.microsoft.com/detail/9NPCD3VLZQMX` |
+
+The first two attempts used the Nuitka onefile build and failed the malware
+scan. Microsoft Defender flagged `DraftOmen.exe` as
+`Trojan:Win32/Wacatac.C!ml`. The third attempt used the standalone build from
+#764. Its `DraftOmen.exe`, SHA-256
+`962a56eff94eca19133f2108f88fc7c2a235c23707c0d3205f869bb2745d436f`, was
+reported to Microsoft as a false positive under WDSI submission
+`9592230a-ce91-42c5-8570-1f4d7d29ca0d`. After that no VirusTotal engine
+flagged it, and the submission passed certification. The history is on #328.
 
 ## Store acquisition check
 
