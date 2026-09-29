@@ -1,8 +1,8 @@
 # Microsoft Store submission
 
-This page holds everything the first Partner Center submission needs, and the
-record of what was submitted. Later releases go through the automated update
-flow in #329, which only works once this first release is live.
+This page holds everything the first Partner Center submission needs, the
+record of what was submitted, and the steps for publishing later releases by
+hand. See [Why updates are not automated](#why-updates-are-not-automated).
 
 ## Package to submit
 
@@ -30,6 +30,37 @@ the installed app and removes it again. The job then uploads the
 
 Actions artifacts expire, so download the artifact soon after the release run.
 
+## Publish an update
+
+Each stable release goes to the Store by hand. The package version must be
+higher than the one the Store publishes now.
+
+1. Get and check the release's `.msixupload` as in
+   [Package to submit](#package-to-submit).
+2. In Partner Center, open **Apps and games**, then **Draft Omen**, and click
+   **Start update**. Partner Center copies the last published submission, so
+   the listing, pricing and age ratings carry over.
+3. On **Packages**, upload the `.msixupload` and wait for validation to pass.
+   The previous version's package can stay in the list. The Store gives each
+   device the highest version it supports.
+4. Optionally, add the changelog entry for the version under **What's new in
+   this version** on the English (United States) listing.
+5. Click **Submit for certification**.
+
+Certification usually takes one to three days. Partner Center moves the
+submission through **Certification** and **Publishing** to **In the Store**,
+and it emails the account when certification fails or the update goes live.
+If the malware scan fails, follow the next section.
+
+## Why updates are not automated
+
+The Microsoft Store Developer CLI can submit updates from a workflow, but it
+signs in as a Microsoft Entra application. The Partner Center account has no
+Entra tenant, and Microsoft's sign-up wizard for a new tenant does not finish
+without a payment card on file. The project keeps no card with Microsoft, so
+#329 was closed without automation. Linking a tenant later would make it
+possible again.
+
 ## If certification fails the malware scan
 
 Certification runs Microsoft Defender over the package. Defender's cloud
@@ -54,7 +85,7 @@ download history or the executable is Authenticode-signed.
 
 ## Pricing and availability
 
-- Pricing: free. The automated update flow in #329 supports free products only.
+- Pricing: free.
 - Markets: every market Partner Center offers by default.
 - Visibility: public and discoverable in the Store.
 - Release: publish as soon as certification passes.

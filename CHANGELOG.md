@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- `docs/microsoft-store.md` now explains how to publish each release to the
+  Microsoft Store by hand in Partner Center. Store updates stay manual because
+  the Store Developer CLI needs a Microsoft Entra tenant, and Microsoft's
+  tenant sign-up does not finish without a payment card. (#329)
 - The website's Windows button now opens the Microsoft Store listing in place
   of the unsigned `.exe` release asset, and the install note says Windows
   installs come from the Store. The home page shows one button per platform:
