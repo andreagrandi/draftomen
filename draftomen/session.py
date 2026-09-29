@@ -907,6 +907,7 @@ class LiveSession:
         self._card_data_local_lookup_attempted = False
         self._card_data_requested_set_code: str | None = None
         self._card_data_detection_event_name: str | None = None
+        self._human_card_data_identity: tuple[str | None, str, str | None] | None = None
         self._configured_set_profile = set_profile
         self._set_profile = set_profile
         self._profile_client = profile_client
@@ -2258,6 +2259,40 @@ class LiveSession:
             allow_network=False,
             transition_generation=transition_generation,
         )
+
+    def _prepare_card_data_for_human_pack(
+        self,
+        *,
+        event: PackOfferedEvent,
+        state: DraftState | None,
+        transition_generation: int,
+    ) -> bool:
+        """Load metadata once when a live human draft offers its first pack.
+        Later packs and retries keep card-data networking closed.
+        """
+
+        draft_format = detect_draft_format(event_name=event.event_name)
+        if draft_format is None or draft_format is DraftFormat.QUICK:
+            return True
+        identity = (
+            event.account_id,
+            event.event_name,
+            state.draft_id if state is not None else None,
+        )
+        if identity == self._human_card_data_identity:
+            return True
+        self._human_card_data_identity = identity
+        self._card_data_network_open = True
+        self._card_data_local_lookup_attempted = False
+        loaded = self._load_card_data_for_set(
+            set_code=event.set_code,
+            allow_network=True,
+            transition_generation=transition_generation,
+        )
+        if not self._transition_is_current(generation=transition_generation):
+            return False
+        self._card_data_network_open = False
+        return loaded
 
     def _finish_card_data_load(
         self,
@@ -4029,6 +4064,12 @@ class LiveSession:
             )
             if transition_generation is None:
                 return
+            if not self._prepare_card_data_for_human_pack(
+                event=event,
+                state=state,
+                transition_generation=transition_generation,
+            ):
+                return
             if not self._transition_is_current(generation=transition_generation):
                 return
             self._score_current_pack()
@@ -4146,6 +4187,12 @@ class LiveSession:
             ):
                 return
         elif isinstance(event, PackOfferedEvent):
+            if not self._prepare_card_data_for_human_pack(
+                event=event,
+                state=None,
+                transition_generation=transition_generation,
+            ):
+                return
             if not self._transition_is_current(generation=transition_generation):
                 return
             self._score_current_pack()

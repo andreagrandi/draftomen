@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Live Premier, Traditional and Pick-Two drafts load card data on the first
+  offered pack, so recommendations and `watch --plain` scored rows appear
+  without a restart. The load permits networking as Quick Draft detection
+  does, then later packs and retries use local data only. (#801)
 - The live session now loads set profiles and ratings for the detected draft
   format instead of always asking for QuickDraft. Quick uses `QuickDraft`,
   Premier uses `PremierDraft`, Traditional tries `TradDraft` then
