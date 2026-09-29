@@ -4212,7 +4212,8 @@ def _format_alsa(*, scored_card: ScoredCard) -> str:
 def _format_tui_source_label(*, scored_card: ScoredCard) -> str:
     labels = {
         "Quick": "Quick Draft",
-        "Premier": "Premier Draft fallback",
+        "Premier": "Premier Draft",
+        "Premier*": "Premier Draft fallback",
         "Prior": "neutral prior",
     }
     return labels.get(scored_card.source_label, scored_card.source_label)

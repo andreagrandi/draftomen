@@ -94,7 +94,7 @@ def test_pick_engine_scores_and_sorts_with_fallback_sources() -> None:
     assert scored_pack.cards[0].card.grp_id == 1
     assert {card.card.grp_id: card.source_label for card in scored_pack.cards} == {
         1: "Quick",
-        2: "Premier",
+        2: "Premier*",
         3: "Quick",
         4: "Prior*",
     }
@@ -1333,6 +1333,61 @@ def test_profile_rating_preserves_evidence_and_computes_grade() -> None:
         assert rating.metadata.source == "profile"
         assert rating.neutral_prior is False
 
+@pytest.mark.parametrize(
+    ("requested_format", "profile_format", "source_format", "label", "reason"),
+    [
+        ("QuickDraft", "quickdraft", "quickdraft", "Quick", None),
+        ("PremierDraft", "premierdraft", "premierdraft", "Premier", None),
+        ("TradDraft", "traddraft", "traddraft", "Trad", None),
+        ("TradDraft", "premierdraft", "premierdraft", "Premier*", "format-fallback"),
+        ("PickTwoDraft", "picktwodraft", "picktwodraft", "Pick-Two", None),
+        (
+            "PickTwoDraft",
+            "premierdraft",
+            "premierdraft",
+            "Premier*",
+            "format-fallback",
+        ),
+    ],
+)
+def test_profile_source_label_names_the_supplying_format_and_marks_fallbacks(
+    requested_format: str,
+    profile_format: str,
+    source_format: str,
+    label: str,
+    reason: str | None,
+) -> None:
+    rate = replace(
+        _profile_rate(0.58, samples=40),
+        aggregate_evidence=AggregateEvidence(
+            source_format=source_format,
+            fallback_reason=None,
+            confidence=1.0,
+        ),
+    )
+    profile = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        schema_version=2,
+        card_ratings=(CardRating(card_key="ARENA_ID:1", gih_win_rate=rate),),
+        event_format=profile_format,
+    )
+
+    scored = PickEngine(
+        set_profile=profile,
+        requested_format=requested_format,
+    ).score_pack(
+        offered_grp_ids=(1, 2),
+        card_database=_contextual_database(),
+    )
+
+    by_id = {card.card.grp_id: card for card in scored.cards}
+    assert by_id[1].source_label == label
+    assert by_id[1].rating.metadata.requested_format == requested_format.casefold()
+    assert by_id[1].rating.metadata.fallback_reason == reason
+    assert by_id[2].source_label == "Prior*"
+    assert by_id[2].rating.metadata.requested_format == requested_format
+
+
 def test_profile_rating_metadata_consumes_versioned_aggregate_authority() -> None:
     database = _contextual_database()
     fallback_rate = replace(
@@ -1472,8 +1527,8 @@ def test_non_empirical_profiles_preserve_deterministic_fallback_and_partial_lega
         grp_id: (card.source_label, card.rating.gih_win_rate)
         for grp_id, card in by_id.items()
     } == {
-        1: ("Profile", pytest.approx(0.51)),
-        2: ("Premier", pytest.approx(0.58)),
+        1: ("Quick", pytest.approx(0.51)),
+        2: ("Premier*", pytest.approx(0.58)),
     }
 
 
@@ -2410,7 +2465,7 @@ def test_scoring_never_lazily_fetches_pair_cards_for_profile_and_legacy_cards() 
                 grp_id: (card.source_label, card.rating.gih_win_rate)
                 for grp_id, card in by_id.items()
             } == {
-                1: ("Profile", pytest.approx(0.70)),
+                1: ("Quick", pytest.approx(0.70)),
                 2: (expected[0], expected[1]),
             }
         assert calls == []
@@ -3401,10 +3456,11 @@ def _test_profile(
     pairs: tuple[PairProfile, ...] = (),
     card_ratings: tuple[CardRating, ...] = (),
     schema_version: int = 1,
+    event_format: str = "quickdraft",
 ) -> SetProfile:
     return SetProfile(
         set_code=set_code,
-        event_format="quickdraft",
+        event_format=event_format,
         profile_version="test",
         generated_at="1970-01-01T00:00:00+00:00",
         source=SourceMetadata(provider="test"),
@@ -3600,7 +3656,7 @@ def test_call_scoring_context_overrides_constructor_profile_and_normalization() 
     assert constructor.normalization.lower_rating == pytest.approx(0.50)
     assert constructor.normalization.upper_rating == pytest.approx(0.60)
     assert scored.cards[0].rating.gih_win_rate == pytest.approx(0.90)
-    assert scored.cards[0].source_label == "Profile"
+    assert scored.cards[0].source_label == "Quick"
     assert scored.normalization.lower_rating == pytest.approx(0.20)
     assert scored.normalization.upper_rating == pytest.approx(0.90)
     assert scored.scoring_context is context
@@ -4318,8 +4374,8 @@ def test_contextual_adjustments_can_be_disabled_without_bypassing_profile_scorin
         (card.card.grp_id, card.raw_score, card.score, card.source_label)
         for card in disabled.cards
     ) == (
-        (7, 100.0, 100, "Profile"),
-        (8, 88.6904761904762, 89, "Profile"),
+        (7, 100.0, 100, "Quick"),
+        (8, 88.6904761904762, 89, "Quick"),
     )
     disabled_card = next(card for card in disabled.cards if card.card.grp_id == 7)
     assert disabled_card.rating.metadata.source == "profile"

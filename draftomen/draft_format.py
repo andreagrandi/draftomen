@@ -123,3 +123,48 @@ def rules_for_format(*, draft_format: DraftFormat) -> DraftRules:
 
     return RULES_BY_FORMAT[draft_format]
 
+
+PREMIER_EVENT_FORMAT = "PremierDraft"
+
+# 17Lands event formats to try for ratings, exact format first.
+RATINGS_FORMATS: dict[DraftFormat, tuple[str, ...]] = {
+    DraftFormat.QUICK: ("QuickDraft",),
+    DraftFormat.PREMIER: (PREMIER_EVENT_FORMAT,),
+    DraftFormat.TRADITIONAL: ("TradDraft", PREMIER_EVENT_FORMAT),
+    DraftFormat.PICK_TWO: ("PickTwoDraft", PREMIER_EVENT_FORMAT),
+}
+
+_EVENT_FORMAT_LABELS: dict[str, str] = {
+    "quickdraft": "Quick",
+    "premierdraft": "Premier",
+    "traddraft": "Trad",
+    "picktwodraft": "Pick-Two",
+}
+
+
+def ratings_formats(*, draft_format: DraftFormat) -> tuple[str, ...]:
+    """Return the 17Lands event formats that may supply ratings for a draft.
+    The first entry is the exact format and later entries are fallbacks.
+    """
+
+    return RATINGS_FORMATS[draft_format]
+
+
+def augmented_model_formats(*, draft_format: DraftFormat) -> tuple[str, ...]:
+    """Return the 17Lands event formats an augmented model may be trained on.
+    Every format accepts a PremierDraft model, which is what Quick Draft uses today.
+    """
+
+    formats = ratings_formats(draft_format=draft_format)
+    if PREMIER_EVENT_FORMAT in formats:
+        return formats
+    return (*formats, PREMIER_EVENT_FORMAT)
+
+
+def event_format_label(*, event_format: str) -> str:
+    """Return the short label for a 17Lands event format such as PremierDraft.
+    Unknown formats are returned unchanged.
+    """
+
+    return _EVENT_FORMAT_LABELS.get(event_format.casefold(), event_format)
+
