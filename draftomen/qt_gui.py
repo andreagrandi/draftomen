@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -14,7 +15,16 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, Protocol, cast
 
-from PySide6.QtCore import QCoreApplication, QObject, QTimer, QUrl, Qt
+from PySide6.QtCore import (
+    QCoreApplication,
+    QMessageLogContext,
+    QObject,
+    QtMsgType,
+    QTimer,
+    QUrl,
+    Qt,
+    qInstallMessageHandler,
+)
 from PySide6.QtGui import QFontDatabase, QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
@@ -22,6 +32,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
 from draftomen import __version__
+from draftomen.applog import configure_logging
 from draftomen.augmented_model_client import AugmentedModelClient
 from draftomen.card_data_client import CardDataClient, cached_card_data_set_codes
 from draftomen.carddb import (
@@ -62,6 +73,8 @@ from draftomen.profile_client import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 SURFACES = ("live", "build", "backtest", "settings")
 ProviderName = Literal["live", "mock"]
 APPLICATION_NAME = "Draft Omen"
@@ -69,6 +82,50 @@ DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json
 TEST_DRAFT_SMOKE_SUMMARY_PREFIX = "Test Draft smoke: "
 TEST_DRAFT_SMOKE_TIMEOUT_SECONDS = 900.0
 TEST_DRAFT_MANUAL_PICK_COUNT = 5
+
+
+def _report_error(message: str) -> None:
+    """Write an error to the application log and to stderr.
+    Terminal users keep seeing the message they saw before the log existed.
+    """
+    logger.error(message)
+    print(message, file=sys.stderr)
+
+
+_QT_LOGGER = logging.getLogger("qt")
+_previous_qt_handler: Callable[..., Any] | None = None
+_QT_MESSAGE_LEVELS = {
+    QtMsgType.QtDebugMsg: logging.DEBUG,
+    QtMsgType.QtInfoMsg: logging.INFO,
+    QtMsgType.QtWarningMsg: logging.WARNING,
+    QtMsgType.QtCriticalMsg: logging.ERROR,
+    QtMsgType.QtFatalMsg: logging.CRITICAL,
+}
+
+
+def _install_qt_message_handler() -> None:
+    """Send Qt messages to the application log and keep the stderr output.
+    A handler that Qt or the embedding code installed earlier prints in place of stderr.
+    """
+    global _previous_qt_handler
+
+    previous_handler = qInstallMessageHandler(_handle_qt_message)
+    # Installing twice must not chain the handler to itself and log each message twice.
+    if previous_handler is not _handle_qt_message:
+        _previous_qt_handler = previous_handler
+
+
+def _handle_qt_message(
+    message_type: QtMsgType,
+    context: QMessageLogContext,
+    message: str,
+) -> None:
+    """Log one Qt message, then hand it to the previous handler or stderr."""
+    _QT_LOGGER.log(_QT_MESSAGE_LEVELS.get(message_type, logging.WARNING), message)
+    if _previous_qt_handler is not None:
+        _previous_qt_handler(message_type, context, message)
+    else:
+        print(message, file=sys.stderr)
 
 
 def _configure_application_metadata(*, application: QGuiApplication) -> None:
@@ -258,7 +315,7 @@ def _preflight_bundled_profile(*, app_dir: Path | None) -> bool:
             raise RuntimeError("loaded bundled profile digest does not match")
         return True
     except Exception as error:  # noqa: BLE001 - preflight must fail closed.
-        print(f"Bundled profile verification failed: {error}", file=sys.stderr)
+        _report_error(f"Bundled profile verification failed: {error}")
         return False
 
 
@@ -430,7 +487,7 @@ def _sync_mocked_draft_capability(
             augmented_model_client=augmented_model_client,
         )
     except ValueError as error:
-        print(f"Mocked Draft could not be enabled: {error}", file=sys.stderr)
+        _report_error(f"Mocked Draft could not be enabled: {error}")
         provider.setTestDraftFactory(None)
         return
     provider.setTestDraftFactory(factory)
@@ -694,23 +751,14 @@ class _TestDraftSmokeDriver:
         test_draft = self._provider.state.get("test_draft", {})
         phase = test_draft.get("phase")
         if phase == "failed":
-            print(
-                f"Test Draft smoke failed: {test_draft.get('error')}",
-                file=sys.stderr,
-            )
+            _report_error(f"Test Draft smoke failed: {test_draft.get('error')}")
             return 1
         # A capability with no set code (missing card data) never starts; report why.
         if not self._started and test_draft.get("error"):
-            print(
-                f"Test Draft smoke failed: {test_draft['error']}",
-                file=sys.stderr,
-            )
+            _report_error(f"Test Draft smoke failed: {test_draft['error']}")
             return 1
         if test_draft.get("enabled") is not True:
-            print(
-                "Test Draft smoke requires the --draftmancer-dir opt-in.",
-                file=sys.stderr,
-            )
+            _report_error("Test Draft smoke requires the --draftmancer-dir opt-in.")
             return 1
         if not self._started:
             set_code = test_draft.get("default_set_code")
@@ -741,9 +789,8 @@ class _TestDraftSmokeDriver:
         if self._leaving and phase == "idle" and test_draft.get("active") is False:
             return 0
         if self._clock() >= self._deadline:
-            print(
+            _report_error(
                 f"Test Draft smoke timed out after {self._timeout_seconds:g} seconds.",
-                file=sys.stderr,
             )
             return 1
         return None
@@ -851,10 +898,7 @@ class _TestDraftManualSmokeDriver:
         if self._step == self._STEP_DONE:
             return 0
         if self._test_draft().get("enabled") is not True:
-            print(
-                "Test Draft smoke requires the --draftmancer-dir opt-in.",
-                file=sys.stderr,
-            )
+            _report_error("Test Draft smoke requires the --draftmancer-dir opt-in.")
             return 1
         try:
             reason = self._capability_failure()
@@ -867,9 +911,8 @@ class _TestDraftManualSmokeDriver:
         if self._step == self._STEP_DONE:
             return 0
         if self._clock() >= self._deadline:
-            print(
+            _report_error(
                 f"Test Draft smoke timed out after {self._timeout_seconds:g} seconds.",
-                file=sys.stderr,
             )
             return 1
         return None
@@ -1003,7 +1046,7 @@ class _TestDraftManualSmokeDriver:
 
     def _fail(self, reason: str) -> int:
         """Report one failed journey requirement and its exit code."""
-        print(f"Test Draft smoke failed: {reason}", file=sys.stderr)
+        _report_error(f"Test Draft smoke failed: {reason}")
         return 1
 
     def _test_draft(self) -> dict[str, Any]:
@@ -1137,10 +1180,9 @@ def run_gui(
             and not load_gui_preferences(app_dir=args.app_dir)[0].mocked_draft_enabled
         )
     ):
-        print(
+        _report_error(
             "--test-draft-smoke requires --draftmancer-dir or an enabled Mocked Draft "
             "setting with the live provider.",
-            file=sys.stderr,
         )
         return 1
 
@@ -1249,6 +1291,8 @@ def run_gui(
 
 
 def main() -> int:
+    configure_logging()
+    _install_qt_message_handler()
     return run_gui()
 
 

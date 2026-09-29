@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from draftomen import DISCLAIMER, __version__
+from draftomen.applog import configure_logging
 from draftomen.audit import DraftAuditError
 from draftomen.augmented_model_client import AugmentedModelClient
 from draftomen.backtest import (
@@ -1946,6 +1947,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     Return a process-style exit code for tests and console-script use.
     """
 
+    configure_logging()
     parser = build_parser()
     raw_args = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(args=raw_args)

@@ -5,10 +5,13 @@ import hashlib
 import io
 import json
 import os
+import platform
 import subprocess
 import sys
+from collections.abc import Iterator
 from importlib.resources import files
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 from typing import Any, Callable
 
@@ -16,7 +19,9 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from draftomen import __version__
+from PySide6.QtCore import qInstallMessageHandler, qWarning
+
+from draftomen import __version__, applog, qt_gui
 from draftomen.audit import load_draft_audit_records
 from draftomen.augmented_model_client import (
     AUGMENTED_MANIFEST_URL,
@@ -10231,3 +10236,95 @@ assert dialog.property("visible") is False
     completed = _run_qml_probe(probe)
 
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.fixture
+def restored_qt_message_handler() -> Iterator[None]:
+    """Remove the Qt message handler that qt_gui installs once the test ends."""
+
+    yield
+    qInstallMessageHandler(None)
+    qt_gui._previous_qt_handler = None
+
+
+def test_main_writes_startup_line_to_the_application_log(
+    monkeypatch: pytest.MonkeyPatch,
+    app_logs_dir: Path,
+    restored_qt_message_handler: None,
+) -> None:
+    monkeypatch.setattr(qt_gui, "run_gui", lambda: 0)
+
+    exit_code = qt_gui.main()
+
+    assert exit_code == 0
+    contents = (app_logs_dir / "draftomen.log").read_text(encoding="utf-8")
+    assert f"Draft Omen {__version__} starting on " in contents
+    assert platform.platform() in contents
+
+
+def test_main_keeps_starting_when_the_logs_folder_cannot_be_created(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    restored_qt_message_handler: None,
+) -> None:
+    blocked = tmp_path / "logs"
+    blocked.write_text("not a folder", encoding="utf-8")
+    monkeypatch.setattr(applog, "default_logs_dir", lambda: blocked)
+    monkeypatch.setattr(qt_gui, "run_gui", lambda: 0)
+
+    exit_code = qt_gui.main()
+
+    assert exit_code == 0
+    assert "could not write its log" in capsys.readouterr().err
+
+
+def test_qt_warning_reaches_the_application_log_and_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    app_logs_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    restored_qt_message_handler: None,
+) -> None:
+    monkeypatch.setattr(qt_gui, "run_gui", lambda: 0)
+    qt_gui.main()
+
+    qWarning("qt warning marker")
+
+    contents = (app_logs_dir / "draftomen.log").read_text(encoding="utf-8")
+    assert "WARNING qt: qt warning marker" in contents
+    assert "qt warning marker" in capsys.readouterr().err
+
+
+def test_installing_the_qt_message_handler_twice_logs_each_message_once(
+    monkeypatch: pytest.MonkeyPatch,
+    app_logs_dir: Path,
+    restored_qt_message_handler: None,
+) -> None:
+    monkeypatch.setattr(qt_gui, "run_gui", lambda: 0)
+    qt_gui.main()
+    qt_gui.main()
+
+    qWarning("qt duplicate marker")
+
+    contents = (app_logs_dir / "draftomen.log").read_text(encoding="utf-8")
+    assert contents.count("qt duplicate marker") == 1
+
+
+def test_gui_errors_reach_stderr_and_the_application_log(
+    app_logs_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    applog.configure_logging()
+    provider = SimpleNamespace(
+        state={"test_draft": {"enabled": True, "phase": "failed", "error": "journey marker"}},
+    )
+    driver = _TestDraftSmokeDriver(
+        provider=provider,  # type: ignore[arg-type]
+        clock=lambda: 0.0,
+    )
+
+    assert driver.advance() == 1
+
+    assert "Test Draft smoke failed: journey marker" in capsys.readouterr().err
+    contents = (app_logs_dir / "draftomen.log").read_text(encoding="utf-8")
+    assert "ERROR draftomen.qt_gui: Test Draft smoke failed: journey marker" in contents
