@@ -1136,6 +1136,74 @@ def test_live_session_without_log_source_processes_typed_persisted_lifecycle(
     ]
 
 
+def test_live_session_records_a_two_card_pick_in_the_audit_log(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    session = LiveSession(
+        log_path=None,
+        app_dir=app_dir,
+        card_database=_fixture_card_database(),
+    )
+    events = (
+        AccountEvent(client_id="direct-account", screen_name="Direct"),
+        QuickDraftDetectedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            account_id="direct-account",
+        ),
+        DraftStartedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            course_id="direct-draft",
+            account_id="direct-account",
+        ),
+        PackOfferedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=0,
+            pick_number=0,
+            offered_grp_ids=(104976, 105080, 104894),
+            pool_grp_ids=(),
+            account_id="direct-account",
+        ),
+        PickMadeEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            pack_number=0,
+            pick_number=0,
+            selected_grp_ids=(104976, 105080),
+            account_id="direct-account",
+        ),
+    )
+
+    session.process_events(events=events)
+
+    audit_records = load_draft_audit_records(
+        account_id="direct-account",
+        draft_id="direct-draft",
+        app_dir=app_dir,
+    )
+    assert [record["record_type"] for record in audit_records] == [
+        "draft_started",
+        "decision_evaluated",
+        "choice_made",
+    ]
+    decision = audit_records[1]
+    choice = audit_records[2]
+    assert choice["selected_grp_ids"] == [104976, 105080]
+    assert choice["evaluation_id"] == decision["evaluation_id"]
+    assert choice["recommendation_followed"] is (
+        choice["recommended_grp_id"] in (104976, 105080)
+    )
+    state = load_draft_state(
+        account_id="direct-account",
+        draft_id="direct-draft",
+        app_dir=app_dir,
+    )
+    assert state.pool_grp_ids == (104976, 105080)
+
+
 def test_live_session_direct_and_parsed_pack_ingestion_are_equivalent(
     tmp_path: Path,
 ) -> None:

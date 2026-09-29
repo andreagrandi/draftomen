@@ -24,6 +24,15 @@ records safely if two Draft Omen processes watch the same account concurrently.
 A malformed existing audit file fails loudly instead of accepting new records
 after corrupted evidence.
 
+### Schema versions
+
+New records use `schema_version` 2. Schema 2 changed only the `choice_made`
+record, which now lists every selected card so Pick-Two picks fit in one record.
+The loader reads schema 1 and schema 2 lines, including both in the same file,
+and rejects any other version. Existing schema 1 lines are never rewritten. A
+draft that started before the upgrade keeps its schema 1 lines, and new records
+are appended to the same file as schema 2.
+
 ## Record types
 
 `draft_started`
@@ -61,8 +70,8 @@ top level:
   accounting when applicable.
 
 The fields are projected from the same scored card as the candidate's existing
-rating, color, contextual, splash, and score fields. They are additive to audit
-schema version 1; they do not replace the existing `contextual_breakdown` or
+rating, color, contextual, splash, and score fields. They were added during
+audit schema version 1; they do not replace the existing `contextual_breakdown` or
 `contextual_evidence` fields.
 
 `evaluation_id` and the evaluation `record_id` remain stable when these fields
@@ -84,11 +93,18 @@ evaluations to that historical pick.
 
 `choice_made`
 
-- The Arena card actually chosen.
+- `selected_grp_ids`: the Arena cards actually chosen, in the order Arena
+  reported them. Quick Draft picks hold one card and Pick-Two picks hold two.
 - The TUI ranking mode visible at the time, or DO Score in plain watch mode.
 - The recommendation at the top of that ranking.
-- Whether the user followed the recommendation.
+- `recommendation_followed`: true when the recommended card is one of the
+  selected cards.
 - The `decision_id` and latest `evaluation_id` available at choice time.
+
+Schema 1 `choice_made` records store a single `chosen_grp_id` in place of
+`selected_grp_ids`. Schema 2 records do not contain `chosen_grp_id`. A
+single-card choice keeps the `record_id` that schema 1 gave it, so a rescan
+after the upgrade does not duplicate an existing schema 1 choice.
 
 A choice remains useful even if Draft Omen started after the offered pack and
 therefore has no evaluation to link. In that case, the evaluation and

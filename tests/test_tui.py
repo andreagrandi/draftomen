@@ -694,7 +694,7 @@ async def _assert_tui_audit_records_visible_ranking(tmp_path: Path) -> None:
     ]
     choice = records[-1]
     assert choice["ranking_mode"] == "win_rate"
-    assert choice["chosen_grp_id"] == 105097
+    assert choice["selected_grp_ids"] == [105097]
     assert choice["recommended_grp_id"] == 104894
     assert choice["recommendation_followed"] is False
 
