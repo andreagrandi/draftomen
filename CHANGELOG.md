@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+- The log parser now reads human-draft picks and completion for Premier,
+  Traditional and Pick-Two drafts. Each successful `EventPlayerDraftMakePick`
+  request becomes one pick with 0-based pack and pick numbers, holding one card
+  or two for Pick-Two. A rejected pick is dropped, and a repeated request or
+  response counts once. A pick with no logged response is still recorded. The
+  draft completes once, from the last pick response or from `DraftCompleteDraft`,
+  with the picks the parser recorded. A missing pick stays a gap. The card pool
+  Arena reports is only compared with those picks, and a mismatch writes a
+  warning to the log. Human-draft packs now carry the pool picked so far, so
+  the pool store accepts them. Malformed or unknown human-draft lines are
+  ignored. (#259)
 - Live Draft keeps the two-column layout on laptop screens such as 1352x799.
   The card details column shrinks from 550 px to 350 px before the view
   switches to stacked tabs, and the card preview gives up height before the
