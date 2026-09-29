@@ -102,16 +102,18 @@ or empty Unreleased section fails the development workflow before publishing.
 The development-release verification must confirm both the metadata and the
 extracted changelog content.
 
-The rolling prerelease contains exactly four unsigned assets for the current
+The rolling prerelease contains exactly three unsigned assets for the current
 build:
 
 - `draftomen-<build-id>-unsigned-macos-arm64.dmg`
 - `draftomen-<build-id>-unsigned-macos-x86_64.dmg`
-- `draftomen-<build-id>-unsigned-windows.exe`
 - `draftomen-<build-id>-unsigned-sha256sums.txt`
 
-The checksum file contains SHA-256 checksums for the two DMGs and the Windows
-executable. The `arm64` DMG is built on `macos-latest` and runs on Apple
+The checksum file contains SHA-256 checksums for the two DMGs. The prerelease
+has no Windows asset, because Windows users install from the Microsoft Store.
+The Windows job still uploads the executable as the
+`draftomen-windows-unsigned-development` Actions artifact, which only
+repository collaborators can download, for testing and diagnosis. The `arm64` DMG is built on `macos-latest` and runs on Apple
 Silicon. The `x86_64` DMG is built on `macos-15-intel` and runs on Intel Macs.
 Intel builds continue only while GitHub offers an Intel macOS runner. Each
 build job checks the executable with `lipo -archs` and fails when the
@@ -168,13 +170,20 @@ Missing, duplicate, or empty sections fail the workflow instead of publishing
 empty or generated notes. It rejects tags that do not match the versions in
 `pyproject.toml` and `website/package.json`, builds the website, and runs the
 full CI gate. It builds the native bundles in parallel, and creates or updates
-the public GitHub Release with the dated changelog body and native bundle
-assets once both finish.
+the public GitHub Release with the dated changelog body and the macOS DMGs
+once both finish. The GitHub Release has no Windows asset. The Windows job
+still has to pass, and it uploads the `draftomen-windows-msixupload` Actions
+artifact for the Microsoft Store.
+
+4. Submit the release's `.msixupload` to the Microsoft Store by hand, as
+   described in
+   [Publish an update](microsoft-store.md#publish-an-update). Store updates
+   are not automated.
 
 ## Verify the published release
 
 The public GitHub Release for `v<version>` must be published with the promoted
-dated changelog body and the three native bundle assets plus checksum file. The
+dated changelog body, the two macOS DMGs and the checksum file. The
 macOS release assets are `draftomen-v<version>-macos-arm64.dmg` and
 `draftomen-v<version>-macos-x86_64.dmg`. Download the asset that
 matches the Mac's architecture, open it

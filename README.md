@@ -42,13 +42,14 @@ For the complete methodology, see [pick scoring](docs/pick-scoring.md), [benchma
 
 ### 1. Install
 
-Download the latest build from [GitHub Releases](https://github.com/andreagrandi/draftomen/releases/latest):
+On Windows, install Draft Omen from the [Microsoft Store](https://apps.microsoft.com/detail/9NPCD3VLZQMX). The Store installs updates on its own. To uninstall, open **Settings > Apps > Installed apps**, find Draft Omen and choose **Uninstall**. Draft Omen keeps its caches, settings and draft history in `%USERPROFILE%\.draftomen`, which uninstalling leaves in place. Delete that folder too to remove all its data.
+
+On macOS, download the latest DMG from [GitHub Releases](https://github.com/andreagrandi/draftomen/releases/latest):
 
 - Apple Silicon Mac: `draftomen-vX.Y.Z-macos-arm64.dmg`
 - Intel Mac: `draftomen-vX.Y.Z-macos-x86_64.dmg`
-- Windows: `draftomen-vX.Y.Z-unsigned-windows.exe`
 
-On macOS, open the DMG and drag Draft Omen onto the `Applications` shortcut, then eject the DMG and open Draft Omen from Applications. The macOS app is signed with a Developer ID and notarized by Apple, so the first launch shows only the usual prompt for an app downloaded from the internet. The Windows build is not signed yet, so Windows shows a SmartScreen warning the first time you open it.
+Open the DMG and drag Draft Omen onto the `Applications` shortcut, then eject the DMG and open Draft Omen from Applications. The macOS app is signed with a Developer ID and notarized by Apple, so the first launch shows only the usual prompt for an app downloaded from the internet.
 
 If macOS says Draft Omen "can't be opened" or "is damaged":
 

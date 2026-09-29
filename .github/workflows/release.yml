@@ -120,12 +120,6 @@ jobs:
           name: draftomen-macos-x86_64-signed-release
           path: release-assets/macos-x86_64
 
-      - name: Download Windows native bundle
-        uses: actions/download-artifact@v8
-        with:
-          name: draftomen-windows-unsigned-development
-          path: release-assets/windows
-
       - name: Rename native bundles and generate checksums
         shell: bash
         env:
@@ -134,7 +128,6 @@ jobs:
           set -euo pipefail
           macos_arm64_name="draftomen-${RELEASE_TAG}-macos-arm64.dmg"
           macos_x86_64_name="draftomen-${RELEASE_TAG}-macos-x86_64.dmg"
-          windows_name="draftomen-${RELEASE_TAG}-unsigned-windows.exe"
           checksums_name="draftomen-${RELEASE_TAG}-sha256sums.txt"
 
           mkdir -p release-assets/published
@@ -142,12 +135,10 @@ jobs:
             "release-assets/published/${macos_arm64_name}"
           mv release-assets/macos-x86_64/Draftomen-signed-macos-x86_64.dmg \
             "release-assets/published/${macos_x86_64_name}"
-          mv release-assets/windows/Draftomen-unsigned-windows.exe \
-            "release-assets/published/${windows_name}"
 
           (
             cd release-assets/published
-            sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" "${windows_name}" \
+            sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" \
               > "${checksums_name}"
           )
 
@@ -171,7 +162,6 @@ jobs:
           gh release upload "${RELEASE_TAG}" \
             "release-assets/published/draftomen-${RELEASE_TAG}-macos-arm64.dmg" \
             "release-assets/published/draftomen-${RELEASE_TAG}-macos-x86_64.dmg" \
-            "release-assets/published/draftomen-${RELEASE_TAG}-unsigned-windows.exe" \
             "release-assets/published/draftomen-${RELEASE_TAG}-sha256sums.txt" \
             --clobber
           gh release edit "${RELEASE_TAG}" --draft=false

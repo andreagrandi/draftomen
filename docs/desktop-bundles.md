@@ -14,7 +14,10 @@ Development builds are unsigned. Their DMG contains
 not notarized. Tag releases sign the macOS app with Developer ID, and they sign,
 notarize and staple the DMG, which contains `Draft Omen.app`. The
 [signed macOS release path](#signed-macos-release-path) section describes it.
-The Windows artifact is unsigned in both contexts.
+The Windows executable is unsigned in both contexts and is never published as
+a release asset. It stays a GitHub Actions artifact for testing and diagnosis.
+Windows users install the MSIX package from the Microsoft Store, which signs
+it. See [Microsoft Store MSIX package](#microsoft-store-msix-package).
 
 ## Tool choice
 
@@ -362,6 +365,8 @@ Download these from the **Actions** page: open the manual workflow run and
 download its artifacts from the run summary. They are GitHub Actions run
 artifacts, not GitHub Release assets; they are retained only for the
 repository's configured Actions artifact-retention period and may expire.
+Only repository collaborators can download them. The Windows executable is
+not copied to the rolling development prerelease.
 
 Each macOS artifact download is a GitHub Actions artifact archive containing
 exactly one file, `Draftomen-unsigned-macos-<arch>.dmg`; it is not the `.app`
@@ -471,12 +476,13 @@ all three native bundle jobs have built and passed their smoke tests.
 It checks out the tagged repository, extracts the non-empty body under the exact
 `## [1.2.3] - YYYY-MM-DD` section in `CHANGELOG.md`, and uses that body as the
 GitHub Release notes. A missing, duplicate, or empty section fails the job
-before release publication. The job downloads the three native Actions artifacts
-from that release run, renames their payloads, generates SHA-256 checksums, and
-creates or updates the GitHub Release with those notes.
+before release publication. The job downloads the two macOS Actions artifacts
+from that release run, renames their DMGs, generates SHA-256 checksums, and
+creates or updates the GitHub Release with those notes. It does not download
+or publish any Windows artifact.
 
 Release publication is recoverable: rerunning the job reuses an existing draft
-or release, replaces the four assets and changelog notes, and publishes any
+or release, replaces the three assets and changelog notes, and publishes any
 draft left by an earlier interrupted attempt. Native Actions artifacts are
 likewise overwritten when their build jobs are rerun.
 
@@ -486,26 +492,27 @@ The persistent public assets attached to the `v1.2.3` GitHub Release are:
   `draftomen-v1.2.3-macos-x86_64.dmg`, signed, notarized and stapled
   compressed read-only images each containing the signed `Draft Omen.app`
   bundle for that architecture and an `Applications` symlink;
-- `draftomen-v1.2.3-unsigned-windows.exe`, containing the Windows
-  executable; and
 - `draftomen-v1.2.3-sha256sums.txt`, containing SHA-256 entries for those
-  three binaries.
+  two images.
 
 The release filenames include the tag, and the macOS names include the
-architecture. The Windows name keeps `unsigned` until Windows signing lands.
+architecture. Releases up to 0.4.2 also published
+`draftomen-v<version>-unsigned-windows.exe`. Later releases ship Windows only
+through the Microsoft Store.
 Releases up to 0.4.0 published unsigned macOS DMGs named
 `draftomen-v<version>-unsigned-macos-<arch>.dmg` and a checksum file named
 `draftomen-v<version>-unsigned-sha256sums.txt`. Releases before 0.4.0
 published a single `unsigned-macos.dmg` that ran only on Apple Silicon. Mounting a macOS asset in
 Finder or with `hdiutil attach -readonly -nobrowse` shows the app and
-Applications shortcut. The Windows executable has no distribution signature.
+Applications shortcut.
 
-The native assets are the only published distribution. Releases after 0.4.0
-do not publish to PyPI or update the Homebrew tap.
+The macOS assets and the Microsoft Store listing are the only published
+distribution. Releases after 0.4.0 do not publish to PyPI or update the
+Homebrew tap.
 
 ## Microsoft Store MSIX package
 
-The Windows app is moving to the Microsoft Store as an MSIX package.
+The Windows app ships through the Microsoft Store as an MSIX package.
 `packaging/windows/AppxManifest.xml` holds the manifest, and
 `packaging/windows/Assets/` holds the Store logos generated from
 `draftomen/assets/draftomen_logo.png`. The manifest uses the package identity
@@ -524,7 +531,8 @@ declares no capability other than `runFullTrust`.
 
 The package holds a Nuitka standalone build: `DraftOmen.exe` next to the
 Python runtime, the Qt DLLs, the QML files and the app's data. It does not
-hold the onefile executable that the GitHub release ships. A onefile
+hold the onefile executable that CI uploads as the
+`draftomen-windows-unsigned-development` artifact. A onefile
 executable unpacks its code into a temp folder and runs it at launch.
 Antivirus engines flag that pattern, and the Store malware scan failed the
 first submission because of it. On VirusTotal the onefile build had 11

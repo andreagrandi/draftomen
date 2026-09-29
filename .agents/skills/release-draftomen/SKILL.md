@@ -11,8 +11,9 @@ description: >-
 
 Normal pushes and merges to `master` do not publish a release. Only pushing a
 tag matching `v*` starts `.github/workflows/release.yml`. A release publishes
-the native macOS and Windows bundles to a GitHub Release. Draft Omen is no
-longer published to PyPI or Homebrew.
+the signed macOS DMGs to a GitHub Release. Windows ships only through the
+Microsoft Store, and the maintainer submits each update by hand. Draft Omen is
+no longer published to PyPI or Homebrew.
 
 An explicit request containing the target version authorizes all release-scoped
 mutations: version edit, commit, push, ready PR creation, CI monitoring, PR
@@ -102,7 +103,8 @@ falls back to generated notes. The native bundle jobs build and smoke-test both
 macOS DMGs and the Windows executable, and the macOS jobs sign, notarize and
 staple each DMG in the `macos-release` environment. After both finish, the
 `github-release` job creates or updates the public GitHub Release with the
-changelog body, the native assets, and the checksum file.
+changelog body, the two macOS DMGs, and the checksum file. The Windows job
+uploads the `draftomen-windows-msixupload` Actions artifact for the Store.
 
 ## Failure handling
 
@@ -123,15 +125,17 @@ Inspect `gh release view vX.Y.Z` and confirm:
 - the release is published, not a draft or prerelease;
 - its body contains the promoted dated changelog entries;
 - it has `draftomen-vX.Y.Z-macos-arm64.dmg`,
-  `draftomen-vX.Y.Z-macos-x86_64.dmg`,
-  `draftomen-vX.Y.Z-unsigned-windows.exe`, and
-  `draftomen-vX.Y.Z-sha256sums.txt`;
+  `draftomen-vX.Y.Z-macos-x86_64.dmg`, and
+  `draftomen-vX.Y.Z-sha256sums.txt`, and no Windows asset;
+- the release run has the `draftomen-windows-msixupload` artifact;
 - a macOS DMG downloaded with `gh release download` matches the checksum file,
   passes `xcrun stapler validate`, and `spctl` accepts the DMG and the mounted
   `Draft Omen.app` as `Notarized Developer ID`;
 - local `master` is clean and synchronized.
 
 The browser download check on a Mac that has never run Draft Omen, described in
-`docs/releasing.md`, needs a person. Remind the user to do it.
+`docs/releasing.md`, needs a person. Remind the user to do it, and to
+submit the `.msixupload` to the Microsoft Store as described in
+`docs/microsoft-store.md`. Do not submit it yourself.
 
 Report the version, tag, workflow URL, and GitHub Release URL.
