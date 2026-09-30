@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- Premier, Traditional and Pick-Two drafts are supported end to end, checked
+  on real Arena logs in plain watch, the TUI and the desktop app. The parser
+  now reads the "Entering table draft queue" scene line, for example
+  `MSH_Premier_Draft` or `HOB_PickTwo_Draft`, as the draft event when a log
+  has no `EventJoin` line. An `EventJoin` for the same set and format keeps
+  its dated event name. `scripts/verify_real_logs.py` prints the format,
+  packs, logical picks, cards, gaps and completion of each local private log
+  without card IDs or UUIDs. (#779)
 - Add hand-written synthetic fixtures for a complete Premier, Traditional and
   Pick-Two draft, each running from ingestion to plain watch and replay
   output. Pick-Two ends with 21 logical picks and 42 cards, the one-card
