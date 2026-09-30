@@ -15,7 +15,9 @@ from draftomen.carddb import (
 )
 from draftomen.card_data_client import CardDataClientError
 from draftomen.cli import main
+from draftomen.draft_format import DraftFormat
 from draftomen.events import (
+    AccountEvent,
     EXPECTED_PICKS_PER_PACK,
     EXPECTED_TOTAL_PICKS,
     DraftStartedEvent,
@@ -29,6 +31,7 @@ from draftomen.pickengine import (
 )
 from draftomen.replay import (
     format_pack_offered_event,
+    format_pick_made_event,
     render_replay_events,
     replay_log_file,
 )
@@ -65,6 +68,12 @@ GOLDEN_REPLAY_PATH = (
 HOSTED_MSH_CARD_DATA_PATH = Path(__file__).parent / "fixtures" / "card-data-msh.json.gz"
 HOSTED_GOLDEN_REPLAY_PATH = (
     Path(__file__).parent / "golden" / "quick-draft-msh-player.hosted-card-data.replay.txt"
+)
+PREMIER_REPLAY_LOG_PATH = (
+    Path(__file__).parent / "fixtures" / "premier-draft-replay.log"
+)
+PICK_TWO_REPLAY_LOG_PATH = (
+    Path(__file__).parent / "fixtures" / "pick-two-draft-replay.log"
 )
 
 
@@ -133,6 +142,187 @@ def test_replay_output_is_byte_identical_across_runs() -> None:
 
     assert first_output == second_output
     assert first_output == GOLDEN_REPLAY_PATH.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("event_name", "draft_format", "label"),
+    [
+        ("QuickDraft_TST_20260930", DraftFormat.QUICK, "Quick Draft"),
+        ("PremierDraft_TST_20260930", DraftFormat.PREMIER, "Premier Draft"),
+        ("TradDraft_TST_20260930", DraftFormat.TRADITIONAL, "Traditional Draft"),
+        ("PickTwoDraft_TST_20260930", DraftFormat.PICK_TWO, "Pick-Two"),
+    ],
+)
+def test_replay_header_names_each_draft_format(
+    event_name: str,
+    draft_format: DraftFormat,
+    label: str,
+) -> None:
+    database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+    output = render_replay_events(
+        events=(
+            PackOfferedEvent(
+                event_name=event_name,
+                set_code="TST",
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(105097,),
+                pool_grp_ids=(),
+                account_id="REPLAYACCOUNT",
+                picks_per_pack=7 if draft_format is DraftFormat.PICK_TWO else 14,
+                draft_format=draft_format,
+                cards_per_pick=2 if draft_format is DraftFormat.PICK_TWO else 1,
+            ),
+        ),
+        card_database=database,
+    )
+
+    assert f"Format: {label}" in output
+
+
+def test_replay_header_prefers_pack_format_over_event_name() -> None:
+    database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+    output = render_replay_events(
+        events=(
+            PackOfferedEvent(
+                event_name="QuickDraft_TST_20260930",
+                set_code="TST",
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(105097,),
+                pool_grp_ids=(),
+                account_id="REPLAYACCOUNT",
+                draft_format=DraftFormat.PREMIER,
+            ),
+        ),
+        card_database=database,
+    )
+
+    assert "Format: Premier Draft" in output
+
+
+def test_replay_header_keeps_first_draft_account_when_a_later_stream_appears() -> None:
+    database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+    output = render_replay_events(
+        events=(
+            AccountEvent(client_id="FIRSTACCOUNT", screen_name="First Player"),
+            DraftStartedEvent(
+                event_name="PremierDraft_TST_first",
+                set_code="TST",
+                course_id="first-course",
+                account_id=None,
+            ),
+            AccountEvent(client_id="SECONDACCOUNT", screen_name="Second Player"),
+            PackOfferedEvent(
+                event_name="PremierDraft_TST_first",
+                set_code="TST",
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(105097,),
+                pool_grp_ids=(),
+                account_id="SECONDACCOUNT",
+                draft_format=DraftFormat.PICK_TWO,
+            ),
+        ),
+        card_database=database,
+        splash_enabled=False,
+    )
+
+    assert "Account: First Player (FIRSTACCOUNT)" in output
+    assert "Format: Premier Draft" in output
+    assert "Draft: first-course" in output
+
+
+def test_replay_uses_neutral_no_events_error() -> None:
+    with pytest.raises(RuntimeError, match="No draft events found in log file\\."):
+        render_replay_events(events=(), card_database=CardDatabase(cards={}))
+
+
+@pytest.mark.parametrize(
+    ("draft_format", "pack_number", "pick_number", "picks_per_pack", "index", "remaining"),
+    [
+        (DraftFormat.PICK_TWO, 2, 1, 7, 16, 5),
+        (DraftFormat.QUICK, 1, 0, 13, 14, 25),
+        (DraftFormat.QUICK, 1, 0, 15, 16, 29),
+    ],
+)
+def test_replay_pick_progress_uses_event_pack_rules(
+    monkeypatch: pytest.MonkeyPatch,
+    draft_format: DraftFormat,
+    pack_number: int,
+    pick_number: int,
+    picks_per_pack: int,
+    index: int,
+    remaining: int,
+) -> None:
+    database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+    calls: list[dict[str, object]] = []
+    score_pack = PickEngine.score_pack
+
+    def record_score_pack(self: PickEngine, **kwargs: object) -> ScoredPack:
+        calls.append(kwargs)
+        return score_pack(self, **kwargs)
+
+    monkeypatch.setattr(PickEngine, "score_pack", record_score_pack)
+    render_replay_events(
+        events=(
+            PackOfferedEvent(
+                event_name=f"{draft_format.value}_TST_20260930",
+                set_code="TST",
+                pack_number=pack_number,
+                pick_number=pick_number,
+                offered_grp_ids=(105097,),
+                pool_grp_ids=(),
+                account_id="REPLAYACCOUNT",
+                picks_per_pack=picks_per_pack,
+                draft_format=draft_format,
+                cards_per_pick=2 if draft_format is DraftFormat.PICK_TWO else 1,
+            ),
+        ),
+        card_database=database,
+        splash_enabled=False,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["global_pick_index"] == index
+    assert calls[0]["estimated_remaining_picks"] == remaining
+
+
+def test_replay_lists_all_cards_selected_at_one_coordinate() -> None:
+    database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+    event = PickMadeEvent(
+        event_name="PickTwoDraft_TST_20260930",
+        set_code="TST",
+        pack_number=0,
+        pick_number=0,
+        selected_grp_ids=(105097, 105134),
+        account_id="REPLAYACCOUNT",
+    )
+
+    assert format_pick_made_event(event=event, card_database=database) == [
+        "Chosen card: Fixture Spider [G] (grpId 105097), "
+        "Fixture Blue Card [U] (grpId 105134)"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("logfile", "format_label", "selected_text"),
+    [
+        (PREMIER_REPLAY_LOG_PATH, "Premier Draft", "Chosen card: Fixture Spider"),
+        (PICK_TWO_REPLAY_LOG_PATH, "Pick-Two", "Fixture Spider [G] (grpId 105097), Fixture Blue Card"),
+    ],
+)
+def test_replay_log_file_reads_synthetic_human_draft_logs(
+    logfile: Path,
+    format_label: str,
+    selected_text: str,
+) -> None:
+    database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+
+    output = replay_log_file(logfile=logfile, card_database=database)
+
+    assert f"Format: {format_label}" in output
+    assert selected_text in output
 
 
 def test_replay_with_ratings_data_shows_fallback_sources() -> None:

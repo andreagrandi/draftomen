@@ -1,6 +1,7 @@
 # Draft audit logging
 
-Draft Omen writes an independent audit trail while processing live Quick Drafts.
+Draft Omen writes an independent audit trail while processing live Quick,
+Premier, Traditional, and Pick-Two drafts.
 The log is designed for later algorithm investigations without recalculating old
 decisions using newer ratings or configuration.
 
@@ -12,9 +13,12 @@ Each draft has one append-only JSON Lines file:
 ~/.draftomen/audit/drafts/<account-id>/<draft-id>.jsonl
 ```
 
-An explicit `--app-dir` replaces `~/.draftomen` in that path. Every line is a
+An explicit `--app-dir` replaces `~/.draftomen` in that path. Every new line is a
 complete JSON object with `schema_version`, `record_id`, `record_type`,
-`recorded_at`, application version, account, draft, event, and set identifiers.
+`recorded_at`, application version, account, draft, event, set, and
+`draft_format` identifiers. `draft_format` is the normalized value `quick`,
+`premier`, `traditional`, or `pick_two`. It is `null` when the event name is
+unknown. Historical schema 1 and schema 2 lines do not gain this field.
 The writer appends a complete encoded line and flushes it to durable storage
 before returning.
 
@@ -26,8 +30,9 @@ after corrupted evidence.
 
 ### Schema versions
 
-New records use `schema_version` 2. Schema 2 changed only the `choice_made`
-record, which now lists every selected card so Pick-Two picks fit in one record.
+New records use `schema_version` 2. Schema 2 adds the normalized `draft_format`
+field to every new record and changed the `choice_made` record, which now lists
+every selected card so Pick-Two picks fit in one record.
 The loader reads schema 1 and schema 2 lines, including both in the same file,
 and rejects any other version. Existing schema 1 lines are never rewritten. A
 draft that started before the upgrade keeps its schema 1 lines, and new records
@@ -96,9 +101,10 @@ evaluations to that historical pick.
 - `selected_grp_ids`: the Arena cards actually chosen, in the order Arena
   reported them. Quick Draft picks hold one card and Pick-Two picks hold two.
 - The TUI ranking mode visible at the time, or DO Score in plain watch mode.
-- The recommendation at the top of that ranking.
-- `recommendation_followed`: true when the recommended card is one of the
-  selected cards.
+- `recommended_grp_id`: the first card in the active `ranking_mode` ordering.
+- `recommendation_followed`: true when that card is one of the selected cards.
+- `top_two_selected_count`: the number of distinct selected cards in the first
+  two entries of the active ranking, from 0 to 2.
 - The `decision_id` and latest `evaluation_id` available at choice time.
 
 Schema 1 `choice_made` records store a single `chosen_grp_id` in place of
@@ -107,8 +113,11 @@ single-card choice keeps the `record_id` that schema 1 gave it, so a rescan
 after the upgrade does not duplicate an existing schema 1 choice.
 
 A choice remains useful even if Draft Omen started after the offered pack and
-therefore has no evaluation to link. In that case, the evaluation and
-recommendation fields are `null`.
+therefore has no evaluation to link. In that case, `evaluation_id`,
+`recommended_grp_id`, `recommendation_followed`, and `top_two_selected_count`
+are all `null`. When an evaluation has no ranking for the active `ranking_mode`,
+the recommendation fields are `null` and `evaluation_id` still links that
+evaluation.
 
 `draft_completed`
 

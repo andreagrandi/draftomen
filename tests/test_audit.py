@@ -14,6 +14,7 @@ from draftomen.audit import (
     DraftAuditStore,
     draft_audit_path,
     load_draft_audit_records,
+    selection_match,
 )
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import PICK_ENGINE
@@ -122,6 +123,7 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
     ]
     decision = records[1]
     assert decision["schema_version"] == 2
+    assert decision["draft_format"] == "quick"
     assert decision["app_version"] == "1.2.3"
     assert decision["recorded_at"] == "2026-07-27T10:30:00+00:00"
     assert decision["offered_grp_ids"] == [101, 102]
@@ -197,11 +199,117 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
     assert choice["ranking_mode"] == "mv"
     assert choice["recommended_grp_id"] == 102
     assert choice["recommendation_followed"] is True
+    assert choice["top_two_selected_count"] == 1
 
     completion = records[3]
     assert completion["picked_grp_ids"] == [102]
     assert completion["pick_count"] == 1
     assert completion["inferred"] is False
+
+
+@pytest.mark.parametrize(
+    ("event_name", "expected_format"),
+    (
+        ("QuickDraft_ABC_20260727", "quick"),
+        ("PremierDraft_ABC_20260727", "premier"),
+        ("TradDraft_ABC_20260727", "traditional"),
+        ("PickTwoDraft_ABC_20260727", "pick_two"),
+    ),
+)
+def test_audit_new_records_store_the_normalized_draft_format(
+    tmp_path: Path,
+    event_name: str,
+    expected_format: str,
+) -> None:
+    state = _draft_state(event_name=event_name)
+    offer = _pack_event(event_name=event_name)
+    engine = PickEngine()
+    scored_pack = engine.score_pack(
+        offered_grp_ids=offer.offered_grp_ids,
+        card_database=_card_database(),
+        pool_grp_ids=offer.pool_grp_ids,
+        pick_index=1,
+    )
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    store.record_draft_started(state=state)
+    store.record_decision(
+        state=state,
+        event=offer,
+        scored_pack=scored_pack,
+        config=engine.config,
+        ratings_data=None,
+    )
+    store.record_choice(
+        state=state,
+        event=_pick_event(event_name=event_name),
+        ranking_mode="score",
+    )
+    store.record_draft_completed(
+        state=_completed_state(event_name=event_name),
+        event=_completed_event(event_name=event_name),
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+
+    assert [record["draft_format"] for record in records] == [
+        expected_format,
+        expected_format,
+        expected_format,
+        expected_format,
+    ]
+
+
+def test_audit_new_records_leave_unknown_draft_format_null(tmp_path: Path) -> None:
+    state = _draft_state(event_name="UnknownDraft_ABC_20260727")
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    store.record_draft_started(state=state)
+    store.record_choice(
+        state=state,
+        event=_pick_event(event_name=state.event_name),
+        ranking_mode="score",
+    )
+    store.record_draft_completed(
+        state=_completed_state(event_name=state.event_name),
+        event=_completed_event(event_name=state.event_name),
+    )
+
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=DRAFT_ID,
+        app_dir=tmp_path,
+    )
+
+    assert [record["draft_format"] for record in records] == [None, None, None]
+
+
+@pytest.mark.parametrize(
+    ("selected_grp_ids", "ranked_grp_ids", "expected"),
+    (
+        ((101,), (102, 103), (102, False, 0)),
+        ((101, 102), (102, 103), (102, True, 1)),
+        ((102, 103), (102, 103), (102, True, 2)),
+        ((103,), (102, 103), (102, False, 1)),
+        ((101,), (101,), (101, True, 1)),
+        ((101, 101), (101, 102), (101, True, 1)),
+        ((101,), None, (None, None, None)),
+        ((101,), (), (None, None, None)),
+    ),
+)
+def test_selection_match_counts_distinct_selected_cards_in_the_top_two(
+    selected_grp_ids: tuple[int, ...],
+    ranked_grp_ids: tuple[int, ...] | None,
+    expected: tuple[int | None, bool | None, int | None],
+) -> None:
+    assert selection_match(
+        selected_grp_ids=selected_grp_ids,
+        ranked_grp_ids=ranked_grp_ids,
+    ) == expected
 
 
 def test_audit_multi_card_pick_writes_one_choice_with_every_selected_card(
@@ -229,6 +337,7 @@ def test_audit_multi_card_pick_writes_one_choice_with_every_selected_card(
     assert "chosen_grp_id" not in choice
     assert choice["recommended_grp_id"] is None
     assert choice["recommendation_followed"] is None
+    assert choice["top_two_selected_count"] is None
 
 
 @pytest.mark.parametrize(
@@ -277,6 +386,7 @@ def test_audit_multi_card_pick_follows_recommendation_when_it_is_selected(
     assert choice["recommended_grp_id"] == 101
     assert choice["selected_grp_ids"] == list(selected_grp_ids)
     assert choice["recommendation_followed"] is expected_followed
+    assert choice["top_two_selected_count"] == (2 if expected_followed else 1)
 
 
 def test_audit_replayed_multi_card_pick_adds_no_record(tmp_path: Path) -> None:
@@ -907,12 +1017,12 @@ def test_audit_file_is_compact_jsonl_with_one_object_per_record(tmp_path: Path) 
     assert all("\n" not in line for line in lines)
 
 
-def _draft_state() -> DraftState:
+def _draft_state(*, event_name: str = EVENT_NAME) -> DraftState:
     started_at = "2026-07-27T10:00:00+00:00"
     return DraftState(
         account_id=ACCOUNT_ID,
         draft_id=DRAFT_ID,
-        event_name=EVENT_NAME,
+        event_name=event_name,
         set_code=SET_CODE,
         course_id=DRAFT_ID,
         started_at=started_at,
@@ -939,8 +1049,8 @@ def _set_profile() -> SetProfile:
     )
 
 
-def _completed_state() -> DraftState:
-    state = _draft_state()
+def _completed_state(*, event_name: str = EVENT_NAME) -> DraftState:
+    state = _draft_state(event_name=event_name)
     return DraftState(
         account_id=state.account_id,
         draft_id=state.draft_id,
@@ -958,11 +1068,12 @@ def _completed_state() -> DraftState:
 
 def _pack_event(
     *,
+    event_name: str = EVENT_NAME,
     offered_grp_ids: tuple[int, ...] = (101, 102),
     pool_grp_ids: tuple[int, ...] = (),
 ) -> PackOfferedEvent:
     return PackOfferedEvent(
-        event_name=EVENT_NAME,
+        event_name=event_name,
         set_code=SET_CODE,
         pack_number=0,
         pick_number=0,
@@ -974,11 +1085,12 @@ def _pack_event(
 
 def _pick_event(
     *,
+    event_name: str = EVENT_NAME,
     pick_number: int = 0,
     selected_grp_ids: tuple[int, ...] = (102,),
 ) -> PickMadeEvent:
     return PickMadeEvent(
-        event_name=EVENT_NAME,
+        event_name=event_name,
         set_code=SET_CODE,
         pack_number=0,
         pick_number=pick_number,
@@ -1034,9 +1146,9 @@ def _schema_one_choice_line(*, pick_number: int, chosen_grp_id: int) -> dict[str
     }
 
 
-def _completed_event() -> DraftCompletedEvent:
+def _completed_event(*, event_name: str = EVENT_NAME) -> DraftCompletedEvent:
     return DraftCompletedEvent(
-        event_name=EVENT_NAME,
+        event_name=event_name,
         set_code=SET_CODE,
         pack_number=2,
         pick_number=13,

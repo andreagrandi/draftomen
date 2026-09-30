@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Replay names the draft format and uses its rules for pick counts. Pick-Two
+  selections keep both cards at one coordinate. Audit records include the
+  format and count how many of the top two cards in the active ranking were
+  selected. Quick replay intentionally gains a format header. (#772)
 - Live draft progress and pool ledger totals follow the active draft rules.
   Pick-Two records 21 logical picks and 42 cards, and pending recovery keeps
   its format, coordinates and selected cards. Mocked Draft keeps its 13 or 15

@@ -7,15 +7,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 from os import PathLike
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, NamedTuple, TypeAlias
 
 from draftomen import __version__
 from draftomen.config import PickEngineConfig
+from draftomen.draft_format import detect_draft_format
 from draftomen.events import (
     DraftCompletedEvent,
     PackOfferedEvent,
@@ -34,6 +35,16 @@ from draftomen.seventeen import SeventeenLandsData, SeventeenLandsFormatData
 PathInput: TypeAlias = str | PathLike[str]
 Clock: TypeAlias = Callable[[], datetime]
 AuditRecord: TypeAlias = dict[str, Any]
+
+
+class SelectionMatch(NamedTuple):
+    """Summarize selected cards against one ordered recommendation ranking.
+    Missing rankings leave every result unavailable.
+    """
+
+    top_grp_id: int | None
+    top_hit: bool | None
+    top_two_selected_count: int | None
 
 AUDIT_DIRECTORY_NAME = "audit"
 DRAFT_AUDIT_DIRECTORY_NAME = "drafts"
@@ -249,9 +260,13 @@ class DraftAuditStore:
             pick_number=event.pick_number,
         )
         evaluation = self._latest_evaluations.get((path, decision_id))
-        recommended_grp_id = _recommended_grp_id(
+        ranked_grp_ids = _active_ranked_grp_ids(
             evaluation=evaluation,
             ranking_mode=mode,
+        )
+        selection = selection_match(
+            selected_grp_ids=event.selected_grp_ids,
+            ranked_grp_ids=ranked_grp_ids,
         )
         payload: AuditRecord = {
             "decision_id": decision_id,
@@ -262,12 +277,9 @@ class DraftAuditStore:
             "pick_number": event.pick_number,
             "selected_grp_ids": selected_grp_ids,
             "ranking_mode": mode,
-            "recommended_grp_id": recommended_grp_id,
-            "recommendation_followed": (
-                None
-                if recommended_grp_id is None
-                else recommended_grp_id in selected_grp_ids
-            ),
+            "recommended_grp_id": selection.top_grp_id,
+            "recommendation_followed": selection.top_hit,
+            "top_two_selected_count": selection.top_two_selected_count,
         }
         record_id = _record_id(
             prefix="choice",
@@ -350,6 +362,7 @@ class DraftAuditStore:
             "draft_id": state.draft_id,
             "event_name": state.event_name,
             "set_code": state.set_code,
+            "draft_format": _normalized_draft_format(event_name=state.event_name),
             **dict(payload),
         }
         encoded = (
@@ -733,11 +746,48 @@ def _choice_identity(
     return {"decision_id": decision_id, "selected_grp_ids": selected_grp_ids}
 
 
-def _recommended_grp_id(
+def selection_match(
+    *,
+    selected_grp_ids: tuple[int, ...],
+    ranked_grp_ids: Sequence[int] | None,
+) -> SelectionMatch:
+    """Compare selected cards with one active ordered ranking.
+    The top-two count uses distinct selected and ranked card identifiers.
+    """
+
+    if not ranked_grp_ids:
+        return SelectionMatch(
+            top_grp_id=None,
+            top_hit=None,
+            top_two_selected_count=None,
+        )
+
+    top_grp_id = ranked_grp_ids[0]
+    if not isinstance(top_grp_id, int):
+        return SelectionMatch(
+            top_grp_id=None,
+            top_hit=None,
+            top_two_selected_count=None,
+        )
+
+    selected = set(selected_grp_ids)
+    top_two = {
+        grp_id
+        for grp_id in ranked_grp_ids[:2]
+        if isinstance(grp_id, int)
+    }
+    return SelectionMatch(
+        top_grp_id=top_grp_id,
+        top_hit=top_grp_id in selected,
+        top_two_selected_count=len(selected.intersection(top_two)),
+    )
+
+
+def _active_ranked_grp_ids(
     *,
     evaluation: AuditRecord | None,
     ranking_mode: str,
-) -> int | None:
+) -> Sequence[int] | None:
     if evaluation is None:
         return None
 
@@ -746,11 +796,15 @@ def _recommended_grp_id(
         return None
 
     ranked_grp_ids = rankings.get(ranking_mode)
-    if not isinstance(ranked_grp_ids, list) or not ranked_grp_ids:
+    if not isinstance(ranked_grp_ids, list):
         return None
 
-    grp_id = ranked_grp_ids[0]
-    return grp_id if isinstance(grp_id, int) else None
+    return ranked_grp_ids
+
+
+def _normalized_draft_format(*, event_name: str) -> str | None:
+    draft_format = detect_draft_format(event_name=event_name)
+    return None if draft_format is None else draft_format.value
 
 
 def _record_id(*, prefix: str, value: Mapping[str, Any]) -> str:

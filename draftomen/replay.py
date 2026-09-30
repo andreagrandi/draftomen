@@ -13,9 +13,8 @@ from typing import TypeAlias
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
+from draftomen.draft_format import DraftFormat, detect_draft_format, rules_for_format
 from draftomen.events import (
-    EXPECTED_PICKS_PER_PACK,
-    EXPECTED_TOTAL_PICKS,
     AccountEvent,
     DraftCompletedEvent,
     DraftEvent,
@@ -55,6 +54,7 @@ class _ReplayHeader:
     account_id: str | None
     screen_name: str | None
     event_name: str | None
+    draft_format: DraftFormat | None
     set_code: str | None
     draft_id: str | None
 
@@ -109,8 +109,14 @@ def render_replay_events(
     """
 
     event_tuple = tuple(events)
-    if not event_tuple:
-        raise ReplayError("No Quick Draft events found in log file.")
+    if not any(
+        isinstance(
+            event,
+            (DraftStartedEvent, PackOfferedEvent, PickMadeEvent, DraftCompletedEvent),
+        )
+        for event in event_tuple
+    ):
+        raise ReplayError("No draft events found in log file.")
 
     _validate_events_with_pool(events=event_tuple)
 
@@ -241,29 +247,48 @@ def _format_completed_build_sheet(
 def _header_from_events(*, events: tuple[DraftEvent, ...]) -> _ReplayHeader:
     account_names: dict[str, str | None] = {}
     active_account_id: str | None = None
+    current_account_id: str | None = None
+    stream_account_id: str | None = None
     event_name: str | None = None
+    offered_format: DraftFormat | None = None
     set_code: str | None = None
     draft_id: str | None = None
 
     for event in events:
         if isinstance(event, AccountEvent):
-            active_account_id = event.client_id
+            current_account_id = event.client_id
             account_names[event.client_id] = event.screen_name
             continue
 
-        if isinstance(event, DraftStartedEvent):
-            active_account_id = event.account_id or active_account_id
-            event_name = event.event_name
-            set_code = event.set_code
-            draft_id = event.course_id
-            break
+        if not isinstance(
+            event,
+            (DraftStartedEvent, PackOfferedEvent, PickMadeEvent, DraftCompletedEvent),
+        ):
+            continue
 
-        if isinstance(event, (PackOfferedEvent, PickMadeEvent, DraftCompletedEvent)):
-            active_account_id = event.account_id or active_account_id
+        event_account_id = event.account_id or current_account_id
+        if event_name is None:
+            active_account_id = event_account_id
+            stream_account_id = event_account_id
             event_name = event.event_name
             set_code = event.set_code
-            draft_id = event.event_name
-            break
+            draft_id = (
+                event.course_id
+                if isinstance(event, DraftStartedEvent)
+                else event.event_name
+            )
+        elif (
+            event.event_name != event_name
+            or event_account_id != stream_account_id
+        ):
+            continue
+
+        if isinstance(event, PackOfferedEvent):
+            offered_format = offered_format or event.draft_format
+
+    draft_format = offered_format
+    if draft_format is None and event_name is not None:
+        draft_format = detect_draft_format(event_name=event_name)
 
     screen_name = None
     if active_account_id is not None:
@@ -273,6 +298,7 @@ def _header_from_events(*, events: tuple[DraftEvent, ...]) -> _ReplayHeader:
         account_id=active_account_id,
         screen_name=screen_name,
         event_name=event_name,
+        draft_format=draft_format,
         set_code=set_code,
         draft_id=draft_id,
     )
@@ -290,6 +316,7 @@ def format_pack_offered_event(
     if scored_pack is None:
         engine = pick_engine if pick_engine is not None else PickEngine()
         pick_index = _draft_pick_index(event=event)
+        rules = rules_for_format(draft_format=event.draft_format)
         scored_pack = engine.score_pack(
             offered_grp_ids=event.offered_grp_ids,
             card_database=card_database,
@@ -298,7 +325,12 @@ def format_pack_offered_event(
             pack_number=event.pack_number,
             pick_number=event.pick_number,
             global_pick_index=pick_index,
-            estimated_remaining_picks=max(0, EXPECTED_TOTAL_PICKS - pick_index),
+            estimated_remaining_picks=max(
+                0,
+                rules.pack_count * event.picks_per_pack - pick_index,
+            ),
+            picks_per_pack=event.picks_per_pack,
+            draft_rules=rules,
         )
     lines = format_ranked_pack(
         event=event,
@@ -398,6 +430,7 @@ def _format_header(*, header: _ReplayHeader) -> list[str]:
         "Draft Omen replay",
         f"Account: {_format_account(header=header)}",
         f"Set: {header.set_code or 'unknown'}",
+        f"Format: {_format_draft_format(draft_format=header.draft_format)}",
         f"Event: {header.event_name or 'unknown'}",
         f"Draft: {header.draft_id or 'unknown'}",
         f"Attribution: {SEVENTEEN_LANDS_ATTRIBUTION}",
@@ -414,8 +447,18 @@ def _format_account(*, header: _ReplayHeader) -> str:
     return f"{header.screen_name} ({header.account_id})"
 
 
+def _format_draft_format(*, draft_format: DraftFormat | None) -> str:
+    labels = {
+        DraftFormat.QUICK: "Quick Draft",
+        DraftFormat.PREMIER: "Premier Draft",
+        DraftFormat.TRADITIONAL: "Traditional Draft",
+        DraftFormat.PICK_TWO: "Pick-Two",
+    }
+    return labels.get(draft_format, "unknown")
+
+
 def _draft_pick_index(*, event: PackOfferedEvent) -> int:
-    return (event.pack_number * EXPECTED_PICKS_PER_PACK) + event.pick_number + 1
+    return (event.pack_number * event.picks_per_pack) + event.pick_number + 1
 
 
 def _format_pack_status(*, scored_pack: ScoredPack) -> str:
