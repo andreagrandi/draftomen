@@ -49,6 +49,7 @@ from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.config import COLOR_PAIRS, POLL_INTERVAL_SECONDS
 from draftomen.deckbuilder import BuildPool, ManaBase, PairSelection, SpellSelection
+from draftomen.draft_format import rules_for_format
 from draftomen.events import (
     DraftCompletedEvent,
     DraftStartedEvent,
@@ -74,6 +75,7 @@ from draftomen.ranking import (
     rank_scored_cards,
     ranking_label,
 )
+from draftomen.replay import format_draft_format
 from draftomen.session import (
     ApplicationPhase,
     AugmentedModelRequest,
@@ -714,6 +716,7 @@ class DraftomenTuiApp(App[None]):
         self._draft_id: str | None = None
         self._pick_label = "—"
         self._pool_size = 0
+        self._last_pick: PickMadeEvent | None = None
         self._pool_grp_ids: tuple[int, ...] = ()
         self._pair_label = "open"
         self._commitment_label = "0% open"
@@ -804,9 +807,9 @@ class DraftomenTuiApp(App[None]):
         yield Header(show_clock=False)
         with Horizontal(id="main"):
             with Vertical(id="pack-panel"):
-                yield Static("Waiting for a Quick Draft pack…", id="pack-title")
+                yield Static("Waiting for a draft…", id="pack-title")
                 yield Static(
-                    "Quick Draft set not detected yet.",
+                    "Draft not detected yet.",
                     id="pre-draft-readiness",
                 )
                 yield DataTable(id="pack-table")
@@ -1576,6 +1579,7 @@ class DraftomenTuiApp(App[None]):
             self._set_code = event.set_code
 
         if isinstance(event, (QuickDraftDetectedEvent, DraftStartedEvent)):
+            self._last_pick = None
             self._reset_secondary_view_state()
             self._view_mode = "pack"
             self._pick_label = (
@@ -1592,6 +1596,7 @@ class DraftomenTuiApp(App[None]):
             self._backtest_error = None
             self._clear_build_render_state()
         elif isinstance(event, PickMadeEvent):
+            self._last_pick = event
             self._pick_label = (
                 f"P{event.pack_number + 1}P{event.pick_number + 1} picked"
             )
@@ -1766,6 +1771,7 @@ class DraftomenTuiApp(App[None]):
         *,
         snapshot: LiveSessionSnapshot,
     ) -> None:
+        self._last_pick = None
         self._reset_secondary_view_state()
         if self._current_pack_event is not None:
             self._view_mode = "pack"
@@ -1775,6 +1781,47 @@ class DraftomenTuiApp(App[None]):
             return
 
         self._request_build_view(success_message=None)
+
+    def _snapshot_cards_per_pick(self) -> int:
+        draft_format = self.session.snapshot.draft_format
+        if draft_format is None:
+            return 1
+        return rules_for_format(draft_format=draft_format).cards_per_pick
+
+    def _pool_size_text(self) -> str:
+        cards_per_pick = self._snapshot_cards_per_pick()
+        if cards_per_pick <= 1:
+            return f"Pool size: {self._pool_size}"
+        return f"Pool size: {self._pool_size} cards from {self._logical_pick_count_text()}"
+
+    def _pool_status_text(self) -> str:
+        cards_per_pick = self._snapshot_cards_per_pick()
+        if cards_per_pick <= 1:
+            return f"Pool: {self._pool_size}"
+        return f"Pool: {self._pool_size} cards, {self._logical_pick_count_text()}"
+
+    def _logical_pick_count_text(self) -> str:
+        picks = self._pool_size // self._snapshot_cards_per_pick()
+        return "1 pick" if picks == 1 else f"{picks} picks"
+
+    def _format_status_segments(self) -> tuple[str, ...]:
+        draft_format = self.session.snapshot.draft_format
+        if draft_format is None:
+            return ()
+        return (f"Format: {format_draft_format(draft_format=draft_format)}",)
+
+    def _last_pick_lines(self) -> tuple[str, ...]:
+        pick = self._last_pick
+        if pick is None:
+            return ()
+        names = ", ".join(
+            self.card_database.lookup(grp_id=grp_id).name
+            for grp_id in pick.selected_grp_ids
+        )
+        coordinate = f"P{pick.pack_number + 1}P{pick.pick_number + 1}"
+        if len(pick.selected_grp_ids) > 1:
+            coordinate += f", {len(pick.selected_grp_ids)} cards"
+        return (f"Last pick {coordinate}: {names}",)
 
     def _reset_secondary_view_state(self) -> None:
         self._forced_pair = None
@@ -2069,21 +2116,24 @@ class DraftomenTuiApp(App[None]):
             if self._pick_label == "complete":
                 title.update("Draft complete")
             elif self._set_code is not None:
+                draft_format = self.session.snapshot.draft_format
+                detected = (
+                    "Draft"
+                    if draft_format is None
+                    else format_draft_format(draft_format=draft_format)
+                )
                 title.update(
-                    "Quick Draft detected — "
+                    f"{detected} detected — "
                     f"{format_set_label(set_code=self._set_code)}; "
                     "waiting for the first pack…"
                 )
             else:
-                title.update("Waiting for a Quick Draft pack…")
+                title.update("Waiting for a draft…")
             return
 
         event = self._current_pack_event
         title.update(
-            "Available cards — Pack "
-            f"{event.pack_number + 1} "
-            "Pick "
-            f"{event.pick_number + 1} "
+            f"Available cards — {_pack_progress_label(event=event)} "
             f"— ranked by {SORT_LABELS[self.sort_mode]}"
         )
 
@@ -2100,8 +2150,8 @@ class DraftomenTuiApp(App[None]):
         set_code = self._set_code
         if set_code is None:
             readiness.update(
-                "Quick Draft set not detected yet.\n"
-                "Waiting for Arena to report a Quick Draft entry."
+                "Draft not detected yet.\n"
+                "Waiting for Arena to report a draft entry."
             )
             return
 
@@ -2322,7 +2372,8 @@ class DraftomenTuiApp(App[None]):
                     lines.append(f"Draft: {self._draft_id or 'unknown draft'}")
                 lines.extend(
                     (
-                        f"Pool size: {self._pool_size}",
+                        self._pool_size_text(),
+                        *self._last_pick_lines(),
                         f"Inferred pair: {inferred_pair}",
                         f"Build pair: {build_pair}",
                         f"Override: {override}",
@@ -2699,8 +2750,9 @@ class DraftomenTuiApp(App[None]):
             (
                 f"View: {self._view_mode}",
                 f"Pair: {pair_label} ({self._commitment_label})",
+                *self._format_status_segments(),
                 f"Pick: {self._pick_label}",
-                f"Pool: {self._pool_size}",
+                self._pool_status_text(),
                 f"Data: {self._data_source}",
                 profile_label,
                 sort_label,
@@ -4207,6 +4259,17 @@ def _format_alsa(*, scored_card: ScoredCard) -> str:
         return "—"
 
     return f"{scored_card.rating.average_last_seen_at:.2f}"
+
+
+def _pack_progress_label(*, event: PackOfferedEvent) -> str:
+    rules = rules_for_format(draft_format=event.draft_format)
+    label = (
+        f"Pack {event.pack_number + 1} of {rules.pack_count}, "
+        f"Pick {event.pick_number + 1} of {event.picks_per_pack}"
+    )
+    if event.cards_per_pick > 1:
+        label += f", take {event.cards_per_pick} cards"
+    return label
 
 
 def _format_tui_source_label(*, scored_card: ScoredCard) -> str:

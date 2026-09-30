@@ -26,6 +26,8 @@ from draftomen.carddb import (
     build_card_database_from_bulk_file,
 )
 from draftomen.cardimages import CardImageService, card_image_cache_dir
+from draftomen.draft_format import DraftFormat
+from draftomen.events import DraftStartedEvent, PackOfferedEvent, PickMadeEvent
 from draftomen.pickengine import ScoredCard
 from draftomen.pool import (
     DraftPick,
@@ -50,6 +52,7 @@ from draftomen.session import (
     ApplicationPhase,
     CardView,
     DataLoadPhase,
+    LiveSessionEvent,
     LiveSessionSnapshot,
     OperationKind,
     SetCardDataLoader,
@@ -701,6 +704,172 @@ async def _assert_tui_audit_records_visible_ranking(tmp_path: Path) -> None:
 
 
 
+def test_tui_waiting_state_is_neutral_about_draft_format(tmp_path: Path) -> None:
+    asyncio.run(_assert_waiting_state_is_neutral(tmp_path=tmp_path))
+
+
+async def _assert_waiting_state_is_neutral(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        app.process_lines(
+            lines=_first_pack_lines()[:3],
+            include_pre_draft_detection=False,
+        )
+        await pilot.pause()
+
+        title = str(app.query_one("#pack-title", Static).render())
+        readiness = str(app.query_one("#pre-draft-readiness", Static).render())
+        assert title == "Waiting for a draft…"
+        assert readiness == (
+            "Draft not detected yet.\nWaiting for Arena to report a draft entry."
+        )
+        assert "Quick Draft" not in title + readiness + _status_text(app=app)
+        assert "Format:" not in _status_text(app=app)
+
+
+def test_tui_names_premier_format_in_title_and_status(tmp_path: Path) -> None:
+    asyncio.run(_assert_premier_format_named(tmp_path=tmp_path))
+
+
+async def _assert_premier_format_named(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        _set_test_snapshot(app=app, draft_format=DraftFormat.PREMIER)
+        app._set_code = "MSH"
+        app._render_all()
+        await pilot.pause()
+
+        title = str(app.query_one("#pack-title", Static).render())
+        assert title.startswith("Premier Draft detected — ")
+        assert "waiting for the first pack" in title
+        assert "Format: Premier Draft" in _status_text(app=app)
+        assert "Pool: 0" in _status_text(app=app)
+
+        _set_test_snapshot(app=app, draft_format=None)
+        app._render_all()
+        await pilot.pause()
+
+        title = str(app.query_one("#pack-title", Static).render())
+        assert title.startswith("Draft detected — ")
+        assert "Format:" not in _status_text(app=app)
+
+
+def test_tui_pick_two_shows_rule_progress_last_pick_and_counts(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_pick_two_progress_and_counts(tmp_path=tmp_path))
+
+
+async def _assert_pick_two_progress_and_counts(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        pack_event = PackOfferedEvent(
+            event_name="PickTwoDraft_MSH_20260101",
+            set_code="MSH",
+            pack_number=0,
+            pick_number=3,
+            offered_grp_ids=(1, 2, 3),
+            pool_grp_ids=(),
+            account_id=None,
+            picks_per_pack=7,
+            draft_format=DraftFormat.PICK_TWO,
+            cards_per_pick=2,
+        )
+        snapshot = _set_test_snapshot(
+            app=app,
+            draft_format=DraftFormat.PICK_TWO,
+            current_pack_event=pack_event,
+        )
+        app._apply_session_snapshot(snapshot)
+        await pilot.pause()
+
+        title = str(app.query_one("#pack-title", Static).render())
+        assert title.startswith(
+            "Available cards — Pack 1 of 3, Pick 4 of 7, take 2 cards — ranked by "
+        )
+        assert "Pick: P1P4" in _status_text(app=app)
+        assert "Last pick" not in _pool_summary_text(app=app)
+
+        pick_event = PickMadeEvent(
+            event_name="PickTwoDraft_MSH_20260101",
+            set_code="MSH",
+            pack_number=0,
+            pick_number=3,
+            selected_grp_ids=(1, 2),
+            account_id=None,
+        )
+        app._pool_size = 8
+        app._apply_session_event(LiveSessionEvent(event=pick_event, snapshot=snapshot))
+        await pilot.pause()
+
+        summary = _pool_summary_text(app=app)
+        names = ", ".join(app.card_database.lookup(grp_id=grp_id).name for grp_id in (1, 2))
+        assert f"Last pick P1P4, 2 cards: {names}" in summary
+        assert "Pool size: 8 cards from 4 picks" in summary
+        status = _status_text(app=app)
+        assert "Pool: 8 cards, 4 picks" in status
+        assert "Pick: P1P4 picked" in status
+
+        app._pool_size = 2
+        app._render_all()
+        await pilot.pause()
+        assert "Pool size: 2 cards from 1 pick\n" in _pool_summary_text(app=app)
+        assert "Pool: 2 cards, 1 pick |" in _status_text(app=app)
+
+        started_event = DraftStartedEvent(
+            event_name="PickTwoDraft_MSH_20260101",
+            set_code="MSH",
+            course_id="course",
+            account_id=None,
+        )
+        app._apply_session_event(
+            LiveSessionEvent(event=started_event, snapshot=snapshot)
+        )
+        await pilot.pause()
+        assert "Last pick" not in _pool_summary_text(app=app)
+
+
+def test_tui_quick_keeps_single_card_pool_counts(tmp_path: Path) -> None:
+    asyncio.run(_assert_quick_keeps_single_card_counts(tmp_path=tmp_path))
+
+
+async def _assert_quick_keeps_single_card_counts(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        app.process_lines(lines=_first_pick_lines())
+        await pilot.pause()
+
+        summary = _pool_summary_text(app=app)
+        last_pick = app._last_pick
+        assert last_pick is not None
+        card_name = app.card_database.lookup(grp_id=last_pick.selected_grp_ids[0]).name
+        status = _status_text(app=app)
+        assert "Pool size: 1\n" in summary
+        assert f"Last pick P1P1: {card_name}" in summary
+        assert "Pool: 1 " in status + " "
+        assert "picks" not in status
+
+
+def _set_test_snapshot(
+    *,
+    app: DraftomenTuiApp,
+    draft_format: DraftFormat | None,
+    current_pack_event: PackOfferedEvent | None = None,
+) -> LiveSessionSnapshot:
+    snapshot = replace(
+        app.session.snapshot,
+        draft_format=draft_format,
+        current_pack_event=current_pack_event,
+    )
+    with app.session._state_lock:
+        app.session._snapshot = snapshot
+    return snapshot
+
+
 def test_tui_ignores_pre_draft_detection_from_historical_scan(
     tmp_path: Path,
 ) -> None:
@@ -719,7 +888,7 @@ async def _assert_historical_detection_is_ignored(tmp_path: Path) -> None:
 
         readiness = app.query_one("#pre-draft-readiness", Static)
         assert readiness.display
-        assert "Quick Draft set not detected yet" in str(readiness.render())
+        assert "Draft not detected yet" in str(readiness.render())
 
 
 async def _assert_fixture_stream_updates_pack_panel(tmp_path: Path) -> None:
