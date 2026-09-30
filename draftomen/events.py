@@ -140,8 +140,8 @@ class PickMadeEvent:
 
 @dataclass(frozen=True, slots=True)
 class DraftCompletedEvent:
-    """Quick Draft completion detected from payload or final-pick inference.
-    The picked card list is the final pool snapshot from Arena.
+    """Draft completion detected from payload or final-pick inference.
+    A human draft carries Arena's card pool apart from its recorded picks.
     """
 
     event_name: str
@@ -151,6 +151,20 @@ class DraftCompletedEvent:
     picked_grp_ids: tuple[int, ...]
     inferred: bool
     account_id: str | None
+    # Set only when Arena's CardPool holds every picked card plus cards whose
+    # submissions the log never recorded.
+    card_pool_grp_ids: tuple[int, ...] | None = None
+
+    @property
+    def pool_grp_ids(self) -> tuple[int, ...]:
+        """Return the cards the player owns after the draft.
+        Arena's card pool replaces the picked cards when present.
+        """
+
+        if self.card_pool_grp_ids is None:
+            return self.picked_grp_ids
+
+        return self.card_pool_grp_ids
 
 
 DraftEvent: TypeAlias = (
@@ -188,6 +202,7 @@ class _HumanDraftRecord:
     draft_id: str | None
     picks: dict[tuple[int, int], tuple[int, ...]] = field(default_factory=dict)
     completed: bool = False
+    card_pool_emitted: bool = False
 
 
 @dataclass(slots=True)
@@ -891,12 +906,24 @@ def _complete_human_draft(
         state.human_draft = record
 
     recorded_cards = _recorded_cards(record=record)
-    if not record.completed:
-        # A gap in the picks stays a gap; the card pool only stands in when no
-        # pick was recorded at all.
+    full_card_pool = None
+    if (
+        card_pool is not None
+        and record.picks
+        and not record.card_pool_emitted
+        and Counter(card_pool) > Counter(recorded_cards)
+    ):
+        full_card_pool = card_pool
+
+    # A gap in the picks stays a gap; the card pool only stands in for picks
+    # when none was recorded. A superset card pool completes the draft again
+    # when it arrives after an earlier completion signal.
+    if not record.completed or full_card_pool is not None:
         picked_grp_ids = recorded_cards or card_pool or ()
         if picked_grp_ids:
             record.completed = True
+            if full_card_pool is not None:
+                record.card_pool_emitted = True
             events = (
                 *events,
                 DraftCompletedEvent(
@@ -907,6 +934,7 @@ def _complete_human_draft(
                     picked_grp_ids=picked_grp_ids,
                     inferred=False,
                     account_id=state.account_id,
+                    card_pool_grp_ids=full_card_pool,
                 ),
             )
 

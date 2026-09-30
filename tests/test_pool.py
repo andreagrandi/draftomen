@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -602,7 +603,121 @@ def test_unknown_state_schema_raises() -> None:
         DraftState.from_json(data={"schema_version": 3, "picks": []})
 
 
+def test_superset_card_pool_becomes_the_pool_without_filling_the_gap(
+    tmp_path: Path,
+) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+
+    completed = store.consume(
+        event=_pick_two_completion(card_pool_grp_ids=(101, 901, 102, 902))
+    )
+
+    assert completed is not None
+    assert completed.completed is True
+    assert completed.pool_grp_ids == (101, 901, 102, 902)
+    assert completed.selected_card_count == 2
+    assert completed.pick_for(pack_number=0, pick_number=1) is None
+    assert _load_pick_two_state(tmp_path=tmp_path) == completed
+
+
+def test_late_card_pool_updates_the_pool_of_a_completed_draft(
+    tmp_path: Path,
+) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+    first = store.consume(event=_pick_two_completion())
+    assert first is not None
+    later_store = DraftPoolStore(app_dir=tmp_path, clock=_later_clock)
+    later_store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name="First"))
+
+    updated = later_store.consume(
+        event=_pick_two_completion(card_pool_grp_ids=(101, 102, 901, 902))
+    )
+
+    assert updated is not None
+    assert updated.completed is True
+    assert updated.completed_at == first.completed_at
+    assert updated.updated_at == _later_clock().isoformat()
+    assert updated.pool_grp_ids == (101, 102, 901, 902)
+    assert updated.selected_card_count == 2
+    assert _load_pick_two_state(tmp_path=tmp_path) == updated
+
+
+def test_replaying_both_completions_after_the_card_pool_changes_nothing(
+    tmp_path: Path,
+) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+    store.consume(event=_pick_two_completion())
+    store.consume(event=_pick_two_completion(card_pool_grp_ids=(101, 102, 901, 902)))
+    path = store.path_for(account_id="ACCOUNT-A", draft_id=PICK_TWO_EVENT_NAME)
+    saved_payload = path.read_text(encoding="utf-8")
+
+    store.consume(event=_pick_two_completion())
+    replayed = store.consume(
+        event=_pick_two_completion(card_pool_grp_ids=(101, 102, 901, 902))
+    )
+
+    assert replayed is not None
+    assert replayed.pool_grp_ids == (101, 102, 901, 902)
+    assert path.read_text(encoding="utf-8") == saved_payload
+
+
+@pytest.mark.parametrize("completed_first", [False, True])
+def test_card_pool_missing_a_recorded_card_keeps_the_pool_and_warns(
+    completed_first: bool,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+    if completed_first:
+        store.consume(event=_pick_two_completion())
+
+    with caplog.at_level(logging.WARNING, logger="draftomen.pool"):
+        state = store.consume(
+            event=_pick_two_completion(card_pool_grp_ids=(101, 901, 902))
+        )
+
+    assert state is not None
+    assert state.completed is True
+    assert state.pool_grp_ids == (101, 102)
+    assert _load_pick_two_state(tmp_path=tmp_path).pool_grp_ids == (101, 102)
+    assert [record.levelno for record in caplog.records] == [logging.WARNING]
+    assert "lacks recorded cards" in caplog.records[0].getMessage()
+
+
+def test_completion_that_conflicts_with_recorded_picks_still_raises(
+    tmp_path: Path,
+) -> None:
+    store = _pick_two_store(tmp_path=tmp_path)
+    store.consume(event=_pick_two_pick(selected_grp_ids=(101, 102)))
+    store.consume(event=_pick_two_completion(card_pool_grp_ids=(101, 102, 901)))
+
+    with pytest.raises(DraftPoolError, match="conflicts with saved pool"):
+        store.consume(
+            event=replace(_pick_two_completion(), picked_grp_ids=(101, 103))
+        )
+
+
 PICK_TWO_EVENT_NAME = "PickTwoDraft_ABC_20260703"
+
+
+def _pick_two_completion(
+    *,
+    card_pool_grp_ids: tuple[int, ...] | None = None,
+) -> DraftCompletedEvent:
+    return DraftCompletedEvent(
+        event_name=PICK_TWO_EVENT_NAME,
+        set_code="ABC",
+        pack_number=0,
+        pick_number=0,
+        picked_grp_ids=(101, 102),
+        inferred=False,
+        account_id=None,
+        card_pool_grp_ids=card_pool_grp_ids,
+    )
 
 
 def _pick_two_store(*, tmp_path: Path) -> DraftPoolStore:

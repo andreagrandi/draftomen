@@ -224,7 +224,7 @@ def _format_completed_build_sheet(
 ) -> list[str]:
     pool = BuildPool(
         set_code=event.set_code,
-        pool_grp_ids=event.picked_grp_ids,
+        pool_grp_ids=event.pool_grp_ids,
         source_label=f"replay {header.draft_id or event.event_name}",
         account_id=header.account_id,
         draft_id=header.draft_id,
@@ -414,10 +414,15 @@ def format_draft_completed_event(*, event: DraftCompletedEvent) -> list[str]:
     """
 
     completion_type = "inferred" if event.inferred else "explicit"
-    return [
+    line = (
         "Draft complete: "
-        f"{len(event.picked_grp_ids)} cards ({completion_type} completion)"
-    ]
+        f"{len(event.pool_grp_ids)} cards ({completion_type} completion)"
+    )
+    if event.card_pool_grp_ids is not None:
+        unrecorded = len(event.card_pool_grp_ids) - len(event.picked_grp_ids)
+        line += f"; Arena's card pool adds {unrecorded} cards with no recorded pick"
+
+    return [line]
 
 
 def format_card_info(card: CardInfo) -> str:

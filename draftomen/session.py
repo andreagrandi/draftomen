@@ -4228,7 +4228,7 @@ class LiveSession:
                 )
                 keep_recommendations = True
             elif isinstance(event, DraftCompletedEvent):
-                self._transient_pool_grp_ids = event.picked_grp_ids
+                self._transient_pool_grp_ids = event.pool_grp_ids
                 phase = ApplicationPhase.DRAFT_COMPLETE
                 message = "Draft complete without an account ID."
                 keep_recommendations = False
