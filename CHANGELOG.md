@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- The desktop live view names the detected draft format and shows pack and
+  pick progress from the draft rules, for example "Pack 1 of 3 · Pick 4 of 7 ·
+  take 2 cards" in Pick-Two. The recent picks gallery lists every card of a
+  logical pick. The pre-draft view and the waiting status no longer mention
+  Quick Draft: they read "Ready for your next draft" and "Waiting for a
+  draft.", and name the format once it is known. (#777)
 - The desktop GUI adapter state gains a `draft_progress` block with the draft
   format name, pack and pick coordinates, and the pack count, picks per pack
   and cards per pick from the active rules. An unknown format publishes a

@@ -9,8 +9,21 @@ Item {
     required property var pool
     required property bool narrow
 
-    readonly property var recentPicks: root.pool && root.pool.recent_picks
-        ? root.pool.recent_picks : []
+    readonly property var recentPicks: {
+        const logicalPicks = root.pool ? root.pool.recent_logical_picks : null
+        if (logicalPicks && logicalPicks.length > 0) {
+            const flattened = []
+            for (let index = 0; index < logicalPicks.length; index++) {
+                const cards = logicalPicks[index] && logicalPicks[index].cards
+                    ? logicalPicks[index].cards : []
+                for (let cardIndex = 0; cardIndex < cards.length; cardIndex++)
+                    flattened.push(cards[cardIndex])
+            }
+            return flattened
+        }
+        return root.pool && root.pool.recent_picks
+            ? root.pool.recent_picks : []
+    }
     readonly property int targetColumns: root.narrow ? 4 : 6
     readonly property int gap: 6
     readonly property int hoverDelay: 501

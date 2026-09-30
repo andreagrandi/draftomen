@@ -92,6 +92,27 @@ Item {
             ? String(recommendations.confidence_summary) : ""
     }
 
+    readonly property var draftProgress: sessionState.draft_progress || null
+    readonly property string draftFormatName: root.draftProgress
+        && root.draftProgress.known && root.draftProgress.format_name
+        ? String(root.draftProgress.format_name) : ""
+    readonly property string draftProgressText: {
+        const progress = root.draftProgress
+        if (!progress || !progress.known
+                || progress.pack_number === null
+                || progress.pack_number === undefined
+                || progress.pick_number === null
+                || progress.pick_number === undefined)
+            return ""
+        let text = "Pack " + (progress.pack_number + 1)
+            + " of " + progress.pack_count
+            + " · Pick " + (progress.pick_number + 1)
+            + " of " + progress.picks_per_pack
+        if (progress.cards_per_pick > 1)
+            text += " · take " + progress.cards_per_pick + " cards"
+        return text
+    }
+
     readonly property string draftHeading: {
         const draft = sessionState.draft
         if (!draft) {
@@ -103,6 +124,8 @@ Item {
             return "Draft complete"
         if (draft.pack_number === null || draft.pick_number === null)
             return draft.event_name
+        if (root.draftProgressText.length > 0)
+            return root.draftProgressText
         return "Pack " + (draft.pack_number + 1)
             + " · Pick " + (draft.pick_number + 1)
     }
@@ -113,7 +136,9 @@ Item {
             return "Loading live draft data"
         if (root.hasSetupGuidance)
             return "Arena setup needed"
-        return "Ready for your next Quick Draft"
+        if (root.draftFormatName.length > 0)
+            return root.draftFormatName + " detected"
+        return "Ready for your next draft"
     }
     readonly property var selectedRecommendation: {
         const recommendations = sessionState.recommendations
@@ -175,6 +200,7 @@ Item {
                 spacing: 2
 
                 Label {
+                    objectName: "liveDraftHeading"
                     text: root.draftHeading
                     color: Theme.text
                     font.pixelSize: Theme.textPixelSize(22)
@@ -184,8 +210,11 @@ Item {
                 }
 
                 Label {
+                    objectName: "liveDraftStatus"
                     text: root.hasRecommendations
-                        ? root.sessionState.recommendations.cards.length
+                        ? (root.draftFormatName.length > 0
+                            ? root.draftFormatName + " · " : "")
+                            + root.sessionState.recommendations.cards.length
                             + " cards available"
                         : root.sessionState.status.message
                     color: Theme.textMuted
@@ -335,8 +364,10 @@ Item {
                                 || root.sessionState.active_account.account_id
                             : "Not detected"],
                         ["Draft", root.sessionState.draft
-                            ? root.sessionState.draft.event_name
-                            : "No Quick Draft detected"],
+                            ? (root.draftFormatName.length > 0
+                                ? root.draftFormatName + " · " : "")
+                                + root.sessionState.draft.event_name
+                            : "No draft detected"],
                         ["Ratings", root.sessionState.ratings.message]
                     ]
 

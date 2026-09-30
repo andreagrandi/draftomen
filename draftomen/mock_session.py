@@ -40,6 +40,7 @@ from draftomen.session import (
     PoolState,
     ProgressState,
     RatingsState,
+    WAITING_FOR_DRAFT_MESSAGE,
     SessionError,
     SetProfileState,
     Recommendation,
@@ -478,7 +479,7 @@ def _snapshot_for_scenario(*, scenario: MockScenario) -> LiveSessionSnapshot:
         return LiveSessionSnapshot(
             status=ApplicationStatus(
                 phase=ApplicationPhase.WAITING_FOR_DRAFT,
-                message="Waiting for a Quick Draft.",
+                message=WAITING_FOR_DRAFT_MESSAGE,
             ),
             accounts=ready.accounts,
             active_account=ready.active_account,

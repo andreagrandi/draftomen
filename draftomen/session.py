@@ -127,7 +127,7 @@ LOG_SETUP_GUIDANCE = (
     "required, then return to Draft Omen and try again while Arena is running."
 )
 
-WAITING_FOR_DRAFT_MESSAGE = "Waiting for a Quick Draft."
+WAITING_FOR_DRAFT_MESSAGE = "Waiting for a draft."
 RECENT_PICK_LIMIT = 24
 
 
@@ -4416,7 +4416,7 @@ class LiveSession:
                     self.snapshot,
                     status=ApplicationStatus(
                         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-                        message=f"Preparing Quick Draft data for {event.set_code}.",
+                        message=f"Preparing draft data for {event.set_code}.",
                     ),
                     accounts=self._known_accounts(),
                     active_account=active_account,
@@ -4487,7 +4487,7 @@ class LiveSession:
                     set_profile=SetProfileState(),
                     status=ApplicationStatus(
                         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-                        message="Waiting for a Quick Draft.",
+                        message=WAITING_FOR_DRAFT_MESSAGE,
                     ),
                     accounts=self._known_accounts(),
                     active_account=identity,
