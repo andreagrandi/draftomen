@@ -4,7 +4,7 @@
 
 # Draft Omen
 
-Draft Omen is an unofficial desktop draft assistant for MTG Arena Quick Drafts. Its PySide6/QML application reads Arena's local `Player.log`, recognizes each pack and pick, and ranks the available cards while you draft. When the draft is complete, it also suggests a 40-card deck from your pool. A terminal interface with the same draft behavior is available as `draftomen-tui`.
+Draft Omen is an unofficial desktop draft assistant for MTG Arena Quick, Premier, Traditional and Pick-Two drafts. Its PySide6/QML application reads Arena's local `Player.log`, recognizes each pack and pick, and ranks the available cards while you draft. When the draft is complete, it also suggests a 40-card deck from your pool. A terminal interface with the same draft behavior is available as `draftomen-tui`.
 
 Draft Omen is read-only: it does not write to, inject into, or automate MTG Arena. Card details come from [Scryfall](https://scryfall.com/) and draft statistics come from [17Lands](https://www.17lands.com/).
 
@@ -26,17 +26,40 @@ After the draft, the Suggested deck view shows an automatic UR pair and a 40-car
 
 Draft Omen keeps the data behind every recommendation visible instead of presenting a black-box pick order:
 
-- **17Lands ratings:** each card shows its Games-in-Hand win rate (`17L WR`) and a 17Lands-style grade. Quick Draft data is preferred; Premier Draft data is used as a fallback when Quick Draft samples are missing or too small.
+- **17Lands ratings:** each card shows its Games-in-Hand win rate (`17L WR`) and a 17Lands-style grade. Ratings come from the draft's own format first. Premier Draft data fills in when that format has no data or too few samples, and the rating label marks the fallback with `*`, such as `Premier*`.
 - **DO Score:** the default 0-100 ranking normalizes 17Lands win rates across the set. A card without a reliable sample starts from a neutral score of 50, adjusted by its Average Last Seen At (`ALSA`) when available. The five freely available basic lands instead score 0 and rank after draftable cards.
 - **Color fit:** early picks stay open. From pick 6 onward, scores gradually favor the colors supported by the drafted pool; from pick 16, on-color cards receive the full bonus and off-color cards the full penalty. Strong picks influence the inferred color pair more than filler.
 - **Close early picks:** when two cards have similar scores, set- and format-specific 17Lands color-pair win rates can break the tie without forcing an early commitment.
 - **Conservative splashing:** an `A`-range, single-pip card can be marked as a visible third-color splash when it is materially better than the on-color choices and the pool can support its mana. Draft Omen limits this to one extra color and two cards.
-- **Transparent alternatives:** press `s` to compare rankings by DO Score, raw 17Lands win rate, ALSA, or mana value. The interface also identifies neutral-prior and Premier-fallback rows.
+- **Transparent alternatives:** press `s` to compare rankings by DO Score, raw 17Lands win rate, ALSA, or mana value. The interface also identifies neutral-prior and fallback rows.
 - **Deck suggestion:** the builder evaluates two-color pairs using card quality and 17Lands pair performance, then chooses spells and lands while considering creatures, curve, colored mana requirements, and cached 17Lands deck-structure targets when available.
 
 DO Score is the default because it performed better than raw 17Lands win rate in Draft Omen's offline pick benchmarks. It is still guidance rather than a perfect pick order: public statistics reflect the decks, players, and contexts in which cards were played.
 
 For the complete methodology, see [pick scoring](docs/pick-scoring.md), [benchmarking](docs/benchmarking.md), and the [deck builder](docs/deck-builder.md).
+
+## Supported draft formats
+
+Draft Omen follows four Arena draft formats. It reads the format from the event name when you join, not from the cards in the pack.
+
+| Format | Packs | Picks per pack | Cards per pick | Ratings, in order |
+|---|---|---|---|---|
+| Quick Draft | 3 | 14 | 1 | QuickDraft |
+| Premier Draft | 3 | 14 | 1 | PremierDraft |
+| Traditional Draft | 3 | 14 | 1 | TradDraft, then PremierDraft |
+| Pick-Two Draft | 3 | 7 | 2 | PickTwoDraft, then PremierDraft |
+
+Traditional Draft is the best-of-three human draft. It drafts like Premier Draft and differs only in match rules. Traditional drafting has no real Arena log sample yet, so it is tested only with a synthetic log.
+
+In Pick-Two you take two cards from each pack, so a draft has 21 picks and 42 cards. Progress reads "Pack 1 of 3 · Pick 4 of 7 · take 2 cards", and the pool counts cards separately from picks.
+
+Human drafts have limits the bot draft does not:
+
+- Arena sometimes skips logging a pack. Draft Omen then shows no recommendation for that pick.
+- Arena sometimes skips logging a pick. That pick stays empty. When the draft ends, Draft Omen saves the full card pool Arena reports, so the deck builder still sees all 42 cards.
+- Mocked Draft offers Quick and Pick-Two only. A Premier or Traditional mock with bots would draft exactly like a Quick Draft.
+
+The [log format](docs/log-format.md) describes how each format is read.
 
 ## How to use it
 
@@ -68,7 +91,7 @@ In MTG Arena, open **Settings → Account**, enable **Detailed Logs (Plugin Supp
 
 ### 3. Start Draft Omen
 
-Open the Draft Omen app before entering a Quick Draft. From a source checkout, run:
+Open the Draft Omen app before entering a draft. From a source checkout, run:
 
 ```bash
 uv run draftomen
@@ -257,6 +280,20 @@ uv run pre-commit install
 To check the whole repository, run `uv run ruff check .`. The nox `ci` session
 runs the same check.
 
+### Private Arena logs
+
+Real `Player.log` and `UTC_Log` files are private development inputs, not
+repository fixtures. They contain account ids, screen names and session ids.
+Keep them under `.git/private/player-logs/`, which git never tracks, and
+summarise them with `uv run python scripts/verify_real_logs.py`. The
+`public-samples/` folder there holds anonymised samples from third parties and
+is private too.
+
+Never commit or publish a raw log, an excerpt from one, an anonymised
+third-party sample, or anything that identifies a player. That covers issues,
+pull requests and screenshots. Tests use hand-written synthetic fixtures. See
+[private logs](docs/log-format.md#private-logs) for details.
+
 ### Visual development
 
 For deterministic visual development, launch the explicit forced-mock entry
@@ -426,7 +463,7 @@ tree, see [Native Test Draft smoke
 bundle guide, which lists the prerequisites, the prepared app directory, and
 both journey summary lines.
 
-Live recommendations currently support Quick Draft. Windows support is best-effort.
+Windows support is best-effort.
 
 ## Troubleshooting
 

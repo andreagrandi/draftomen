@@ -14,7 +14,7 @@
   <Properties>
     <DisplayName>Draft Omen</DisplayName>
     <PublisherDisplayName>Andrea Grandi</PublisherDisplayName>
-    <Description>An unofficial Quick Draft assistant for MTG Arena</Description>
+    <Description>An unofficial draft assistant for MTG Arena</Description>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Dependencies>
@@ -34,7 +34,7 @@
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Draft Omen"
-        Description="An unofficial Quick Draft assistant for MTG Arena"
+        Description="An unofficial draft assistant for MTG Arena"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png">

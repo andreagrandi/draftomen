@@ -1,6 +1,6 @@
 # PRD — Draft Omen (GUI + CLI/TUI)
 
-*An unofficial Quick Draft assistant for MTG Arena.*
+*An unofficial draft assistant for MTG Arena Quick, Premier, Traditional and Pick-Two drafts.*
 
 | | |
 |---|---|
@@ -9,13 +9,13 @@
 | **Date** | 2026-07-03 |
 | **Platform** | macOS (primary target); cross-platform capable (Python) — Windows supported best-effort |
 | **Interface** | PySide6/QML GUI (live default), `draftomen-tui` terminal interface, and plain CLI output for replay/scripting |
-| **Target user** | Single user (personal tool), Quick Draft player on MTG Arena; may use multiple Arena accounts on the same computer |
+| **Target user** | Single user (personal tool), Limited drafter on MTG Arena; may use multiple Arena accounts on the same computer |
 
 ---
 
 ## 1. Summary
 
-A desktop application that assists a player during **MTG Arena Quick Drafts**. The live PySide6/QML interface watches Arena's local log file, identifies the cards offered in each pack, and displays a live **score-ranked list** (highest → lowest) of the pack's cards based on **17lands QuickDraft statistics**, progressively biasing scores toward the player's committed colors (target: a two-color deck). The stable `draftomen-tui` terminal command provides the same live workflow and plain CLI modes. When the last pick is made, the **deck builder triggers automatically** and proposes a 40-card deck: chosen color pair, 23 spells balanced between creatures and other spells with a sane mana curve, and a mana base (drafted nonbasic lands + basic land counts) — with deck structure informed by what winning 17lands decks look like.
+A desktop application that assists a player during **MTG Arena Quick, Premier, Traditional and Pick-Two drafts**. The live PySide6/QML interface watches Arena's local log file, identifies the cards offered in each pack, and displays a live **score-ranked list** (highest → lowest) of the pack's cards based on **17lands statistics for the draft's format**, progressively biasing scores toward the player's committed colors (target: a two-color deck). The stable `draftomen-tui` terminal command provides the same live workflow and plain CLI modes. When the last pick is made, the **deck builder triggers automatically** and proposes a 40-card deck: chosen color pair, 23 spells balanced between creatures and other spells with a sane mana curve, and a mana base (drafted nonbasic lands + basic land counts) — with deck structure informed by what winning 17lands decks look like.
 
 The tool reads data; it never writes to, injects into, or automates the game client.
 
@@ -42,9 +42,9 @@ Two distinct notions of "account," both handled:
 
 ### Goals (v1)
 
-1. Live pick recommendations during **Quick Draft only**, from P1P1 through the final pick.
+1. Live pick recommendations during **Quick, Premier, Traditional and Pick-Two drafts**, from P1P1 through the final pick. The format comes from the event name, and each format's pack rules set the pick count and the cards taken per pick (§3.1).
 2. Per-pick display: every offered card with a **single, comparable score**, sorted highest → lowest, showing card name and color(s).
-3. Scores driven by 17lands **QuickDraft** card data, with automatic fallback to PremierDraft data when QuickDraft samples are unavailable or too thin (early in a set's run).
+3. Scores driven by 17lands card data for the draft's own format, with automatic fallback to PremierDraft data when that format's samples are unavailable or too thin (early in a set's run, or for rarer formats such as Traditional and Pick-Two).
 4. Color-aware scoring that starts open and converges on the best **two-color pair** as the pool grows.
 5. **Deck builder auto-triggered when no picks remain** (also runnable on demand): pair selection, 23-spell list with creature/spell balance and curve constraints, land count including drafted duals, basics split by pip count. Output is a build sheet the player replicates in the Arena client. Deck structure targets anchored to winning-deck patterns from 17lands (see FR-5.6).
 6. **Multi-account correctness**: per-OS-user log resolution and per-MTGA-account state separation.
@@ -54,7 +54,7 @@ Two distinct notions of "account," both handled:
 
 ### Non-Goals (v1)
 
-- Premier Draft, Traditional Draft, Sealed, Cube.
+- Sealed, Cube, and constructed formats such as Standard.
 - Screen reading / OCR.
 - Match tracking, collection tracking, win-rate dashboards.
 - Automatic deck import into Arena (the client does not support Limited decklist import; the build sheet is applied manually).
@@ -70,7 +70,8 @@ Two distinct notions of "account," both handled:
 
 - Arena writes `Player.log`; requires the in-game setting **Detailed Logs (Plugin Support)** (Settings → Account), then a client restart.
 - The log is **reset on every game restart**; the previous session is moved to `Player-prev.log`.
-- Quick Draft (bot draft) is the *easy* case: pack contents and picks are logged pick-by-pick, **including P1P1**. (The well-known "P1P1 missing until P1P2" quirk affects only human drafts — Premier/Traditional — and is irrelevant to this tool.)
+- Quick Draft (bot draft) is the *easy* case: pack contents and picks are logged pick-by-pick, **including P1P1**. Human drafts (Premier, Traditional and Pick-Two) log each pack as a `Draft.Notify` line and each pick as an `EventPlayerDraftMakePick` request, with 1-based coordinates. Arena can skip a notify, including the P1P1 one, or a pick request, so the parser keeps gaps rather than guessing. [log-format.md](log-format.md) records the protocol.
+- Premier and Traditional take one card per pick from 14-card packs. Traditional is the best-of-three variant and drafts the same way. Pick-Two takes two cards per pick, so each pack gives 7 logical picks and the draft ends with 42 cards from 21 picks.
 - Historical event markers for bot drafts in reference implementations: `BotDraft_DraftStatus` / `BotDraft_DraftPick` carrying JSON with pack number, pick number, and card IDs. **Exact current tokens must be confirmed empirically** (see M0) — event names drift across Arena patches.
 - Session-start log lines carry the logged-in Arena account identity (screen name / user id); exact token to be confirmed at M0 alongside the draft events.
 - As a cross-check, Arena also logs the event card pool when entering the deck-building screen.
@@ -114,7 +115,7 @@ Both defaults derive from the running OS user's home directory, which is what gu
 
 ## 4. User stories
 
-1. *As a drafter*, when a Quick Draft pack is offered, I see within ~1 second every card in the pack with a **score**, ordered highest to lowest, with card name and color(s), so I can pick confidently at a glance.
+1. *As a drafter*, when a draft pack is offered, I see within ~1 second every card in the pack with a **score**, ordered highest to lowest, with card name and color(s), so I can pick confidently at a glance.
 2. *As a drafter*, as my pool grows, scores increasingly favor my strongest two colors, so I end up with a coherent bi-color deck.
 3. *As a drafter*, at any point I can see my current pool, the tool's inferred color pair, and which Arena account the session belongs to.
 4. *As a drafter with two Arena accounts on this computer*, the tool always reads the current OS user's logs and keeps each Arena account's drafts and pools separate, so recommendations never mix accounts.
@@ -135,12 +136,12 @@ Both defaults derive from the running OS user's home directory, which is what gu
 - FR-1.3 Detect truncation/recreation (inode change or size shrink) and reset the offset; on startup, optionally scan `Player-prev.log` + current log to recover an in-progress draft.
 - FR-1.4 Tolerate partial trailing lines (buffer until newline).
 
-### FR-2 Quick Draft event parser & account awareness
+### FR-2 Draft event parser & account awareness
 
 - FR-2.1 Detect the **active MTGA account** from session-start log events; expose it to the UI and state layer. If the account changes mid-stream (relog), close out the previous account's context cleanly.
-- FR-2.2 Detect Quick Draft entry from the live `EventJoin` request before the first pack, then confirm draft start from course state, including set code and event identity. Historical startup scans must not present an old entry as the upcoming draft.
+- FR-2.2 Detect draft entry and format from event metadata before the first pack: the live `EventJoin` request, the course state, or for human drafts the table draft queue line. Never infer the format from pack contents. Historical startup scans must not present an old entry as the upcoming draft.
 - FR-2.3 For each pick: extract pack number, pick number, offered card `grpId`s.
-- FR-2.4 Extract the player's chosen card for each pick; maintain the pool.
+- FR-2.4 Extract the player's chosen cards for each pick, one or two depending on the format; maintain the pool.
 - FR-2.5 Detect **draft completion** (explicit event if present; otherwise inferred at final pick with full pool count) — this is the auto-trigger for the deck builder.
 - FR-2.6 Persist draft state (pool, picks, set, timestamps) to disk keyed by **(MTGA account id, draft/event id)**.
 - FR-2.7 Parser is built and tested against **captured fixture logs** checked into the repo, never against assumed formats.
@@ -149,12 +150,12 @@ Both defaults derive from the running OS user's home directory, which is what gu
 ### FR-3 Static data layer
 
 - FR-3.1 Scryfall bulk download → local `grpId → {name, colors, mana_value, rarity, types}` map; cached; manual `refresh-data` command.
-- FR-3.2 17lands ratings fetch per (set, format=QuickDraft) and all-time period: GIH WR, OH WR, ALSA, IWD, sample counts; cached with timestamp. The all-time period preserves historical samples when a set returns to draft. The TUI asks before the first download for a set, shows request progress, replaces legacy date-range caches, and auto-refreshes an existing current cache if it is > 24 h old.
-- FR-3.3 Fallback chain: QuickDraft data → PremierDraft data (flagged in UI) → neutral prior.
+- FR-3.2 17lands ratings fetch per (set, format) and all-time period, where format is the draft's own 17lands format: GIH WR, OH WR, ALSA, IWD, sample counts; cached with timestamp. The all-time period preserves historical samples when a set returns to draft. The TUI asks before the first download for a set, shows request progress, replaces legacy date-range caches, and auto-refreshes an existing current cache if it is > 24 h old.
+- FR-3.3 Fallback chain: the draft's own format → PremierDraft data (flagged in UI) → neutral prior. Quick uses `QuickDraft`, Premier uses `PremierDraft`, Traditional uses `TradDraft` and Pick-Two uses `PickTwoDraft`. [pick-scoring.md](pick-scoring.md#draft-formats-and-ratings-fallback) holds the full table.
 - FR-3.4 Color-pair win rates for the set (10 two-color pairs) fetched and cached on the same cadence.
 - FR-3.5 Attribution line "Card data from 17Lands (17lands.com)" visible in the TUI footer and on build sheets.
 - FR-3.6 All caches and state live under a single app data directory (e.g., `~/.draftomen/`), with per-account subdirectories for draft state.
-- FR-3.7 Before P1P1, show exactly one set-level 0–100 reliability value derived from aggregate Quick Draft coverage, Premier fallback coverage, and sample depth. Hide it when the first pack appears. This value is presentation-only and must never enter card scoring, ranking, fallback resolution, color commitment, backtests, benchmarks, or deck building.
+- FR-3.7 Before P1P1, show exactly one set-level 0–100 reliability value derived from aggregate own-format coverage, Premier fallback coverage, and sample depth. Hide it when the first pack appears. This value is presentation-only and must never enter card scoring, ranking, fallback resolution, color commitment, backtests, benchmarks, or deck building.
 
 ### FR-4 Pick engine & pick display
 
@@ -227,7 +228,7 @@ Both defaults derive from the running OS user's home directory, which is what gu
 draftomen/
   paths.py        # FR-1.1 / NFR-8: per-OS log path & app-dir resolution
   logfollow.py    # FR-1: offset-persisted poller, rotation handling
-  events.py       # FR-2: account detection, quick-draft events, completion detection
+  events.py       # FR-2: account detection, bot and human draft events, completion detection
   carddb.py       # FR-3: Scryfall bulk → grpId map (cache)
   seventeen.py    # FR-3: 17lands ratings + pair WRs (cache, fallback chain, attribution)
   pickengine.py   # FR-4: ratings → normalized 0–100 score, color commitment
@@ -282,7 +283,7 @@ M0–M5 are each sized as a weekend-or-less chunk; the TUI (M6) is deliberately 
 |---|---|---|---|
 | Arena patch changes log event names/format | High (recurring) | Tool breaks until patched | Fixture-driven parser; loud failures (FR-2.8); maintained community forks as canary; parser isolated in one module |
 | Account-identity token in logs is unclear/absent | Low–medium | Per-account separation degraded | Confirm at M0; fallback: hash of whatever stable session identity exists; worst case, `--account` manual flag |
-| QuickDraft data absent/thin early in a set | Certain, cyclically | Weaker recommendations | Automatic PremierDraft fallback, clearly flagged (FR-3.3) |
+| Own-format data absent/thin early in a set or for Traditional and Pick-Two | Certain, cyclically | Weaker recommendations | Automatic PremierDraft fallback, clearly flagged (FR-3.3) |
 | Cards under 500 samples have no WR | Certain for some rares | Scoring gaps | ALSA-adjusted neutral prior (FR-4.1) |
 | GIH WR bias (deck/player quality confounds) | Inherent | Occasional bad advice | Score not gospel; bench output makes overrides easy; documented limitation |
 | 17lands endpoint shape changes (no stability guarantee) | Medium | Data layer breaks | Thin fetch module, cached last-good data, daily cadence keeps us low-profile |
@@ -307,7 +308,6 @@ M0–M5 are each sized as a weekend-or-less chunk; the TUI (M6) is deliberately 
 
 - M7 hardening: per-set/per-pair empirically fitted structure targets from 17lands public data dumps (CC BY 4.0), refreshed per set.
 - Broader three-color archetype support beyond the conservative one-color splash policy.
-- Premier/Traditional draft support (requires handling the P1P1 log quirk).
 - Native UI (menu-bar / floating panel) on top of the stabilized core.
 - Localized card names in output.
 - Manual tier-list import for day-one new sets.

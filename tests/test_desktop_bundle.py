@@ -928,7 +928,7 @@ def test_native_specs_preserve_project_metadata() -> None:
         else:
             assert "--assume-yes-for-downloads" not in nuitka_args
             assert (
-                "--file-description=An unofficial Quick Draft assistant for MTG Arena"
+                "--file-description=An unofficial draft assistant for MTG Arena"
                 in nuitka_args
             )
 
