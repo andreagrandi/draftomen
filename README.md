@@ -327,13 +327,19 @@ uv run draftomen-tui test-draft \
   --draftmancer-dir ../Draftmancer
 ```
 
-`test-draft` always drafts automatically: it confirms the first ranked
-recommendation of every offered pack, prints one
+`test-draft` always drafts automatically: it confirms the top ranked
+recommendations of every offered pack, prints one
 `Pack N pick M: <card> (grpId <id>)` line per accepted pick, and finishes with
-the ordinary deck-builder report. It reads the configured card-data cache and
+the ordinary deck-builder report. A Pick-Two line lists both cards, separated
+by a comma. It reads the configured card-data cache and
 set profiles from the normal application directory, keeps simulated draft state
 and audit records in a private temporary directory, and neither reads nor
 changes Arena draft history.
+
+`--format` picks the simulated draft: `quick` (default) runs an 8-seat pod with
+seven bots and one card per pick, `pick_two` runs a 4-seat pod with three bots
+and two cards per pick. Premier and Traditional are human drafts and are not
+offered.
 
 `--set-code` accepts any set present in both Draftmancer's `MTGASets` and the
 local card-data cache (HOB by default); an unsupported set fails before any

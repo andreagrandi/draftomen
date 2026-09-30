@@ -3012,12 +3012,22 @@ def test_live_adapter_loads_the_available_augmentation_model_off_gui_thread(
 # --------------------------------------------------------------------------
 
 
+_EXPECTED_FORMATS: list[dict[str, object]] = [
+    {"key": "quick", "label": "Quick Draft"},
+    {"key": "pick_two", "label": "Pick-Two Draft"},
+]
+
+
 _DISABLED_TEST_DRAFT_STATE: dict[str, object] = {
     "enabled": False,
     "active": False,
     "phase": "idle",
     "mode": None,
     "set_code": None,
+    "draft_format": None,
+    "supported_formats": _EXPECTED_FORMATS,
+    "cards_per_pick": 0,
+    "offered_grp_ids": [],
     "supported_sets": [],
     "default_set_code": None,
     "pending": False,
@@ -3139,7 +3149,7 @@ class _FakeTestDraftController:
         self.start_calls = 0
         self.start_thread_ids: list[int] = []
         self.inspect_calls = 0
-        self.confirm_calls: list[tuple[int, TestDraftOfferIdentity]] = []
+        self.confirm_calls: list[tuple[tuple[int, ...], TestDraftOfferIdentity]] = []
         self.run_auto_calls = 0
         self._inspections = deque(inspections)
         self._confirm = confirm
@@ -3168,13 +3178,13 @@ class _FakeTestDraftController:
     def confirm(
         self,
         *,
-        grp_id: int,
+        grp_ids: tuple[int, ...],
         expected_offer: TestDraftOfferIdentity,
     ) -> object:
-        self.confirm_calls.append((grp_id, expected_offer))
+        self.confirm_calls.append((grp_ids, expected_offer))
         if self._confirm is None:
             raise AssertionError("the simulated confirm call is not scripted.")
-        return self._confirm(grp_id=grp_id, expected_offer=expected_offer)
+        return self._confirm(grp_ids=grp_ids, expected_offer=expected_offer)
 
     def run_auto(self) -> object:
         self.run_auto_calls += 1
@@ -3331,6 +3341,7 @@ class _RecordingTestDraftFactory:
         *,
         server_url: str,
         set_code: str,
+        draft_format: DraftFormat,
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
@@ -3339,6 +3350,7 @@ class _RecordingTestDraftFactory:
             {
                 "server_url": server_url,
                 "set_code": set_code,
+                "draft_format": draft_format,
                 "splash_enabled": splash_enabled,
                 "contextual_adjustments_enabled": (
                     contextual_adjustments_enabled
@@ -3353,6 +3365,7 @@ class _RecordingTestDraftFactory:
             return self.runtime_factory(
                 server_url=server_url,
                 set_code=set_code,
+                draft_format=draft_format,
                 publisher=publisher,
                 splash_enabled=splash_enabled,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
@@ -3456,8 +3469,8 @@ def test_live_adapter_without_test_draft_opt_in_ignores_test_draft_commands(
         )
 
         polls_before_commands = len(session.poll_thread_ids)
-        adapter.startTestDraft("manual", "hob")
-        adapter.pickTestDraft(1, 1)
+        adapter.startTestDraft("manual", "hob", "quick")
+        adapter.pickTestDraft([1], 1)
         adapter.leaveTestDraft()
         _process_until(
             application=qcore_application,
@@ -3607,7 +3620,7 @@ def test_live_adapter_keeps_gui_thread_responsive_during_blocked_test_draft_star
             and bool(sessions[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["pending"] is True
@@ -3706,7 +3719,7 @@ def test_live_adapter_ignores_late_arena_results_while_test_draft_is_authoritati
         )
         assert client.calls == [("OTJ", "QuickDraft", False)]
 
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["active"] is True
@@ -3808,7 +3821,7 @@ def test_live_adapter_start_failure_keeps_arena_authoritative(
             predicate=lambda: _published_set_codes(state=adapter.state) == ["hob"],
             description="the published Test Draft capability",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
@@ -3922,7 +3935,7 @@ def test_live_adapter_clearing_mocked_draft_factory_restores_arena_authority(
             description="the initial Arena poll",
         )
         arena = arenas[0]
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -3990,7 +4003,7 @@ def test_live_adapter_applies_mocked_draft_toggle_after_a_blocked_start(
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: controller.started.is_set()
@@ -4022,7 +4035,7 @@ def test_live_adapter_applies_mocked_draft_toggle_after_a_blocked_start(
         arena = arenas[0]
         assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
 
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: len(arena.poll_thread_ids) >= 2,
@@ -4060,7 +4073,7 @@ def test_live_adapter_ignores_reinstalling_the_same_mocked_draft_factory(
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -4144,6 +4157,7 @@ class _RealTestDraftRuntimeFactory:
         *,
         server_url: str,
         set_code: str,
+        draft_format: DraftFormat,
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
@@ -4163,6 +4177,7 @@ class _RealTestDraftRuntimeFactory:
             scryfall_bulk_file=self._sources.bulk_path,
             server_url=server_url,
             set_code=set_code,
+            draft_format=draft_format,
             timeout_seconds=self._timeout_seconds,
             source_app_dir=self._sources.normal_app_dir,
             profile_manifest_url=None,
@@ -4251,7 +4266,7 @@ def test_live_adapter_publishes_manual_test_draft_snapshots_off_gui_thread(
         assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
         assert arena.snapshot.build is not None
 
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -4338,7 +4353,7 @@ def test_live_adapter_loads_augmented_model_for_manual_test_draft_offer(
         augmentation_enabled=True,
     )
     try:
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
@@ -4380,7 +4395,7 @@ def test_live_adapter_keeps_augmentation_choice_across_test_draft_source_changes
         augmented_model_client=client,
     )
     try:
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
@@ -4412,7 +4427,7 @@ def test_live_adapter_keeps_augmentation_choice_across_test_draft_source_changes
             if isinstance(command, ChangeAugmentation)
         ] == [ChangeAugmentation(enabled=True)]
 
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
@@ -4462,7 +4477,7 @@ def test_live_adapter_keeps_manual_draft_on_basic_do_when_augmented_model_unavai
     )
     baseline_adapter: LiveSessionAdapter | None = None
     try:
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
@@ -4493,7 +4508,7 @@ def test_live_adapter_keeps_manual_draft_on_basic_do_when_augmented_model_unavai
             socket=_helper_socket(states=_arena_states()),
             augmented_model_client=baseline_client,
         )
-        baseline_adapter.startTestDraft("manual", "hob")
+        baseline_adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: baseline_adapter.state["test_draft"]["offer_generation"]
@@ -4509,7 +4524,7 @@ def test_live_adapter_keeps_manual_draft_on_basic_do_when_augmented_model_unavai
         baseline_adapter = None
 
         first_choice = adapter.state["recommendations"]["cards"][0]["card"]["grp_id"]
-        adapter.pickTestDraft(first_choice, 1)
+        adapter.pickTestDraft([first_choice], 1)
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 2,
@@ -4538,7 +4553,7 @@ def test_live_adapter_runs_auto_test_draft_to_completion_and_build(
         socket=socket,
     )
     try:
-        adapter.startTestDraft("auto", "hob")
+        adapter.startTestDraft("auto", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["phase"] == "completed",
@@ -4594,7 +4609,7 @@ def test_live_adapter_rejects_stale_and_duplicate_test_draft_generations(
         socket=socket,
     )
     try:
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -4605,10 +4620,10 @@ def test_live_adapter_rejects_stale_and_duplicate_test_draft_generations(
         # The stale generation, the future generation, and the duplicate of the
         # current generation are queued back to back; only the one call holding
         # the current generation may reach the simulator.
-        adapter.pickTestDraft(rank_one_grp_id, 0)
-        adapter.pickTestDraft(rank_one_grp_id, 2)
-        adapter.pickTestDraft(rank_one_grp_id, 1)
-        adapter.pickTestDraft(rank_one_grp_id, 1)
+        adapter.pickTestDraft([rank_one_grp_id], 0)
+        adapter.pickTestDraft([rank_one_grp_id], 2)
+        adapter.pickTestDraft([rank_one_grp_id], 1)
+        adapter.pickTestDraft([rank_one_grp_id], 1)
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 2,
@@ -4650,7 +4665,7 @@ def test_live_adapter_leaves_test_draft_and_restores_arena_state(
         socket=socket,
     )
     try:
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -4674,6 +4689,10 @@ def test_live_adapter_leaves_test_draft_and_restores_arena_state(
             "phase": "idle",
             "mode": None,
             "set_code": None,
+            "draft_format": None,
+            "supported_formats": _EXPECTED_FORMATS,
+            "cards_per_pick": 0,
+            "offered_grp_ids": [],
             "supported_sets": _expected_sets("hob"),
             "default_set_code": "hob",
             "pending": False,
@@ -4804,7 +4823,7 @@ def test_live_adapter_refreshes_mocked_draft_profile_without_touching_arena(
         arena = arenas[0]
         assert arena_client.calls == [("OTJ", "QuickDraft", False)]
 
-        adapter.startTestDraft("manual", "dft")
+        adapter.startTestDraft("manual", "dft", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["active"] is True,
@@ -4863,7 +4882,7 @@ def test_live_adapter_leave_cancels_blocked_test_draft_and_closes_once(
         socket=socket,
     )
     try:
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: entered.is_set()
@@ -4908,7 +4927,7 @@ def test_live_adapter_shutdown_closes_blocked_test_draft_once(
         tmp_path=tmp_path,
         socket=socket,
     )
-    adapter.startTestDraft("manual", "hob")
+    adapter.startTestDraft("manual", "hob", "quick")
     try:
         _process_until(
             application=qcore_application,
@@ -4968,7 +4987,7 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
         assert arena.snapshot.recommendations.splash_enabled is False
         assert arena.snapshot.contextual_adjustments_enabled is False
 
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -4977,6 +4996,7 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
         assert factory.create_calls[0] == {
             "server_url": factory.server_url,
             "set_code": "hob",
+            "draft_format": DraftFormat.QUICK,
             "splash_enabled": False,
             "contextual_adjustments_enabled": False,
         }
@@ -5077,7 +5097,7 @@ def test_live_adapter_drops_a_start_that_a_pending_leave_owns(
         # Start and Leave are queued while the worker is still inside the
         # startup scan; the leave request marks the worker directly, so the
         # Start the worker has not reached yet must be dropped.
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         adapter.leaveTestDraft()
         arena.release.set()
 
@@ -5099,6 +5119,10 @@ def test_live_adapter_drops_a_start_that_a_pending_leave_owns(
             "phase": "idle",
             "mode": None,
             "set_code": None,
+            "draft_format": None,
+            "supported_formats": _EXPECTED_FORMATS,
+            "cards_per_pick": 0,
+            "offered_grp_ids": [],
             "supported_sets": _expected_sets("hob"),
             "default_set_code": "hob",
             "pending": False,
@@ -5157,7 +5181,7 @@ def test_live_adapter_ignores_publications_from_a_superseded_test_draft_runtime(
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -5176,7 +5200,7 @@ def test_live_adapter_ignores_publications_from_a_superseded_test_draft_runtime(
         )
         assert runtimes[0].close_calls == 1
 
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: len(factory.publishers) == 2
@@ -5251,7 +5275,7 @@ def test_live_adapter_replays_contextual_preference_on_leave(
             description="the initial Arena poll",
         )
         arena = arenas[0]
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -5307,8 +5331,10 @@ def test_live_adapter_keeps_gui_thread_responsive_during_blocked_test_draft_pick
         pool=replace(simulated.pool, total_cards=13),
     )
 
-    def confirm(*, grp_id: int, expected_offer: TestDraftOfferIdentity) -> object:
-        del grp_id, expected_offer
+    def confirm(
+        *, grp_ids: tuple[int, ...], expected_offer: TestDraftOfferIdentity
+    ) -> object:
+        del grp_ids, expected_offer
         entered.set()
         release.wait(timeout=3.0)
         return _ScriptedTestDraftStep(after=confirmed_snapshot)
@@ -5339,7 +5365,7 @@ def test_live_adapter_keeps_gui_thread_responsive_during_blocked_test_draft_pick
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -5349,7 +5375,7 @@ def test_live_adapter_keeps_gui_thread_responsive_during_blocked_test_draft_pick
             "grp_id"
         ]
 
-        adapter.pickTestDraft(rank_one_grp_id, 1)
+        adapter.pickTestDraft([rank_one_grp_id], 1)
         _process_until(
             application=qcore_application,
             predicate=lambda: entered.is_set()
@@ -5372,7 +5398,7 @@ def test_live_adapter_keeps_gui_thread_responsive_during_blocked_test_draft_pick
             and adapter.state["test_draft"]["offer_generation"] == 2,
             description="the confirmed Test Draft pick",
         )
-        assert controller.confirm_calls == [(rank_one_grp_id, _test_draft_offer())]
+        assert controller.confirm_calls == [((rank_one_grp_id,), _test_draft_offer())]
         assert controller.inspect_calls == 1
         assert adapter.state["pool"]["total_cards"] == 13
         assert adapter.state["test_draft"]["phase"] == "drafting"
@@ -5409,7 +5435,7 @@ def test_live_adapter_serves_and_releases_the_mocked_draft_server(
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -5465,7 +5491,7 @@ def test_live_adapter_releases_the_mocked_draft_server_when_the_draft_start_fail
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
@@ -5516,7 +5542,7 @@ def test_live_adapter_releases_the_mocked_draft_server_when_auto_startup_fails(
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("auto", "hob")
+        adapter.startTestDraft("auto", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["phase"] == "failed"
@@ -5568,7 +5594,7 @@ def test_live_adapter_publishes_the_mocked_draft_server_error(
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
@@ -5611,7 +5637,7 @@ def test_live_adapter_releases_the_mocked_draft_server_when_the_capability_is_cl
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -5657,7 +5683,7 @@ def test_live_adapter_releases_the_mocked_draft_server_at_shutdown(
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
@@ -5701,7 +5727,7 @@ def test_live_adapter_keeps_gui_thread_responsive_while_the_mocked_draft_server_
             predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
             description="the initial Arena poll",
         )
-        adapter.startTestDraft("manual", "hob")
+        adapter.startTestDraft("manual", "hob", "quick")
         _process_until(
             application=qcore_application,
             predicate=lambda: factory.ensure_calls == 1 and ticks.ticks > 0,
@@ -5810,6 +5836,10 @@ def test_live_adapter_downloads_the_missing_test_draft_bulk_file_off_the_gui_thr
             "phase": "idle",
             "mode": None,
             "set_code": None,
+            "draft_format": None,
+            "supported_formats": _EXPECTED_FORMATS,
+            "cards_per_pick": 0,
+            "offered_grp_ids": [],
             "supported_sets": _expected_sets("hob", "msh"),
             "default_set_code": "hob",
             "pending": False,
@@ -6011,6 +6041,216 @@ def test_live_adapter_reports_an_unavailable_set_card_data_download(
         )
         assert factory.card_data_calls == ["mat"]
         assert factory.create_calls == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def _start_fake_test_draft_adapter(
+    *,
+    application: QCoreApplication,
+    controller: _FakeTestDraftController,
+) -> tuple[LiveSessionAdapter, _RecordingTestDraftFactory]:
+    """Start one live adapter whose Test Draft factory serves a scripted controller."""
+    runtime = _FakeTestDraftRuntime(
+        session=_FakeTestDraftSession(),
+        controller=controller,
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    _process_until(
+        application=application,
+        predicate=lambda: _published_set_codes(state=adapter.state) == ["hob"],
+        description="the published Test Draft capability",
+    )
+    return adapter, factory
+
+
+def test_live_adapter_publishes_only_the_mocked_draft_formats(
+    qcore_application: QCoreApplication,
+) -> None:
+    adapter, _ = _start_fake_test_draft_adapter(
+        application=qcore_application,
+        controller=_FakeTestDraftController(),
+    )
+    try:
+        test_draft = adapter.state["test_draft"]
+        assert test_draft["supported_formats"] == _EXPECTED_FORMATS
+        assert [item["key"] for item in test_draft["supported_formats"]] == [
+            "quick",
+            "pick_two",
+        ]
+        assert test_draft["draft_format"] is None
+        assert test_draft["cards_per_pick"] == 0
+        assert test_draft["offered_grp_ids"] == []
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_starts_a_pick_two_test_draft_with_two_cards_per_pick(
+    qcore_application: QCoreApplication,
+) -> None:
+    controller = _FakeTestDraftController()
+    adapter, factory = _start_fake_test_draft_adapter(
+        application=qcore_application,
+        controller=controller,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob", "pick_two")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Pick-Two offer",
+        )
+        test_draft = adapter.state["test_draft"]
+        assert factory.create_calls[0]["draft_format"] == DraftFormat.PICK_TWO
+        assert test_draft["draft_format"] == "pick_two"
+        assert test_draft["cards_per_pick"] == 2
+        assert test_draft["offered_grp_ids"] == [1, 2, 3]
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_starts_a_quick_test_draft_with_one_card_per_pick(
+    qcore_application: QCoreApplication,
+) -> None:
+    adapter, factory = _start_fake_test_draft_adapter(
+        application=qcore_application,
+        controller=_FakeTestDraftController(),
+    )
+    try:
+        adapter.startTestDraft("manual", "hob", "quick")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Quick offer",
+        )
+        assert factory.create_calls[0]["draft_format"] == DraftFormat.QUICK
+        assert adapter.state["test_draft"]["draft_format"] == "quick"
+        assert adapter.state["test_draft"]["cards_per_pick"] == 1
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_fails_an_unsupported_mocked_draft_format_without_a_runtime(
+    qcore_application: QCoreApplication,
+) -> None:
+    adapter, factory = _start_fake_test_draft_adapter(
+        application=qcore_application,
+        controller=_FakeTestDraftController(),
+    )
+    try:
+        adapter.startTestDraft("manual", "hob", "premier")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "failed",
+            description="the unsupported format failure",
+        )
+        assert adapter.state["test_draft"]["error"] == (
+            "Unsupported Mocked Draft format: premier"
+        )
+        assert adapter.state["test_draft"]["active"] is False
+        assert factory.create_calls == []
+        assert factory.ensure_calls == 0
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_confirms_both_cards_of_a_pick_two_pick(
+    qcore_application: QCoreApplication,
+) -> None:
+    simulated = _test_draft_session_snapshot()
+    confirmed_snapshot = replace(
+        simulated,
+        pool=replace(simulated.pool, total_cards=9),
+    )
+
+    def confirm(
+        *, grp_ids: tuple[int, ...], expected_offer: TestDraftOfferIdentity
+    ) -> object:
+        del grp_ids, expected_offer
+        return _ScriptedTestDraftStep(after=confirmed_snapshot)
+
+    controller = _FakeTestDraftController(confirm=confirm)
+    adapter, _ = _start_fake_test_draft_adapter(
+        application=qcore_application,
+        controller=controller,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob", "pick_two")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Pick-Two offer",
+        )
+        adapter.pickTestDraft([1, 2], 1)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 2,
+            description="the confirmed Pick-Two pick",
+        )
+        assert controller.confirm_calls == [((1, 2), _test_draft_offer())]
+        assert adapter.state["test_draft"]["phase"] == "drafting"
+        assert adapter.state["test_draft"]["error"] is None
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+
+def test_live_adapter_ignores_a_pick_with_the_wrong_card_count_without_failing(
+    qcore_application: QCoreApplication,
+) -> None:
+    simulated = _test_draft_session_snapshot()
+
+    def confirm(
+        *, grp_ids: tuple[int, ...], expected_offer: TestDraftOfferIdentity
+    ) -> object:
+        del grp_ids, expected_offer
+        return _ScriptedTestDraftStep(after=simulated)
+
+    controller = _FakeTestDraftController(confirm=confirm)
+    adapter, _ = _start_fake_test_draft_adapter(
+        application=qcore_application,
+        controller=controller,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob", "pick_two")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Pick-Two offer",
+        )
+        # The wrong counts are followed by one valid pick, so the valid pick's
+        # arrival proves the earlier requests were handled and ignored.
+        adapter.pickTestDraft([1], 1)
+        adapter.pickTestDraft([1, 2, 3], 1)
+        adapter.pickTestDraft([], 1)
+        adapter.pickTestDraft([1, 2], 1)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 2,
+            description="the one valid Pick-Two pick",
+        )
+        assert controller.confirm_calls == [((1, 2), _test_draft_offer())]
+        assert adapter.state["test_draft"]["phase"] == "drafting"
+        assert adapter.state["test_draft"]["error"] is None
+        assert adapter.state["test_draft"]["active"] is True
     finally:
         adapter.shutdown()
         adapter.wait_for_shutdown()

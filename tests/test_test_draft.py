@@ -20,6 +20,7 @@ from draftomen.audit import DraftAuditStore, load_draft_audit_records
 from draftomen.card_data_client import card_data_cache_path
 from draftomen.cardimages import CardImageService
 from draftomen.deckbuilder import DeckBuilderError
+from draftomen.draft_format import DraftFormat
 from draftomen.draftmancer import (
     DraftmancerAdapter,
     DraftmancerAdapterError,
@@ -441,6 +442,7 @@ def _create_runtime(
     snapshot_publisher: SnapshotPublisher | None = None,
     simulation_app_dir: Path | None = None,
     card_image_service: CardImageService | None = None,
+    draft_format: DraftFormat = DraftFormat.QUICK,
 ) -> TestDraftRuntime:
     """Create one isolated runtime over the seeded card, profile, and bulk sources."""
 
@@ -457,6 +459,7 @@ def _create_runtime(
         simulation_app_dir=simulation_app_dir,
         socket_client=socket,
         card_image_service=card_image_service,
+        draft_format=draft_format,
     )
 
 
@@ -560,11 +563,11 @@ def test_manual_confirm_accepts_non_top_recommendation(tmp_path: Path) -> None:
 
     assert chosen != _rank_one(inspection)
 
-    step = controller.confirm(grp_id=chosen, expected_offer=inspection.offer)
+    step = controller.confirm(grp_ids=(chosen,), expected_offer=inspection.offer)
 
     booster_index = (100, 101, 102).index(chosen)
-    assert step.grp_id == chosen
-    assert step.unique_card_id == (11, 12, 13)[booster_index]
+    assert step.grp_ids[0] == chosen
+    assert step.unique_card_ids[0] == (11, 12, 13)[booster_index]
     assert _pick_card_calls(socket) == [
         {"pickedCards": [booster_index], "burnedCards": []}
     ]
@@ -599,8 +602,8 @@ def test_auto_confirms_rank_one_over_published_selection(tmp_path: Path) -> None
 
     step = controller.advance_auto()
 
-    assert step.grp_id == expected
-    assert step.grp_id != selection.recommendations.selected_grp_id
+    assert step.grp_ids[0] == expected
+    assert step.grp_ids[0] != selection.recommendations.selected_grp_id
     assert len(_pick_card_calls(socket)) == 1
     controller.close()
 
@@ -617,7 +620,7 @@ def test_inspect_refuses_completed_draft_without_picking_again(tmp_path: Path) -
 
     inspection = controller.start()
     step = controller.confirm(
-        grp_id=_rank_one(inspection),
+        grp_ids=(_rank_one(inspection),),
         expected_offer=inspection.offer,
     )
 
@@ -688,7 +691,7 @@ def test_inspect_refuses_unready_pack_state_without_submitting(tmp_path: Path) -
     # superseded pack can never look ready again.
     session.scripted_snapshot = None
     step = controller.confirm(
-        grp_id=_rank_one(inspection),
+        grp_ids=(_rank_one(inspection),),
         expected_offer=inspection.offer,
     )
     session.scripted_snapshot = inspection.snapshot
@@ -729,13 +732,13 @@ def test_confirm_refuses_forged_and_superseded_tokens_without_submitting(
             TestDraftError,
             match="not the current offered pack",
         ) as forged_error:
-            controller.confirm(grp_id=_rank_one(inspection), expected_offer=forged)
+            controller.confirm(grp_ids=(_rank_one(inspection),), expected_offer=forged)
         assert forged_error.value.stage == "readiness"
         assert forged_error.value.steps == ()
     assert _pick_card_calls(socket) == []
 
     step = controller.confirm(
-        grp_id=_rank_one(inspection),
+        grp_ids=(_rank_one(inspection),),
         expected_offer=inspection.offer,
     )
 
@@ -743,7 +746,7 @@ def test_confirm_refuses_forged_and_superseded_tokens_without_submitting(
         TestDraftError,
         match="not the current offered pack",
     ) as stale_error:
-        controller.confirm(grp_id=step.grp_id, expected_offer=inspection.offer)
+        controller.confirm(grp_ids=(step.grp_ids[0],), expected_offer=inspection.offer)
 
     assert stale_error.value.stage == "readiness"
     assert stale_error.value.steps == (step,)
@@ -765,10 +768,10 @@ def test_repeated_confirmation_submits_and_records_one_pick(tmp_path: Path) -> N
 
     inspection = controller.start()
     chosen = _rank_one(inspection)
-    step = controller.confirm(grp_id=chosen, expected_offer=inspection.offer)
+    step = controller.confirm(grp_ids=(chosen,), expected_offer=inspection.offer)
 
     with pytest.raises(TestDraftError) as repeat:
-        controller.confirm(grp_id=chosen, expected_offer=inspection.offer)
+        controller.confirm(grp_ids=(chosen,), expected_offer=inspection.offer)
 
     assert repeat.value.stage == "readiness"
     assert repeat.value.steps == (step,)
@@ -817,14 +820,14 @@ def test_confirm_refuses_repeat_after_ambiguous_pick_without_resubmitting(
     # A rejected acknowledgement is reported as a drafting failure, and the
     # offer identity stays consumed so the caller cannot retry it blindly.
     with pytest.raises(TestDraftError, match="did not accept the pick") as rejected:
-        controller.confirm(grp_id=chosen, expected_offer=inspection.offer)
+        controller.confirm(grp_ids=(chosen,), expected_offer=inspection.offer)
 
     assert rejected.value.stage == "drafting"
     assert rejected.value.steps == ()
     assert isinstance(rejected.value.__cause__, DraftmancerAdapterError)
 
     with pytest.raises(TestDraftError, match="already confirmed") as repeated:
-        controller.confirm(grp_id=chosen, expected_offer=inspection.offer)
+        controller.confirm(grp_ids=(chosen,), expected_offer=inspection.offer)
 
     assert repeated.value.stage == "readiness"
     assert repeated.value.steps == ()
@@ -889,7 +892,7 @@ def test_advance_auto_carries_accepted_picks_into_the_production_pool(
         next_pack = step.after.current_pack_event
         assert step.after.status.phase is ApplicationPhase.DRAFTING
         assert next_pack is not None
-        assert next_pack.pool_grp_ids == step.before.offer.pool_grp_ids + (step.grp_id,)
+        assert next_pack.pool_grp_ids == step.before.offer.pool_grp_ids + (step.grp_ids[0],)
 
     completed = steps[-1].after
     assert completed.status.phase is ApplicationPhase.DRAFT_COMPLETE
@@ -900,7 +903,7 @@ def test_advance_auto_carries_accepted_picks_into_the_production_pool(
         for card in completed.pool.cards
         for _ in range(card.quantity)
     )
-    assert drafted == Counter(step.grp_id for step in steps)
+    assert drafted == Counter(step.grp_ids[0] for step in steps)
     controller.close()
 
 
@@ -923,9 +926,9 @@ def test_duplicate_copies_confirm_the_first_matching_instance(tmp_path: Path) ->
     inspection = controller.start()
     assert inspection.offer.offered_grp_ids == (100, 100)
 
-    step = controller.confirm(grp_id=100, expected_offer=inspection.offer)
+    step = controller.confirm(grp_ids=(100,), expected_offer=inspection.offer)
 
-    assert step.unique_card_id == 11
+    assert step.unique_card_ids[0] == 11
     assert _pick_card_calls(socket) == [{"pickedCards": [0], "burnedCards": []}]
     assert step.after.current_pack_event is not None
     assert step.after.current_pack_event.pool_grp_ids == (100,)
@@ -970,9 +973,9 @@ def test_auto_run_exposes_ordered_inspections_and_the_normal_build(
         rows = before.recommendations.cards
         assert tuple(row.rank for row in rows) == tuple(range(1, len(rows) + 1))
         assert {row.card.grp_id for row in rows} == set(offered_grp_ids)
-        assert rows[0].card.grp_id == step.grp_id
+        assert rows[0].card.grp_id == step.grp_ids[0]
         assert before.pool.total_cards == len(accepted)
-        accepted += (step.grp_id,)
+        accepted += (step.grp_ids[0],)
         if len(accepted) < len(_HELPER_OFFERS):
             assert step.after.status.phase is ApplicationPhase.DRAFTING
             assert step.after.current_pack_event is not None
@@ -983,7 +986,7 @@ def test_auto_run_exposes_ordered_inspections_and_the_normal_build(
     build = result.build.build
     assert build is not None
     assert build.domain_pool is not None
-    assert build.domain_pool.pool_grp_ids == tuple(step.grp_id for step in result.steps)
+    assert build.domain_pool.pool_grp_ids == tuple(step.grp_ids[0] for step in result.steps)
     assert build.domain_pool.account_id == _CONTROLLER_ACCOUNT_ID
     assert build.domain_selection is not None
     assert build.domain_spell_selection is not None
@@ -1029,6 +1032,193 @@ def test_auto_run_completes_a_full_draft_with_non_arena_pack_sizes(
     controller.close()
 
 
+def _pick_two_config() -> DraftmancerConfig:
+    return _config(draft_format=DraftFormat.PICK_TWO)
+
+
+def _pick_two_states(
+    *,
+    grp_ids: tuple[int, ...],
+    packs: int = 3,
+) -> tuple[dict[str, object], ...]:
+    """Script a Pick-Two draft whose pack loses two cards per logical pick."""
+
+    return tuple(
+        _state(
+            pack_number=pack_number,
+            pick_number=pick_number,
+            arena_ids=grp_ids[pick_number * 2 :],
+        )
+        for pack_number in range(packs)
+        for pick_number in range(len(grp_ids) // 2)
+    )
+
+
+def test_pick_two_confirm_submits_two_cards_in_one_step(tmp_path: Path) -> None:
+    grp_ids = (100, 101, 102, 103)
+    socket = _scripted_socket(
+        config=_pick_two_config(),
+        states=_pick_two_states(grp_ids=grp_ids, packs=1),
+    )
+    session = _draft_session(app_dir=tmp_path / "app", grp_ids=grp_ids)
+    controller = _controller(
+        socket=socket,
+        session=session,
+        grp_ids=grp_ids,
+        config=_pick_two_config(),
+    )
+
+    inspection = controller.start()
+    assert inspection.snapshot.current_pack_event is not None
+    assert inspection.snapshot.current_pack_event.cards_per_pick == 2
+    step = controller.confirm(grp_ids=(102, 100), expected_offer=inspection.offer)
+
+    assert step.grp_ids == (102, 100)
+    assert step.unique_card_ids == (3, 1)
+    assert _pick_card_calls(socket) == [{"pickedCards": [2, 0], "burnedCards": []}]
+    assert step.after.current_pack_event is not None
+    assert step.after.current_pack_event.pool_grp_ids == (102, 100)
+    assert step.after.pool.total_cards == 2
+    controller.close()
+
+
+def test_pick_two_confirm_rejects_bad_selections_without_consuming_the_offer(
+    tmp_path: Path,
+) -> None:
+    grp_ids = (100, 101, 102, 103)
+    socket = _scripted_socket(
+        config=_pick_two_config(),
+        states=_pick_two_states(grp_ids=grp_ids, packs=1),
+    )
+    session = _draft_session(app_dir=tmp_path / "app", grp_ids=grp_ids)
+    controller = _controller(
+        socket=socket,
+        session=session,
+        grp_ids=grp_ids,
+        config=_pick_two_config(),
+    )
+    inspection = controller.start()
+
+    for selection in ((100,), (100, 101, 102), (100, 100), (100, 999)):
+        with pytest.raises(TestDraftError) as error:
+            controller.confirm(grp_ids=selection, expected_offer=inspection.offer)
+        assert error.value.stage == "readiness"
+        assert _pick_card_calls(socket) == []
+
+    step = controller.confirm(grp_ids=(100, 101), expected_offer=inspection.offer)
+    assert step.grp_ids == (100, 101)
+    controller.close()
+
+
+def test_pick_two_confirm_takes_two_copies_only_when_the_pack_holds_two(
+    tmp_path: Path,
+) -> None:
+    grp_ids = (100, 101, 102)
+    states = (
+        _state(
+            pack_number=0,
+            pick_number=0,
+            arena_ids=(100, 100, 101, 102),
+            unique_ids=(11, 12, 13, 14),
+        ),
+        _state(pack_number=0, pick_number=1, arena_ids=(101, 102), unique_ids=(13, 14)),
+    )
+    socket = _scripted_socket(config=_pick_two_config(), states=states)
+    session = _draft_session(app_dir=tmp_path / "app", grp_ids=grp_ids)
+    controller = _controller(
+        socket=socket,
+        session=session,
+        grp_ids=grp_ids,
+        config=_pick_two_config(),
+    )
+    inspection = controller.start()
+
+    with pytest.raises(TestDraftError) as error:
+        controller.confirm(grp_ids=(101, 101), expected_offer=inspection.offer)
+    assert error.value.stage == "readiness"
+    assert _pick_card_calls(socket) == []
+
+    step = controller.confirm(grp_ids=(100, 100), expected_offer=inspection.offer)
+    assert step.unique_card_ids == (11, 12)
+    assert _pick_card_calls(socket) == [{"pickedCards": [0, 1], "burnedCards": []}]
+    controller.close()
+
+
+def test_pick_two_advance_auto_fills_from_remaining_copies(tmp_path: Path) -> None:
+    grp_ids = (100, 101)
+    states = (
+        _state(
+            pack_number=0,
+            pick_number=0,
+            arena_ids=(100, 100),
+            unique_ids=(11, 12),
+        ),
+    )
+    socket = _scripted_socket(config=_pick_two_config(), states=states)
+    session = _draft_session(app_dir=tmp_path / "app", grp_ids=grp_ids)
+    controller = _controller(
+        socket=socket,
+        session=session,
+        grp_ids=grp_ids,
+        config=_pick_two_config(),
+    )
+    controller.start()
+
+    step = controller.advance_auto()
+
+    assert step.grp_ids == (100, 100)
+    assert step.unique_card_ids == (11, 12)
+    controller.close()
+
+
+def test_pick_two_auto_run_takes_top_two_for_21_picks_and_42_cards(
+    tmp_path: Path,
+) -> None:
+    grp_ids = tuple(range(1000, 1014))
+    socket = _scripted_socket(
+        config=_pick_two_config(),
+        states=_pick_two_states(grp_ids=grp_ids),
+    )
+    session = _draft_session(app_dir=tmp_path / "app", grp_ids=grp_ids)
+    controller = _controller(
+        socket=socket,
+        session=session,
+        grp_ids=grp_ids,
+        config=_pick_two_config(),
+    )
+
+    result = controller.run_auto()
+
+    assert len(result.steps) == 21
+    assert all(len(step.grp_ids) == 2 for step in result.steps)
+    for step in result.steps:
+        rows = step.before.snapshot.recommendations.cards
+        assert step.grp_ids == tuple(row.card.grp_id for row in rows[:2])
+    assert result.completed.status.phase is ApplicationPhase.DRAFT_COMPLETE
+    assert result.completed.pool.total_cards == 42
+    build = result.build.build
+    assert build is not None
+    assert build.domain_pool is not None
+    assert len(build.domain_pool.pool_grp_ids) == 42
+    assert len(_pick_card_calls(socket)) == 21
+    controller.close()
+
+
+def test_create_runtime_rejects_unsupported_format_as_startup_failure(
+    tmp_path: Path,
+) -> None:
+    sources = _seed_helper_sources(tmp_path=tmp_path)
+
+    with pytest.raises(TestDraftError) as error:
+        _create_runtime(
+            sources=sources,
+            socket=_helper_socket(states=_print_states()),
+            draft_format=DraftFormat.PREMIER,
+        )
+
+    assert error.value.stage == "startup"
+
+
 def test_start_failure_keeps_stage_and_original_cause(tmp_path: Path) -> None:
     socket = _FakeSocket(connect_error=OSError("connection refused"))
     session = _draft_session(app_dir=tmp_path / "app", grp_ids=(100,))
@@ -1067,7 +1257,7 @@ def test_drafting_failure_keeps_accepted_steps_and_original_cause(
 
     with pytest.raises(TestDraftError, match="did not accept the pick") as error:
         controller.confirm(
-            grp_id=_rank_one(inspection),
+            grp_ids=(_rank_one(inspection),),
             expected_offer=inspection.offer,
         )
 
@@ -1104,13 +1294,13 @@ def test_drafting_failure_preserves_earlier_accepted_steps(tmp_path: Path) -> No
         controller.advance_auto()
 
     assert error.value.stage == "drafting"
-    assert [step.grp_id for step in error.value.steps] == [first.grp_id]
+    assert [step.grp_ids[0] for step in error.value.steps] == [first.grp_ids[0]]
     assert error.value.snapshot.pool.total_cards == 1
     assert len(_pick_card_calls(socket)) == 2
 
     states = list_draft_states(app_dir=app_dir)
     assert [state.chosen_pick_count for state in states] == [1]
-    assert states[0].pool_grp_ids == (first.grp_id,)
+    assert states[0].pool_grp_ids == (first.grp_ids[0],)
     controller.close()
 
 
@@ -1150,7 +1340,7 @@ def test_unchanged_next_offer_coordinates_fail_the_ordering_check(
 
     with pytest.raises(TestDraftError, match="did not accept the pick") as error:
         controller.confirm(
-            grp_id=_rank_one(inspection),
+            grp_ids=(_rank_one(inspection),),
             expected_offer=inspection.offer,
         )
 
@@ -1189,7 +1379,7 @@ def test_build_failure_keeps_completed_steps_and_original_cause(
 
     assert error.value.stage == "build"
     assert len(error.value.steps) == 1
-    assert error.value.steps[0].grp_id == 100
+    assert error.value.steps[0].grp_ids[0] == 100
     assert error.value.snapshot.status.phase is ApplicationPhase.DRAFT_COMPLETE
     assert error.value.snapshot.pool.total_cards == 1
     assert isinstance(error.value.__cause__, DeckBuilderError)
@@ -1217,7 +1407,7 @@ def test_build_failure_reports_the_published_session_error(
     # raised-dispatch case, and still keeps every accepted step.
     assert error.value.stage == "build"
     assert error.value.__cause__ is None
-    assert [step.grp_id for step in error.value.steps] == [100]
+    assert [step.grp_ids[0] for step in error.value.steps] == [100]
     controller.close()
 
 
@@ -1256,7 +1446,7 @@ def test_helper_run_keeps_normal_arena_state_and_audit_untouched(
     assert len(persisted) == 1
     assert persisted[0].account_id == user_id
     assert persisted[0].completed is True
-    assert persisted[0].pool_grp_ids == tuple(step.grp_id for step in result.steps)
+    assert persisted[0].pool_grp_ids == tuple(step.grp_ids[0] for step in result.steps)
     audit_records = load_draft_audit_records(
         account_id=persisted[0].account_id,
         draft_id=persisted[0].draft_id,
@@ -1482,13 +1672,13 @@ def test_reusable_test_draft_runtime_matches_headless_auto_contract(
         rows = before.recommendations.cards
         assert tuple(row.rank for row in rows) == tuple(range(1, len(rows) + 1))
         assert {row.card.grp_id for row in rows} == set(offered_grp_ids)
-        assert rows[0].card.grp_id == step.grp_id
-        accepted += (step.grp_id,)
+        assert rows[0].card.grp_id == step.grp_ids[0]
+        accepted += (step.grp_ids[0],)
 
     build = result.build.build
     assert build is not None
     assert build.domain_pool is not None
-    assert build.domain_pool.pool_grp_ids == tuple(step.grp_id for step in result.steps)
+    assert build.domain_pool.pool_grp_ids == tuple(step.grp_ids[0] for step in result.steps)
     assert build.domain_selection is not None
     assert build.domain_spell_selection is not None
     assert build.domain_mana_base is not None
@@ -1953,7 +2143,7 @@ def test_runtime_cancel_wakes_blocked_pick(tmp_path: Path) -> None:
     inspection = runtime.controller.inspect()
     done = _start_worker(
         target=lambda: runtime.controller.confirm(
-            grp_id=_rank_one(inspection),
+            grp_ids=(_rank_one(inspection),),
             expected_offer=inspection.offer,
         ),
         workers=workers,
@@ -1980,7 +2170,7 @@ def test_runtime_cancel_wakes_blocked_pick(tmp_path: Path) -> None:
     persisted = list_draft_states(app_dir=runtime.simulation_app_dir)
     assert [state.chosen_pick_count for state in persisted] == [1]
     assert persisted[0].completed is False
-    assert persisted[0].pool_grp_ids == (first_step.grp_id,)
+    assert persisted[0].pool_grp_ids == (first_step.grp_ids[0],)
 
     runtime.close()
 

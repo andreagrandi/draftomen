@@ -71,7 +71,8 @@ from draftomen.deckbuilder import (
     load_persisted_pool,
     load_pool_file,
 )
-from draftomen.draftmancer import DraftmancerAdapterError
+from draftomen.draft_format import DraftFormat
+from draftomen.draftmancer import MOCKED_DRAFT_FORMATS, DraftmancerAdapterError
 from draftomen.events import DraftLogParseError
 from draftomen.logfollow import LogFollowError
 from draftomen.paths import (
@@ -430,6 +431,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--set-code",
         default=DEFAULT_TEST_DRAFT_SET_CODE,
         help=f"set code to draft (default: {DEFAULT_TEST_DRAFT_SET_CODE})",
+    )
+    test_draft_parser.add_argument(
+        "--format",
+        dest="draft_format",
+        type=DraftFormat,
+        choices=[item.draft_format for item in MOCKED_DRAFT_FORMATS],
+        default=DraftFormat.QUICK,
+        help="draft format to simulate (default: quick)",
     )
     test_draft_parser.add_argument(
         "--timeout",
@@ -1646,6 +1655,7 @@ def handle_test_draft(args: argparse.Namespace) -> int:
             profile_manifest_url=profile_manifest_url,
             profile_network_policy=profile_network_policy,
             splash_enabled=args.splash_enabled,
+            draft_format=args.draft_format,
         )
     except (DraftmancerAdapterError, TestDraftError) as error:
         print(f"test-draft failed: {error}", file=sys.stderr)
@@ -1670,15 +1680,18 @@ def _format_test_draft_trace(*, result: TestDraftRunResult) -> str:
 
     lines: list[str] = []
     for step in result.steps:
-        accepted = next(
-            row
-            for row in step.before.snapshot.recommendations.cards
-            if row.card.grp_id == step.grp_id
-        )
+        names = []
+        for grp_id in step.grp_ids:
+            accepted = next(
+                row
+                for row in step.before.snapshot.recommendations.cards
+                if row.card.grp_id == grp_id
+            )
+            names.append(f"{accepted.card.name} (grpId {grp_id})")
         lines.append(
             f"Pack {step.before.offer.pack_number + 1} "
             f"pick {step.before.offer.pick_number + 1}: "
-            f"{accepted.card.name} (grpId {step.grp_id})"
+            + ", ".join(names)
         )
     return "".join(f"{line}\n" for line in lines)
 

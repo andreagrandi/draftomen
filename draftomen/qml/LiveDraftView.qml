@@ -165,6 +165,77 @@ Item {
         && !root.testDraftPending
         && root.testDraftOfferGeneration > 0
         && root.selectedRecommendation !== null
+    readonly property int testDraftCardsPerPick: root.testDraft
+        && root.testDraft.cards_per_pick ? Number(root.testDraft.cards_per_pick) : 1
+    readonly property var testDraftOfferedGrpIds: root.testDraft
+        && root.testDraft.offered_grp_ids ? root.testDraft.offered_grp_ids : []
+    readonly property string testDraftFormatLabel: {
+        const testDraft = root.testDraft
+        if (!testDraft || !testDraft.draft_format)
+            return ""
+        const formats = testDraft.supported_formats || []
+        for (let index = 0; index < formats.length; index++) {
+            if (formats[index].key === testDraft.draft_format)
+                return String(formats[index].label)
+        }
+        return String(testDraft.draft_format)
+    }
+    readonly property bool testDraftStagingPicks: root.testDraftCardsPerPick === 2
+    // The first card of a Pick-Two pick waits here until the second is chosen.
+    property int stagedGrpId: -1
+    property string stagedName: ""
+    readonly property bool testDraftHasStagedPick: root.stagedGrpId >= 0
+    readonly property int testDraftSelectedCopies: {
+        const selected = root.selectedRecommendation
+        if (!selected)
+            return 0
+        let copies = 0
+        for (let index = 0; index < root.testDraftOfferedGrpIds.length; index++) {
+            if (root.testDraftOfferedGrpIds[index] === selected.card.grp_id)
+                copies++
+        }
+        return copies
+    }
+    readonly property bool testDraftSecondPickAllowed: {
+        const selected = root.selectedRecommendation
+        if (!root.testDraftHasStagedPick || !selected)
+            return true
+        return selected.card.grp_id !== root.stagedGrpId
+            || root.testDraftSelectedCopies >= 2
+    }
+    readonly property string testDraftPickText: {
+        if (!root.testDraftStagingPicks)
+            return "Pick"
+        return root.testDraftHasStagedPick ? "Pick 2 of 2" : "Pick 1 of 2"
+    }
+
+    function clearStagedPick() {
+        root.stagedGrpId = -1
+        root.stagedName = ""
+    }
+
+    function confirmTestDraftPick() {
+        const selected = root.selectedRecommendation
+        if (!selected)
+            return
+        if (!root.testDraftStagingPicks) {
+            sessionProvider.pickTestDraft([selected.card.grp_id], root.testDraftOfferGeneration)
+            return
+        }
+        if (!root.testDraftHasStagedPick) {
+            root.stagedGrpId = selected.card.grp_id
+            root.stagedName = String(selected.card.name)
+            return
+        }
+        const staged = root.stagedGrpId
+        root.clearStagedPick()
+        sessionProvider.pickTestDraft(
+            [staged, selected.card.grp_id], root.testDraftOfferGeneration
+        )
+    }
+
+    onTestDraftOfferGenerationChanged: root.clearStagedPick()
+    onTestDraftManualChanged: root.clearStagedPick()
 
     property bool recommendationFocusPublishedWhileVisible: false
 
@@ -253,7 +324,8 @@ Item {
                     // The capability may be absent from the published state, so the
                     // binding must not read through a null record.
                     text: root.testDraft
-                        ? "Mocked Draft · " + String(root.testDraft.mode) + " · "
+                        ? "Mocked Draft · " + root.testDraftFormatLabel + " · "
+                            + String(root.testDraft.mode) + " · "
                             + String(root.testDraft.set_code).toUpperCase()
                         : ""
                     color: Theme.primary
@@ -275,15 +347,45 @@ Item {
             DimensionalButton {
                 objectName: "testDraftPickButton"
                 visible: root.testDraftManual
-                enabled: root.testDraftCanPick
+                enabled: root.testDraftCanPick && root.testDraftSecondPickAllowed
                 accented: true
-                text: "Pick"
+                text: root.testDraftPickText
                 Layout.alignment: Qt.AlignVCenter
-                Accessible.name: "Confirm Mocked Draft pick"
-                Accessible.description: "Submit the selected card to the simulated draft."
-                onClicked: sessionProvider.pickTestDraft(
-                    root.selectedRecommendation.card.grp_id, root.testDraftOfferGeneration
-                )
+                Accessible.name: root.testDraftStagingPicks
+                    ? "Confirm Mocked Draft " + root.testDraftPickText.toLowerCase()
+                    : "Confirm Mocked Draft pick"
+                Accessible.description: {
+                    if (!root.testDraftStagingPicks)
+                        return "Submit the selected card to the simulated draft."
+                    return root.testDraftHasStagedPick
+                        ? "Submit the staged card and the selected card to the simulated draft."
+                        : "Stage the selected card as the first card of this pick."
+                }
+                onClicked: root.confirmTestDraftPick()
+            }
+
+            Label {
+                objectName: "testDraftStagedPick"
+                visible: root.testDraftManual && root.testDraftHasStagedPick
+                text: "Staged: " + root.stagedName
+                color: Theme.primary
+                font.pixelSize: Theme.textPixelSize(12)
+                elide: Text.ElideRight
+                Layout.alignment: Qt.AlignVCenter
+                Layout.maximumWidth: 180
+                Accessible.name: "Staged Mocked Draft card " + root.stagedName
+            }
+
+            DimensionalButton {
+                objectName: "testDraftClearStagedPick"
+                visible: root.testDraftManual && root.testDraftHasStagedPick
+                enabled: !root.testDraftPending
+                accented: false
+                text: "Clear"
+                Layout.alignment: Qt.AlignVCenter
+                Accessible.name: "Clear staged Mocked Draft card"
+                Accessible.description: "Discard the staged first card and choose it again."
+                onClicked: root.clearStagedPick()
             }
 
             DimensionalComboBox {

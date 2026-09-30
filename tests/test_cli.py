@@ -53,6 +53,7 @@ from draftomen.seventeen import (
     load_17lands_format_data,
     seventeen_lands_structure_targets_cache_path,
 )
+from draftomen.draft_format import DraftFormat
 from draftomen.test_draft import (
     TestDraftError,
     TestDraftInspection,
@@ -2054,6 +2055,7 @@ def test_test_draft_parser_defaults_and_options() -> None:
     assert defaults.server_url == "http://127.0.0.1:3000"
     assert defaults.set_code == "HOB"
     assert defaults.timeout == 10.0
+    assert defaults.draft_format is DraftFormat.QUICK
     assert defaults.app_dir is None
     assert defaults.profile_manifest_url is None
     assert defaults.offline_profiles is False
@@ -2078,9 +2080,12 @@ def test_test_draft_parser_defaults_and_options() -> None:
             "https://profiles.example/manifest.json",
             "--offline-profiles",
             "--no-splash",
+            "--format",
+            "pick_two",
         ]
     )
 
+    assert configured.draft_format is DraftFormat.PICK_TWO
     assert configured.scryfall_bulk_file == Path("bulk.jsonl.gz")
     assert configured.server_url == "http://127.0.0.1:9999"
     assert configured.set_code == "dsk"
@@ -2094,6 +2099,19 @@ def test_test_draft_parser_defaults_and_options() -> None:
         parser.parse_args(args=["test-draft"])
 
     assert error.value.code == 2
+
+    for unsupported in ("premier", "traditional", "bogus"):
+        with pytest.raises(SystemExit) as format_error:
+            parser.parse_args(
+                args=[
+                    "test-draft",
+                    "--draftmancer-dir",
+                    "../Draftmancer",
+                    "--format",
+                    unsupported,
+                ]
+            )
+        assert format_error.value.code == 2
 
 
 def test_test_draft_prints_ordered_trace_and_build_output(
@@ -2149,6 +2167,52 @@ def test_test_draft_prints_ordered_trace_and_build_output(
         "Pack 1 pick 1: First Pick (grpId 7)\n"
         "Pack 1 pick 3: Accepted Second Pick (grpId 13)\n"
         "Pack 3 pick 1: Deep Pick (grpId 17)\n"
+        f"{expected_build}"
+    )
+
+
+def test_test_draft_passes_the_format_and_traces_every_picked_card(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    build_snapshot, expected_build = _test_draft_build_snapshot(directory=tmp_path)
+    result = TestDraftRunResult(
+        steps=(
+            _test_draft_step(
+                pack_number=0,
+                pick_number=0,
+                offered=((7, "First Pick"), (9, "Runner Up"), (11, "Third")),
+                accepted_grp_ids=(7, 9),
+            ),
+        ),
+        completed=LiveSessionSnapshot(),
+        build=build_snapshot,
+    )
+    received: dict[str, object] = {}
+
+    def run(**kwargs: object) -> TestDraftRunResult:
+        received.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "run_test_draft_auto", run)
+
+    exit_code = main(
+        argv=[
+            "test-draft",
+            "--draftmancer-dir",
+            str(tmp_path / "Draftmancer"),
+            "--format",
+            "pick_two",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert received["draft_format"] is DraftFormat.PICK_TWO
+    assert captured.out == (
+        "Pack 1 pick 1: First Pick (grpId 7), Runner Up (grpId 9)\n"
         f"{expected_build}"
     )
 
@@ -2577,13 +2641,16 @@ def _test_draft_step(
     pack_number: int,
     pick_number: int,
     offered: tuple[tuple[int, str], ...],
-    accepted_grp_id: int,
+    accepted_grp_id: int | None = None,
+    accepted_grp_ids: tuple[int, ...] | None = None,
 ) -> TestDraftStep:
     rows = tuple(
         _test_draft_recommendation(rank=rank, grp_id=grp_id, name=name)
         for rank, (grp_id, name) in enumerate(offered, start=1)
     )
-    accepted = next(row for row in rows if row.card.grp_id == accepted_grp_id)
+    if accepted_grp_ids is None:
+        assert accepted_grp_id is not None
+        accepted_grp_ids = (accepted_grp_id,)
     return TestDraftStep(
         before=TestDraftInspection(
             offer=TestDraftOfferIdentity(
@@ -2599,8 +2666,8 @@ def _test_draft_step(
                 recommendations=RecommendationState(cards=rows)
             ),
         ),
-        grp_id=accepted.card.grp_id,
-        unique_card_id=accepted.card.grp_id + 1000,
+        grp_ids=accepted_grp_ids,
+        unique_card_ids=tuple(grp_id + 1000 for grp_id in accepted_grp_ids),
         after=LiveSessionSnapshot(),
     )
 

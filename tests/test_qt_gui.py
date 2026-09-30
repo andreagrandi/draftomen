@@ -23,6 +23,7 @@ from PySide6.QtCore import qInstallMessageHandler, qWarning
 
 from draftomen import __version__, applog, qt_gui
 from draftomen.audit import load_draft_audit_records
+from draftomen.draft_format import DraftFormat
 from draftomen.augmented_model_client import (
     AUGMENTED_MANIFEST_URL,
     AUGMENTED_OBJECTS_BASE_URL,
@@ -770,6 +771,7 @@ def test_gui_mocked_draft_hob_offer_loads_validated_augmented_model(
     runtime = factory.create_runtime(
         server_url=DEFAULT_TEST_DRAFT_SERVER_URL,
         set_code="HOB",
+        draft_format=DraftFormat.QUICK,
         publisher=lambda snapshot: None,
         splash_enabled=True,
         contextual_adjustments_enabled=True,
@@ -1073,11 +1075,11 @@ def test_test_draft_smoke_driver_starts_completes_leaves_and_reports(
     class StubProvider:
         def __init__(self) -> None:
             self.state: dict[str, Any] = {}
-            self.start_calls: list[tuple[str, str]] = []
+            self.start_calls: list[tuple[str, str, str]] = []
             self.leave_calls = 0
 
-        def startTestDraft(self, mode: str, set_code: str) -> None:
-            self.start_calls.append((mode, set_code))
+        def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+            self.start_calls.append((mode, set_code, draft_format))
 
         def leaveTestDraft(self) -> None:
             self.leave_calls += 1
@@ -1106,9 +1108,9 @@ def test_test_draft_smoke_driver_starts_completes_leaves_and_reports(
     }
 
     assert driver.advance() is None
-    assert provider.start_calls == [("auto", "hob")]
+    assert provider.start_calls == [("auto", "hob", "quick")]
     assert driver.advance() is None
-    assert provider.start_calls == [("auto", "hob")]
+    assert provider.start_calls == [("auto", "hob", "quick")]
 
     provider.state = {
         "test_draft": {
@@ -1140,7 +1142,7 @@ def test_test_draft_smoke_driver_starts_completes_leaves_and_reports(
     }
 
     assert driver.advance() is None
-    assert provider.start_calls == [("auto", "hob")]
+    assert provider.start_calls == [("auto", "hob", "quick")]
     assert provider.leave_calls == 1
 
     summaries = [
@@ -1191,10 +1193,10 @@ def test_test_draft_smoke_driver_fails_on_error_and_timeout(
     class StubProvider:
         def __init__(self) -> None:
             self.state: dict[str, Any] = {}
-            self.start_calls: list[tuple[str, str]] = []
+            self.start_calls: list[tuple[str, str, str]] = []
 
-        def startTestDraft(self, mode: str, set_code: str) -> None:
-            self.start_calls.append((mode, set_code))
+        def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+            self.start_calls.append((mode, set_code, draft_format))
 
     failed_provider = StubProvider()
     failed_driver = _TestDraftSmokeDriver(
@@ -1296,15 +1298,15 @@ class _StubManualSmokeProvider:
             "pool": {"total_cards": 0},
             "recommendations": {"cards": [], "selected_grp_id": None},
         }
-        self.start_calls: list[tuple[str, str]] = []
-        self.pick_calls: list[tuple[int, int]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
+        self.pick_calls: list[tuple[list[int], int]] = []
         self.leave_calls = 0
 
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
-    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
-        self.pick_calls.append((grp_id, offer_generation))
+    def pickTestDraft(self, grp_ids: list, offer_generation: int) -> None:
+        self.pick_calls.append((list(grp_ids), offer_generation))
 
     def leaveTestDraft(self) -> None:
         self.leave_calls += 1
@@ -8817,8 +8819,8 @@ class StubTestDraftProvider(MockSessionAdapter):
         self, *, test_draft: dict, scenario: str = "ready"
     ) -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
-        self.pick_calls: list[tuple[int, int]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
+        self.pick_calls: list[tuple[list[int], int]] = []
         self.leave_calls = 0
         super().__init__(session=MockLiveSession(scenario=scenario))
 
@@ -8831,13 +8833,13 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
-    @Slot(int, int)
-    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
-        self.pick_calls.append((grp_id, offer_generation))
+    @Slot("QVariantList", int)
+    def pickTestDraft(self, grp_ids: list, offer_generation: int) -> None:
+        self.pick_calls.append((list(grp_ids), offer_generation))
 
     @Slot()
     def leaveTestDraft(self) -> None:
@@ -9424,8 +9426,8 @@ class StubTestDraftProvider(MockSessionAdapter):
         self, *, test_draft: dict, scenario: str = "ready"
     ) -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
-        self.pick_calls: list[tuple[int, int]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
+        self.pick_calls: list[tuple[list[int], int]] = []
         self.leave_calls = 0
         super().__init__(session=MockLiveSession(scenario=scenario))
 
@@ -9438,13 +9440,13 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
-    @Slot(int, int)
-    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
-        self.pick_calls.append((grp_id, offer_generation))
+    @Slot("QVariantList", int)
+    def pickTestDraft(self, grp_ids: list, offer_generation: int) -> None:
+        self.pick_calls.append((list(grp_ids), offer_generation))
 
     @Slot()
     def leaveTestDraft(self) -> None:
@@ -9466,6 +9468,7 @@ application = QGuiApplication([])
 provider = StubTestDraftProvider(
     test_draft={
         "enabled": True,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": [
             {"code": "msh", "name": "Marvel Super Heroes", "card_data_cached": True},
             {"code": "hob", "name": "The Hobbit", "card_data_cached": True},
@@ -9495,6 +9498,7 @@ application.processEvents()
 test_draft_button = root.findChild(QObject, "testDraftButton")
 dialog = root.findChild(QObject, "testDraftDialog")
 selector = root.findChild(QObject, "testDraftSetSelector")
+format_selector = root.findChild(QObject, "testDraftFormatSelector")
 manual_button = root.findChild(QObject, "testDraftManualModeButton")
 auto_button = root.findChild(QObject, "testDraftAutoModeButton")
 start_button = root.findChild(QObject, "testDraftStartButton")
@@ -9503,6 +9507,7 @@ assert test_draft_button.property("text") == "Mocked Draft"
 assert dialog is not None
 assert dialog.property("title") == "Mocked Draft"
 assert selector is not None
+assert format_selector is not None
 assert manual_button is not None
 assert auto_button is not None
 assert start_button is not None
@@ -9520,6 +9525,10 @@ assert list(selector.property("model")) == [
 ]
 assert selector.property("displayText") == "The Hobbit (HOB)"
 assert selector.property("currentIndex") == 1
+assert format_selector.property("count") == 2
+assert list(format_selector.property("model")) == ["Quick Draft", "Pick-Two Draft"]
+assert format_selector.property("displayText") == "Quick Draft"
+assert format_selector.property("enabled") is True
 assert manual_button.property("checked") is True
 assert auto_button.property("checked") is False
 assert dialog.property("selectedMode") == "manual"
@@ -9533,10 +9542,16 @@ assert dialog.property("selectedMode") == "auto"
 assert auto_button.property("checked") is True
 assert manual_button.property("checked") is False
 
+format_selector.forceActiveFocus()
+QTest.keyClick(root, Qt.Key_Down)
+application.processEvents()
+assert format_selector.property("displayText") == "Pick-Two Draft"
+assert dialog.property("selectedFormatKey") == "pick_two"
+
 start_button.forceActiveFocus()
 QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
-assert provider.start_calls == [("auto", "hob")]
+assert provider.start_calls == [("auto", "hob", "pick_two")]
 assert dialog.property("visible") is True
 """
     completed = _run_qml_probe(probe)
@@ -9565,7 +9580,7 @@ from draftomen.qt_mock import MockSessionAdapter
 class StubTestDraftProvider(MockSessionAdapter):
     def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
         super().__init__(session=MockLiveSession(scenario=scenario))
 
     def _test_draft_state_value(self) -> dict:
@@ -9577,9 +9592,9 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
 
 def sets() -> list[dict]:
@@ -9595,6 +9610,7 @@ application = QGuiApplication([])
 provider = StubTestDraftProvider(
     test_draft={
         "enabled": True,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": sets(),
         "default_set_code": "hob",
     }
@@ -9649,7 +9665,7 @@ assert selector.property("currentIndex") == 2
 start_button.forceActiveFocus()
 QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
-assert provider.start_calls == [("manual", "lci")]
+assert provider.start_calls == [("manual", "lci", "quick")]
 
 provider.publish_test_draft(pending=True, phase="starting")
 application.processEvents()
@@ -9695,8 +9711,8 @@ class StubTestDraftProvider(MockSessionAdapter):
         self, *, test_draft: dict, scenario: str = "ready"
     ) -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
-        self.pick_calls: list[tuple[int, int]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
+        self.pick_calls: list[tuple[list[int], int]] = []
         self.leave_calls = 0
         super().__init__(session=MockLiveSession(scenario=scenario))
 
@@ -9709,13 +9725,13 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
-    @Slot(int, int)
-    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
-        self.pick_calls.append((grp_id, offer_generation))
+    @Slot("QVariantList", int)
+    def pickTestDraft(self, grp_ids: list, offer_generation: int) -> None:
+        self.pick_calls.append((list(grp_ids), offer_generation))
 
     @Slot()
     def leaveTestDraft(self) -> None:
@@ -9742,7 +9758,11 @@ provider = StubTestDraftProvider(
         "phase": "drafting",
         "set_code": "hob",
         "offer_generation": 3,
+        "draft_format": "quick",
+        "cards_per_pick": 1,
+        "offered_grp_ids": [],
         "pending": False,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": [
             {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
         ],
@@ -9770,9 +9790,11 @@ application.processEvents()
 indicator = root.findChild(QObject, "testDraftIndicator")
 pick_button = root.findChild(QObject, "testDraftPickButton")
 assert indicator is not None and indicator.isVisible()
-assert indicator.property("text") == "Mocked Draft · manual · HOB"
+assert indicator.property("text") == "Mocked Draft · Quick Draft · manual · HOB"
 assert pick_button is not None and pick_button.isVisible()
+assert pick_button.property("text") == "Pick"
 assert pick_button.property("enabled") is True
+assert root.findChild(QObject, "testDraftStagedPick").property("visible") is False
 
 rank_two_row = find_visual_item(root.contentItem(), "wideRecommendationRow2")
 if rank_two_row is None:
@@ -9789,7 +9811,203 @@ assert pick_button.property("enabled") is True
 pick_button.forceActiveFocus()
 QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
-assert provider.pick_calls == [(rank_two_grp_id, 3)]
+assert provider.pick_calls == [([rank_two_grp_id], 3)]
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_test_draft_pick_two_stages_the_first_card_before_confirming_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubTestDraftProvider(MockSessionAdapter):
+    def __init__(
+        self, *, test_draft: dict, scenario: str = "ready"
+    ) -> None:
+        self.test_draft_state = dict(test_draft)
+        self.start_calls: list[tuple[str, str, str]] = []
+        self.pick_calls: list[tuple[list[int], int]] = []
+        self.leave_calls = 0
+        super().__init__(session=MockLiveSession(scenario=scenario))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def publish_test_draft(self, **changes) -> None:
+        self.test_draft_state.update(changes)
+        self._replace_state(
+            state=self.state | {"test_draft": dict(self.test_draft_state)}
+        )
+
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
+
+    @Slot("QVariantList", int)
+    def pickTestDraft(self, grp_ids: list, offer_generation: int) -> None:
+        self.pick_calls.append((list(grp_ids), offer_generation))
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        self.leave_calls += 1
+
+
+def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubTestDraftProvider(
+    test_draft={
+        "enabled": True,
+        "active": True,
+        "mode": "manual",
+        "phase": "drafting",
+        "set_code": "hob",
+        "offer_generation": 1,
+        "draft_format": "pick_two",
+        "cards_per_pick": 2,
+        "offered_grp_ids": [],
+        "pending": False,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
+        "supported_sets": [
+            {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+        ],
+    }
+)
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+
+def press(item):
+    item.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    application.processEvents()
+
+
+def select_rank(rank):
+    row = find_visual_item(root.contentItem(), "wideRecommendationRow" + str(rank))
+    if row is None:
+        row = find_visual_item(root.contentItem(), "narrowRecommendationRow" + str(rank))
+    assert row is not None and row.isVisible()
+    press(row)
+
+
+cards = provider.state["recommendations"]["cards"]
+rank_one_grp_id = cards[0]["card"]["grp_id"]
+rank_two_grp_id = cards[1]["card"]["grp_id"]
+rank_one_name = cards[0]["card"]["name"]
+rank_two_name = cards[1]["card"]["name"]
+provider.publish_test_draft(
+    offered_grp_ids=[card["card"]["grp_id"] for card in cards]
+)
+application.processEvents()
+
+indicator = root.findChild(QObject, "testDraftIndicator")
+pick_button = root.findChild(QObject, "testDraftPickButton")
+staged_label = root.findChild(QObject, "testDraftStagedPick")
+clear_button = root.findChild(QObject, "testDraftClearStagedPick")
+assert indicator.property("text") == "Mocked Draft · Pick-Two Draft · manual · HOB"
+assert pick_button.property("text") == "Pick 1 of 2"
+assert pick_button.property("enabled") is True
+assert staged_label.property("visible") is False
+assert clear_button.property("visible") is False
+
+# The first press stages the selected card and sends nothing.
+select_rank(1)
+assert provider.state["recommendations"]["selected_grp_id"] == rank_one_grp_id
+press(pick_button)
+assert provider.pick_calls == []
+assert pick_button.property("text") == "Pick 2 of 2"
+assert staged_label.property("visible") is True
+assert staged_label.property("text") == "Staged: " + rank_one_name
+assert clear_button.property("visible") is True
+
+# The staged card cannot be the second card while the pack holds one copy.
+assert pick_button.property("enabled") is False
+
+# Clear drops the staged card and returns to the first step.
+press(clear_button)
+assert pick_button.property("text") == "Pick 1 of 2"
+assert staged_label.property("visible") is False
+assert pick_button.property("enabled") is True
+
+# Stage rank one, choose rank two, and the second press submits both.
+press(pick_button)
+select_rank(2)
+assert provider.state["recommendations"]["selected_grp_id"] == rank_two_grp_id
+assert pick_button.property("enabled") is True
+press(pick_button)
+assert provider.pick_calls == [([rank_one_grp_id, rank_two_grp_id], 1)]
+assert pick_button.property("text") == "Pick 1 of 2"
+assert staged_label.property("visible") is False
+
+# A new offer generation discards a staged card.
+press(pick_button)
+assert staged_label.property("visible") is True
+provider.publish_test_draft(offer_generation=2)
+application.processEvents()
+assert staged_label.property("visible") is False
+assert pick_button.property("text") == "Pick 1 of 2"
+
+# A pack holding two copies of the selected card allows picking it twice.
+provider.publish_test_draft(
+    offer_generation=3,
+    offered_grp_ids=[rank_two_grp_id, rank_two_grp_id, rank_one_grp_id],
+)
+application.processEvents()
+press(pick_button)
+assert pick_button.property("text") == "Pick 2 of 2"
+assert pick_button.property("enabled") is True
+press(pick_button)
+assert provider.pick_calls[-1] == ([rank_two_grp_id, rank_two_grp_id], 3)
+
+# Ending the draft discards a staged card.
+press(pick_button)
+assert staged_label.property("visible") is True
+provider.publish_test_draft(active=False, phase="idle", offer_generation=0)
+application.processEvents()
+assert staged_label.property("visible") is False
 """
     completed = _run_qml_probe(probe)
 
@@ -9820,8 +10038,8 @@ class StubTestDraftProvider(MockSessionAdapter):
         self, *, test_draft: dict, scenario: str = "ready"
     ) -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
-        self.pick_calls: list[tuple[int, int]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
+        self.pick_calls: list[tuple[list[int], int]] = []
         self.leave_calls = 0
         super().__init__(session=MockLiveSession(scenario=scenario))
 
@@ -9834,13 +10052,13 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
-    @Slot(int, int)
-    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
-        self.pick_calls.append((grp_id, offer_generation))
+    @Slot("QVariantList", int)
+    def pickTestDraft(self, grp_ids: list, offer_generation: int) -> None:
+        self.pick_calls.append((list(grp_ids), offer_generation))
 
     @Slot()
     def leaveTestDraft(self) -> None:
@@ -9868,6 +10086,7 @@ provider = StubTestDraftProvider(
         "set_code": "hob",
         "offer_generation": 3,
         "pending": True,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": [
             {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
         ],
@@ -9981,8 +10200,8 @@ class StubTestDraftProvider(MockSessionAdapter):
         self, *, test_draft: dict, scenario: str = "ready"
     ) -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
-        self.pick_calls: list[tuple[int, int]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
+        self.pick_calls: list[tuple[list[int], int]] = []
         self.leave_calls = 0
         super().__init__(session=MockLiveSession(scenario=scenario))
 
@@ -9995,13 +10214,13 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
-    @Slot(int, int)
-    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
-        self.pick_calls.append((grp_id, offer_generation))
+    @Slot("QVariantList", int)
+    def pickTestDraft(self, grp_ids: list, offer_generation: int) -> None:
+        self.pick_calls.append((list(grp_ids), offer_generation))
 
     @Slot()
     def leaveTestDraft(self) -> None:
@@ -10029,6 +10248,7 @@ provider = StubTestDraftProvider(
         "set_code": "hob",
         "offer_generation": 1,
         "pending": False,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": [
             {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
         ],
@@ -10120,6 +10340,7 @@ provider = StubTestDraftProvider(
         "mode": None,
         "phase": "failed",
         "set_code": "hob",
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": [
             {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
         ],
@@ -10184,7 +10405,7 @@ from draftomen.qt_mock import MockSessionAdapter
 class StubTestDraftProvider(MockSessionAdapter):
     def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
         self.card_data_calls: list[str] = []
         super().__init__(session=MockLiveSession(scenario=scenario))
 
@@ -10197,9 +10418,9 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
     @Slot(str)
     def downloadTestDraftCardData(self, set_code: str) -> None:
@@ -10217,7 +10438,12 @@ def sets(*, woe_cached: bool) -> list[dict]:
 QQuickStyle.setStyle("Fusion")
 application = QGuiApplication([])
 provider = StubTestDraftProvider(
-    test_draft={"enabled": True, "supported_sets": [], "default_set_code": None}
+    test_draft={
+        "enabled": True,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
+        "supported_sets": [],
+        "default_set_code": None,
+    }
 )
 preference_dir = TemporaryDirectory()
 preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
@@ -10318,7 +10544,7 @@ assert start_button.property("enabled") is True
 start_button.forceActiveFocus()
 QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
-assert provider.start_calls == [("manual", "woe")]
+assert provider.start_calls == [("manual", "woe", "quick")]
 """
     completed = _run_qml_probe(probe)
 
@@ -10348,7 +10574,7 @@ from draftomen.qt_mock import MockSessionAdapter
 class StubTestDraftProvider(MockSessionAdapter):
     def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
         self.leave_calls = 0
         self.download_calls = 0
         super().__init__(session=MockLiveSession(scenario=scenario))
@@ -10362,9 +10588,9 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
     @Slot()
     def leaveTestDraft(self) -> None:
@@ -10390,6 +10616,7 @@ application = QGuiApplication([])
 provider = StubTestDraftProvider(
     test_draft={
         "enabled": True,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": [
             {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
         ],
@@ -10540,6 +10767,7 @@ application = QGuiApplication([])
 provider = StubTestDraftProvider(
     test_draft={
         "enabled": True,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": [
             {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
         ],
@@ -10660,7 +10888,7 @@ from draftomen.qt_mock import MockSessionAdapter
 class StubTestDraftProvider(MockSessionAdapter):
     def __init__(self, *, test_draft: dict, scenario: str = "ready") -> None:
         self.test_draft_state = dict(test_draft)
-        self.start_calls: list[tuple[str, str]] = []
+        self.start_calls: list[tuple[str, str, str]] = []
         super().__init__(session=MockLiveSession(scenario=scenario))
 
     def _test_draft_state_value(self) -> dict:
@@ -10672,9 +10900,9 @@ class StubTestDraftProvider(MockSessionAdapter):
             state=self.state | {"test_draft": dict(self.test_draft_state)}
         )
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        self.start_calls.append((mode, set_code))
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        self.start_calls.append((mode, set_code, draft_format))
 
 
 QQuickStyle.setStyle("Fusion")
@@ -10682,6 +10910,7 @@ application = QGuiApplication([])
 provider = StubTestDraftProvider(
     test_draft={
         "enabled": True,
+        "supported_formats": [{"key": "quick", "label": "Quick Draft"}, {"key": "pick_two", "label": "Pick-Two Draft"}],
         "supported_sets": [
             {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
         ],
@@ -10724,7 +10953,7 @@ provider.publish_test_draft(
     pending=False, phase="failed", error="Draftmancer is not running"
 )
 application.processEvents()
-assert provider.start_calls == [("manual", "hob")]
+assert provider.start_calls == [("manual", "hob", "quick")]
 assert dialog.property("visible") is True
 
 # A later successful start from the same dialog still closes it.
@@ -10735,7 +10964,7 @@ QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
 provider.publish_test_draft(active=True, phase="drafting")
 application.processEvents()
-assert provider.start_calls == [("manual", "hob"), ("manual", "hob")]
+assert provider.start_calls == [("manual", "hob", "quick"), ("manual", "hob", "quick")]
 assert dialog.property("visible") is False
 """
     completed = _run_qml_probe(probe)
