@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 from os import PathLike
 from pathlib import Path
@@ -36,7 +36,8 @@ from draftomen.augmented_model_client import (
     AugmentedModelLoad,
     AugmentedModelOutcome,
 )
-from draftomen.draft_format import rules_for_format
+from draftomen.draft_format import DraftFormat, rules_for_format
+from draftomen.draftmancer import MOCKED_DRAFT_FORMATS
 from draftomen.preferences import (
     GuiDisplayPreferences,
     load_gui_preferences,
@@ -90,6 +91,21 @@ TEST_DRAFT_MODES: tuple[TestDraftMode, ...] = ("manual", "auto")
 
 
 @dataclass(frozen=True, slots=True)
+class TestDraftFormatOption:
+    """Publish one selectable Mocked Draft format by its key and label."""
+
+    key: str
+    label: str
+
+
+def _supported_test_draft_formats() -> tuple[TestDraftFormatOption, ...]:
+    return tuple(
+        TestDraftFormatOption(key=item.draft_format.value, label=item.label)
+        for item in MOCKED_DRAFT_FORMATS
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class TestDraftSessionState:
     """Publish the native Test Draft capability, source, and pick token."""
 
@@ -98,6 +114,12 @@ class TestDraftSessionState:
     phase: TestDraftPhase = "idle"
     mode: TestDraftMode | None = None
     set_code: str | None = None
+    draft_format: str | None = None
+    supported_formats: tuple[TestDraftFormatOption, ...] = field(
+        default_factory=_supported_test_draft_formats
+    )
+    cards_per_pick: int = 0
+    offered_grp_ids: tuple[int, ...] = ()
     supported_sets: tuple[TestDraftSet, ...] = ()
     default_set_code: str | None = None
     pending: bool = False
@@ -137,6 +159,7 @@ class TestDraftFactory(Protocol):
         *,
         server_url: str,
         set_code: str,
+        draft_format: DraftFormat,
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
@@ -826,13 +849,13 @@ class SessionAdapter(QObject):
     def retryError(self, error_id: str) -> None:
         self._dispatch(command=RetryError(error_id=error_id))
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
-        del mode, set_code
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
+        del mode, set_code, draft_format
 
-    @Slot(int, int)
-    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
-        del grp_id, offer_generation
+    @Slot("QVariantList", int)
+    def pickTestDraft(self, grp_ids: list[int], offer_generation: int) -> None:
+        del grp_ids, offer_generation
 
     @Slot()
     def leaveTestDraft(self) -> None:
@@ -1025,6 +1048,7 @@ class _LiveSessionWorker(QObject):
         self._test_draft_runtime: TestDraftRuntime | None = None
         self._test_draft_mode: TestDraftMode | None = None
         self._test_draft_set_code: str | None = None
+        self._test_draft_format: DraftFormat | None = None
         self._test_draft_offer: TestDraftOfferIdentity | None = None
         self._test_draft_offer_generation = 0
         self._test_draft_pending = False
@@ -1510,6 +1534,13 @@ class _LiveSessionWorker(QObject):
                 phase=self._test_draft_phase,
                 mode=self._test_draft_mode,
                 set_code=self._test_draft_set_code,
+                draft_format=(
+                    None if self._test_draft_format is None else self._test_draft_format.value
+                ),
+                cards_per_pick=self._test_draft_cards_per_pick(),
+                offered_grp_ids=(
+                    () if self._test_draft_offer is None else self._test_draft_offer.offered_grp_ids
+                ),
                 supported_sets=self._test_draft_supported_sets,
                 default_set_code=self._test_draft_default_set_code,
                 pending=self._test_draft_pending,
@@ -1522,8 +1553,15 @@ class _LiveSessionWorker(QObject):
             )
         )
 
-    @Slot(str, str)
-    def start_test_draft(self, mode: str, set_code: str) -> None:
+    def _test_draft_cards_per_pick(self) -> int:
+        """Return the cards one logical pick takes, or zero without an offer."""
+
+        if self._test_draft_format is None or self._test_draft_offer is None:
+            return 0
+        return rules_for_format(draft_format=self._test_draft_format).cards_per_pick
+
+    @Slot(str, str, str)
+    def start_test_draft(self, mode: str, set_code: str, draft_format: str) -> None:
         """Create one simulated runtime and make it the authoritative source."""
 
         if self._test_draft_factory is None or self._stop_requested:
@@ -1537,6 +1575,15 @@ class _LiveSessionWorker(QObject):
             self._test_draft_error = f"Unsupported Test Draft mode: {mode}"
             self._publish_test_draft_state()
             return
+        supported_format = next(
+            (item for item in MOCKED_DRAFT_FORMATS if item.draft_format.value == draft_format),
+            None,
+        )
+        if supported_format is None:
+            self._test_draft_phase = "failed"
+            self._test_draft_error = f"Unsupported Mocked Draft format: {draft_format}"
+            self._publish_test_draft_state()
+            return
         trimmed_set_code = set_code.strip()
         if not trimmed_set_code:
             self._test_draft_phase = "failed"
@@ -1548,6 +1595,7 @@ class _LiveSessionWorker(QObject):
         self._test_draft_error = None
         self._test_draft_mode = cast(TestDraftMode, mode)
         self._test_draft_set_code = trimmed_set_code
+        self._test_draft_format = supported_format.draft_format
         self._test_draft_phase = "starting"
         self._test_draft_offer = None
         self._test_draft_offer_generation = 0
@@ -1563,6 +1611,7 @@ class _LiveSessionWorker(QObject):
             runtime = self._test_draft_factory.create_runtime(
                 server_url=server_url,
                 set_code=trimmed_set_code,
+                draft_format=supported_format.draft_format,
                 publisher=self._test_draft_snapshot_publisher(
                     runtime_generation=generation
                 ),
@@ -1742,8 +1791,8 @@ class _LiveSessionWorker(QObject):
             return  # runtime stays owned until leave/shutdown
         self._close_test_draft_runtime()
 
-    @Slot(int, int)
-    def pick_test_draft(self, grp_id: int, offer_generation: int) -> None:
+    @Slot(list, int)
+    def pick_test_draft(self, grp_ids: list[int], offer_generation: int) -> None:
         """Confirm one inspected simulated offer and publish the next pack."""
 
         runtime = self._test_draft_runtime
@@ -1759,11 +1808,13 @@ class _LiveSessionWorker(QObject):
             or offer_generation != self._test_draft_offer_generation
         ):
             return
+        if len(grp_ids) != self._test_draft_cards_per_pick():
+            return
         self._test_draft_pending = True
         self._publish_test_draft_state()
         try:
             step = runtime.controller.confirm(
-                grp_id=grp_id,
+                grp_ids=tuple(int(item) for item in grp_ids),
                 expected_offer=self._test_draft_offer,
             )
             self._publish_snapshot(step.after)
@@ -1837,6 +1888,7 @@ class _LiveSessionWorker(QObject):
 
         self._test_draft_mode = None
         self._test_draft_set_code = None
+        self._test_draft_format = None
         self._test_draft_offer = None
         self._test_draft_offer_generation = 0
         self._test_draft_phase = "idle"
@@ -1956,8 +2008,8 @@ class LiveSessionAdapter(SessionAdapter):
     """
 
     _commandRequested = Signal(object)
-    _testDraftStartRequested = Signal(str, str)
-    _testDraftPickRequested = Signal(int, int)
+    _testDraftStartRequested = Signal(str, str, str)
+    _testDraftPickRequested = Signal(list, int)
     _testDraftLeaveRequested = Signal()
     _testDraftDownloadRequested = Signal()
     _testDraftCardDataDownloadRequested = Signal(str)
@@ -2081,17 +2133,17 @@ class LiveSessionAdapter(SessionAdapter):
         if thread is not None and thread.isRunning():
             thread.wait()
 
-    @Slot(str, str)
-    def startTestDraft(self, mode: str, set_code: str) -> None:
+    @Slot(str, str, str)
+    def startTestDraft(self, mode: str, set_code: str, draft_format: str) -> None:
         if self._test_draft_state.get("enabled") is not True or self._worker is None:
             return
-        self._testDraftStartRequested.emit(mode, set_code)
+        self._testDraftStartRequested.emit(mode, set_code, draft_format)
 
-    @Slot(int, int)
-    def pickTestDraft(self, grp_id: int, offer_generation: int) -> None:
+    @Slot("QVariantList", int)
+    def pickTestDraft(self, grp_ids: list[int], offer_generation: int) -> None:
         if self._worker is None:
             return
-        self._testDraftPickRequested.emit(grp_id, offer_generation)
+        self._testDraftPickRequested.emit(list(grp_ids), offer_generation)
 
     @Slot()
     def leaveTestDraft(self) -> None:

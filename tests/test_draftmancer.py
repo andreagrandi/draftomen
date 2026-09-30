@@ -13,11 +13,14 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import socketio
+from draftomen.draft_format import DraftFormat, detect_draft_format
 from draftomen.draftmancer import (
+    MOCKED_DRAFT_FORMATS,
     DraftmancerAdapter,
     DraftmancerAdapterError,
     DraftmancerConfig,
     intersect_supported_set_codes,
+    mocked_draft_format,
 )
 
 from draftomen.carddb import CardDatabase, CardInfo
@@ -129,7 +132,12 @@ class _FakeSocket:
             handler(reason)
 
 
-def _config(*, timeout_seconds: float = 1.0, set_code: str = "hob") -> DraftmancerConfig:
+def _config(
+    *,
+    timeout_seconds: float = 1.0,
+    set_code: str = "hob",
+    draft_format: DraftFormat = DraftFormat.QUICK,
+) -> DraftmancerConfig:
     return DraftmancerConfig(
         server_url="http://127.0.0.1:3000",
         session_id="session-1",
@@ -137,6 +145,7 @@ def _config(*, timeout_seconds: float = 1.0, set_code: str = "hob") -> Draftmanc
         user_name="Developer",
         set_code=set_code,
         timeout_seconds=timeout_seconds,
+        draft_format=draft_format,
     )
 
 
@@ -170,7 +179,7 @@ def _seats(config: DraftmancerConfig) -> dict[str, dict[str, object]]:
                 "userName": f"Bot {index}",
                 "isBot": True,
             }
-            for index in range(7)
+            for index in range(mocked_draft_format(draft_format=config.draft_format).bot_count)
         },
     }
 
@@ -436,7 +445,7 @@ def test_pick_before_connect_or_outside_offer_is_local_failure() -> None:
     socket = _FakeSocket()
     adapter, published = _adapter(socket=socket, config=config)
     with pytest.raises(DraftmancerAdapterError):
-        adapter.pick(unique_card_id=1)
+        adapter.pick(unique_card_ids=(1,))
     assert socket.calls == []
     assert published == []
 
@@ -445,7 +454,7 @@ def test_pick_before_connect_or_outside_offer_is_local_failure() -> None:
     adapter, published = _adapter(socket=socket, config=config, grp_ids=(100,))
     adapter.connect_and_start()
     with pytest.raises(DraftmancerAdapterError):
-        adapter.pick(unique_card_id=999)
+        adapter.pick(unique_card_ids=(999,))
     assert len(socket.calls) == 1
     assert len(published) == 2
 
@@ -708,7 +717,7 @@ def test_duplicate_arena_ids_use_unique_instance_index_for_pick() -> None:
     adapter, published = _adapter(socket=socket, config=config, grp_ids=(100, 101))
 
     adapter.connect_and_start()
-    adapter.pick(unique_card_id=12)
+    adapter.pick(unique_card_ids=(12,))
 
     assert socket.calls[1].event == "pickCard"
     assert socket.calls[1].data == {"pickedCards": [1], "burnedCards": []}
@@ -841,7 +850,7 @@ def test_three_pack_lifecycle_orders_pick_before_queued_offer_and_completion(
         assert isinstance(booster, list)
         instance = booster[0]["uniqueID"]
         assert isinstance(instance, int)
-        adapter.pick(unique_card_id=instance)
+        adapter.pick(unique_card_ids=(instance,))
         for worker in workers:
             worker.join(timeout=1)
             assert not worker.is_alive()
@@ -904,7 +913,7 @@ def test_pick_rejection_and_malformed_ack_publish_no_pick_or_completion() -> Non
             DraftmancerAdapterError,
             match=r"^Draftmancer rejected pick:",
         ) as error:
-            adapter.pick(unique_card_id=1)
+            adapter.pick(unique_card_ids=(1,))
         if isinstance(ack, dict):
             assert str(error.value).startswith("Draftmancer rejected pick:")
             assert "Pick rejected" in str(error.value)
@@ -912,7 +921,7 @@ def test_pick_rejection_and_malformed_ack_publish_no_pick_or_completion() -> Non
         assert not any(isinstance(event, PickMadeEvent) for event in published)
         assert not any(isinstance(event, DraftCompletedEvent) for event in published)
         with pytest.raises(DraftmancerAdapterError):
-            adapter.pick(unique_card_id=1)
+            adapter.pick(unique_card_ids=(1,))
 
 
 def test_default_socket_client_reports_construction_failure(
@@ -977,7 +986,7 @@ def test_pick_ack_timeout_has_no_fabricated_pick_or_completion() -> None:
     adapter.connect_and_start()
 
     with pytest.raises(DraftmancerAdapterError, match=r"(?i)(timed out|timeout)"):
-        adapter.pick(unique_card_id=1)
+        adapter.pick(unique_card_ids=(1,))
     assert not any(isinstance(event, PickMadeEvent) for event in published)
     assert not any(isinstance(event, DraftCompletedEvent) for event in published)
 
@@ -993,7 +1002,7 @@ def test_missing_next_offer_timeout_does_not_fabricate_completion() -> None:
     adapter.connect_and_start()
 
     with pytest.raises(DraftmancerAdapterError, match=r"(?i)(timed out|timeout)"):
-        adapter.pick(unique_card_id=1)
+        adapter.pick(unique_card_ids=(1,))
     assert any(isinstance(event, PickMadeEvent) for event in published)
     assert not any(isinstance(event, DraftCompletedEvent) for event in published)
 
@@ -1084,7 +1093,7 @@ def test_cancel_wakes_blocked_pick_acknowledgement() -> None:
     assert [type(event) for event in published] == [DraftStartedEvent, PackOfferedEvent]
 
     done = _start_worker(
-        target=lambda: adapter.pick(unique_card_id=1),
+        target=lambda: adapter.pick(unique_card_ids=(1,)),
         workers=workers,
         errors=worker_errors,
     )
@@ -1350,7 +1359,7 @@ def test_disconnect_during_each_wait_is_terminal(
         operation = adapter.connect_and_start
     else:
         adapter.connect_and_start()
-        operation = partial(adapter.pick, unique_card_id=1)
+        operation = partial(adapter.pick, unique_card_ids=(1,))
 
     with pytest.raises(
         DraftmancerAdapterError,
@@ -1504,3 +1513,164 @@ def test_missing_card_resolver_describes_unlisted_printings_from_the_draftmancer
     assert card.set_code == "spg"
     assert card.source_provenance == ("draftmancer",)
     adapter.close()
+
+
+def test_mocked_draft_formats_list_quick_then_pick_two_and_round_trip_event_names() -> None:
+    assert [item.draft_format for item in MOCKED_DRAFT_FORMATS] == [
+        DraftFormat.QUICK,
+        DraftFormat.PICK_TWO,
+    ]
+    assert [item.label for item in MOCKED_DRAFT_FORMATS] == [
+        "Quick Draft",
+        "Pick-Two Draft",
+    ]
+    assert [item.seat_count for item in MOCKED_DRAFT_FORMATS] == [8, 4]
+    for item in MOCKED_DRAFT_FORMATS:
+        assert (
+            detect_draft_format(event_name=f"{item.event_prefix}HOB_Draftmancer_x")
+            == item.draft_format
+        )
+
+
+@pytest.mark.parametrize(
+    "draft_format",
+    [DraftFormat.PREMIER, DraftFormat.TRADITIONAL],
+)
+def test_config_rejects_formats_that_are_not_mocked_draft_formats(
+    draft_format: DraftFormat,
+) -> None:
+    with pytest.raises(DraftmancerAdapterError, match="does not support"):
+        _config(draft_format=draft_format)
+
+
+def test_pick_two_session_settings_and_event_name() -> None:
+    config = _config(draft_format=DraftFormat.PICK_TWO)
+    state = _state(pack_number=0, pick_number=0, arena_ids=(100, 101, 102, 100))
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, published = _adapter(socket=socket, config=config)
+
+    adapter.connect_and_start()
+
+    settings = json.loads(_query(socket)["sessionSettings"][0])
+    assert settings["bots"] == 3
+    assert settings["pickedCardsPerRound"] == 2
+    assert settings["boostersPerPlayer"] == 3
+    started = published[0]
+    assert isinstance(started, DraftStartedEvent)
+    assert started.event_name == "PickTwoDraft_HOB_Draftmancer_session-1"
+    assert (
+        detect_draft_format(event_name=started.event_name) is DraftFormat.PICK_TWO
+    )
+
+
+def test_pick_two_start_requires_four_seats_with_three_bots() -> None:
+    config = _config(draft_format=DraftFormat.PICK_TWO)
+    quick_seats = _seats(_config())
+    too_few = _seats(config)
+    too_few.pop("bot-2")
+    for seats in (quick_seats, too_few):
+        def action(
+            socket: _FakeSocket,
+            payload: dict[str, dict[str, object]] = seats,
+        ) -> object:
+            socket.server_emit("startDraft", payload)
+            return {"code": 0}
+
+        socket = _FakeSocket(start_action=action)
+        adapter, published = _adapter(socket=socket, config=config)
+        with pytest.raises(DraftmancerAdapterError, match="4 seats|3 bots"):
+            adapter.connect_and_start()
+        assert published == []
+
+
+def test_pick_two_pick_sends_both_indexes_and_publishes_one_event() -> None:
+    config = _config(draft_format=DraftFormat.PICK_TWO)
+    first = _state(
+        pack_number=0,
+        pick_number=0,
+        arena_ids=(100, 101, 102, 100),
+        unique_ids=(11, 12, 13, 14),
+    )
+    second = _state(
+        pack_number=0,
+        pick_number=1,
+        arena_ids=(100, 102),
+        unique_ids=(11, 13),
+    )
+    socket = _FakeSocket(
+        start_action=_start_action(config, first),
+        pick_actions=[
+            lambda fake: (fake.server_emit("draftState", second), {"code": 0})[1],
+        ],
+    )
+    adapter, published = _adapter(socket=socket, config=config)
+
+    adapter.connect_and_start()
+    adapter.pick(unique_card_ids=(13, 12))
+
+    assert socket.calls[1].data == {"pickedCards": [2, 1], "burnedCards": []}
+    offer, pick, next_offer = published[1:4]
+    assert isinstance(offer, PackOfferedEvent)
+    assert offer.draft_format is DraftFormat.PICK_TWO
+    assert offer.cards_per_pick == 2
+    assert offer.picks_per_pack == 2
+    assert isinstance(pick, PickMadeEvent)
+    assert pick.selected_grp_ids == (102, 101)
+    assert isinstance(next_offer, PackOfferedEvent)
+    assert next_offer.pool_grp_ids == (102, 101)
+    assert next_offer.pick_number == 1
+    assert next_offer.picks_per_pack == 2
+
+
+def test_pick_two_pick_rejects_wrong_count_duplicates_and_foreign_ids() -> None:
+    config = _config(draft_format=DraftFormat.PICK_TWO)
+    state = _state(
+        pack_number=0,
+        pick_number=0,
+        arena_ids=(100, 101, 102, 100),
+        unique_ids=(11, 12, 13, 14),
+    )
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, published = _adapter(socket=socket, config=config)
+    adapter.connect_and_start()
+
+    for selection in ((11,), (11, 12, 13), (11, 11), (11, 99)):
+        with pytest.raises(DraftmancerAdapterError):
+            adapter.pick(unique_card_ids=selection)
+        assert len(socket.calls) == 1
+        assert len(published) == 2
+
+
+def test_pick_two_offer_with_odd_card_count_fails_before_publishing() -> None:
+    config = _config(draft_format=DraftFormat.PICK_TWO)
+    state = _state(pack_number=0, pick_number=0, arena_ids=(100, 101, 102))
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, published = _adapter(socket=socket, config=config)
+
+    with pytest.raises(DraftmancerAdapterError, match="cannot take evenly"):
+        adapter.connect_and_start()
+
+    assert [type(event) for event in published] == [DraftStartedEvent]
+
+
+def test_quick_offer_reports_format_and_one_card_per_pick() -> None:
+    config = _config()
+    state = _state(pack_number=0, pick_number=0, arena_ids=(100, 101))
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, published = _adapter(socket=socket, config=config)
+    adapter.connect_and_start()
+    offer = published[1]
+    assert isinstance(offer, PackOfferedEvent)
+    assert offer.draft_format is DraftFormat.QUICK
+    assert offer.cards_per_pick == 1
+    assert offer.picks_per_pack == 2
+
+
+def test_quick_pick_rejects_two_cards() -> None:
+    config = _config()
+    state = _state(pack_number=0, pick_number=0, arena_ids=(100, 101))
+    socket = _FakeSocket(start_action=_start_action(config, state))
+    adapter, _ = _adapter(socket=socket, config=config)
+    adapter.connect_and_start()
+    with pytest.raises(DraftmancerAdapterError, match="exactly 1"):
+        adapter.pick(unique_card_ids=(1, 2))

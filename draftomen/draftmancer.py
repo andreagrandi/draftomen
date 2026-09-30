@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import socketio
 
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.draft_format import DraftFormat, DraftRules, rules_for_format
 from draftomen.events import (
     DraftCompletedEvent,
     DraftEvent,
@@ -32,7 +33,10 @@ __all__ = [
     "DraftmancerAdapter",
     "DraftmancerAdapterError",
     "DraftmancerConfig",
+    "MOCKED_DRAFT_FORMATS",
+    "MockedDraftFormat",
     "intersect_supported_set_codes",
+    "mocked_draft_format",
 ]
 
 
@@ -40,6 +44,56 @@ class DraftmancerAdapterError(RuntimeError):
     """Raised for Draftmancer transport and protocol failures.
 Only this error type crosses the adapter's caller-facing boundary.
 """
+
+
+@dataclass(frozen=True, slots=True)
+class MockedDraftFormat:
+    """Describe one draft format the Mocked Draft can run against bots.
+    The event prefix makes the session derive the same format from the event name.
+    """
+
+    draft_format: DraftFormat
+    label: str
+    event_prefix: str
+    seat_count: int
+
+    @property
+    def bot_count(self) -> int:
+        """Return the bot seats; the user holds the only other seat."""
+
+        return self.seat_count - 1
+
+
+# Premier and Traditional are human drafts, so running them against bots
+# would only relabel a Quick Draft and they are not offered.
+MOCKED_DRAFT_FORMATS: tuple[MockedDraftFormat, ...] = (
+    MockedDraftFormat(
+        draft_format=DraftFormat.QUICK,
+        label="Quick Draft",
+        event_prefix="QuickDraft_",
+        seat_count=8,
+    ),
+    # Arena Pick-Two packs return after four logical picks, so the pod has four seats.
+    MockedDraftFormat(
+        draft_format=DraftFormat.PICK_TWO,
+        label="Pick-Two Draft",
+        event_prefix="PickTwoDraft_",
+        seat_count=4,
+    ),
+)
+
+
+def mocked_draft_format(*, draft_format: DraftFormat) -> MockedDraftFormat:
+    """Return the Mocked Draft description of a supported draft format.
+    Formats that are not simulated against bots raise an adapter error.
+    """
+
+    for candidate in MOCKED_DRAFT_FORMATS:
+        if candidate.draft_format == draft_format:
+            return candidate
+    raise DraftmancerAdapterError(
+        f"Mocked Draft does not support the {draft_format!r} format."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +108,10 @@ Values are validated before an adapter performs any network work.
     user_name: str
     set_code: str
     timeout_seconds: float = 10.0
+    draft_format: DraftFormat = DraftFormat.QUICK
 
     def __post_init__(self) -> None:
+        mocked_draft_format(draft_format=self.draft_format)
         if not isinstance(self.server_url, str):
             raise DraftmancerAdapterError("server_url must be a non-empty HTTP(S) URL.")
         try:
@@ -290,8 +346,8 @@ The method returns only after start and first draftState are processed.
             timeout_message="Timed out waiting for Draftmancer start and first offer.",
         )
 
-    def pick(self, *, unique_card_id: int) -> None:
-        """Submit one active simulator instance and publish its next transition.
+    def pick(self, *, unique_card_ids: tuple[int, ...]) -> None:
+        """Submit the active simulator instances of one logical pick and publish its next transition.
 The method returns only after a subsequent offer or completion is processed.
 """
 
@@ -307,13 +363,30 @@ The method returns only after a subsequent offer or completion is processed.
                 raise DraftmancerAdapterError("Draftmancer draft is already complete.")
             if self._pick_in_flight:
                 raise DraftmancerAdapterError("A Draftmancer pick is already in flight.")
-            if not isinstance(unique_card_id, int) or isinstance(unique_card_id, bool):
-                raise DraftmancerAdapterError("Draftmancer pick instance id must be an integer.")
-            selected = self._active_offer.get(unique_card_id)
-            if selected is None or self._active_coordinates is None:
-                raise DraftmancerAdapterError(
-                    f"Draftmancer pick instance {unique_card_id} is not in the active offer."
+            required = self._rules.cards_per_pick
+            if (
+                not isinstance(unique_card_ids, tuple)
+                or len(unique_card_ids) != required
+                or any(
+                    not isinstance(card_id, int) or isinstance(card_id, bool)
+                    for card_id in unique_card_ids
                 )
+            ):
+                raise DraftmancerAdapterError(
+                    f"Draftmancer pick needs exactly {required} integer instance ids."
+                )
+            if len(set(unique_card_ids)) != len(unique_card_ids):
+                raise DraftmancerAdapterError(
+                    "Draftmancer pick instance ids must be distinct."
+                )
+            selected: list[_OfferedCard] = []
+            for card_id in unique_card_ids:
+                offered = self._active_offer.get(card_id)
+                if offered is None or self._active_coordinates is None:
+                    raise DraftmancerAdapterError(
+                        f"Draftmancer pick instance {card_id} is not in the active offer."
+                    )
+                selected.append(offered)
             coordinates = self._active_coordinates
             self._pick_in_flight = True
         socket = self._socket
@@ -323,7 +396,10 @@ The method returns only after a subsequent offer or completion is processed.
         self._call_acknowledgement(
             socket=socket,
             event="pickCard",
-            data={"pickedCards": [selected.booster_index], "burnedCards": []},
+            data={
+                "pickedCards": [card.booster_index for card in selected],
+                "burnedCards": [],
+            },
             operation="pick",
         )
         with self._condition:
@@ -334,7 +410,7 @@ The method returns only after a subsequent offer or completion is processed.
             self._active_offer = {}
             self._active_coordinates = None
             self._pick_in_flight = False
-            self._accepted_pool.append(selected.arena_id)
+            self._accepted_pool.extend(card.arena_id for card in selected)
             self._last_pick_coordinates = coordinates
             self._expected_coordinates = (coordinates[0], coordinates[1] + 1)
             event = PickMadeEvent(
@@ -342,7 +418,7 @@ The method returns only after a subsequent offer or completion is processed.
                 set_code=self._config.set_code.upper(),
                 pack_number=coordinates[0],
                 pick_number=coordinates[1],
-                selected_grp_ids=(selected.arena_id,),
+                selected_grp_ids=tuple(card.arena_id for card in selected),
                 account_id=self._config.user_id,
             )
         self._emit(event=event)
@@ -389,10 +465,18 @@ Explicit close wakes any waiting caller without fabricating lifecycle events.
                 pass
 
     @property
+    def _mocked_format(self) -> MockedDraftFormat:
+        return mocked_draft_format(draft_format=self._config.draft_format)
+
+    @property
+    def _rules(self) -> DraftRules:
+        return rules_for_format(draft_format=self._config.draft_format)
+
+    @property
     def _event_name(self) -> str:
         return (
-            f"QuickDraft_{self._config.set_code.upper()}_Draftmancer_"
-            f"{self._config.session_id}"
+            f"{self._mocked_format.event_prefix}{self._config.set_code.upper()}"
+            f"_Draftmancer_{self._config.session_id}"
         )
 
     def _raise_if_unavailable(self, *, operation: str) -> None:
@@ -443,10 +527,10 @@ The handshake is awaited on the adapter's condition, so cancellation and the tim
             "sessionSettings": json.dumps(
                 {
                     "ownerIsPlayer": True,
-                    "bots": 7,
+                    "bots": self._mocked_format.bot_count,
                     "boostersPerPlayer": 3,
                     "setRestriction": [self._config.set_code],
-                    "pickedCardsPerRound": 1,
+                    "pickedCardsPerRound": self._rules.cards_per_pick,
                     "burnedCardsPerRound": 0,
                     "discardRemainingCardsAt": 0,
                     "reviewTimer": 0,
@@ -747,8 +831,11 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
             seats = _seat_records(payload=payload)
         except DraftmancerAdapterError as error:
             raise self._fail(error)
-        if len(seats) != 8:
-            error = DraftmancerAdapterError("Draftmancer startDraft did not provide eight seats.")
+        mocked = self._mocked_format
+        if len(seats) != mocked.seat_count:
+            error = DraftmancerAdapterError(
+                f"Draftmancer startDraft did not provide {mocked.seat_count} seats."
+            )
             raise self._fail(error)
         non_bots = []
         bot_count = 0
@@ -764,9 +851,14 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                 bot_count += 1
             else:
                 non_bots.append(seat)
-        if bot_count != 7 or len(non_bots) != 1 or non_bots[0].get("userID") != self._config.user_id:
+        if (
+            bot_count != mocked.bot_count
+            or len(non_bots) != 1
+            or non_bots[0].get("userID") != self._config.user_id
+        ):
             error = DraftmancerAdapterError(
-                "Draftmancer startDraft seats did not contain the configured user and seven bots."
+                "Draftmancer startDraft seats did not contain the configured user "
+                f"and {mocked.bot_count} bots."
             )
             raise self._fail(error)
         with self._condition:
@@ -817,6 +909,13 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                     f"expected {expected}, got {coordinates}."
                 )
                 raise self._fail(error)
+            cards_per_pick = self._rules.cards_per_pick
+            if len(offers) % cards_per_pick:
+                error = DraftmancerAdapterError(
+                    f"Draftmancer offered {len(offers)} cards, which a "
+                    f"{cards_per_pick}-card pick cannot take evenly."
+                )
+                raise self._fail(error)
             self._last_offer_key = offer_key
             self._active_coordinates = coordinates
             self._active_offer = offers
@@ -828,9 +927,12 @@ A connect envelope after cancellation or close is dropped by _enqueue and never 
                 offered_grp_ids=tuple(card.arena_id for card in offers.values()),
                 pool_grp_ids=tuple(self._accepted_pool),
                 account_id=self._config.user_id,
-                # Each pick takes one card from the pack, so the offered count
-                # plus the pick number recovers the set's booster size.
-                picks_per_pack=len(offers) + coordinates[1],
+                # Each logical pick takes cards_per_pick cards from the pack, so
+                # the offered picks plus the pick number recover the booster's
+                # logical pick count.
+                picks_per_pack=coordinates[1] + len(offers) // cards_per_pick,
+                draft_format=self._config.draft_format,
+                cards_per_pick=cards_per_pick,
             )
         self._emit(event=event)
 

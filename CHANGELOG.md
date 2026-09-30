@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- Mocked Draft can run a Pick-Two draft with a 4-seat pod and two cards per
+  pick, chosen separately from Manual and Auto. The Mocked Draft dialog has a
+  Format selector, and a manual Pick-Two pick stages the first card before
+  the second press submits both. Quick Draft keeps its 8-seat
+  pod and one card per pick. The `test-draft` command takes `--format quick`
+  or `--format pick_two`, and a Pick-Two trace line lists both cards. Premier
+  and Traditional are not offered, because bots would only relabel a Quick
+  Draft. (#658)
 - Premier, Traditional and Pick-Two drafts are supported end to end, checked
   on real Arena logs in plain watch, the TUI and the desktop app. The parser
   now reads the "Entering table draft queue" scene line, for example

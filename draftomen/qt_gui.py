@@ -40,6 +40,7 @@ from draftomen.carddb import (
     download_scryfall_default_cards_bulk_file,
 )
 from draftomen.cardimages import CardImageService, card_image_cache_dir
+from draftomen.draft_format import DraftFormat
 from draftomen.draftmancer_server import MockedDraftServer
 from draftomen.mock_session import MOCK_SCENARIOS, MockLiveSession
 from draftomen.paths import resolve_player_log_path
@@ -572,6 +573,7 @@ class _GuiTestDraftFactory:
         *,
         server_url: str,
         set_code: str,
+        draft_format: DraftFormat,
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
@@ -582,6 +584,7 @@ class _GuiTestDraftFactory:
             scryfall_bulk_file=self._scryfall_bulk_file,
             server_url=server_url,
             set_code=set_code,
+            draft_format=draft_format,
             timeout_seconds=self._timeout_seconds,
             source_app_dir=self._app_dir,
             profile_manifest_url=self._profile_manifest_url,
@@ -763,7 +766,7 @@ class _TestDraftSmokeDriver:
         if not self._started:
             set_code = test_draft.get("default_set_code")
             if set_code:
-                self._provider.startTestDraft("auto", set_code)
+                self._provider.startTestDraft("auto", set_code, DraftFormat.QUICK.value)
                 self._started = True
         if (
             self._started

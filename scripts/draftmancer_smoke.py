@@ -289,7 +289,7 @@ def _run_smoke(
                 if not offer.offered_grp_ids:
                     raise DraftmancerSmokeError("Draftmancer published an empty active offer")
                 expected_grp_ids.append(offer.offered_grp_ids[0])
-                adapter.pick(unique_card_id=offered_instance_ids[0])
+                adapter.pick(unique_card_ids=(offered_instance_ids[0],))
             _validate_event_stream(
                 events=tuple(event_stream),
                 expected_grp_ids=tuple(expected_grp_ids),

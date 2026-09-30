@@ -8,6 +8,7 @@ Dialog {
     required property var sessionState
     property var returnFocusItem: null
     property string selectedMode: "manual"
+    property string chosenFormatKey: ""
 
     readonly property var testDraft: root.sessionState.test_draft || null
     readonly property bool active: root.testDraft !== null && root.testDraft.active === true
@@ -25,6 +26,18 @@ Dialog {
     }
     readonly property bool cardDataDownloading: root.testDraft !== null
         && root.testDraft.card_data_downloading === true
+    readonly property var supportedFormats: root.testDraft && root.testDraft.supported_formats
+        ? root.testDraft.supported_formats : []
+    readonly property int selectedFormatIndex: {
+        const formats = root.supportedFormats
+        for (let index = 0; index < formats.length; index++) {
+            if (formats[index].key === root.chosenFormatKey)
+                return index
+        }
+        return formats.length > 0 ? 0 : -1
+    }
+    readonly property string selectedFormatKey: root.selectedFormatIndex >= 0
+        ? String(root.supportedFormats[root.selectedFormatIndex].key) : ""
     readonly property var supportedSets: root.testDraft && root.testDraft.supported_sets
         ? root.testDraft.supported_sets : []
     property string chosenSetCode: ""
@@ -159,6 +172,33 @@ Dialog {
             }
             Accessible.name: "Mocked Draft set"
             Accessible.description: "Choose the simulated draft set."
+        }
+
+        Label {
+            text: "Format"
+            color: Theme.textMuted
+            Accessible.name: text
+        }
+
+        DimensionalComboBox {
+            id: formatSelector
+            objectName: "testDraftFormatSelector"
+            Layout.fillWidth: true
+            enabled: !root.active && !root.pending
+            model: root.supportedFormats.map(function(format) {
+                return String(format.label)
+            })
+            currentIndex: root.selectedFormatIndex
+            // Each published state rebuilds the model, and ComboBox then resets
+            // currentIndex to 0, so restore the selected format once the reset lands.
+            onModelChanged: Qt.callLater(function() {
+                formatSelector.currentIndex = root.selectedFormatIndex
+            })
+            onActivated: function(index) {
+                root.chosenFormatKey = String(root.supportedFormats[index].key)
+            }
+            Accessible.name: "Mocked Draft format"
+            Accessible.description: "Choose the simulated draft format."
         }
 
         Label {
@@ -298,7 +338,7 @@ Dialog {
             text: "Start"
             accented: true
             visible: !root.active
-            enabled: !root.pending && root.selectedSetReady
+            enabled: !root.pending && root.selectedSetReady && root.selectedFormatKey.length > 0
             implicitWidth: 120
             activeFocusOnTab: true
             focusPolicy: Qt.StrongFocus
@@ -306,7 +346,9 @@ Dialog {
             Accessible.name: "Start Mocked Draft"
             onClicked: {
                 root.startRequested = true
-                sessionProvider.startTestDraft(root.selectedMode, root.selectedSetCode)
+                sessionProvider.startTestDraft(
+                    root.selectedMode, root.selectedSetCode, root.selectedFormatKey
+                )
             }
         }
 

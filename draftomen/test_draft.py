@@ -26,6 +26,7 @@ from draftomen.carddb import (
 )
 from draftomen.cardimages import CardImageService
 from draftomen.corpus import DEFAULT_CACHE_DIR
+from draftomen.draft_format import DraftFormat
 from draftomen.draftmancer import (
     DraftmancerAdapter,
     DraftmancerAdapterError,
@@ -120,8 +121,8 @@ class TestDraftStep:
     __test__ = False
 
     before: TestDraftInspection
-    grp_id: int
-    unique_card_id: int
+    grp_ids: tuple[int, ...]
+    unique_card_ids: tuple[int, ...]
     after: LiveSessionSnapshot
 
 
@@ -207,10 +208,10 @@ class TestDraftController:
     def confirm(
         self,
         *,
-        grp_id: int,
+        grp_ids: tuple[int, ...],
         expected_offer: TestDraftOfferIdentity,
     ) -> TestDraftStep:
-        """Submit one recommended card for the offer the caller inspected.
+        """Submit the recommended cards of one logical pick for the inspected offer.
         A stale, superseded, or already consumed token never submits a pick.
         """
 
@@ -231,39 +232,70 @@ class TestDraftController:
                     message="this offered pack was already confirmed.",
                     stage="readiness",
                 )
-            unique_card_id = self._instance_for_card(identity=identity, grp_id=grp_id)
-            self._require_recommended_card(
-                inspection=inspection,
-                grp_id=grp_id,
+            grp_ids = tuple(grp_ids)
+            event = inspection.snapshot.current_pack_event
+            required = 1 if event is None else event.cards_per_pick
+            if len(grp_ids) != required:
+                raise self._error(
+                    message=(
+                        f"this pick takes exactly {required} card(s); "
+                        f"got {len(grp_ids)}."
+                    ),
+                    stage="readiness",
+                )
+            unique_card_ids = self._instances_for_cards(
+                identity=identity,
+                grp_ids=grp_ids,
             )
+            for grp_id in grp_ids:
+                self._require_recommended_card(
+                    inspection=inspection,
+                    grp_id=grp_id,
+                )
             self._consumed_offers.add(expected_offer)
             try:
-                self._adapter.pick(unique_card_id=unique_card_id)
+                self._adapter.pick(unique_card_ids=unique_card_ids)
             except Exception as error:
                 raise self._error(
                     message=f"the simulator did not accept the pick: {error}",
                     stage="drafting",
                 ) from error
-            after = self._validated_after_locked(identity=identity, grp_id=grp_id)
+            after = self._validated_after_locked(identity=identity, grp_ids=grp_ids)
             step = TestDraftStep(
                 before=inspection,
-                grp_id=grp_id,
-                unique_card_id=unique_card_id,
+                grp_ids=grp_ids,
+                unique_card_ids=unique_card_ids,
                 after=after,
             )
             self._steps.append(step)
             return step
 
     def advance_auto(self) -> TestDraftStep:
-        """Confirm the first ranked card of a freshly inspected offered pack.
+        """Confirm the top ranked cards of a freshly inspected offered pack.
         Rankings are re-read per call so a profile refresh is never stale.
         """
 
         with self._lock:
             self._raise_if_closed()
             inspection = self._inspect_locked()
+            event = inspection.snapshot.current_pack_event
+            required = 1 if event is None else event.cards_per_pick
+            ranked = tuple(
+                row.card.grp_id for row in inspection.snapshot.recommendations.cards
+            )
+            chosen = list(ranked[:required])
+            if len(chosen) < required:
+                # Copies of one card share a recommendation row, so take the
+                # remaining copies in ranked order.
+                remaining = list(inspection.offer.offered_grp_ids)
+                for grp_id in chosen:
+                    remaining.remove(grp_id)
+                for grp_id in ranked:
+                    while grp_id in remaining and len(chosen) < required:
+                        remaining.remove(grp_id)
+                        chosen.append(grp_id)
             return self.confirm(
-                grp_id=inspection.snapshot.recommendations.cards[0].card.grp_id,
+                grp_ids=tuple(chosen),
                 expected_offer=inspection.offer,
             )
 
@@ -318,10 +350,10 @@ class TestDraftController:
         self,
         *,
         stage: TestDraftStage = "readiness",
-        accepted_picks: int | None = None,
+        accepted_cards: int | None = None,
     ) -> TestDraftInspection:
         """Validate the current snapshot as one ready offered pack.
-        The accepted-pick count keeps a superseded offer from looking ready.
+        The accepted-card count keeps a superseded offer from looking ready.
         """
 
         self._raise_if_closed()
@@ -383,7 +415,11 @@ class TestDraftController:
                 ),
                 stage=stage,
             )
-        accepted = len(self._steps) if accepted_picks is None else accepted_picks
+        accepted = (
+            sum(len(step.grp_ids) for step in self._steps)
+            if accepted_cards is None
+            else accepted_cards
+        )
         if len(identity.pool_grp_ids) != accepted:
             raise self._error(
                 message="the offered pack pool does not match the accepted picks.",
@@ -401,13 +437,13 @@ class TestDraftController:
             )
         return TestDraftInspection(offer=identity, snapshot=snapshot)
 
-    def _instance_for_card(
+    def _instances_for_cards(
         self,
         *,
         identity: TestDraftOfferIdentity,
-        grp_id: int,
-    ) -> int:
-        """Resolve one offered card to its first simulator instance.
+        grp_ids: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        """Resolve each offered card to its own simulator instance.
         Duplicate copies stay deterministic because offered order is stable.
         """
 
@@ -417,17 +453,24 @@ class TestDraftController:
                 message="the simulator offer no longer maps to the offered pack.",
                 stage="readiness",
             )
-        for instance_id, offered_grp_id in zip(
-            instance_ids,
-            identity.offered_grp_ids,
-            strict=True,
-        ):
-            if offered_grp_id == grp_id:
-                return instance_id
-        raise self._error(
-            message=f"card {grp_id} is not in the offered pack.",
-            stage="readiness",
-        )
+        available = list(zip(instance_ids, identity.offered_grp_ids, strict=True))
+        resolved: list[int] = []
+        for grp_id in grp_ids:
+            match = next(
+                (entry for entry in available if entry[1] == grp_id),
+                None,
+            )
+            if match is None:
+                raise self._error(
+                    message=(
+                        f"card {grp_id} is not in the offered pack "
+                        "or was selected more often than the pack holds it."
+                    ),
+                    stage="readiness",
+                )
+            available.remove(match)
+            resolved.append(match[0])
+        return tuple(resolved)
 
     def _require_recommended_card(
         self,
@@ -452,7 +495,7 @@ class TestDraftController:
         self,
         *,
         identity: TestDraftOfferIdentity,
-        grp_id: int,
+        grp_ids: tuple[int, ...],
     ) -> LiveSessionSnapshot:
         """Require the accepted pick to reach the next pack or completion.
         The measured transition is the adapter's own published state.
@@ -483,16 +526,17 @@ class TestDraftController:
                     message="the completed draft still publishes pack state.",
                     stage="drafting",
                 )
-            if snapshot.pool.total_cards != len(identity.pool_grp_ids) + 1:
+            if snapshot.pool.total_cards != len(identity.pool_grp_ids) + len(grp_ids):
                 raise self._error(
-                    message="the completed pool does not contain the accepted pick.",
+                    message="the completed pool does not contain the accepted cards.",
                     stage="drafting",
                 )
             return snapshot
 
         inspection = self._inspect_locked(
             stage="drafting",
-            accepted_picks=len(self._steps) + 1,
+            accepted_cards=sum(len(step.grp_ids) for step in self._steps)
+            + len(grp_ids),
         )
         next_offer = inspection.offer
         if (next_offer.pack_number, next_offer.pick_number) <= (
@@ -503,7 +547,7 @@ class TestDraftController:
                 message="the simulator did not advance to a new offered pack.",
                 stage="drafting",
             )
-        if next_offer.pool_grp_ids != identity.pool_grp_ids + (grp_id,):
+        if next_offer.pool_grp_ids != identity.pool_grp_ids + grp_ids:
             raise self._error(
                 message=(
                     "the next offered pack does not carry the accepted pick in "
@@ -716,6 +760,7 @@ def create_test_draft_runtime(
     socket_client: object | None = None,
     card_image_service: CardImageService | None = None,
     augmented_model_client: AugmentedModelClient | None = None,
+    draft_format: DraftFormat = DraftFormat.QUICK,
 ) -> TestDraftRuntime:
     """Create one isolated simulated draft runtime from validated sources.
     The returned runtime owns its session, adapter, and temporary directory.
@@ -782,6 +827,7 @@ def create_test_draft_runtime(
             user_name=DRAFTMANCER_TEST_USER_NAME,
             set_code=normalized_set_code,
             timeout_seconds=timeout_seconds,
+            draft_format=draft_format,
         )
     except Exception as error:
         raise TestDraftError(
@@ -866,6 +912,7 @@ def run_test_draft_auto(
     contextual_adjustments_enabled: bool = True,
     simulation_app_dir: Path | None = None,
     socket_client: object | None = None,
+    draft_format: DraftFormat = DraftFormat.QUICK,
 ) -> TestDraftRunResult:
     """Run one headless automatic draft against a pinned Draftmancer server.
     Card and profile sources stay in the normal app directory; simulated draft
@@ -885,6 +932,7 @@ def run_test_draft_auto(
         contextual_adjustments_enabled=contextual_adjustments_enabled,
         simulation_app_dir=simulation_app_dir,
         socket_client=socket_client,
+        draft_format=draft_format,
     )
     try:
         return runtime.controller.run_auto()
