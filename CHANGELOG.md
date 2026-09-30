@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- Add hand-written synthetic fixtures for a complete Premier, Traditional and
+  Pick-Two draft, each running from ingestion to plain watch and replay
+  output. Pick-Two ends with 21 logical picks and 42 cards, the one-card
+  formats with 42 picks and 42 cards. Tests derive the variants from these
+  fixtures: thread prefix, missing first notify, missing submission, failed
+  pick response, repeated notify, truncated last line, and completion with
+  and without `DraftCompleteDraft`. (#778)
 - The desktop live view names the detected draft format and shows pack and
   pick progress from the draft rules, for example "Pack 1 of 3 · Pick 4 of 7 ·
   take 2 cards" in Pick-Two. The recent picks gallery lists every card of a
