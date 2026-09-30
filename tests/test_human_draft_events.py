@@ -632,8 +632,40 @@ def test_missing_submission_leaves_a_gap_that_completion_does_not_fill() -> None
         (0, 4),
     ]
     completed = _completions(events=events)
-    assert len(completed) == 1
-    assert completed[0].picked_grp_ids == (1, 2, 3, 4)
+    assert [event.picked_grp_ids for event in completed] == [(1, 2, 3, 4), (1, 2, 3, 4)]
+    assert [event.card_pool_grp_ids for event in completed] == [None, (1, 2, 9, 9, 3, 4)]
+    assert completed[1].pool_grp_ids == (1, 2, 9, 9, 3, 4)
+
+
+def test_superset_card_pool_as_the_only_completion_signal_is_carried_once() -> None:
+    lines = [
+        _join_request(event_name=PREMIER),
+        _pick_request(cards=[11]),
+        *_pick_response(),
+        *_complete_response(card_pool=[11, 12]),
+        *_complete_response(card_pool=[11, 12]),
+    ]
+
+    completed = _completions(events=parse_events(lines))
+
+    assert [(event.picked_grp_ids, event.card_pool_grp_ids) for event in completed] == [
+        ((11,), (11, 12)),
+    ]
+
+
+def test_late_superset_card_pool_emits_one_more_completion() -> None:
+    lines = [
+        _join_request(event_name=PREMIER),
+        _pick_request(pack=3, pick=14, cards=[11]),
+        *_pick_response(IsPickingCompleted=True, IsPickSuccessful=True),
+        *_complete_response(card_pool=[11, 12]),
+        *_complete_response(card_pool=[11, 12]),
+    ]
+
+    completed = _completions(events=parse_events(lines))
+
+    assert [event.card_pool_grp_ids for event in completed] == [None, (11, 12)]
+    assert [event.picked_grp_ids for event in completed] == [(11,), (11,)]
 
 
 def test_completion_from_the_final_pick_response() -> None:
@@ -786,7 +818,9 @@ def test_late_card_pool_still_reconciles_after_an_earlier_completion(
     with caplog.at_level(logging.WARNING, logger="draftomen.events"):
         events = list(parse_events(lines))
 
-    assert len(_completions(events=events)) == 1
+    completed = _completions(events=events)
+    assert len(completed) == 1
+    assert completed[0].card_pool_grp_ids is None
     assert len(caplog.records) == 1
 
 
@@ -1214,8 +1248,9 @@ def test_pick_two_log_with_a_missing_submission_feeds_the_pool_store(tmp_path: P
     assert missing.selected_grp_ids == ()
     assert state.completed
     assert state.chosen_pick_count == 20
-    assert sorted(state.pool_grp_ids) == sorted(recorded)
-    assert len(state.pool_grp_ids) == 40
+    assert state.selected_card_count == 40
+    assert sorted(state.pool_grp_ids) == sorted([*recorded, 9001, 9002])
+    assert len(state.pool_grp_ids) == 42
 
 
 def test_premier_log_feeds_the_pool_store(tmp_path: Path) -> None:

@@ -373,7 +373,7 @@ def test_missing_first_notify_still_reaches_draft_complete_in_the_session(
 
 
 @pytest.mark.parametrize("case", ALL_CASES)
-def test_missing_submission_leaves_a_gap_and_completion_does_not_fill_it(
+def test_missing_submission_leaves_a_gap_and_the_card_pool_fills_the_pool(
     case: FormatCase,
     tmp_path: Path,
 ) -> None:
@@ -393,7 +393,7 @@ def test_missing_submission_leaves_a_gap_and_completion_does_not_fill_it(
     assert gap.selected_grp_ids == ()
     assert state.completed
     assert state.chosen_pick_count == case.logical_picks - 1
-    assert len(state.pool_grp_ids) == TOTAL_CARDS - case.cards_per_pick
+    assert len(state.pool_grp_ids) == TOTAL_CARDS
 
 
 @pytest.mark.parametrize("case", ALL_CASES)
@@ -415,7 +415,14 @@ def test_missing_submission_shows_the_pack_but_no_chosen_line_for_the_gap(
     assert f"Pack {pack} Pick {pick}" in replay.splitlines()
     assert len(_chosen_lines(output=replay)) == case.logical_picks - 1
     assert len(_chosen_lines(output=watch)) == case.logical_picks - 1
-    assert snapshot.pool.total_cards == TOTAL_CARDS - case.cards_per_pick
+    assert snapshot.pool.total_cards == TOTAL_CARDS
+    recorded = TOTAL_CARDS - case.cards_per_pick
+    for output in (replay, watch):
+        assert [line for line in output.splitlines() if line.startswith("Draft complete:")] == [
+            f"Draft complete: {recorded} cards (explicit completion)",
+            f"Draft complete: {TOTAL_CARDS} cards (explicit completion); "
+            f"Arena's card pool adds {case.cards_per_pick} cards with no recorded pick",
+        ]
 
 
 @pytest.mark.parametrize("case", ALL_CASES)
@@ -459,7 +466,7 @@ def test_failed_pick_response_without_retry_records_no_pick(
 
     assert len(picks) == case.logical_picks - 1
     assert state.chosen_pick_count == case.logical_picks - 1
-    assert len(state.pool_grp_ids) == TOTAL_CARDS - case.cards_per_pick
+    assert len(state.pool_grp_ids) == TOTAL_CARDS
 
 
 @pytest.mark.parametrize("case", ALL_CASES)

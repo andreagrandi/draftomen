@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- A human draft whose log skips a pick submission now saves Arena's full
+  `CardPool` from `DraftCompleteDraft` as its pool, so a Pick-Two draft with
+  one missing request keeps all 42 cards instead of 40. The missing pick stays
+  empty. The pool updates when the `CardPool` arrives after the draft already
+  completed, and replay and plain watch print a second "Draft complete" line
+  that counts the added cards. A `CardPool` that lacks a recorded card leaves
+  the saved pool unchanged and logs a warning. (#800)
 - Mocked Draft can run a Pick-Two draft with a 4-seat pod and two cards per
   pick, chosen separately from Manual and Auto. The Mocked Draft dialog has a
   Format selector, and a manual Pick-Two pick stages the first card before

@@ -313,6 +313,8 @@ class DraftAuditStore:
             "inferred": event.inferred,
             "completed_at": state.completed_at,
         }
+        if event.card_pool_grp_ids is not None:
+            payload["card_pool_grp_ids"] = list(event.card_pool_grp_ids)
         record_id = _record_id(
             prefix="draft-completed",
             value={

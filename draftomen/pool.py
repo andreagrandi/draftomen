@@ -5,6 +5,7 @@ Consume parser events into resumable draft snapshots keyed by account and draft.
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
@@ -33,6 +34,8 @@ STATE_SCHEMA_VERSION = 2
 LEGACY_CHOSEN_CARD_KEY = "chosen_grp_id"
 ACCOUNT_PROFILE_DIRECTORY_NAME = "accounts"
 ACCOUNT_PROFILE_SCHEMA_VERSION = 1
+
+logger = logging.getLogger(__name__)
 
 
 class DraftPoolError(RuntimeError):
@@ -626,17 +629,42 @@ class DraftPoolStore:
             set_code=event.set_code,
         )
         if state.completed:
-            if not _same_pool_contents(state.pool_grp_ids, event.picked_grp_ids):
+            if _same_pool_contents(state.pool_grp_ids, event.pool_grp_ids):
+                return state
+
+            # After Arena's card pool replaced the saved pool, a replayed
+            # completion still matches the recorded picks.
+            if not _same_pool_contents(_selected_cards(state=state), event.picked_grp_ids):
                 raise DraftPoolError(
                     f"Completion for draft {state.draft_id!r} conflicts with saved pool."
                 )
 
-            return state
+            if event.card_pool_grp_ids is None:
+                return state
+
+            pool_grp_ids = _pool_with_card_pool(
+                state=state,
+                pool_grp_ids=state.pool_grp_ids,
+                card_pool_grp_ids=event.card_pool_grp_ids,
+            )
+            if pool_grp_ids == state.pool_grp_ids:
+                return state
+
+            updated = replace(state, pool_grp_ids=pool_grp_ids, updated_at=self._now_iso())
+            save_draft_state(state=updated, app_dir=self.app_dir)
+            return updated
 
         pool_grp_ids = event.picked_grp_ids if not state.pool_grp_ids else state.pool_grp_ids
         if not _same_pool_contents(pool_grp_ids, event.picked_grp_ids):
             raise DraftPoolError(
                 f"Completion for draft {state.draft_id!r} does not match accumulated pool."
+            )
+
+        if event.card_pool_grp_ids is not None:
+            pool_grp_ids = _pool_with_card_pool(
+                state=state,
+                pool_grp_ids=pool_grp_ids,
+                card_pool_grp_ids=event.card_pool_grp_ids,
             )
 
         now = self._now_iso()
@@ -1070,6 +1098,27 @@ def _ensure_pool_snapshot(*, state: DraftState, pool_grp_ids: tuple[int, ...]) -
 
 def _same_pool_contents(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
     return Counter(left) == Counter(right)
+
+
+def _selected_cards(*, state: DraftState) -> tuple[int, ...]:
+    return tuple(card for pick in state.picks for card in pick.selected_grp_ids)
+
+
+def _pool_with_card_pool(
+    *,
+    state: DraftState,
+    pool_grp_ids: tuple[int, ...],
+    card_pool_grp_ids: tuple[int, ...],
+) -> tuple[int, ...]:
+    # Arena's card pool may add cards whose picks the log missed, never drop one.
+    if Counter(card_pool_grp_ids) >= Counter(pool_grp_ids):
+        return card_pool_grp_ids
+
+    logger.warning(
+        "Card pool for draft %r lacks recorded cards; keeping the saved pool",
+        state.draft_id,
+    )
+    return pool_grp_ids
 
 
 def _is_new_draft_pack_conflict(
