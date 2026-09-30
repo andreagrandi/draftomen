@@ -1,0 +1,8 @@
+{"authenticateResponse":{"clientId":"PICKTWOREPLAYACCOUNT","screenName":"Replay Pick-Two"}}
+[UnityCrossThreadLogger]==> EventJoin {"id":"pick-two-join","request":"{\"EventName\":\"PickTwoDraft_MSH_20260930\",\"EntryCurrencyType\":\"Gem\"}"}
+<== EventJoin(pick-two-join)
+{"Course":{"CourseId":"pick-two-replay-course","InternalEventName":"PickTwoDraft_MSH_20260930","CurrentModule":"PlayerDraft","ModulePayload":""}}
+[UnityCrossThreadLogger]Draft.Notify {"draftId":"pick-two-replay-draft","SelfPick":1,"SelfPack":1,"PackCards":"105097,105134,105003,105037,105117,105014,105034,104997,105030,104989,105054,105070,105084,105182"}
+[UnityCrossThreadLogger]==> EventPlayerDraftMakePick {"id":"pick-two-pick-1","request":"{\"DraftId\":\"pick-two-replay-draft\",\"GrpIds\":[105097,105134],\"Pack\":1,\"Pick\":1}"}
+<== EventPlayerDraftMakePick(pick-two-pick-1)
+{"IsPickSuccessful":true}

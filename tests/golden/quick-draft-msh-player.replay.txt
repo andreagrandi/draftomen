@@ -1,6 +1,7 @@
 Draft Omen replay
 Account: FixturePlayer (FIXTURECLIENTID1234567890)
 Set: MSH
+Format: Quick Draft
 Event: QuickDraft_MSH_20260702
 Draft: 00000000-0000-4000-8000-000000000004
 Attribution: Card data from 17Lands (17lands.com)
