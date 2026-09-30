@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- The TUI names the detected draft format in the waiting title, the detected
+  title, and the status bar, and opens with a neutral "Waiting for a draft"
+  state. The pack title shows progress from the draft rules, for example "Pack
+  1 of 3, Pick 4 of 7, take 2 cards" in Pick-Two. The pool summary shows the
+  last pick with every card, and Pick-Two pool counts read "8 cards from 4
+  picks". Quick Draft counts stay unchanged. (#775)
 - `watch --plain` names the draft format in each pick status line and shows
   pack and pick progress from the draft rules, for example "Pack 1 of 3, Pick
   4 of 7, take 2 cards" in Pick-Two. A Pick-Two pick prints both cards on one
