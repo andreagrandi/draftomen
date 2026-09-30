@@ -2089,6 +2089,209 @@ assert guidance.property("text") == LOG_SETUP_GUIDANCE
     assert completed.returncode == 0, completed.stderr
 
 
+_DRAFT_FORMAT_PROBE_SETUP = """
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen import __version__
+from draftomen.draft_format import DraftFormat
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+from draftomen.session import (
+    ApplicationPhase,
+    RecentLogicalPick,
+    RecommendationState,
+    WAITING_FOR_DRAFT_MESSAGE,
+)
+
+
+def publish(snapshot):
+    provider._publish(snapshot=snapshot)
+    application.processEvents()
+
+
+def text_of(name):
+    item = root.findChild(QObject, name)
+    assert item is not None, name
+    return item.property("text")
+
+
+def find_visual_item(item, object_name):
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+def visible_texts(item=None):
+    item = root.contentItem() if item is None else item
+    texts = []
+    value = item.property("text")
+    if item.isVisible() and isinstance(value, str) and value:
+        texts.append(value)
+    for child in item.childItems():
+        texts.extend(visible_texts(child))
+    return texts
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+preferences_dir = TemporaryDirectory()
+session = MockLiveSession(scenario="ready")
+ready = session.snapshot
+provider = MockSessionAdapter(session=session)
+preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+"""
+
+
+def test_qml_live_heading_names_draft_format_and_pick_progress_offscreen() -> None:
+    probe = _DRAFT_FORMAT_PROBE_SETUP + """
+publish(
+    replace(
+        ready,
+        draft_format=DraftFormat.PICK_TWO,
+        draft=replace(ready.draft, pack_number=0, pick_number=3, completed=False),
+    )
+)
+assert text_of("liveDraftHeading") == "Pack 1 of 3 \u00b7 Pick 4 of 7 \u00b7 take 2 cards"
+assert text_of("liveDraftStatus").startswith("Pick-Two \u00b7 ")
+assert text_of("liveDraftStatus").endswith(" cards available")
+
+publish(
+    replace(
+        ready,
+        draft_format=DraftFormat.PREMIER,
+        draft=replace(ready.draft, pack_number=0, pick_number=1, completed=False),
+    )
+)
+assert text_of("liveDraftHeading") == "Pack 1 of 3 \u00b7 Pick 2 of 14"
+assert text_of("liveDraftStatus").startswith("Premier Draft \u00b7 ")
+
+publish(
+    replace(
+        ready,
+        draft_format=None,
+        draft=replace(ready.draft, pack_number=0, pick_number=1, completed=False),
+    )
+)
+assert text_of("liveDraftHeading") == "Pack 1 \u00b7 Pick 2"
+assert text_of("liveDraftStatus").endswith(" cards available")
+assert "\u00b7" not in text_of("liveDraftStatus")
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_pre_draft_view_is_format_neutral_until_format_known_offscreen() -> None:
+    probe = _DRAFT_FORMAT_PROBE_SETUP + """
+empty = replace(
+    ready,
+    status=replace(
+        ready.status,
+        phase=ApplicationPhase.WAITING_FOR_DRAFT,
+        message=WAITING_FOR_DRAFT_MESSAGE,
+    ),
+    draft=None,
+    draft_format=None,
+    recommendations=RecommendationState(),
+    ratings=replace(ready.ratings, message="Ratings ready."),
+    pool=replace(ready.pool, total_cards=0),
+    build=None,
+)
+publish(empty)
+assert text_of("preDraftHeading") == "Ready for your next draft"
+texts = visible_texts()
+assert "No draft detected" in texts
+assert not [text for text in texts if "Quick Draft" in text], texts
+
+detected = replace(
+    empty,
+    draft_format=DraftFormat.PICK_TWO,
+    draft=replace(ready.draft, pack_number=None, pick_number=None, completed=False),
+)
+publish(detected)
+assert text_of("preDraftHeading") == "Pick-Two detected"
+assert any(
+    text == "Pick-Two \u00b7 " + ready.draft.event_name for text in visible_texts()
+)
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_recent_picks_gallery_shows_every_card_of_a_pick_offscreen() -> None:
+    probe = _DRAFT_FORMAT_PROBE_SETUP + """
+def thumbnail_names(count):
+    names = []
+    for index in range(count):
+        thumbnail = find_visual_item(root.contentItem(), f"recentPickThumbnail{index}")
+        assert thumbnail is not None, index
+        names.append(thumbnail.property("card")["name"])
+    assert find_visual_item(root.contentItem(), f"recentPickThumbnail{count}") is None
+    return names
+
+
+tabs = root.findChild(QObject, "liveDetailTabs")
+tabs.setProperty("currentIndex", 1)
+application.processEvents()
+
+first, second, third = ready.pool.recent_picks[:3]
+logical = (
+    RecentLogicalPick(pack_number=0, pick_number=1, cards=(first, second)),
+    RecentLogicalPick(pack_number=0, pick_number=0, cards=(third,)),
+)
+publish(
+    replace(
+        ready,
+        draft_format=DraftFormat.PICK_TWO,
+        pool=replace(ready.pool, recent_picks=(first, second, third), recent_logical_picks=logical),
+    )
+)
+expected = [pick.card.name for pick in (first, second, third)]
+assert thumbnail_names(3) == expected
+
+publish(
+    replace(
+        ready,
+        pool=replace(ready.pool, recent_picks=(first, second), recent_logical_picks=()),
+    )
+)
+assert thumbnail_names(2) == [first.card.name, second.card.name]
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_production_gui_processes_representative_arena_log_offscreen(
     tmp_path: Path,
 ) -> None:
@@ -2628,9 +2831,11 @@ try:
     status_message = provider.state["status"]["message"]
     assert status_message.startswith("Pack ")
     assert ", pick 6" in status_message
-    draft = provider.state["draft"]
+    progress = provider.state["draft_progress"]
+    assert progress["known"] is True
     expected_heading = (
-        f"Pack {draft['pack_number'] + 1} · Pick {draft['pick_number'] + 1}"
+        f"Pack {progress['pack_number'] + 1} of {progress['pack_count']}"
+        f" · Pick {progress['pick_number'] + 1} of {progress['picks_per_pack']}"
     )
 
     def assert_redundant_header_lines_absent(*, width: int, height: int) -> None:
@@ -3647,7 +3852,7 @@ empty_snapshot = replace(
     status=replace(
         ready_snapshot.status,
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-        message="Waiting for a Quick Draft.",
+        message="Waiting for a draft.",
     ),
     draft=None,
     pool=replace(ready_snapshot.pool, total_cards=0),

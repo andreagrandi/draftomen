@@ -878,7 +878,7 @@ def test_live_session_uses_ordinary_waiting_for_readable_empty_log(
 
     assert session.snapshot.status == ApplicationStatus(
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-        message="Waiting for a Quick Draft.",
+        message="Waiting for a draft.",
         setup_guidance=False,
     )
 
@@ -911,7 +911,7 @@ def test_live_session_clears_log_guidance_when_log_becomes_readable(
 
     assert snapshot.status == ApplicationStatus(
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-        message="Waiting for a Quick Draft.",
+        message="Waiting for a draft.",
         setup_guidance=False,
     )
 
@@ -971,7 +971,7 @@ def test_live_session_refreshes_setup_guidance_after_neutral_login_context(
 
     assert session.snapshot.status == ApplicationStatus(
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-        message="Waiting for a Quick Draft.",
+        message="Waiting for a draft.",
     )
     snapshot = session.poll_once()
 
@@ -992,7 +992,7 @@ def test_live_session_draft_event_overrides_log_setup_guidance(
 
     assert snapshot.status == ApplicationStatus(
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-        message="Preparing Quick Draft data for MSH.",
+        message="Preparing draft data for MSH.",
         setup_guidance=False,
     )
     assert session.poll_once() is snapshot
@@ -1208,7 +1208,7 @@ def test_live_session_without_log_source_processes_typed_persisted_lifecycle(
     assert session.follower is None
     assert initial.status == ApplicationStatus(
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-        message="Waiting for a Quick Draft.",
+        message="Waiting for a draft.",
     )
     assert initial.status.setup_guidance is False
     assert session.poll_once() is initial
@@ -4603,7 +4603,7 @@ def test_live_session_account_without_draft_clears_profile_and_retires_request(
 
     assert switched.status == ApplicationStatus(
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-        message="Waiting for a Quick Draft.",
+        message="Waiting for a draft.",
     )
     assert switched.set_profile == SetProfileState()
     assert session._active_set_code() is None
