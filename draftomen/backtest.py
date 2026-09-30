@@ -8,11 +8,13 @@ from dataclasses import dataclass
 from os import PathLike
 from typing import TypeAlias
 
+from draftomen.audit import selection_match
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.events import (
-    EXPECTED_PACK_COUNT,
-    EXPECTED_PICKS_PER_PACK,
-    EXPECTED_TOTAL_PICKS,
+from draftomen.draft_format import (
+    DraftFormat,
+    DraftRules,
+    detect_draft_format,
+    rules_for_format,
 )
 from draftomen.pickengine import (
     PickEngine,
@@ -53,6 +55,8 @@ class BacktestPickResult:
     role_ledger: PoolRoleLedger | None = None
     scoring_context: PickScoringContext | None = None
     contextual_evidence: tuple[str, ...] = ()
+    selected_cards: tuple[CardInfo, ...] = ()
+    top_two_selected_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,12 +159,15 @@ def generate_backtest_report(
         contextual_adjustments_enabled=contextual_adjustments_enabled,
         set_profile=set_profile,
     )
+    draft_format = detect_draft_format(event_name=state.event_name) or DraftFormat.QUICK
+    rules = rules_for_format(draft_format=draft_format)
     rows = tuple(
         _score_pick(
             pick=pick,
             card_database=card_database,
             pick_engine=engine,
             ranking_mode=ranking_mode,
+            rules=rules,
         )
         for pick in state.picks
     )
@@ -206,24 +213,17 @@ def _score_pick(
     card_database: CardDatabase,
     pick_engine: PickEngine,
     ranking_mode: str,
+    rules: DraftRules,
 ) -> BacktestPickResult:
-    if len(pick.selected_grp_ids) > 1:
-        return _skipped_result(
-            pick=pick,
-            actual=None,
-            reason="multi-card pick",
-        )
-
-    actual_grp_id = pick.selected_grp_ids[0] if pick.selected_grp_ids else None
-    actual = (
-        card_database.lookup(grp_id=actual_grp_id)
-        if actual_grp_id is not None
-        else None
+    selected_cards = tuple(
+        card_database.lookup(grp_id=grp_id) for grp_id in pick.selected_grp_ids
     )
+    actual = selected_cards[0] if selected_cards else None
     if pick.offered_grp_ids is None:
         return _skipped_result(
             pick=pick,
             actual=actual,
+            selected_cards=selected_cards,
             reason="missing offered-card history",
         )
 
@@ -231,6 +231,7 @@ def _score_pick(
         return _skipped_result(
             pick=pick,
             actual=actual,
+            selected_cards=selected_cards,
             reason="empty offered-card history",
             offered_count=0,
         )
@@ -239,21 +240,23 @@ def _score_pick(
         return _skipped_result(
             pick=pick,
             actual=actual,
+            selected_cards=selected_cards,
             reason="missing pool-before-pick snapshot",
             offered_count=len(pick.offered_grp_ids),
         )
 
     if not (
-        0 <= pick.pack_number < EXPECTED_PACK_COUNT
-        and 0 <= pick.pick_number < EXPECTED_PICKS_PER_PACK
+        0 <= pick.pack_number < rules.pack_count
+        and 0 <= pick.pick_number < rules.picks_per_pack
     ):
         return _skipped_result(
             pick=pick,
             actual=actual,
+            selected_cards=selected_cards,
             reason="pick outside expected draft shape",
         )
 
-    global_pick_index = _draft_pick_index(pick=pick)
+    global_pick_index = _draft_pick_index(pick=pick, rules=rules)
     scored_pack = pick_engine.score_pack(
         offered_grp_ids=pick.offered_grp_ids,
         card_database=card_database,
@@ -262,7 +265,9 @@ def _score_pick(
         pack_number=pick.pack_number,
         pick_number=pick.pick_number,
         global_pick_index=global_pick_index,
-        estimated_remaining_picks=max(0, EXPECTED_TOTAL_PICKS - global_pick_index),
+        estimated_remaining_picks=max(0, rules.total_picks - global_pick_index),
+        picks_per_pack=rules.picks_per_pack,
+        draft_rules=rules,
     )
     ranked_cards = rank_scored_cards(
         cards=scored_pack.cards,
@@ -273,12 +278,13 @@ def _score_pick(
         return _skipped_result(
             pick=pick,
             actual=actual,
+            selected_cards=selected_cards,
             reason="no recommended card",
             pool_size=len(pick.pool_before_pick),
             offered_count=len(pick.offered_grp_ids),
         )
 
-    if actual_grp_id is None:
+    if not pick.selected_grp_ids:
         return BacktestPickResult(
             pack_number=pick.pack_number,
             pick_number=pick.pick_number,
@@ -294,6 +300,10 @@ def _score_pick(
             contextual_evidence=recommended.contextual_evidence,
         )
 
+    selection = selection_match(
+        selected_grp_ids=pick.selected_grp_ids,
+        ranked_grp_ids=tuple(card.card.grp_id for card in ranked_cards),
+    )
     return BacktestPickResult(
         pack_number=pick.pack_number,
         pick_number=pick.pick_number,
@@ -301,12 +311,14 @@ def _score_pick(
         offered_count=len(pick.offered_grp_ids),
         recommended=recommended,
         actual=actual,
-        match=recommended.card.grp_id == actual_grp_id,
+        match=selection.top_hit,
         skipped_reason=None,
         data_source=scored_pack.source_summary,
         role_ledger=scored_pack.role_ledger,
         scoring_context=scored_pack.scoring_context,
         contextual_evidence=recommended.contextual_evidence,
+        selected_cards=selected_cards,
+        top_two_selected_count=selection.top_two_selected_count,
     )
 
 
@@ -314,6 +326,7 @@ def _skipped_result(
     *,
     pick: DraftPick,
     actual: CardInfo | None,
+    selected_cards: tuple[CardInfo, ...],
     reason: str,
     pool_size: int | None = None,
     offered_count: int | None = None,
@@ -328,11 +341,12 @@ def _skipped_result(
         match=None,
         skipped_reason=reason,
         data_source=None,
+        selected_cards=selected_cards,
     )
 
 
-def _draft_pick_index(*, pick: DraftPick) -> int:
-    return (pick.pack_number * EXPECTED_PICKS_PER_PACK) + pick.pick_number + 1
+def _draft_pick_index(*, pick: DraftPick, rules: DraftRules) -> int:
+    return (pick.pack_number * rules.picks_per_pack) + pick.pick_number + 1
 
 
 def _format_header(*, report: BacktestReport) -> list[str]:
@@ -423,6 +437,9 @@ def _format_recommended(*, row: BacktestPickResult) -> str:
 
 
 def _format_actual(*, row: BacktestPickResult) -> str:
+    if row.selected_cards:
+        return "; ".join(format_card_info(card) for card in row.selected_cards)
+
     if row.actual is not None:
         return format_card_info(row.actual)
 
