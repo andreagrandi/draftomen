@@ -41,6 +41,10 @@ When working on the last remaining open ticket belonging to an epic, do not clos
 - If any work required by the epic remains, create an additional child ticket covering the missing work and leave the epic open.
 - If the whole epic has been implemented and verified, close the epic only after the final child ticket has been closed.
 
+## Private Arena Logs
+
+Real `Player.log` and `UTC_Log` files, including the anonymised third-party samples in `.git/private/player-logs/public-samples/`, are private development inputs. Never commit, attach, quote or publish them, excerpts from them, or any player-identifying data such as account ids, screen names or session ids. This applies to fixtures, documentation, issues, pull requests and screenshots. Use hand-written synthetic fixtures for tests and `scripts/verify_real_logs.py` for local checks against the private logs. Before committing, check that `git status --untracked-files=all` lists no log or derived output.
+
 ## Changelog Requirement
 
 Before committing, pushing, or opening or updating a pull request, ensure the changeset includes an appropriate `CHANGELOG.md` entry under `## [Unreleased]`. For a release, move those entries to `## [X.Y.Z] - YYYY-MM-DD`, then restore `## [Unreleased]`.

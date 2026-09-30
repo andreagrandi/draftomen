@@ -57,6 +57,15 @@ are appended to the same file as schema 2.
   target, grade and score gates, classification, and exact decision reasons.
 - Exact card order for DO Score, 17Lands win rate, ALSA, and mana-value views.
 
+The ratings snapshot records the `requested_format` for the draft, such as
+`TradDraft`, with its `primary` dataset and, when loaded, its `fallback`
+`PremierDraft` dataset. Each candidate's rating `source` holds the same
+`requested_format`, the `source_format` that supplied the rating, and a
+`fallback_reason` such as `primary-missing`, `primary-thin` or
+`format-fallback` when that source is not the requested format. The order
+each format tries is listed in
+[pick-scoring.md](pick-scoring.md#draft-formats-and-ratings-fallback).
+
 ### Rationale and published recommendation fields
 
 Each `decision_evaluated.recommendation` object and every object in
@@ -99,12 +108,16 @@ evaluations to that historical pick.
 `choice_made`
 
 - `selected_grp_ids`: the Arena cards actually chosen, in the order Arena
-  reported them. Quick Draft picks hold one card and Pick-Two picks hold two.
+  reported them. Quick, Premier and Traditional picks hold one card and
+  Pick-Two picks hold two.
 - The TUI ranking mode visible at the time, or DO Score in plain watch mode.
 - `recommended_grp_id`: the first card in the active `ranking_mode` ordering.
 - `recommendation_followed`: true when that card is one of the selected cards.
+  A Pick-Two pick follows the recommendation when either of its two cards is
+  the recommended card.
 - `top_two_selected_count`: the number of distinct selected cards in the first
-  two entries of the active ranking, from 0 to 2.
+  two entries of the active ranking, from 0 to 2. A one-card pick scores 0 or
+  1. A Pick-Two pick scores 2 when it takes both of the top two cards.
 - The `decision_id` and latest `evaluation_id` available at choice time.
 
 Schema 1 `choice_made` records store a single `chosen_grp_id` in place of

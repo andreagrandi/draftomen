@@ -43,10 +43,13 @@ const repositoryDocs = [
           <p>
             With Arena's <strong>Detailed Logs (Plugin Support)</strong> enabled,
             Draft Omen watches the local <code>Player.log</code> as an append-only
-            stream. It parses complete lines containing the current Quick Draft
-            protocol payloads, including <code>BotDraftDraftStatus</code> for the
-            first pack and <code>BotDraftDraftPick</code> for picks and following
-            pack responses.
+            stream. It reads the draft format from the event name when you join:
+            Quick, Premier, Traditional or Pick-Two. Quick Draft payloads use{" "}
+            <code>BotDraftDraftStatus</code> for the first pack and{" "}
+            <code>BotDraftDraftPick</code> for picks and following pack responses.
+            Human drafts log each pack as a <code>Draft.Notify</code> line and each
+            pick as an <code>EventPlayerDraftMakePick</code> request, which holds
+            two cards in Pick-Two.
           </p>
           <p>
             Each offered <code>DraftPack</code> becomes a pack snapshot; the
@@ -63,9 +66,10 @@ const repositoryDocs = [
           <h2 id="ratings-heading">2. Resolve data, then rank the pack</h2>
           <p>
             Card IDs are normalized and joined to set metadata. For each card,
-            Draft Omen prefers 17Lands <strong>QuickDraft Games-in-Hand (GIH) win rate</strong>{" "}
-            when the sample is strong. If QuickDraft data is missing or thin, it
-            marks and uses the <strong>PremierDraft</strong> value; if neither
+            Draft Omen prefers the 17Lands <strong>Games-in-Hand (GIH) win rate</strong>{" "}
+            for the draft's own format when the sample is strong. If that data is
+            missing or thin, it marks and uses the <strong>PremierDraft</strong>{" "}
+            value; if neither
             format has a reliable sample, it uses a neutral prior. The interface
             keeps the source, raw GIH WR, and grade visible rather than hiding the
             fallback.
@@ -131,8 +135,8 @@ const repositoryDocs = [
             DO Score and public win rates describe the decks, players, samples,
             and contexts represented in those data. They are guidance—not a
             perfect pick order—and the app keeps alternatives available for your
-            judgment. Live recommendations currently target Quick Draft; Windows
-            support is best-effort.
+            judgment. Traditional Draft has not yet been checked against a real
+            Arena log. Windows support is best-effort.
           </p>
         </section>
 

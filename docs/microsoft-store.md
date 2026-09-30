@@ -121,7 +121,7 @@ Draft Omen
 ### Description
 
 ```text
-Draft Omen is an unofficial draft assistant for MTG Arena Quick Drafts. It reads Arena's local log while you draft, recognizes each pack and pick, and ranks the cards on offer. When the draft ends, it suggests a 40-card deck from your pool.
+Draft Omen is an unofficial draft assistant for MTG Arena Quick, Premier, Traditional and Pick-Two drafts. It reads Arena's local log while you draft, recognizes each pack and pick, and ranks the cards on offer. When the draft ends, it suggests a 40-card deck from your pool.
 
 Every recommendation shows the data behind it: the DO Score, the 17Lands win rate and grade, how the card fits your colors, and a summary of your pool so far. You can sort by other measures to compare.
 
@@ -183,7 +183,7 @@ Draft Omen is a desktop app built with Qt and packaged as a full-trust Win32 app
 ### Notes for certification
 
 ```text
-Draft Omen is a companion app for MTG Arena Quick Drafts. It reads Arena's local Player.log and shows pick recommendations. It never writes to Arena.
+Draft Omen is a companion app for MTG Arena drafts. It reads Arena's local Player.log and shows pick recommendations. It never writes to Arena.
 
 Testing without MTG Arena: launch the app. It opens on the Live Draft view with an "Arena setup needed" message that explains how to turn on Arena logs, because no Arena log exists. A "Ratings unavailable" notice is expected too, because ratings load only after the app detects a draft's card set. The About and Privacy buttons in the left rail work without Arena.
 

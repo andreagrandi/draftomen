@@ -1,6 +1,31 @@
-# MTG Arena Quick Draft log format
+# MTG Arena draft log format
 
-This document records the current Arena `Player.log` tokens observed in the sanitized fixture at `tests/fixtures/quick-draft-msh-player.log`.
+This document records the Arena log tokens Draft Omen reads for Quick, Premier, Traditional and Pick-Two drafts. The Quick Draft sections quote the sanitized fixture at `tests/fixtures/quick-draft-msh-player.log`. The human-draft sections describe the protocol at field level only. Real human-draft logs are private, so this document quotes none of them. See [Private logs](#private-logs).
+
+## Format detection
+
+Draft Omen decides the format from event metadata before it reads any pack. It never guesses the format from pack size or card count. The event name comes from the first of these that appears:
+
+- An `EventJoin` request whose `EventName` starts with a known prefix.
+- A course payload whose `CurrentModule` is `PlayerDraft` and whose `InternalEventName` holds the event name.
+- The scene line `Entering table draft queue: <SET>_<Kind>_Draft`, for logs that have no `EventJoin` line. `Premier`, `Trad` and `PickTwo` map to the `PremierDraft_`, `TradDraft_` and `PickTwoDraft_` prefixes. An `EventJoin` for the same set and format that follows keeps its dated event name.
+
+The event name prefix picks the format and its pack rules:
+
+| Prefix | Format | Packs | Logical picks per pack | Cards per pick | Pool |
+|---|---|---|---|---|---|
+| `QuickDraft_` | Quick | 3 | 14 | 1 | 42 |
+| `PremierDraft_` | Premier | 3 | 14 | 1 | 42 |
+| `TradDraft_` | Traditional | 3 | 14 | 1 | 42 |
+| `PickTwoDraft_`, `PickTwoTradDraft_` | Pick-Two | 3 | 7 | 2 | 42 |
+
+The longest matching prefix wins. An unknown prefix leaves the active draft alone. Traditional and Premier differ in match rules, not in how packs are picked, so they share one drafting path. `PickTwoTradDraft_` appears in 17Lands format lists but in no log we hold.
+
+A logical pick is one submission to Arena. It holds `cards_per_pick` cards, so a Pick-Two draft has 21 logical picks and 42 cards. Draft Omen counts progress in logical picks and pool size in cards.
+
+## Line prefixes
+
+Arena's rotated `UTC_Log` files start each line with a `[<thread>] ` prefix. The parser strips that prefix and then reads the line like a plain `Player.log` line. Tags such as `[Accounts - Login]` and `[UnityCrossThreadLogger]` are kept.
 
 ## Fixture
 
@@ -90,6 +115,50 @@ Wotc.Mtga.Events.LimitedPlayerEvent:CompleteDraft()
 ```
 
 The parser should auto-trigger the deck builder when `Payload.DraftStatus == "Completed"`. Fallback inference remains safe if Arena drops the explicit status: `PackNumber == 2`, `PickNumber == 13`, `DraftPack == []`, and 42 `PickedCards`.
+
+## Human drafts
+
+Premier, Traditional and Pick-Two drafts share one protocol. Draft Omen reads three kinds of line once the format is known.
+
+### Pack offered
+
+A `[UnityCrossThreadLogger]Draft.Notify` line carries a JSON object with:
+
+- `draftId`: the draft's identifier.
+- `SelfPack` and `SelfPick`: the pack and logical pick, both 1-based on the wire. Draft Omen stores them 0-based, so `SelfPack: 1, SelfPick: 1` is pack 0, pick 0.
+- `PackCards`: the offered card `grpId` values.
+
+The notify has no event name, so the pack belongs to the last draft event the parser detected. Arena logs each notify twice, and the repeat is dropped. A notify whose coordinates fall outside the format's pack rules is ignored.
+
+### Pick submitted
+
+A `==> EventPlayerDraftMakePick` request carries a string-encoded JSON `request` with `DraftId`, `Pack`, `Pick` and `GrpIds`. `Pack` and `Pick` are 1-based like the notify. `GrpIds` holds one or more selected cards: one in Premier and Traditional, two in Pick-Two. A pick whose card count does not match the format is still recorded as logged, and the parser writes a warning.
+
+The response arrives as a `<== EventPlayerDraftMakePick(<id>)` marker followed by a JSON body on the next line. `IsPickSuccessful: false` drops the pick. `IsPickingCompleted: true` completes the draft. A request with no logged response is still recorded when the next pack or completion arrives. A repeated request or response counts once.
+
+### Draft completed
+
+The draft completes once, from the first of:
+
+- a pick response with `IsPickingCompleted: true`;
+- a `DraftCompleteDraft` request whose `EventName` matches the draft and whose `IsBotDraft` is `false`;
+- the `DraftCompleteDraft` response, whose `CardPool` lists the full pool Arena holds.
+
+The completed pool holds the recorded picks. A missing pick stays a gap. When Arena's `CardPool` holds every recorded card plus the missing ones, Draft Omen saves that full pool instead, so a draft with gaps still keeps all 42 cards. A `CardPool` that lacks a recorded card leaves the pool unchanged, and the parser writes a warning.
+
+### Known limits
+
+- No real Traditional drafting log has been captured. Traditional support rests on the synthetic fixture and the protocol it shares with Premier.
+- Arena sometimes skips a `Draft.Notify` or a pick request. A skipped notify means no recommendation for that pick. A skipped request leaves a gap until the `CardPool` fills the pool.
+- Malformed or unknown human-draft lines are ignored rather than failing the live session.
+
+## Private logs
+
+Real `Player.log` and `UTC_Log` files are private development inputs. They hold account identifiers, screen names, session ids and inventory. Keep them under `.git/private/player-logs/`, which git never tracks. That folder groups logs by format, with a `manifest.txt` in each subfolder. Its `public-samples/` subfolder holds anonymised excerpts collected from third parties. They are private too.
+
+Run `uv run python scripts/verify_real_logs.py` to summarise every private log. It prints the format, packs, logical picks, cards, gaps and completion of each file, without card IDs or UUIDs.
+
+Human-draft tests use hand-written synthetic fixtures such as `tests/fixtures/premier-draft-complete.log`, `traditional-draft-complete.log` and `pick-two-draft-complete.log`. The pseudonymised Quick Draft fixture predates this rule and is the only fixture taken from a real log. Do not commit a real log, an excerpt from one, an anonymised sample, or output derived from them.
 
 ## Rotation behavior
 

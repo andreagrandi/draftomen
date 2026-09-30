@@ -115,7 +115,7 @@ def test_tui_parser_uses_tui_command_name(
 
     assert error.value.code == 0
     assert "usage: draftomen-tui" in captured.out
-    assert "Unofficial Quick Draft assistant for MTG Arena (TUI)." in captured.out
+    assert "Unofficial draft assistant for MTG Arena (TUI)." in captured.out
 
 
 @pytest.mark.parametrize(

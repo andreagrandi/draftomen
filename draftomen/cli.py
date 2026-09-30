@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="draftomen-tui",
-        description="Unofficial Quick Draft assistant for MTG Arena (TUI).",
+        description="Unofficial draft assistant for MTG Arena (TUI).",
     )
     parser.add_argument(
         "--version",

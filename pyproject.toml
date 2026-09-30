@@ -1,7 +1,7 @@
 [project]
 name = "draftomen"
 version = "0.4.2"
-description = "An unofficial Quick Draft assistant for MTG Arena"
+description = "An unofficial draft assistant for MTG Arena"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"

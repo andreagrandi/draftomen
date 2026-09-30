@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+- The README, PRD, website and Store listing now describe Quick, Premier,
+  Traditional and Pick-Two drafts instead of Quick Draft only. The README has a
+  format table and names the limits of human drafts, including that Traditional
+  drafting has no real Arena log sample yet. The log-format document covers
+  format detection from event metadata, the 1-based human-draft coordinates,
+  picks with one or two cards and the `UTC_Log` thread prefix. Pick scoring and
+  audit documents explain the ratings fallback table and how a Pick-Two pick
+  counts against the recommendation. The package, Windows app and
+  `draftomen-tui --help` descriptions now read "draft assistant". A new rule
+  in `AGENTS.md` and the README forbids committing or publishing raw Arena
+  logs, anonymised third-party samples or player-identifying data. (#264)
 - A human draft whose log skips a pick submission now saves Arena's full
   `CardPool` from `DraftCompleteDraft` as its pool, so a Pick-Two draft with
   one missing request keeps all 42 cards instead of 40. The missing pick stays
