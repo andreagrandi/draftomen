@@ -1236,3 +1236,120 @@ def test_premier_log_feeds_the_pool_store(tmp_path: Path) -> None:
     assert states[0].completed
     assert states[0].pool_grp_ids == (100, 200, 300)
     assert states[0].chosen_pick_count == 3
+
+
+def _queue_marker(*, kind: str = "Premier", set_code: str = "MSH", prefix: str = "") -> str:
+    context = f"Entering table draft queue: {set_code}_{kind}_Draft"
+    body = json.dumps(
+        {
+            "fromSceneName": "EventLanding",
+            "toSceneName": "TableDraftQueue",
+            "initiator": "System",
+            "context": context,
+        }
+    )
+    return f"{prefix}[UnityCrossThreadLogger]Client.SceneChange {body}"
+
+
+@pytest.mark.parametrize(
+    ("kind", "event_name", "draft_format", "picks_per_pack", "cards_per_pick"),
+    [
+        ("Premier", "PremierDraft_MSH", DraftFormat.PREMIER, 14, 1),
+        ("PickTwo", "PickTwoDraft_MSH", DraftFormat.PICK_TWO, 7, 2),
+        ("Trad", "TradDraft_MSH", DraftFormat.TRADITIONAL, 14, 1),
+    ],
+)
+def test_queue_marker_sets_the_format_for_a_notify_only_stream(
+    kind: str,
+    event_name: str,
+    draft_format: DraftFormat,
+    picks_per_pack: int,
+    cards_per_pick: int,
+) -> None:
+    events = list(parse_events([_queue_marker(kind=kind), _notify(card_count=12)]))
+
+    assert events == [
+        PackOfferedEvent(
+            event_name=event_name,
+            set_code="MSH",
+            pack_number=0,
+            pick_number=0,
+            offered_grp_ids=tuple(range(1000, 1012)),
+            pool_grp_ids=(),
+            account_id=None,
+            picks_per_pack=picks_per_pack,
+            draft_format=draft_format,
+            cards_per_pick=cards_per_pick,
+        )
+    ]
+
+
+def test_queue_marker_with_a_thread_prefix_sets_the_format() -> None:
+    events = _pack_events(lines=[_queue_marker(prefix="[36185] "), _notify()])
+
+    assert [event.event_name for event in events] == ["PremierDraft_MSH"]
+
+
+def test_queue_marker_after_a_matching_join_keeps_the_dated_event_name() -> None:
+    events = _pack_events(
+        lines=[
+            _join_request(event_name="PremierDraft_MSH_20260623"),
+            _notify(pack=1, pick=1),
+            _queue_marker(),
+            _notify(pack=1, pick=2, first_grp_id=2000),
+        ]
+    )
+
+    assert [event.event_name for event in events] == ["PremierDraft_MSH_20260623"] * 2
+
+
+def test_matching_join_before_any_notify_replaces_the_queue_event_name() -> None:
+    events = _pack_events(
+        lines=[
+            _queue_marker(),
+            _join_request(event_name="PremierDraft_MSH_20260623"),
+            _notify(),
+        ]
+    )
+
+    assert [event.event_name for event in events] == ["PremierDraft_MSH_20260623"]
+
+
+def test_matching_join_after_a_notify_keeps_the_queue_event_name() -> None:
+    events = _pack_events(
+        lines=[
+            _queue_marker(),
+            _notify(pack=1, pick=1),
+            _join_request(event_name="PremierDraft_MSH_20260623"),
+            _notify(pack=1, pick=2, first_grp_id=2000),
+        ]
+    )
+
+    assert [event.event_name for event in events] == ["PremierDraft_MSH"] * 2
+
+
+def test_queue_marker_for_another_set_replaces_the_context() -> None:
+    events = _pack_events(
+        lines=[
+            _join_request(event_name="PremierDraft_MSH_20260623"),
+            _queue_marker(set_code="HOB"),
+            _notify(),
+        ]
+    )
+
+    assert [(event.event_name, event.set_code) for event in events] == [
+        ("PremierDraft_HOB", "HOB")
+    ]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        _queue_marker(kind="Quick"),
+        "[UnityCrossThreadLogger]Client.SceneChange Entering table draft queue: garbage",
+        "Entering table draft queue: _Premier_Draft",
+        "Entering table draft queue: ",
+    ],
+)
+def test_unknown_or_malformed_queue_marker_produces_nothing(marker: str) -> None:
+    assert list(parse_events([marker, _notify()])) == []

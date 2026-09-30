@@ -37,6 +37,14 @@ _NOTIFY_LINE = re.compile(r"^\[UnityCrossThreadLogger\]Draft\.Notify\s+(?P<body>
 _THREAD_PREFIX = re.compile(
     r"^\[(?!UnityCrossThreadLogger\])[^\[\]]+\]\s+(?=\[UnityCrossThreadLogger\]|<==|==>|\{)"
 )
+_TABLE_DRAFT_QUEUE = re.compile(
+    r"Entering table draft queue: (?P<set_code>[A-Za-z0-9]+)_(?P<kind>[A-Za-z0-9]+)_Draft\b"
+)
+_QUEUE_KIND_PREFIXES = {
+    "Premier": "PremierDraft",
+    "PickTwo": "PickTwoDraft",
+    "Trad": "TradDraft",
+}
 _RESPONSE_MARKER = re.compile(r"^<==\s+(?P<token>[^()]+)\(")
 _RESPONSE_ID = re.compile(r"^<==\s+(?P<token>[^()\s]+)\((?P<id>[^()]*)\)")
 _MAKE_PICK_TOKEN = "EventPlayerDraftMakePick"
@@ -160,6 +168,8 @@ class _DraftContext:
     event_name: str
     set_code: str
     rules: DraftRules
+    # A queue-marker context has no dated event name, so EventJoin may still replace it.
+    from_queue: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +313,17 @@ def _parse_general_line(
         state.draft_context = None
         state.last_notify = None
         state.login_generation += 1
+        return ()
+
+    queue_match = _TABLE_DRAFT_QUEUE.search(stripped)
+    if queue_match is not None:
+        prefix = _QUEUE_KIND_PREFIXES.get(queue_match.group("kind"))
+        if prefix is not None:
+            _remember_draft_event(
+                event_name=f"{prefix}_{queue_match.group('set_code')}",
+                state=state,
+                from_queue=True,
+            )
         return ()
 
     notify_match = _NOTIFY_LINE.match(stripped)
@@ -467,7 +488,12 @@ def _remember_join_request_event(
         _remember_draft_event(event_name=event_name, state=state)
 
 
-def _remember_draft_event(*, event_name: str, state: _ParserState) -> None:
+def _remember_draft_event(
+    *,
+    event_name: str,
+    state: _ParserState,
+    from_queue: bool = False,
+) -> None:
     draft_format = detect_draft_format(event_name=event_name)
     if draft_format is None:
         return
@@ -480,14 +506,39 @@ def _remember_draft_event(*, event_name: str, state: _ParserState) -> None:
     if context is not None and context.event_name == event_name:
         return
 
+    if context is not None and _same_draft(
+        context=context,
+        draft_format=draft_format,
+        set_code=parts[1],
+    ):
+        # The pool store rejects a renamed event, so one draft keeps one name.
+        if from_queue:
+            return
+        if context.from_queue:
+            if state.last_notify is None:
+                state.draft_context = _DraftContext(
+                    event_name=event_name,
+                    set_code=context.set_code,
+                    rules=context.rules,
+                )
+            return
+
     state.outbox.extend(_flush_pending_pick(state=state))
     state.human_draft = None
     state.draft_context = _DraftContext(
         event_name=event_name,
         set_code=parts[1],
         rules=rules_for_format(draft_format=draft_format),
+        from_queue=from_queue,
     )
     state.last_notify = None
+
+
+def _same_draft(*, context: _DraftContext, draft_format: DraftFormat, set_code: str) -> bool:
+    return (
+        context.set_code == set_code
+        and detect_draft_format(event_name=context.event_name) == draft_format
+    )
 
 
 def _parse_draft_notify(*, body: str, state: _ParserState) -> tuple[DraftEvent, ...]:
