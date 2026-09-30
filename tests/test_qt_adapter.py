@@ -39,6 +39,8 @@ from draftomen.carddb import (
     build_card_database_from_bulk_file,
 )
 from draftomen.cardimages import CardImageService
+from draftomen.draft_format import DraftFormat, rules_for_format
+from draftomen.events import PackOfferedEvent
 from draftomen.mock_session import MockLiveSession
 from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
 from draftomen.preferences import (
@@ -58,6 +60,7 @@ from draftomen.qt_adapter import (
     LiveSessionAdapter,
     RecommendationListModel,
     SessionAdapter,
+    _to_qml_value,
 )
 from draftomen.session import (
     AugmentationState,
@@ -75,12 +78,15 @@ from draftomen.session import (
     ChooseRecommendation,
     DataLoadPhase,
     DismissError,
+    DraftIdentity,
     FocusBuildCard,
     LiveSession,
     LiveSessionCommand,
     LiveSessionSnapshot,
     PoolState,
     ProfileRefreshRequest,
+    RecentLogicalPick,
+    RecentPick,
     Recommendation,
     RecommendationState,
     RequestBacktest,
@@ -746,6 +752,223 @@ def test_session_adapter_converts_local_image_path_to_file_url(
     assert adapter.state["pool"]["current_colors"] == ["W", "U"]
     assert adapter.state["pool"]["role_ledger"]["mode"] == "completed_pool"
     assert adapter.state["pool"]["role_ledger"]["stage"] is None
+
+
+def _draft_identity(
+    *, pack_number: int | None = 1, pick_number: int | None = 4
+) -> DraftIdentity:
+    return DraftIdentity(
+        account_id="account",
+        draft_id="draft",
+        event_name="Draft",
+        set_code="FIX",
+        course_id=None,
+        pack_number=pack_number,
+        pick_number=pick_number,
+        completed=False,
+    )
+
+
+def _pack_event(
+    *, draft_format: DraftFormat, picks_per_pack: int, cards_per_pick: int
+) -> PackOfferedEvent:
+    return PackOfferedEvent(
+        event_name="Draft",
+        set_code="FIX",
+        pack_number=1,
+        pick_number=4,
+        offered_grp_ids=(1, 2),
+        pool_grp_ids=(),
+        account_id="account",
+        picks_per_pack=picks_per_pack,
+        draft_format=draft_format,
+        cards_per_pick=cards_per_pick,
+    )
+
+
+@pytest.mark.parametrize(
+    ("draft_format", "format_name", "picks_per_pack", "cards_per_pick"),
+    [
+        (DraftFormat.QUICK, "Quick Draft", 14, 1),
+        (DraftFormat.PREMIER, "Premier Draft", 14, 1),
+        (DraftFormat.TRADITIONAL, "Traditional Draft", 14, 1),
+        (DraftFormat.PICK_TWO, "Pick-Two", 7, 2),
+    ],
+)
+def test_session_adapter_publishes_draft_progress_for_each_format(
+    draft_format: DraftFormat,
+    format_name: str,
+    picks_per_pack: int,
+    cards_per_pick: int,
+) -> None:
+    adapter = SessionAdapter(
+        snapshot=LiveSessionSnapshot(
+            draft=_draft_identity(),
+            draft_format=draft_format,
+        )
+    )
+
+    assert adapter.state["draft_progress"] == {
+        "known": True,
+        "draft_format": draft_format.value,
+        "format_name": format_name,
+        "pack_number": 1,
+        "pick_number": 4,
+        "pack_count": 3,
+        "picks_per_pack": picks_per_pack,
+        "cards_per_pick": cards_per_pick,
+    }
+    rules = rules_for_format(draft_format=draft_format)
+    assert rules.picks_per_pack == picks_per_pack
+    assert rules.cards_per_pick == cards_per_pick
+
+
+def test_session_adapter_draft_progress_prefers_pack_event_rules() -> None:
+    adapter = SessionAdapter(
+        snapshot=LiveSessionSnapshot(
+            draft=_draft_identity(),
+            draft_format=DraftFormat.QUICK,
+            current_pack_event=_pack_event(
+                draft_format=DraftFormat.QUICK, picks_per_pack=15, cards_per_pick=1
+            ),
+        )
+    )
+
+    assert adapter.state["draft_progress"]["picks_per_pack"] == 15
+    assert adapter.state["draft_progress"]["cards_per_pick"] == 1
+    assert adapter.state["draft_progress"]["pack_count"] == 3
+    assert "current_pack_event" not in adapter.state
+
+
+def test_session_adapter_draft_progress_is_neutral_without_a_format() -> None:
+    adapter = SessionAdapter(
+        snapshot=LiveSessionSnapshot(draft=_draft_identity(), draft_format=None)
+    )
+
+    assert adapter.state["draft_progress"] == {
+        "known": False,
+        "draft_format": None,
+        "format_name": None,
+        "pack_number": None,
+        "pick_number": None,
+        "pack_count": None,
+        "picks_per_pack": None,
+        "cards_per_pick": None,
+    }
+
+
+def test_session_adapter_draft_progress_has_no_coordinates_without_identity() -> None:
+    adapter = SessionAdapter(
+        snapshot=LiveSessionSnapshot(draft_format=DraftFormat.PICK_TWO)
+    )
+    partial = SessionAdapter(
+        snapshot=LiveSessionSnapshot(
+            draft=_draft_identity(pack_number=None, pick_number=None),
+            draft_format=DraftFormat.PICK_TWO,
+        )
+    )
+
+    for candidate in (adapter, partial):
+        progress = candidate.state["draft_progress"]
+        assert progress["known"] is True
+        assert progress["format_name"] == "Pick-Two"
+        assert progress["pack_number"] is None
+        assert progress["pick_number"] is None
+        assert progress["picks_per_pack"] == 7
+        assert progress["cards_per_pick"] == 2
+
+
+def test_session_adapter_quick_state_only_adds_draft_progress() -> None:
+    snapshot = LiveSessionSnapshot(
+        draft=_draft_identity(), draft_format=DraftFormat.QUICK
+    )
+    adapter = SessionAdapter(snapshot=snapshot)
+    previous = cast(dict[str, object], _to_qml_value(snapshot))
+    previous["test_draft"] = adapter.state["test_draft"]
+
+    assert set(adapter.state) - set(previous) == {"draft_progress"}
+    assert {
+        key: value for key, value in adapter.state.items() if key != "draft_progress"
+    } == previous
+
+
+def test_session_adapter_draft_progress_survives_failure() -> None:
+    adapter = SessionAdapter(
+        snapshot=LiveSessionSnapshot(
+            draft=_draft_identity(), draft_format=DraftFormat.PICK_TWO
+        )
+    )
+    before = adapter.state["draft_progress"]
+
+    adapter._apply_failure("boom")
+
+    assert adapter.state["status"]["phase"] == "error"
+    assert adapter.state["draft_progress"] == before
+
+
+def _recent_pick(*, grp_id: int, name: str, image_path: Path) -> RecentPick:
+    return RecentPick(
+        card=CardView(
+            grp_id=grp_id,
+            name=name,
+            colors=(),
+            rarity="common",
+            types=("Creature",),
+            mana_cost=None,
+            mana_value=1.0,
+            image_path=str(image_path),
+        ),
+        image=CardImageState(
+            grp_id=grp_id,
+            image_path=str(image_path),
+            phase=DataLoadPhase.READY,
+            message="Card image ready.",
+        ),
+    )
+
+
+def test_session_adapter_lists_every_card_of_a_pick_two_logical_pick(
+    tmp_path: Path,
+) -> None:
+    first = _recent_pick(grp_id=1, name="First", image_path=tmp_path / "first.jpg")
+    second = _recent_pick(grp_id=2, name="Second", image_path=tmp_path / "second.jpg")
+    adapter = SessionAdapter(
+        snapshot=LiveSessionSnapshot(
+            draft_format=DraftFormat.PICK_TWO,
+            pool=PoolState(
+                recent_picks=(second, first),
+                recent_logical_picks=(
+                    RecentLogicalPick(
+                        pack_number=0,
+                        pick_number=3,
+                        cards=(first, second),
+                    ),
+                    RecentLogicalPick(
+                        pack_number=0,
+                        pick_number=2,
+                        cards=(first, first),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    logical_picks = adapter.state["pool"]["recent_logical_picks"]
+    assert [
+        (pick["pack_number"], pick["pick_number"]) for pick in logical_picks
+    ] == [(0, 3), (0, 2)]
+    assert [card["card"]["name"] for card in logical_picks[0]["cards"]] == [
+        "First",
+        "Second",
+    ]
+    assert [card["card"]["grp_id"] for card in logical_picks[1]["cards"]] == [1, 1]
+    assert logical_picks[0]["cards"][1]["card"]["image_path"] == (
+        QUrl.fromLocalFile(str(tmp_path / "second.jpg")).toString()
+    )
+    assert logical_picks[0]["cards"][1]["image"]["phase"] == "ready"
+    assert [
+        pick["card"]["grp_id"] for pick in adapter.state["pool"]["recent_picks"]
+    ] == [2, 1]
 
 
 def test_session_adapter_exposes_card_data_update_time_in_qvariant_map() -> None:

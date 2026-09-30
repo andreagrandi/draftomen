@@ -444,6 +444,177 @@ def test_pool_state_publishes_canonical_commitment_colors(
     assert pool.current_colors == ("W", "U")
 
 
+def _recent_pick_session(
+    tmp_path: Path,
+    *,
+    draft_format: DraftFormat,
+    grp_ids: range,
+) -> LiveSession:
+    cards = {
+        grp_id: CardInfo(
+            grp_id=grp_id,
+            name=f"Card {grp_id}",
+            colors=("W",),
+            mana_value=2.0,
+            rarity="common",
+            types=("Creature",),
+        )
+        for grp_id in grp_ids
+    }
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        card_database=CardDatabase(cards=cards),
+    )
+    session._active_draft_format = draft_format
+    session._active_picks_per_pack = rules_for_format(
+        draft_format=draft_format
+    ).picks_per_pack
+    return session
+
+
+def _logical_summary(
+    pool: PoolState,
+) -> list[tuple[int, int, tuple[int, ...]]]:
+    return [
+        (
+            logical_pick.pack_number,
+            logical_pick.pick_number,
+            tuple(pick.card.grp_id for pick in logical_pick.cards),
+        )
+        for logical_pick in pool.recent_logical_picks
+    ]
+
+
+def test_recent_logical_picks_quick_draft_lists_one_card_per_pick_newest_first(
+    tmp_path: Path,
+) -> None:
+    session = _recent_pick_session(
+        tmp_path, draft_format=DraftFormat.QUICK, grp_ids=range(1, 20)
+    )
+    picks_per_pack = session._active_picks_per_pack
+
+    pool = session._pool_state(pool_grp_ids=tuple(range(1, picks_per_pack + 3)))
+
+    assert _logical_summary(pool) == [
+        (1, 1, (picks_per_pack + 2,)),
+        (1, 0, (picks_per_pack + 1,)),
+        *[(0, index, (index + 1,)) for index in reversed(range(picks_per_pack))],
+    ]
+    assert tuple(pick.card.grp_id for pick in pool.recent_picks) == tuple(
+        reversed(range(1, picks_per_pack + 3))
+    )
+
+
+def test_recent_logical_picks_pick_two_keeps_duplicate_copies(
+    tmp_path: Path,
+) -> None:
+    session = _recent_pick_session(
+        tmp_path, draft_format=DraftFormat.PICK_TWO, grp_ids=range(1, 10)
+    )
+
+    pool = session._pool_state(pool_grp_ids=(5, 3, 7, 7, 2, 1))
+
+    assert _logical_summary(pool) == [
+        (0, 2, (2, 1)),
+        (0, 1, (7, 7)),
+        (0, 0, (5, 3)),
+    ]
+
+
+def test_recent_logical_picks_pick_two_rolls_over_to_next_pack(
+    tmp_path: Path,
+) -> None:
+    session = _recent_pick_session(
+        tmp_path, draft_format=DraftFormat.PICK_TWO, grp_ids=range(1, 10)
+    )
+    session._active_picks_per_pack = 2
+
+    pool = session._pool_state(pool_grp_ids=(1, 2, 3, 4, 5, 6))
+
+    assert _logical_summary(pool) == [
+        (1, 0, (5, 6)),
+        (0, 1, (3, 4)),
+        (0, 0, (1, 2)),
+    ]
+
+
+def test_recent_logical_picks_keeps_trailing_partial_group(
+    tmp_path: Path,
+) -> None:
+    session = _recent_pick_session(
+        tmp_path, draft_format=DraftFormat.PICK_TWO, grp_ids=range(1, 10)
+    )
+
+    pool = session._pool_state(pool_grp_ids=(1, 2, 3))
+
+    assert _logical_summary(pool) == [(0, 1, (3,)), (0, 0, (1, 2))]
+
+
+def test_recent_logical_picks_only_include_groups_inside_recent_window(
+    tmp_path: Path,
+) -> None:
+    session = _recent_pick_session(
+        tmp_path, draft_format=DraftFormat.PICK_TWO, grp_ids=range(1, 40)
+    )
+
+    pool = session._pool_state(pool_grp_ids=tuple(range(1, 28)))
+
+    # The window holds cards 4..27, so the group (3, 4) is dropped.
+    summary = _logical_summary(pool)
+    assert len(pool.recent_picks) == 24
+    assert len(summary) == 12
+    assert summary[0] == (1, 6, (27,))
+    assert summary[-1] == (0, 2, (5, 6))
+
+
+def test_recent_logical_picks_empty_without_card_database(tmp_path: Path) -> None:
+    session = LiveSession(log_path=tmp_path / "Player.log", card_database=None)
+
+    pool = session._pool_state(pool_grp_ids=(1, 2))
+
+    assert pool.recent_logical_picks == ()
+
+
+def test_recent_logical_picks_receive_refreshed_image_state(
+    tmp_path: Path,
+) -> None:
+    session = _recent_pick_session(
+        tmp_path, draft_format=DraftFormat.PICK_TWO, grp_ids=range(1, 10)
+    )
+    session._card_image_uris_by_grp_id = {
+        grp_id: f"https://example.test/{grp_id}.jpg" for grp_id in range(1, 10)
+    }
+    pool = session._pool_state(pool_grp_ids=(1, 2, 2, 3))
+    session._publish(snapshot=replace(session.snapshot, pool=pool))
+    request = next(
+        queued
+        for queued in session._recent_pick_image_requests
+        if queued.grp_id == 2
+    )
+    image_path = tmp_path / "2.jpg"
+    image_path.write_bytes(b"image")
+
+    session.complete_recent_pick_image_request(
+        request=request,
+        image_path=image_path,
+        image_uri=request.image_uri,
+    )
+
+    groups = session.snapshot.pool.recent_logical_picks
+    assert [tuple(pick.card.grp_id for pick in group.cards) for group in groups] == [
+        (2, 3),
+        (1, 2),
+    ]
+    refreshed = [pick for group in groups for pick in group.cards if pick.card.grp_id == 2]
+    assert len(refreshed) == 2
+    for pick in refreshed:
+        assert pick.image.phase == DataLoadPhase.READY
+        assert pick.image.image_path == str(image_path)
+        assert pick.card.image_path == str(image_path)
+    other = groups[0].cards[1]
+    assert other.image.phase == DataLoadPhase.LOADING
+
+
 def test_live_session_snapshot_covers_complete_frontend_state_immutably() -> None:
     card = _card()
     account = AccountIdentity(account_id="account-1", screen_name="Player#12345")
