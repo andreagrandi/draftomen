@@ -16,6 +16,7 @@ from typing import TextIO, TypeAlias
 from draftomen.carddb import CardDatabase
 from draftomen.config import POLL_INTERVAL_SECONDS
 from draftomen.deckbuilder import DeckBuilderError, format_build_result
+from draftomen.draft_format import DraftFormat, rules_for_format
 from draftomen.events import (
     AccountEvent,
     DraftCompletedEvent,
@@ -26,8 +27,9 @@ from draftomen.events import (
 )
 from draftomen.profile_client import ProfileClient, ProfileRefreshResult
 from draftomen.replay import (
+    format_card_info,
     format_draft_completed_event,
-    format_pick_made_event,
+    format_draft_format,
     format_ranked_pack,
 )
 from draftomen.session import (
@@ -40,6 +42,8 @@ from draftomen.session import (
     SetCardDataLoader,
 )
 PathInput: TypeAlias = str | PathLike[str]
+
+WAITING_FOR_DRAFT_TEXT = "Waiting for a draft."
 
 
 class PlainLogWatcher:
@@ -310,6 +314,7 @@ class PlainLogWatcher:
             return [
                 "Draft started: "
                 f"{event.event_name} (set {event.set_code}, draft {event.course_id})",
+                _format_summary(draft_format=published.snapshot.draft_format),
                 f"Status: active account {account_label}, draft {event.course_id}",
                 "",
             ]
@@ -344,14 +349,19 @@ class PlainLogWatcher:
                 confidence_summary=recommendation_state.confidence_summary,
                 comparison_summary=recommendation_state.comparison_summary,
                 concise_explanations=concise_explanations,
+                heading=_pack_heading(event=event),
             )
             account_label = _account_label(
                 published=published,
                 account_id=event.account_id,
             )
+            draft_format = format_draft_format(
+                draft_format=published.snapshot.draft_format,
+            )
             lines = [
                 "Status: "
                 f"active account {account_label}, "
+                f"format {draft_format}, "
                 f"pick P{event.pack_number + 1}P{event.pick_number + 1}, "
                 f"{_color_status_from_pack_lines(lines=pack_lines)}, "
                 f"data {_data_source_from_pack_lines(lines=pack_lines)}"
@@ -362,12 +372,14 @@ class PlainLogWatcher:
         if isinstance(event, PickMadeEvent):
             if self.session.snapshot.card_data.phase == DataLoadPhase.FAILED:
                 return []
-            lines = format_pick_made_event(
-                event=event,
-                card_database=self._presentation_card_database(),
+            card_database = self._presentation_card_database()
+            chosen_cards = ", ".join(
+                format_card_info(card_database.lookup(grp_id=grp_id))
+                for grp_id in event.selected_grp_ids
             )
-            lines.append("")
-            return lines
+            # Pick-Two selects two cards in one logical pick.
+            label = "Chosen card" if len(event.selected_grp_ids) == 1 else "Chosen cards"
+            return [f"{label}: {chosen_cards}", ""]
 
         if isinstance(event, DraftCompletedEvent):
             lines = format_draft_completed_event(event=event)
@@ -454,7 +466,8 @@ def run_plain_watch(
     try:
         output.write("Draft Omen watch\n")
         output.write(f"Watching: {watcher.log_path}\n")
-        output.write("Mode: plain-text\n\n")
+        output.write("Mode: plain-text\n")
+        output.write(f"{WAITING_FOR_DRAFT_TEXT}\n\n")
         output.flush()
 
         if startup_scan:
@@ -508,6 +521,31 @@ def _account_label(*, published: LiveSessionEvent, account_id: str | None) -> st
         return account_id
 
     return f"{identity.screen_name} ({account_id})"
+
+
+def _format_summary(*, draft_format: DraftFormat | None) -> str:
+    if draft_format is None:
+        return "Format: unknown, waiting for the first pack"
+
+    rules = rules_for_format(draft_format=draft_format)
+    summary = (
+        f"Format: {format_draft_format(draft_format=draft_format)}, "
+        f"{rules.pack_count} packs of {rules.picks_per_pack} picks"
+    )
+    if rules.cards_per_pick > 1:
+        summary += f", {rules.cards_per_pick} cards per pick"
+    return summary
+
+
+def _pack_heading(*, event: PackOfferedEvent) -> str:
+    rules = rules_for_format(draft_format=event.draft_format)
+    heading = (
+        f"Pack {event.pack_number + 1} of {rules.pack_count}, "
+        f"Pick {event.pick_number + 1} of {event.picks_per_pack}"
+    )
+    if event.cards_per_pick > 1:
+        heading += f", take {event.cards_per_pick} cards"
+    return heading
 
 
 def _data_source_from_pack_lines(*, lines: list[str]) -> str:

@@ -356,11 +356,14 @@ def format_ranked_pack(
     confidence_summary: str | None = None,
     comparison_summary: str | None = None,
     concise_explanations: Mapping[int, str] | None = None,
+    heading: str | None = None,
 ) -> list[str]:
-    """Format a scored pack's ranked cards for plain text output."""
+    """Format a scored pack's ranked cards for plain text output.
+    Callers may replace the default pack and pick heading.
+    """
 
     lines = [
-        f"Pack {event.pack_number + 1} Pick {event.pick_number + 1}",
+        heading or f"Pack {event.pack_number + 1} Pick {event.pick_number + 1}",
         _format_pack_status(scored_pack=scored_pack),
         f"Data source: {scored_pack.source_summary}",
     ]
@@ -430,7 +433,7 @@ def _format_header(*, header: _ReplayHeader) -> list[str]:
         "Draft Omen replay",
         f"Account: {_format_account(header=header)}",
         f"Set: {header.set_code or 'unknown'}",
-        f"Format: {_format_draft_format(draft_format=header.draft_format)}",
+        f"Format: {format_draft_format(draft_format=header.draft_format)}",
         f"Event: {header.event_name or 'unknown'}",
         f"Draft: {header.draft_id or 'unknown'}",
         f"Attribution: {SEVENTEEN_LANDS_ATTRIBUTION}",
@@ -447,7 +450,11 @@ def _format_account(*, header: _ReplayHeader) -> str:
     return f"{header.screen_name} ({header.account_id})"
 
 
-def _format_draft_format(*, draft_format: DraftFormat | None) -> str:
+def format_draft_format(*, draft_format: DraftFormat | None) -> str:
+    """Return the plain-text name of a draft format.
+    A format that is not known yet reads as unknown.
+    """
+
     labels = {
         DraftFormat.QUICK: "Quick Draft",
         DraftFormat.PREMIER: "Premier Draft",

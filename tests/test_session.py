@@ -6378,7 +6378,7 @@ def test_plain_watch_cli_scores_first_human_pack_without_restart(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Pack 1 Pick 1" in result.stdout
+    assert "Pack 1 of 3, Pick 1 of " in result.stdout
     assert "(grpId 104894)" in result.stdout
     assert "(grpId 104976)" in result.stdout
     assert "Shared live session did not score" not in result.stderr
@@ -9549,9 +9549,9 @@ def test_plain_watch_cli_finishes_pick_two_with_21_choices_and_42_cards(
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.count("Chosen card:") == 21
-    assert "Pack 3 Pick 7" in result.stdout
-    assert "Pack 3 Pick 8" not in result.stdout
+    assert result.stdout.count("Chosen cards:") == 21
+    assert "Pack 3 of 3, Pick 7 of 7, take 2 cards" in result.stdout
+    assert "Pick 8 of 7" not in result.stdout
     assert "Draft complete: 42 cards" in result.stdout
     states = session_module.list_draft_states(app_dir=app_dir)
     assert len(states) == 1

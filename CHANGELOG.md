@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- `watch --plain` names the draft format in each pick status line and shows
+  pack and pick progress from the draft rules, for example "Pack 1 of 3, Pick
+  4 of 7, take 2 cards" in Pick-Two. A Pick-Two pick prints both cards on one
+  "Chosen cards" line. Watch opens with a neutral "Waiting for a draft." line,
+  and a Quick Draft start adds a format summary line. (#774)
 - Backtest uses the draft rules for logical pick counts and scores Pick-Two
   selections against the top recommendation. Reports show both selected cards,
   and scoring keeps the saved pool before each pick. Quick Draft output stays

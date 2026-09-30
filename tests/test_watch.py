@@ -4,6 +4,7 @@ import json
 import time
 import urllib.request
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ import pytest
 
 from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import CardDatabase, CardInfo, build_card_database_from_bulk_file
+from draftomen.draft_format import DraftFormat
 from draftomen.events import EXPECTED_PICKS_PER_PACK, PackOfferedEvent
 from draftomen.pool import draft_state_path, load_draft_state
 from draftomen.profile_client import (
@@ -32,9 +34,16 @@ from draftomen.set_profile import (
 
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
 
-from draftomen.watch import PlainLogWatcher
+from draftomen.watch import (
+    PlainLogWatcher,
+    _format_summary,
+    _pack_heading,
+    run_plain_watch,
+)
 
 FIXTURE_LOG_PATH = Path(__file__).parent / "fixtures" / "quick-draft-msh-player.log"
+PREMIER_LOG_PATH = Path(__file__).parent / "fixtures" / "premier-draft-replay.log"
+PICK_TWO_LOG_PATH = Path(__file__).parent / "fixtures" / "pick-two-draft-replay.log"
 SCRYFALL_BULK_SAMPLE_PATH = (
     Path(__file__).parent / "fixtures" / "scryfall-default-cards-sample.jsonl"
 )
@@ -103,17 +112,17 @@ def test_plain_watch_processes_appended_lines_incrementally(tmp_path: Path) -> N
         assert "Status: AI enhancement:" not in pack_output
         assert "Status: AI-enhanced suggestions" not in pack_output
         assert "data neutral prior" in pack_output
-        assert "Pack 1 Pick 1" in pack_output
+        assert "Pack 1 of 3, Pick 1 of 14" in pack_output
         assert "Fixture Spider (grpId 105097)" in pack_output
         assert "Chosen card:" not in pack_output
         assert pack_output.index("Status: active account FixturePlayer") < (
-            pack_output.index("Pack 1 Pick 1")
+            pack_output.index("Pack 1 of 3, Pick 1 of 14")
         )
-        assert pack_output.index("Pack 1 Pick 1") < pack_output.index("Data source: ")
+        assert pack_output.index("Pack 1 of 3, Pick 1 of 14") < pack_output.index("Data source: ")
         assert pack_output.index("Data source: ") < pack_output.index("Offered cards:")
 
         output_lines = pack_output.splitlines()
-        pack_start = output_lines.index("Pack 1 Pick 1")
+        pack_start = output_lines.index("Pack 1 of 3, Pick 1 of 14")
         ranked_rows = [
             index
             for index, line in enumerate(output_lines)
@@ -611,8 +620,8 @@ def test_plain_watch_scores_accountless_pack_through_shared_session(
         ]
     )
 
-    assert "Status: active account unknown, pick P1P1" in output
-    assert "Pack 1 Pick 1" in output
+    assert "Status: active account unknown, format Quick Draft, pick P1P1" in output
+    assert "Pack 1 of 3, Pick 1 of 14" in output
     assert "Fixture Spider (grpId 105097)" in output
     snapshot = watcher.session.snapshot
     assert snapshot.current_scored_pack is not None
@@ -1267,7 +1276,7 @@ def test_plain_watch_scoring_never_requests_network_with_real_profile_client(
     )
     assert "65.0%" in first_output
     assert "Data source: set profile" in first_output
-    assert "Pack 2 Pick 3" in second_output
+    assert "Pack 2 of 3, Pick 3 of 14" in second_output
     assert "commitment 100% (locked)" in second_output
     assert "All-Decks Leader (grpId 4)" in output
 
@@ -1335,7 +1344,7 @@ def test_plain_watch_account_switch_announces_and_separates_state(
 
     assert "Active account: First (ACCOUNT-A)" in output
     assert "Account switched: First (ACCOUNT-A) -> Second (ACCOUNT-B)" in output
-    assert "Status: active account Second (ACCOUNT-B), pick P1P1" in output
+    assert "Status: active account Second (ACCOUNT-B), format Quick Draft, pick P1P1" in output
     assert "inferred pair open, commitment 0% (open), pool 0" in output
     assert output.count("Pool: watch ACCOUNT-A/draft-a") == 1
     assert output.count("Pool: watch ACCOUNT-B/draft-b") == 1
@@ -1360,6 +1369,124 @@ def test_plain_watch_account_switch_announces_and_separates_state(
     assert second_state.pool_grp_ids == (201,)
     assert first_state.completed is True
     assert second_state.completed is True
+
+
+def test_plain_watch_names_quick_draft_format_when_draft_starts(
+    tmp_path: Path,
+) -> None:
+    watcher = PlainLogWatcher(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        poll_interval=0.01,
+    )
+    try:
+        output = watcher.process_lines(
+            lines=FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()[:7],
+        )
+    finally:
+        watcher.close()
+
+    output_lines = output.splitlines()
+    started_index = next(
+        index
+        for index, line in enumerate(output_lines)
+        if line.startswith("Draft started: ")
+    )
+    assert output_lines[started_index + 1] == "Format: Quick Draft, 3 packs of 14 picks"
+
+
+def test_plain_watch_shows_premier_format_and_progress(tmp_path: Path) -> None:
+    watcher = PlainLogWatcher(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        poll_interval=0.01,
+    )
+    try:
+        output = watcher.process_lines(
+            lines=PREMIER_LOG_PATH.read_text(encoding="utf-8").splitlines(),
+        )
+    finally:
+        watcher.close()
+
+    output_lines = output.splitlines()
+    assert (
+        "Status: active account Replay Premier (PREMIERREPLAYACCOUNT), "
+        "format Premier Draft, pick P1P1"
+    ) in output
+    assert "Pack 1 of 3, Pick 1 of 14" in output_lines
+    assert "Chosen card: Fixture Spider [G] (grpId 105097)" in output_lines
+    assert "Quick" not in output
+
+
+def test_plain_watch_prints_pick_two_cards_as_one_logical_pick(
+    tmp_path: Path,
+) -> None:
+    watcher = PlainLogWatcher(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        poll_interval=0.01,
+    )
+    try:
+        output = watcher.process_lines(
+            lines=PICK_TWO_LOG_PATH.read_text(encoding="utf-8").splitlines(),
+        )
+    finally:
+        watcher.close()
+
+    output_lines = output.splitlines()
+    assert (
+        "Status: active account Replay Pick-Two (PICKTWOREPLAYACCOUNT), "
+        "format Pick-Two, pick P1P1"
+    ) in output
+    assert "Pack 1 of 3, Pick 1 of 7, take 2 cards" in output_lines
+    chosen_lines = [line for line in output_lines if line.startswith("Chosen")]
+    assert chosen_lines == [
+        "Chosen cards: Fixture Spider [G] (grpId 105097), "
+        "Fixture Blue Card [U] (grpId 105134)"
+    ]
+    assert "Quick" not in output
+
+
+def test_plain_watch_pick_two_heading_follows_draft_rules() -> None:
+    event = PackOfferedEvent(
+        event_name="PickTwoDraft_MSH_20260930",
+        set_code="MSH",
+        pack_number=0,
+        pick_number=3,
+        offered_grp_ids=(105003, 105037),
+        pool_grp_ids=(),
+        account_id="PICKTWOREPLAYACCOUNT",
+        picks_per_pack=7,
+        draft_format=DraftFormat.PICK_TWO,
+        cards_per_pick=2,
+    )
+
+    assert _pack_heading(event=event) == "Pack 1 of 3, Pick 4 of 7, take 2 cards"
+
+
+def test_plain_watch_unknown_format_prints_neutral_waiting_text(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("", encoding="utf-8")
+    output = StringIO()
+
+    run_plain_watch(
+        log_path=log_path,
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        output=output,
+        poll_interval=0.01,
+        once=True,
+    )
+
+    assert "Waiting for a draft." in output.getvalue().splitlines()
+    assert "Quick" not in output.getvalue()
+    summary = _format_summary(draft_format=None)
+    assert summary == "Format: unknown, waiting for the first pack"
 
 
 def _fixture_card_database() -> CardDatabase:
