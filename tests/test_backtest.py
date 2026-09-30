@@ -16,6 +16,7 @@ from draftomen.backtest import (
     load_persisted_backtest_state,
 )
 from draftomen.events import EXPECTED_PICKS_PER_PACK, EXPECTED_TOTAL_PICKS
+from draftomen.draft_format import PICK_TWO_RULES
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cli import main
 from draftomen.ranking import rank_scored_cards
@@ -94,18 +95,36 @@ def test_backtest_uses_saved_pool_before_pick_for_recommendation() -> None:
     assert "Summary: 1/2 recommendations matched actual picks (50.0%)." in output
 
 
-def test_backtest_skips_multi_card_pick_instead_of_comparing_one_card() -> None:
-    state = _draft_state(
-        picks=(
-            DraftPick(
-                pack_number=0,
-                pick_number=0,
-                offered_grp_ids=(4, 3),
-                pool_before_pick=(),
-                selected_grp_ids=(4, 3),
+@pytest.mark.parametrize(
+    ("selected_grp_ids", "expected_match", "expected_top_two"),
+    [
+        ((4, 3), True, 2),
+        ((3, 4), True, 2),
+        ((1, 4), True, 1),
+        ((3, 1), False, 1),
+        ((1, 2), False, 0),
+        ((4, 4), True, 1),
+    ],
+)
+def test_backtest_pick_two_uses_shared_selection_hit_rule(
+    selected_grp_ids: tuple[int, ...],
+    expected_match: bool,
+    expected_top_two: int,
+) -> None:
+    state = replace(
+        _draft_state(
+            picks=(
+                DraftPick(
+                    pack_number=0,
+                    pick_number=0,
+                    offered_grp_ids=(4, 3),
+                    pool_before_pick=(),
+                    selected_grp_ids=selected_grp_ids,
+                ),
             ),
+            pool_grp_ids=selected_grp_ids,
         ),
-        pool_grp_ids=(4, 3),
+        event_name="PickTwoDraft_TST_20260930",
     )
 
     report = generate_backtest_report(
@@ -113,10 +132,161 @@ def test_backtest_skips_multi_card_pick_instead_of_comparing_one_card() -> None:
         card_database=_card_database(),
     )
 
+    assert len(report.compared_rows) == 1
+    assert report.skipped_rows == ()
+    row = report.rows[0]
+    assert row.recommended is not None
+    assert row.recommended.card.grp_id == 4
+    assert row.match is expected_match
+    assert row.top_two_selected_count == expected_top_two
+    assert tuple(card.grp_id for card in row.selected_cards) == selected_grp_ids
+
+
+def test_backtest_pick_two_keeps_logical_picks_separate_from_pool_cards() -> None:
+    rules = PICK_TWO_RULES
+    picks = tuple(
+        DraftPick(
+            pack_number=index // rules.picks_per_pack,
+            pick_number=index % rules.picks_per_pack,
+            offered_grp_ids=(4, 3),
+            pool_before_pick=(4, 3) * index,
+            selected_grp_ids=(4, 3),
+        )
+        for index in range(rules.total_picks)
+    )
+    state = replace(
+        _draft_state(picks=picks, pool_grp_ids=(4, 3) * rules.total_picks),
+        event_name="PickTwoDraft_TST_20260930",
+    )
+    report = generate_backtest_report(
+        state=state,
+        card_database=_card_database(),
+        set_profile=_set_profile(),
+    )
+
+    assert state.chosen_pick_count == 21
+    assert state.selected_card_count == 42
+    assert len(report.compared_rows) == 21
+    assert report.skipped_rows == ()
+    for index, row in enumerate(report.rows):
+        assert row.pool_size == index * 2
+        assert row.role_ledger is not None
+        assert row.role_ledger.pool_size == index * 2
+        assert row.role_ledger.stage is not None
+        stage = row.role_ledger.stage
+        assert stage.global_pick_index == index + 1
+        assert stage.estimated_remaining_picks == 20 - index
+        assert stage.total_picks == 21
+        assert stage.total_cards == 42
+        assert stage.draft_rules == rules
+        assert row.scoring_context is not None
+        assert row.scoring_context.stage == stage
+
+
+@pytest.mark.parametrize(
+    ("pack_number", "pick_number", "offered", "pool", "reason"),
+    [
+        (0, 7, (4, 3), (), "pick outside expected draft shape"),
+        (3, 0, (4, 3), (), "pick outside expected draft shape"),
+        (0, 0, None, (), "missing offered-card history"),
+        (0, 0, (), (), "empty offered-card history"),
+        (0, 0, (4, 3), None, "missing pool-before-pick snapshot"),
+    ],
+)
+def test_backtest_pick_two_skips_invalid_coordinates_or_missing_history(
+    pack_number: int,
+    pick_number: int,
+    offered: tuple[int, ...] | None,
+    pool: tuple[int, ...] | None,
+    reason: str,
+) -> None:
+    pick = DraftPick(
+        pack_number=pack_number,
+        pick_number=pick_number,
+        offered_grp_ids=offered,
+        pool_before_pick=pool,
+        selected_grp_ids=(4, 3),
+    )
+    state = replace(
+        _draft_state(picks=(pick,), pool_grp_ids=(4, 3)),
+        event_name="PickTwoDraft_TST_20260930",
+    )
+    report = generate_backtest_report(state=state, card_database=_card_database())
+
     assert report.compared_rows == ()
     assert len(report.skipped_rows) == 1
-    assert report.skipped_rows[0].skipped_reason == "multi-card pick"
-    assert report.skipped_rows[0].actual is None
+    assert report.rows[0].skipped_reason == reason
+    assert tuple(card.grp_id for card in report.rows[0].selected_cards) == (4, 3)
+
+
+def test_backtest_pick_two_cli_shows_both_cards_without_mutating_state(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = replace(
+        _draft_state(
+            picks=(
+                DraftPick(
+                    pack_number=0,
+                    pick_number=0,
+                    offered_grp_ids=(4, 3),
+                    pool_before_pick=(),
+                    selected_grp_ids=(3, 4),
+                ),
+            ),
+            pool_grp_ids=(3, 4),
+        ),
+        event_name="PickTwoDraft_TST_20260930",
+    )
+    app_dir = tmp_path / "app"
+    path = save_draft_state(state=state, app_dir=app_dir)
+    before = path.read_bytes()
+    bulk_file = _write_bulk_file(directory=tmp_path)
+
+    exit_code = main(
+        argv=["backtest", "--app-dir", str(app_dir), "--bulk-file", str(bulk_file)]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert "Picks: 1 chosen, 1 compared, 0 skipped" in captured.out
+    assert (
+        "White Followup [W] (grpId 3); Red Temptation [R] (grpId 4)"
+        in captured.out
+    )
+    assert "Summary: 1/1 recommendations matched actual picks (100.0%)." in captured.out
+    assert path.read_bytes() == before
+
+
+def test_backtest_pick_two_uses_coordinates_and_saved_pool_despite_history_gaps() -> None:
+    state = replace(
+        _draft_state(
+            picks=(
+                DraftPick(
+                    pack_number=1,
+                    pick_number=0,
+                    offered_grp_ids=(4, 3),
+                    pool_before_pick=(1, 2),
+                    selected_grp_ids=(1, 3),
+                ),
+            ),
+            pool_grp_ids=(4, 4, 4),
+        ),
+        event_name="PickTwoDraft_TST_20260930",
+    )
+    row = generate_backtest_report(
+        state=state, card_database=_card_database(),
+    ).rows[0]
+
+    assert row.pool_size == 2
+    assert row.recommended is not None
+    assert row.recommended.card.grp_id == 3
+    assert row.match is True
+    assert row.role_ledger is not None
+    assert row.role_ledger.stage is not None
+    assert row.role_ledger.stage.global_pick_index == 8
+    assert row.role_ledger.stage.estimated_remaining_picks == 13
 
 
 def test_backtest_retains_profile_context_and_recommendation_evidence() -> None:

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Backtest uses the draft rules for logical pick counts and scores Pick-Two
+  selections against the top recommendation. Reports show both selected cards,
+  and scoring keeps the saved pool before each pick. Quick Draft output stays
+  unchanged. (#773)
 - Replay names the draft format and uses its rules for pick counts. Pick-Two
   selections keep both cards at one coordinate. Audit records include the
   format and count how many of the top two cards in the active ranking were
