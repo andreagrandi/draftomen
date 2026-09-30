@@ -414,12 +414,50 @@ class CardImageFetchResult:
     image_uri: str
 
 
+def _recent_logical_pick_groups(
+    *,
+    pool_grp_ids: tuple[int, ...],
+    cards_per_pick: int,
+    picks_per_pack: int,
+    window: int,
+) -> list[tuple[int, int, tuple[int, ...]]]:
+    """Chunk the chronological pool into logical picks, oldest first.
+    Keep only groups that start inside the last window cards.
+    """
+
+    first_kept = max(0, len(pool_grp_ids) - window)
+    groups: list[tuple[int, int, tuple[int, ...]]] = []
+    for start in range(0, len(pool_grp_ids), cards_per_pick):
+        if start < first_kept:
+            continue
+        index = start // cards_per_pick
+        groups.append(
+            (
+                index // picks_per_pack,
+                index % picks_per_pack,
+                pool_grp_ids[start : start + cards_per_pick],
+            )
+        )
+    return groups
+
+
 @dataclass(frozen=True, slots=True)
 class RecentPick:
     """Describe one chronological picked card and its gallery image state."""
 
     card: CardView
     image: CardImageState
+
+
+@dataclass(frozen=True, slots=True)
+class RecentLogicalPick:
+    """Describe every card selected for one logical pick.
+    Coordinates are zero-based, matching draft identity conventions.
+    """
+
+    pack_number: int
+    pick_number: int
+    cards: tuple[RecentPick, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +478,7 @@ class PoolState:
 
     cards: tuple[PoolCard, ...] = ()
     recent_picks: tuple[RecentPick, ...] = ()
+    recent_logical_picks: tuple[RecentLogicalPick, ...] = ()
     total_cards: int = 0
     inferred_pair: str | None = None
     commitment: float = 0.0
@@ -2792,10 +2831,25 @@ class LiveSession:
             )
             for pick in pool.recent_picks
         )
+        refreshed = {pick.card.grp_id: pick for pick in recent_picks}
+        recent_logical_picks = tuple(
+            replace(
+                logical_pick,
+                cards=tuple(
+                    refreshed.get(pick.card.grp_id, pick)
+                    for pick in logical_pick.cards
+                ),
+            )
+            for logical_pick in pool.recent_logical_picks
+        )
         self._publish(
             snapshot=replace(
                 self.snapshot,
-                pool=replace(pool, recent_picks=recent_picks),
+                pool=replace(
+                    pool,
+                    recent_picks=recent_picks,
+                    recent_logical_picks=recent_logical_picks,
+                ),
             )
         )
 
@@ -3939,9 +3993,26 @@ class LiveSession:
         color_distribution, mana_curve, average_mana_value = self._pool_aggregates(
             cards=cards,
         )
+        recent_by_grp_id = {pick.card.grp_id: pick for pick in recent_picks}
+        recent_logical_picks = tuple(
+            RecentLogicalPick(
+                pack_number=pack_number,
+                pick_number=pick_number,
+                cards=tuple(recent_by_grp_id[grp_id] for grp_id in group),
+            )
+            for pack_number, pick_number, group in reversed(
+                _recent_logical_pick_groups(
+                    pool_grp_ids=pool_grp_ids,
+                    cards_per_pick=draft_rules.cards_per_pick,
+                    picks_per_pack=self._active_picks_per_pack,
+                    window=RECENT_PICK_LIMIT,
+                )
+            )
+        )
         return PoolState(
             cards=cards,
             recent_picks=recent_picks,
+            recent_logical_picks=recent_logical_picks,
             total_cards=len(pool_grp_ids),
             target_cards=target_cards,
             inferred_pair=inferred_pair,

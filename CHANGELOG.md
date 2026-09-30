@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- The desktop GUI adapter state gains a `draft_progress` block with the draft
+  format name, pack and pick coordinates, and the pack count, picks per pack
+  and cards per pick from the active rules. An unknown format publishes a
+  neutral block with every value empty. The pool gains
+  `recent_logical_picks`, which groups recent picks by logical pick so a
+  Pick-Two pick lists both cards. Existing state keys are unchanged. (#776)
 - The TUI names the detected draft format in the waiting title, the detected
   title, and the status bar, and opens with a neutral "Waiting for a draft"
   state. The pack title shows progress from the draft rules, for example "Pack

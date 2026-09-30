@@ -36,6 +36,7 @@ from draftomen.augmented_model_client import (
     AugmentedModelLoad,
     AugmentedModelOutcome,
 )
+from draftomen.draft_format import rules_for_format
 from draftomen.preferences import (
     GuiDisplayPreferences,
     load_gui_preferences,
@@ -43,6 +44,7 @@ from draftomen.preferences import (
 )
 from draftomen.profile_client import ProfileClient
 from draftomen.ranking import RankingMode
+from draftomen.replay import format_draft_format
 from draftomen.session import (
     AugmentedModelRequest,
     CardImageFetchResult,
@@ -185,6 +187,42 @@ def _to_qml_value(value: Any) -> Any:
             for key, item in value.items()
         }
     return value
+
+
+def _draft_progress_value(*, snapshot: LiveSessionSnapshot) -> dict[str, Any]:
+    """Describe the draft format and pick position for QML.
+    An unknown format publishes a neutral state with every value unset.
+    """
+
+    draft_format = snapshot.draft_format
+    if draft_format is None:
+        return {
+            "known": False,
+            "draft_format": None,
+            "format_name": None,
+            "pack_number": None,
+            "pick_number": None,
+            "pack_count": None,
+            "picks_per_pack": None,
+            "cards_per_pick": None,
+        }
+    rules = rules_for_format(draft_format=draft_format)
+    pack_event = snapshot.current_pack_event
+    draft = snapshot.draft
+    return {
+        "known": True,
+        "draft_format": draft_format.value,
+        "format_name": format_draft_format(draft_format=draft_format),
+        "pack_number": None if draft is None else draft.pack_number,
+        "pick_number": None if draft is None else draft.pick_number,
+        "pack_count": rules.pack_count,
+        "picks_per_pack": (
+            rules.picks_per_pack if pack_event is None else pack_event.picks_per_pack
+        ),
+        "cards_per_pick": (
+            rules.cards_per_pick if pack_event is None else pack_event.cards_per_pick
+        ),
+    }
 
 
 class RecommendationListModel(QAbstractListModel):
@@ -845,6 +883,7 @@ class SessionAdapter(QObject):
     def _publish(self, *, snapshot: LiveSessionSnapshot) -> None:
         state = cast(dict[str, Any], _to_qml_value(snapshot))
         state["test_draft"] = self._test_draft_state_value()
+        state["draft_progress"] = _draft_progress_value(snapshot=snapshot)
         self._replace_state(state=state)
 
     def _test_draft_state_value(self) -> dict[str, Any]:
