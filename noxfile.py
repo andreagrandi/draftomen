@@ -28,9 +28,11 @@ def gui(session: nox.Session) -> None:
         "pytest",
         "tests/test_session.py",
         "tests/test_mock_session.py",
-        *QT_TEST_FILES,
         "tests/test_preferences.py",
     )
+    # The Qt tests wait on worker threads with short deadlines and fail at random
+    # when parallel workers compete for a 4-core runner, so they run one at a time.
+    session.run("uv", "run", "pytest", "-n", "0", *QT_TEST_FILES)
     session.run(
         "uv",
         "run",
