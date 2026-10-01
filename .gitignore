@@ -235,3 +235,5 @@ __marimo__/
 .draftomen/enrichment-runs/hob/*
 !.draftomen/enrichment-runs/hob/benchmark.json
 !.draftomen/enrichment-runs/hob/benchmark.md
+
+extensions/node_modules/

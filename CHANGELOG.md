@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- A Chrome extension in `extensions/moxgate` reads the Moxgate draft page and
+  posts each pack and pool to `draftomen-tui watch --source moxgate --plain` on
+  127.0.0.1. Load it unpacked from chrome://extensions. Its popup shows whether
+  Draft Omen is running and what happened to the last snapshot. A new `extension`
+  CI job runs its tests. (#828)
 - `draftomen watch --source moxgate --plain` starts the Moxgate receiver
   instead of following Player.log and shows recommendations for each pack the
   browser extension posts. `--moxgate-port` overrides the default port 47326.
