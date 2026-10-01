@@ -6,6 +6,10 @@ set and one Limited event format. The profile boundary is in
 cache formats; those existing cache files are not migrated or rewritten by
 profile loading.
 
+The desktop app, the TUI, plain watch and the README call set profiles
+"ratings", because players know the data by that name. Code, schema fields,
+URLs, manifest keys, cache paths and CLI commands keep the name "profile".
+
 The producer workflow is explicit and reproducible: it reads caller-selected
 local inputs, writes a validated compressed artifact plus a generation marker,
 and can turn those outputs into a remote manifest record. The profile client

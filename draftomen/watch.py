@@ -275,7 +275,7 @@ class PlainLogWatcher:
         if state.set_code is None:
             return None
         maturity = state.maturity or "unavailable"
-        status = f"Profile: {maturity}"
+        status = f"Ratings: {maturity}"
         if state.refresh_outcome is not None:
             status += f" ({state.refresh_outcome})"
         return f"Status: {status}"

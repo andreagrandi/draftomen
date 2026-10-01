@@ -322,7 +322,7 @@ class SetProfileState:
     source: str | None = None
     phase: DataLoadPhase = DataLoadPhase.UNAVAILABLE
     refresh_outcome: str | None = None
-    message: str = "Set profile is not configured."
+    message: str = "Ratings are not configured."
 
 class ContextualEvidenceStatus(str, Enum):
     """Classify empirical contextual evidence availability."""
@@ -3408,14 +3408,14 @@ class LiveSession:
             return RatingsState(
                 set_code=normalized_set_code,
                 phase=DataLoadPhase.READY,
-                message=f"Profile ratings are ready for {normalized_set_code}.",
+                message=f"{normalized_set_code} ratings are ready.",
                 last_successful_update=generated_at,
             )
         return RatingsState(
             set_code=normalized_set_code,
             phase=DataLoadPhase.UNAVAILABLE,
             message=(
-                f"Profile ratings are not empirical for {normalized_set_code}; "
+                f"{normalized_set_code} ratings are not empirical; "
                 "deterministic fallback scores are active."
             ),
         )
@@ -3805,19 +3805,19 @@ class LiveSession:
         )
         if phase is DataLoadPhase.FAILED:
             message = (
-                f"Set profile refresh failed for {set_code}; "
-                "using the last-good profile."
+                f"Ratings refresh failed for {set_code}; "
+                "using the last good ratings."
             )
         elif refresh_outcome == ProfileRefreshOutcome.UPDATED.value:
-            message = f"Updated {set_code} set profile."
+            message = f"Updated {set_code} ratings."
         elif refresh_outcome == ProfileRefreshOutcome.UNCHANGED.value:
-            message = f"{set_code} set profile is current."
+            message = f"{set_code} ratings are current."
         elif profile.maturity is ProfileMaturity.GENERIC:
-            message = f"No set profile for {set_code}; generic scoring is active."
+            message = f"No ratings for {set_code}; generic scoring is active."
         elif resolved_source == "injected":
-            message = f"Using the configured {maturity} set profile for {set_code}."
+            message = f"Using the configured {maturity} ratings for {set_code}."
         else:
-            message = f"Using the cached {maturity} set profile for {set_code}."
+            message = f"Using the cached {maturity} ratings for {set_code}."
         return SetProfileState(
             set_code=set_code,
             event_format=event_format,
@@ -3851,9 +3851,9 @@ class LiveSession:
         if not request.force or phase is not DataLoadPhase.FAILED:
             return self.snapshot.errors
         reason = (
-            "no hosted profile exists for this set."
+            "no hosted ratings exist for this set."
             if outcome == ProfileRefreshOutcome.MISSING.value
-            else "hosted profile refresh failed."
+            else "hosted ratings refresh failed."
         )
         error = SessionError(
             error_id=error_id,

@@ -427,7 +427,7 @@ def _ready_snapshot() -> LiveSessionSnapshot:
             source="mock",
             phase=DataLoadPhase.READY,
             refresh_outcome="unchanged",
-            message="Mock Quick Draft set profile is current.",
+            message="Mock Quick Draft ratings are current.",
         ),
         contextual_evidence=ContextualEvidenceState(
             status=ContextualEvidenceStatus.EXACT,

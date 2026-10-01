@@ -451,9 +451,9 @@ async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
             assert app.profile_refresh_in_flight is None
             assert app.session.snapshot.recommendations == recommendations_before_cancel
             cancelled_notice = app._rating_notices_by_set["MSH"]
-            assert "Hosted profile refresh cancelled for MSH" in cancelled_notice
+            assert "Hosted ratings refresh cancelled for MSH" in cancelled_notice
             assert "existing cached ratings remain active" in cancelled_notice
-            assert "Hosted profile is current" not in cancelled_notice
+            assert "Hosted ratings are current" not in cancelled_notice
 
             await pilot.press("d")
             await pilot.pause()
@@ -476,7 +476,7 @@ async def _assert_tui_ready_ratings_download_refreshes_hosted_profile(
                 app.session.snapshot.set_profile.refresh_outcome
                 == ProfileRefreshOutcome.UNCHANGED.value
             )
-            assert "Hosted profile unchanged for MSH" in app._rating_notices_by_set["MSH"]
+            assert "Hosted ratings unchanged for MSH" in app._rating_notices_by_set["MSH"]
             assert image_calls == []
         finally:
             release_refresh.set()
@@ -541,7 +541,7 @@ async def _assert_rejected_ratings_refresh_does_not_stick(
 
         notice = app._rating_notices_by_set["MSH"]
         assert "refresh unavailable" in notice
-        assert "Refreshing hosted profile" not in notice
+        assert "Refreshing hosted ratings" not in notice
         assert app.session.profile_refresh_request() is None
         assert app.profile_refresh_in_flight is None
         assert app.session.snapshot.recommendations == recommendations
@@ -3400,9 +3400,9 @@ async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
         )
         assert failed_snapshot.recommendations == initial_snapshot.recommendations
         failure_notice = app._rating_notices_by_set["MSH"]
-        assert "Hosted profile refresh failed for MSH" in failure_notice
+        assert "Hosted ratings refresh failed for MSH" in failure_notice
         assert "cached ratings remain active" in failure_notice
-        assert "Hosted profile unchanged" not in failure_notice
+        assert "Hosted ratings unchanged" not in failure_notice
         assert "hosted refresh failed; cached ratings active" in _status_text(app=app)
         assert len(failed_snapshot.errors) == 1
         assert "Error: 17Lands ratings failed for MSH" in _status_text(app=app)
@@ -3412,7 +3412,7 @@ async def _assert_ratings_retry_clears_session_error(tmp_path: Path) -> None:
         assert error.recoverable
         assert error.operation is OperationKind.RATINGS
         assert error.message == (
-            "17Lands ratings failed for MSH: hosted profile refresh failed."
+            "17Lands ratings failed for MSH: hosted ratings refresh failed."
         )
         assert app.session.profile_refresh_request() is None
         assert app.profile_refresh_in_flight is None

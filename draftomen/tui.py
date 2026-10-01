@@ -445,21 +445,21 @@ class MissingRatingsScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         """Compose the hosted profile refresh prompt for missing or ready data."""
         if self.is_refresh:
-            title = f"Refresh hosted profile for {self.set_code}"
+            title = f"Refresh hosted ratings for {self.set_code}"
             message = (
-                "A hosted set profile is active for this draft. Refresh it now? "
+                "Hosted ratings are active for this draft. Refresh them now? "
                 "Progress will be shown, then the current pack will be rescored "
                 "automatically."
             )
-            action_label = "Refresh profile"
+            action_label = "Refresh ratings"
         else:
-            title = f"No empirical profile for {self.set_code}"
+            title = f"No empirical ratings for {self.set_code}"
             message = (
                 "Draft Omen is using deterministic fallback scores. Check the "
-                "hosted set profile now? Progress will be shown, then the current "
+                "hosted ratings now? Progress will be shown, then the current "
                 "pack will be rescored automatically."
             )
-            action_label = "Check hosted profile"
+            action_label = "Check hosted ratings"
 
         with Vertical(id="missing-ratings-dialog"):
             yield Static(title, id="missing-ratings-title")
@@ -946,7 +946,7 @@ class DraftomenTuiApp(App[None]):
         set_code = self._set_code
         if set_code is None:
             self._last_error = (
-                "No active draft set is available for a hosted profile refresh."
+                "No active draft set is available for a hosted ratings refresh."
             )
             self._render_all()
             return
@@ -1343,7 +1343,7 @@ class DraftomenTuiApp(App[None]):
         self._profile_refresh_in_flight = request
         self._rating_notices_by_set.setdefault(
             request.set_code,
-            f"Refreshing hosted profile for {request.set_code}…",
+            f"Refreshing hosted ratings for {request.set_code}…",
         )
         self._render_all()
         self._refresh_profile_worker(request=request)
@@ -1684,30 +1684,30 @@ class DraftomenTuiApp(App[None]):
                 completed = 0 if progress.completed is None else progress.completed
                 total = "?" if progress.total is None else str(progress.total)
                 self._rating_notices_by_set[set_code] = (
-                    f"Refreshing hosted profile for {set_code} ({completed}/{total})"
+                    f"Refreshing hosted ratings for {set_code} ({completed}/{total})"
                 )
             else:
                 self._rating_notices_by_set[set_code] = (
-                    f"Refreshing hosted profile for {set_code}…"
+                    f"Refreshing hosted ratings for {set_code}…"
                 )
             return
         if profile.phase == DataLoadPhase.FAILED:
             if ratings.phase == DataLoadPhase.READY:
                 self._rating_notices_by_set[set_code] = (
-                    f"Hosted profile refresh failed for {set_code}; cached ratings "
+                    f"Hosted ratings refresh failed for {set_code}; cached ratings "
                     "remain active. Press d to retry."
                 )
             else:
                 self._rating_notices_by_set[set_code] = (
-                    f"Hosted profile refresh failed for {set_code}; deterministic "
+                    f"Hosted ratings refresh failed for {set_code}; deterministic "
                     "fallback scores remain active. Press d to retry."
                 )
             return
 
         if ratings.phase in {DataLoadPhase.MISSING, DataLoadPhase.UNAVAILABLE}:
             self._rating_notices_by_set[set_code] = (
-                f"No empirical profile for {set_code}; deterministic fallback scores "
-                "are active. Choose Check hosted profile, or press d later."
+                f"No empirical ratings for {set_code}; deterministic fallback scores "
+                "are active. Choose Check hosted ratings, or press d later."
             )
             if ratings.phase == DataLoadPhase.MISSING:
                 self._show_missing_ratings_prompt(set_code=set_code)
@@ -1737,32 +1737,32 @@ class DraftomenTuiApp(App[None]):
         profile = snapshot.set_profile
         if profile.phase == DataLoadPhase.FAILED:
             return (
-                f"Hosted profile refresh failed for {set_code}; cached ratings "
+                f"Hosted ratings refresh failed for {set_code}; cached ratings "
                 "remain active. Press d to retry."
             )
 
         if profile.refresh_outcome == "updated":
-            prefix = f"Hosted profile updated for {set_code}; scores recalculated."
+            prefix = f"Hosted ratings updated for {set_code}; scores recalculated."
         elif profile.refresh_outcome == "unchanged":
             prefix = (
-                f"Hosted profile unchanged for {set_code}; cached ratings remain "
+                f"Hosted ratings unchanged for {set_code}; cached ratings remain "
                 "active."
             )
         elif profile.refresh_outcome == "cached":
-            prefix = f"Hosted profile loaded from cache for {set_code}."
+            prefix = f"Hosted ratings loaded from cache for {set_code}."
         else:
-            prefix = f"Hosted profile ready for {set_code}; scores recalculated."
+            prefix = f"Hosted ratings ready for {set_code}; scores recalculated."
 
         total_cards = ratings.total_cards
         rated_cards = ratings.rated_cards
         if total_cards is None or rated_cards is None:
-            return f"{prefix} Future scores will use it."
+            return f"{prefix} Future scores will use them."
         if rated_cards == total_cards:
             return f"{prefix} All {total_cards} offered cards have usable ratings."
 
         return (
             f"{prefix} {rated_cards}/{total_cards} offered cards have usable "
-            "ratings; deterministic fallback scores remain where profile evidence "
+            "ratings; deterministic fallback scores remain where ratings evidence "
             "is unavailable or thin."
         )
 
@@ -1861,7 +1861,7 @@ class DraftomenTuiApp(App[None]):
             profile.phase == DataLoadPhase.LOADING
             or ratings.phase == DataLoadPhase.LOADING
         ):
-            return f"{source} (refreshing hosted profile)"
+            return f"{source} (refreshing hosted ratings)"
         if profile.phase == DataLoadPhase.FAILED:
             if ratings.phase == DataLoadPhase.READY:
                 return f"{source} (hosted refresh failed; cached ratings active)"
@@ -1869,7 +1869,7 @@ class DraftomenTuiApp(App[None]):
         if ratings.phase == DataLoadPhase.FAILED:
             return f"{source} (ratings unavailable; deterministic fallback)"
         if ratings.phase in {DataLoadPhase.MISSING, DataLoadPhase.UNAVAILABLE}:
-            return f"{source} (no empirical profile; deterministic fallback)"
+            return f"{source} (no empirical ratings; deterministic fallback)"
         if (
             ratings.phase == DataLoadPhase.READY
             and ratings.total_cards
@@ -1922,7 +1922,7 @@ class DraftomenTuiApp(App[None]):
         if refresh and snapshot.ratings.phase == DataLoadPhase.READY:
             if snapshot.set_profile.phase == DataLoadPhase.FAILED:
                 self._rating_notices_by_set[set_code] = (
-                    f"Hosted profile refresh failed for {set_code}; refresh "
+                    f"Hosted ratings refresh failed for {set_code}; refresh "
                     "cancelled. Cached ratings remain active. Press d to retry."
                 )
             else:
@@ -1935,8 +1935,8 @@ class DraftomenTuiApp(App[None]):
                 )
         else:
             self._rating_notices_by_set[set_code] = (
-                f"No empirical profile for {set_code}; deterministic fallback scores "
-                "remain active. Press d to check the hosted profile."
+                f"No empirical ratings for {set_code}; deterministic fallback scores "
+                "remain active. Press d to check the hosted ratings."
             )
         self._render_all()
 
@@ -1950,12 +1950,12 @@ class DraftomenTuiApp(App[None]):
         action = "cancelled" if cancelled else "unavailable"
         if snapshot.ratings.phase == DataLoadPhase.READY:
             return (
-                f"Hosted profile refresh {action} for {set_code}; existing cached "
+                f"Hosted ratings refresh {action} for {set_code}; existing cached "
                 "ratings remain active. Press d to refresh."
             )
         return (
-            f"Hosted profile refresh {action} for {set_code}; deterministic fallback "
-            "scores remain active. Press d to check the hosted profile."
+            f"Hosted ratings refresh {action} for {set_code}; deterministic fallback "
+            "scores remain active. Press d to check the hosted ratings."
         )
 
     def _start_ratings_load(self, *, set_code: str) -> None:
@@ -1964,7 +1964,7 @@ class DraftomenTuiApp(App[None]):
 
         self._rating_download_requested_sets.add(set_code)
         self._rating_notices_by_set[set_code] = (
-            f"Refreshing hosted profile for {set_code}…"
+            f"Refreshing hosted ratings for {set_code}…"
         )
         self._render_all()
         self._dispatch_session_command_worker(
@@ -2156,7 +2156,7 @@ class DraftomenTuiApp(App[None]):
             return
 
         set_label = format_set_label(set_code=set_code)
-        prefix = f"Hosted profile for {set_label}:"
+        prefix = f"Hosted ratings for {set_label}:"
         snapshot = self.session.snapshot
         ratings = snapshot.ratings
         profile = snapshot.set_profile
@@ -2182,7 +2182,7 @@ class DraftomenTuiApp(App[None]):
 
         if ratings.phase in {DataLoadPhase.MISSING, DataLoadPhase.UNAVAILABLE}:
             readiness.update(
-                f"{prefix} No empirical profile — deterministic fallback active; "
+                f"{prefix} No empirical ratings — deterministic fallback active; "
                 "press d to check"
             )
             return
@@ -2740,9 +2740,9 @@ class DraftomenTuiApp(App[None]):
             segments.append(f"Account: {self._active_account_label}")
         profile_state = self.session.snapshot.set_profile
         profile_label = (
-            "Profile: unavailable"
+            "Ratings: unavailable"
             if profile_state.maturity is None
-            else f"Profile: {profile_state.maturity}"
+            else f"Ratings: {profile_state.maturity}"
         )
         if profile_state.refresh_outcome is not None:
             profile_label += f" ({profile_state.refresh_outcome})"
