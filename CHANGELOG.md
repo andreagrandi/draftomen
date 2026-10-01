@@ -6,7 +6,10 @@
 
 - The Qt adapter startup coalescing test waits for the post-start state to
   arrive instead of reading the observed states as soon as the session is
-  ready, which failed at random in the parallel CI `gui` job.
+  ready, which failed at random in the parallel CI `gui` job. The `gui` nox
+  session now runs the Qt test files one at a time, because several of them
+  failed at random with parallel workers on the 4-core CI runner. Other tests
+  still run in parallel.
 - A Chrome extension in `extensions/moxgate` reads the Moxgate draft page and
   posts each pack and pool to `draftomen-tui watch --source moxgate --plain` on
   127.0.0.1. Load it unpacked from chrome://extensions. Its popup shows whether
