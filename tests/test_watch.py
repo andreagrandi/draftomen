@@ -15,7 +15,7 @@ from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import CardDatabase, CardInfo, build_card_database_from_bulk_file
 from draftomen.draft_format import DraftFormat
 from draftomen.events import EXPECTED_PICKS_PER_PACK, PackOfferedEvent
-from draftomen.pool import draft_state_path, load_draft_state
+from draftomen.pool import draft_state_path, list_draft_states, load_draft_state
 from draftomen.profile_client import (
     ProfileClient,
     ProfileNetworkPolicy,
@@ -1543,6 +1543,42 @@ def test_run_plain_moxgate_watch_prints_header_and_stops_receiver(
     assert lines[1].startswith("Watching: Moxgate snapshots on http://127.0.0.1:")
     assert lines[1].endswith("/moxgate/snapshot")
     assert lines[2:4] == ["Mode: plain-text", "Waiting for a draft."]
+
+
+def test_run_plain_moxgate_watch_saves_draft_and_prints_build_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packs = _packs(pack_count=3, pack_size=14)
+    grp_ids = _all_grp_ids(packs)
+    snapshots = _snapshots(packs)
+
+    class PrefilledReceiver(MoxgateReceiver):
+        def start(self) -> None:
+            super().start()
+            for snapshot, _ in snapshots:
+                self.snapshots.put(snapshot)
+
+    monkeypatch.setattr("draftomen.watch.MoxgateReceiver", PrefilledReceiver)
+    output = StringIO()
+
+    exit_code = run_plain_moxgate_watch(
+        card_database=_database(*grp_ids),
+        canonical_grp_ids_by_scryfall_id=_scryfall_map(*grp_ids),
+        port=0,
+        app_dir=tmp_path / "app",
+        output=output,
+        poll_interval=0.01,
+        stop_after_empty_polls=2,
+    )
+
+    text = output.getvalue()
+    assert exit_code == 0
+    assert "Status: active account moxgate" in text
+    assert "Draft complete: 42 cards" in text
+    build_sheet = text[text.index("Draft complete: 42 cards") :]
+    assert "Suggested deck" in build_sheet
+    assert "Pool: watch moxgate/" in build_sheet
+    assert list_draft_states(app_dir=tmp_path / "app")[0].account_id == "moxgate"
 
 
 def _fixture_card_database() -> CardDatabase:

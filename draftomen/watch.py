@@ -26,6 +26,7 @@ from draftomen.events import (
     QuickDraftDetectedEvent,
 )
 from draftomen.moxgate_server import (
+    MOXGATE_ACCOUNT_ID,
     MOXGATE_DEFAULT_PORT,
     MOXGATE_SNAPSHOT_PATH,
     MoxgateReceiver,
@@ -552,6 +553,7 @@ def run_plain_moxgate_watch(
                 session=watcher.session,
                 card_database=card_database,
                 canonical_grp_ids_by_scryfall_id=canonical_grp_ids_by_scryfall_id,
+                account_id=MOXGATE_ACCOUNT_ID,
             )
             host_label = f"[{host}]" if ":" in host else host
             output.write("Draft Omen watch\n")
