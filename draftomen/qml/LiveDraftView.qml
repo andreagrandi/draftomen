@@ -153,6 +153,20 @@ Item {
         return cards.length > 0 ? cards[0] : null
     }
     readonly property var testDraft: sessionState.test_draft || null
+    readonly property var moxgate: sessionState.moxgate || null
+    readonly property string moxgatePhase: root.moxgate && root.moxgate.phase
+        ? String(root.moxgate.phase) : "stopped"
+    readonly property string moxgateError: root.moxgate && root.moxgate.error
+        ? String(root.moxgate.error) : ""
+    readonly property string moxgateText: {
+        if (root.moxgatePhase === "starting")
+            return "Moxgate · loading card data"
+        if (root.moxgatePhase === "waiting")
+            return "Moxgate · waiting for the extension on " + String(root.moxgate.endpoint)
+        if (root.moxgatePhase === "receiving")
+            return "Moxgate · receiving a draft"
+        return ""
+    }
     readonly property bool testDraftActive: root.testDraft !== null && root.testDraft.active === true
     readonly property bool testDraftManual: root.testDraftActive && root.testDraft.mode === "manual"
     readonly property bool testDraftPending: root.testDraft !== null && root.testDraft.pending === true
@@ -337,6 +351,32 @@ Item {
                     objectName: "testDraftError"
                     visible: root.testDraftError.length > 0
                     text: root.testDraftError
+                    color: Theme.error
+                    font.pixelSize: Theme.textPixelSize(12)
+                    Layout.maximumWidth: 320
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            ColumnLayout {
+                objectName: "moxgateColumn"
+                visible: root.moxgatePhase !== "stopped"
+                Layout.alignment: Qt.AlignVCenter
+                spacing: 2
+
+                Label {
+                    objectName: "moxgateIndicator"
+                    visible: root.moxgateText.length > 0
+                    text: root.moxgateText
+                    color: Theme.primary
+                    font.pixelSize: Theme.textPixelSize(12)
+                    font.bold: true
+                }
+
+                Label {
+                    objectName: "moxgateError"
+                    visible: root.moxgateError.length > 0
+                    text: root.moxgateError
                     color: Theme.error
                     font.pixelSize: Theme.textPixelSize(12)
                     Layout.maximumWidth: 320

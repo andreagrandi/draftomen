@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- The desktop app has a draft source selector next to Settings. Choosing
+  Moxgate starts the receiver on 127.0.0.1:47326 and shows whether it is
+  loading card data, waiting for the extension or receiving a draft. Choosing
+  Arena stops the receiver and frees the port. A port already in use shows an
+  error naming the port. Card data comes from the Mocked Draft Scryfall bulk
+  file set in Settings or passed with `--scryfall-bulk-file`. (#829)
 - `draftomen-tui watch --source moxgate --plain` saves Moxgate drafts under the
   fixed account id `moxgate` and prints a deck build sheet after "Draft
   complete". Moxgate snapshots carry no account id, so these drafts were not

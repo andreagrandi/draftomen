@@ -41,6 +41,7 @@ from draftomen.qt_gui import (
     TEST_DRAFT_MANUAL_PICK_COUNT,
     TEST_DRAFT_SMOKE_SUMMARY_PREFIX,
     TEST_DRAFT_SMOKE_TIMEOUT_SECONDS,
+    _GuiMoxgateFactory,
     _GuiTestDraftFactory,
     _TestDraftManualSmokeDriver,
     _TestDraftSmokeDriver,
@@ -62,6 +63,7 @@ from draftomen.test_draft import (
     default_test_draft_bulk_file,
     default_test_draft_checkout_dir,
 )
+from tests.test_moxgate import _all_grp_ids, _database, _packs, _scryfall_map
 from tests.augmented_artifacts import (
     augmented_manifest_entry_json,
     augmented_manifest_json,
@@ -8913,6 +8915,240 @@ assert pick_button.isVisible() is False
 assert dialog.property("visible") is False
 assert indicator.isVisible() is False
 assert error_label.isVisible() is False
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def _moxgate_factory(
+    *, tmp_path: Path, bulk_file: Path | None, preferences: GuiDisplayPreferences | None = None
+) -> _GuiMoxgateFactory:
+    flags = [] if bulk_file is None else ["--scryfall-bulk-file", str(bulk_file)]
+    args = _parser().parse_args(["--app-dir", str(tmp_path / "app"), *flags])
+    return _GuiMoxgateFactory(
+        args=args,
+        preferences=lambda: GuiDisplayPreferences() if preferences is None else preferences,
+        profile_client=ProfileClient(
+            app_dir=args.app_dir,
+            manifest_url=qt_gui.DEFAULT_PROFILE_MANIFEST_URL,
+            network_policy=ProfileNetworkPolicy.OFFLINE,
+        ),
+        augmented_model_client=None,
+        port=0,
+    )
+
+
+def test_moxgate_factory_names_the_missing_bulk_file(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.jsonl"
+    factory = _moxgate_factory(tmp_path=tmp_path, bulk_file=missing)
+
+    with pytest.raises(FileNotFoundError) as raised:
+        factory.create_runtime(
+            publisher=lambda snapshot: None,
+            splash_enabled=True,
+            contextual_adjustments_enabled=True,
+        )
+
+    assert str(raised.value) == (
+        f"Scryfall bulk file not found: {missing}. Set the Mocked Draft Scryfall "
+        "bulk file in Settings or pass --scryfall-bulk-file."
+    )
+
+
+def test_moxgate_factory_resolves_the_bulk_file_from_current_preferences(
+    tmp_path: Path,
+) -> None:
+    configured = tmp_path / "from-settings.jsonl"
+    factory = _moxgate_factory(
+        tmp_path=tmp_path,
+        bulk_file=None,
+        preferences=GuiDisplayPreferences(
+            mocked_draft_scryfall_bulk_file=str(configured)
+        ),
+    )
+
+    with pytest.raises(FileNotFoundError, match="from-settings.jsonl"):
+        factory.create_runtime(
+            publisher=lambda snapshot: None,
+            splash_enabled=True,
+            contextual_adjustments_enabled=True,
+        )
+
+
+def test_moxgate_factory_loads_card_data_once_per_bulk_file_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bulk_file = tmp_path / "bulk.jsonl"
+    bulk_file.write_text("{}\n")
+    grp_ids = _all_grp_ids(_packs(pack_count=1, pack_size=3))
+    loads: list[Path] = []
+
+    def load_card_data(*, bulk_path: Path) -> tuple[CardDatabase, dict[str, int]]:
+        loads.append(bulk_path)
+        return _database(*grp_ids), _scryfall_map(*grp_ids)
+
+    monkeypatch.setattr(qt_gui, "load_moxgate_card_data", load_card_data)
+    factory = _moxgate_factory(tmp_path=tmp_path, bulk_file=bulk_file)
+
+    for _ in range(2):
+        runtime = factory.create_runtime(
+            publisher=lambda snapshot: None,
+            splash_enabled=False,
+            contextual_adjustments_enabled=True,
+        )
+        try:
+            assert runtime.state.phase == "waiting"
+        finally:
+            runtime.close()
+
+    assert loads == [bulk_file]
+
+    stat = bulk_file.stat()
+    os.utime(bulk_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    factory.create_runtime(
+        publisher=lambda snapshot: None,
+        splash_enabled=False,
+        contextual_adjustments_enabled=True,
+    ).close()
+
+    assert loads == [bulk_file, bulk_file]
+
+
+def test_live_provider_always_offers_the_moxgate_source(tmp_path: Path) -> None:
+    args = _parser().parse_args(["--app-dir", str(tmp_path / "app")])
+
+    provider = _build_provider(args=args, preferences=GuiDisplayPreferences())
+
+    assert isinstance(provider, LiveSessionAdapter)
+    assert provider.state["moxgate"]["enabled"] is True
+    assert provider.state["moxgate"]["phase"] == "stopped"
+
+
+def test_qml_moxgate_source_selector_and_indicator_follow_the_published_state_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubMoxgateProvider(MockSessionAdapter):
+    def __init__(self) -> None:
+        self.moxgate_state = None
+        self.calls: list[str] = []
+        super().__init__(session=MockLiveSession(scenario="ready"))
+
+    def _moxgate_state_value(self):
+        return self.moxgate_state
+
+    def publish_moxgate(self, **changes) -> None:
+        base = {
+            "enabled": True,
+            "active": False,
+            "phase": "stopped",
+            "port": 4111,
+            "endpoint": None,
+            "error": None,
+        }
+        self.moxgate_state = base | changes
+        self._replace_state(state=self.state | {"moxgate": self.moxgate_state})
+
+    @Slot()
+    def startMoxgate(self) -> None:
+        self.calls.append("start")
+
+    @Slot()
+    def stopMoxgate(self) -> None:
+        self.calls.append("stop")
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubMoxgateProvider()
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+selector = root.findChild(QObject, "sourceSelector")
+indicator = root.findChild(QObject, "moxgateIndicator")
+error_label = root.findChild(QObject, "moxgateError")
+assert selector is not None and indicator is not None and error_label is not None
+
+# A provider without the capability shows nothing.
+assert selector.isVisible() is False
+assert indicator.isVisible() is False
+
+provider.publish_moxgate(enabled=False)
+application.processEvents()
+assert selector.isVisible() is False
+
+provider.publish_moxgate()
+application.processEvents()
+assert selector.isVisible() is True
+assert selector.property("currentIndex") == 0
+assert indicator.isVisible() is False
+assert error_label.isVisible() is False
+
+provider.publish_moxgate(phase="starting", active=False)
+application.processEvents()
+assert selector.property("currentIndex") == 1
+assert indicator.isVisible() is True
+assert indicator.property("text") == "Moxgate \u00b7 loading card data"
+
+provider.publish_moxgate(
+    phase="waiting", active=True, endpoint="http://127.0.0.1:4111/snapshot"
+)
+application.processEvents()
+assert selector.property("currentIndex") == 1
+assert indicator.property("text") == (
+    "Moxgate \u00b7 waiting for the extension on http://127.0.0.1:4111/snapshot"
+)
+assert error_label.isVisible() is False
+
+provider.publish_moxgate(
+    phase="receiving", active=True, endpoint="http://127.0.0.1:4111/snapshot"
+)
+application.processEvents()
+assert indicator.property("text") == "Moxgate \u00b7 receiving a draft"
+
+provider.publish_moxgate(phase="port_in_use", error="Port 4111 is already in use.")
+application.processEvents()
+assert selector.property("currentIndex") == 0
+assert indicator.isVisible() is False
+assert error_label.isVisible() is True
+assert error_label.property("text") == "Port 4111 is already in use."
+
+selector.setProperty("currentIndex", 1)
+selector.activated.emit(1)
+selector.setProperty("currentIndex", 0)
+selector.activated.emit(0)
+assert provider.calls == ["start", "stop"], provider.calls
 """
     completed = _run_qml_probe(probe)
 

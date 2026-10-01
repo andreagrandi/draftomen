@@ -115,6 +115,16 @@ class MoxgateReceiverError(RuntimeError):
     """
 
 
+class MoxgatePortInUseError(MoxgateReceiverError):
+    """Raised when the Moxgate receiver cannot bind its port.
+    The port attribute holds the port that was requested.
+    """
+
+    def __init__(self, message: str, *, port: int) -> None:
+        super().__init__(message)
+        self.port = port
+
+
 class _ReceiverServer(HTTPServer):
     # On Windows SO_REUSEADDR lets a second socket take over a port in use.
     allow_reuse_address = sys.platform != "win32"
@@ -355,7 +365,7 @@ class MoxgateReceiver:
 
     def start(self) -> None:
         """Bind the port and serve requests on a daemon thread.
-        Raises MoxgateReceiverError when the port cannot be bound.
+        Raises MoxgatePortInUseError when the port cannot be bound.
         """
 
         if self._server is not None:
@@ -368,9 +378,10 @@ class MoxgateReceiver:
                 max_body_bytes=self._max_body_bytes,
             )
         except OSError as error:
-            raise MoxgateReceiverError(
+            raise MoxgatePortInUseError(
                 f"Moxgate receiver could not listen on {self._host}:{self._port}: "
-                f"{error}. Is another Draft Omen watch running?"
+                f"{error}. Is another Draft Omen watch running?",
+                port=self._port,
             ) from error
 
         thread = threading.Thread(
