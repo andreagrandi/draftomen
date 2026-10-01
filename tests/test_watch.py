@@ -33,11 +33,14 @@ from draftomen.set_profile import (
 )
 
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
+from tests.test_moxgate import _all_grp_ids, _database, _packs, _scryfall_map, _snapshots
 
+from draftomen.moxgate_server import MoxgateReceiver, MoxgateSessionFeeder
 from draftomen.watch import (
     PlainLogWatcher,
     _format_summary,
     _pack_heading,
+    run_plain_moxgate_watch,
     run_plain_watch,
 )
 
@@ -1487,6 +1490,59 @@ def test_plain_watch_unknown_format_prints_neutral_waiting_text(
     assert "Quick" not in output.getvalue()
     summary = _format_summary(draft_format=None)
     assert summary == "Format: unknown, waiting for the first pack"
+
+
+def test_plain_moxgate_watch_renders_pack_recommendation_from_queued_snapshot(
+    tmp_path: Path,
+) -> None:
+    packs = _packs(pack_count=3, pack_size=3)
+    grp_ids = _all_grp_ids(packs)
+    watcher = PlainLogWatcher(
+        log_path=None,
+        card_database=_database(*grp_ids),
+        app_dir=tmp_path / "app",
+    )
+    receiver = MoxgateReceiver(port=0)
+    feeder = MoxgateSessionFeeder(
+        snapshots=receiver.snapshots,
+        session=watcher.session,
+        card_database=_database(*grp_ids),
+        canonical_grp_ids_by_scryfall_id=_scryfall_map(*grp_ids),
+    )
+    try:
+        assert watcher.drain_moxgate(feeder=feeder) == ""
+
+        receiver.snapshots.put(_snapshots(packs)[0][0])
+        output = watcher.drain_moxgate(feeder=feeder)
+
+        assert "Pack 1 of 3, Pick 1 of 3" in output
+        assert "Fixture 1000" in output
+        assert watcher.drain_moxgate(feeder=feeder) == ""
+    finally:
+        watcher.close()
+
+
+def test_run_plain_moxgate_watch_prints_header_and_stops_receiver(
+    tmp_path: Path,
+) -> None:
+    output = StringIO()
+
+    exit_code = run_plain_moxgate_watch(
+        card_database=_database(1000),
+        canonical_grp_ids_by_scryfall_id={},
+        port=0,
+        app_dir=tmp_path / "app",
+        output=output,
+        poll_interval=0.01,
+        stop_after_empty_polls=2,
+    )
+
+    lines = output.getvalue().splitlines()
+    assert exit_code == 0
+    assert lines[0] == "Draft Omen watch"
+    assert lines[1].startswith("Watching: Moxgate snapshots on http://127.0.0.1:")
+    assert lines[1].endswith("/moxgate/snapshot")
+    assert lines[2:4] == ["Mode: plain-text", "Waiting for a draft."]
 
 
 def _fixture_card_database() -> CardDatabase:

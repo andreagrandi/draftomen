@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from os import PathLike
@@ -24,6 +24,12 @@ from draftomen.events import (
     PackOfferedEvent,
     PickMadeEvent,
     QuickDraftDetectedEvent,
+)
+from draftomen.moxgate_server import (
+    MOXGATE_DEFAULT_PORT,
+    MOXGATE_SNAPSHOT_PATH,
+    MoxgateReceiver,
+    MoxgateSessionFeeder,
 )
 from draftomen.profile_client import ProfileClient, ProfileRefreshResult
 from draftomen.replay import (
@@ -54,7 +60,7 @@ class PlainLogWatcher:
     def __init__(
         self,
         *,
-        log_path: PathInput,
+        log_path: PathInput | None,
         card_database: CardDatabase | None = None,
         set_card_data_loader: SetCardDataLoader | None = None,
         app_dir: PathInput | None = None,
@@ -216,6 +222,16 @@ class PlainLogWatcher:
 
         self._events.clear()
         self.session.poll_once()
+        self._schedule_profile_refresh()
+        return self._render_published_events()
+
+    def drain_moxgate(self, *, feeder: MoxgateSessionFeeder) -> str:
+        """Drain queued Moxgate snapshots through the session and return rendered output.
+        Empty strings mean no draft events were produced this cycle.
+        """
+
+        self._events.clear()
+        feeder.drain()
         self._schedule_profile_refresh()
         return self._render_published_events()
 
@@ -495,6 +511,84 @@ def run_plain_watch(
             time.sleep(poll_interval)
     finally:
         watcher.close()
+
+
+def run_plain_moxgate_watch(
+    *,
+    card_database: CardDatabase,
+    canonical_grp_ids_by_scryfall_id: Mapping[str, int],
+    port: int = MOXGATE_DEFAULT_PORT,
+    host: str = "127.0.0.1",
+    app_dir: PathInput | None = None,
+    output: TextIO | None = None,
+    poll_interval: float = POLL_INTERVAL_SECONDS,
+    once: bool = False,
+    stop_after_empty_polls: int | None = None,
+    splash_enabled: bool = True,
+    profile_client: ProfileClient | None = None,
+) -> int:
+    """Run watch --plain on Moxgate snapshots until interrupted or a test stop fires.
+    The receiver and the watcher are always released, including on interrupt.
+    """
+
+    if output is None:
+        output = sys.stdout
+
+    receiver = MoxgateReceiver(host=host, port=port)
+    # Bind before building the watcher so a port in use leaves nothing running.
+    receiver.start()
+    try:
+        watcher = PlainLogWatcher(
+            log_path=None,
+            card_database=card_database,
+            app_dir=app_dir,
+            poll_interval=poll_interval,
+            splash_enabled=splash_enabled,
+            profile_client=profile_client,
+        )
+        try:
+            feeder = MoxgateSessionFeeder(
+                snapshots=receiver.snapshots,
+                session=watcher.session,
+                card_database=card_database,
+                canonical_grp_ids_by_scryfall_id=canonical_grp_ids_by_scryfall_id,
+            )
+            host_label = f"[{host}]" if ":" in host else host
+            output.write("Draft Omen watch\n")
+            output.write(
+                f"Watching: Moxgate snapshots on "
+                f"http://{host_label}:{receiver.port}{MOXGATE_SNAPSHOT_PATH}\n"
+            )
+            output.write("Mode: plain-text\n")
+            output.write(f"{WAITING_FOR_DRAFT_TEXT}\n\n")
+            output.flush()
+
+            if once:
+                _write_if_present(
+                    output=output, text=watcher.drain_moxgate(feeder=feeder)
+                )
+                return 0
+
+            empty_polls = 0
+            while True:
+                text = watcher.drain_moxgate(feeder=feeder)
+                if text:
+                    _write_if_present(output=output, text=text)
+                    empty_polls = 0
+                else:
+                    empty_polls += 1
+
+                if (
+                    stop_after_empty_polls is not None
+                    and empty_polls >= stop_after_empty_polls
+                ):
+                    return 0
+
+                time.sleep(poll_interval)
+        finally:
+            watcher.close()
+    finally:
+        receiver.stop()
 
 
 def _write_if_present(*, output: TextIO, text: str) -> None:

@@ -119,10 +119,16 @@ from draftomen.test_draft import (
     DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
     TestDraftError,
     TestDraftRunResult,
+    default_test_draft_bulk_file,
     run_test_draft_auto,
 )
+from draftomen.moxgate_server import (
+    MOXGATE_DEFAULT_PORT,
+    MoxgateReceiverError,
+    load_moxgate_card_data,
+)
 from draftomen.tui import run_tui_watch
-from draftomen.watch import run_plain_watch
+from draftomen.watch import run_plain_moxgate_watch, run_plain_watch
 
 DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
 
@@ -162,6 +168,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the default MTG Arena Player.log path.",
     )
     watch_parser.add_argument(
+        "--source",
+        choices=("arena", "moxgate"),
+        default="arena",
+        help=(
+            "Read drafts from the MTG Arena Player.log (arena) or from Moxgate "
+            "snapshots posted to a local port (moxgate, requires --plain)."
+        ),
+    )
+    watch_parser.add_argument(
+        "--moxgate-port",
+        type=int,
+        default=MOXGATE_DEFAULT_PORT,
+        help=f"Loopback port for Moxgate snapshots. Defaults to {MOXGATE_DEFAULT_PORT}.",
+    )
+    watch_parser.add_argument(
         "--plain",
         action="store_true",
         help="Use plain-text output instead of the default TUI.",
@@ -191,7 +212,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Resolve card names from a local Scryfall JSONL(.gz) bulk file "
-            "instead of the cached card database."
+            "instead of the cached card database. With --source moxgate it is "
+            "required and defaults to the Mocked Draft bulk file in the app dir."
         ),
     )
     watch_parser.add_argument(
@@ -1431,6 +1453,9 @@ def handle_watch(args: argparse.Namespace) -> int:
     Plain mode follows the log and renders replay-compatible pack output.
     """
 
+    if args.source == "moxgate":
+        return _handle_moxgate_watch(args=args)
+
     try:
         log_path = resolve_player_log_path(log_path=args.log_path)
     except UnsupportedPlatformError as error:
@@ -1506,6 +1531,72 @@ def handle_watch(args: argparse.Namespace) -> int:
         ProfileClientError,
         SeventeenLandsError,
     ) as error:
+        print(f"watch failed: {error}", file=sys.stderr)
+        return 1
+
+
+def _handle_moxgate_watch(*, args: argparse.Namespace) -> int:
+    """Run watch --plain on Moxgate snapshots from the loopback receiver.
+    Card data comes from one Scryfall bulk file read at startup.
+    """
+
+    if not args.plain:
+        print("watch failed: --source moxgate requires --plain.", file=sys.stderr)
+        return 2
+
+    if not 0 <= args.moxgate_port <= 65535:
+        print(
+            "watch failed: --moxgate-port must be between 0 and 65535.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.poll_interval <= 0:
+        print("watch failed: --poll-interval must be greater than zero.", file=sys.stderr)
+        return 2
+
+    bulk_path = (
+        args.bulk_file
+        if args.bulk_file is not None
+        else default_test_draft_bulk_file(app_dir=args.app_dir)
+    )
+    if not bulk_path.is_file():
+        print(
+            f"watch failed: Scryfall bulk file not found: {bulk_path}. "
+            "Pass --bulk-file with a Scryfall default-cards file.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        database, grp_ids_by_scryfall_id = load_moxgate_card_data(bulk_path=bulk_path)
+        profile_manifest_url = (
+            DEFAULT_PROFILE_MANIFEST_URL
+            if args.profile_manifest_url is None
+            else args.profile_manifest_url
+        )
+        profile_client = ProfileClient(
+            app_dir=args.app_dir,
+            manifest_url=profile_manifest_url,
+            network_policy=(
+                ProfileNetworkPolicy.OFFLINE
+                if getattr(args, "offline_profiles", False)
+                else ProfileNetworkPolicy.ALLOWED
+            ),
+        )
+        return run_plain_moxgate_watch(
+            card_database=database,
+            canonical_grp_ids_by_scryfall_id=grp_ids_by_scryfall_id,
+            port=args.moxgate_port,
+            app_dir=args.app_dir,
+            poll_interval=args.poll_interval,
+            once=args.once,
+            splash_enabled=True if args.splash_enabled is None else args.splash_enabled,
+            profile_client=profile_client,
+        )
+    except KeyboardInterrupt:
+        return 130
+    except (CardDatabaseError, MoxgateReceiverError, ProfileClientError) as error:
         print(f"watch failed: {error}", file=sys.stderr)
         return 1
 
