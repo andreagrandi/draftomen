@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from draftomen import moxgate_server
+from draftomen.carddb import CardDatabaseError
 from draftomen.moxgate import MoxgateSnapshot
 from draftomen.moxgate_server import (
     MOXGATE_REQUEST_HEADER,
@@ -431,3 +432,72 @@ def test_unexpected_handler_error_is_logged_and_not_printed(
     assert "failed to handle a request" in caplog.text
     assert "boom" in caplog.text
     assert capsys.readouterr().err == ""
+
+
+def test_load_moxgate_card_data_maps_arena_id_oracle_fallback_and_unmapped(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        {
+            "id": "sf-direct",
+            "arena_id": 501,
+            "oracle_id": "oracle-a",
+            "name": "Direct Card",
+            "colors": ["W"],
+            "cmc": 2,
+            "rarity": "common",
+            "type_line": "Creature",
+        },
+        {
+            "id": "sf-other-printing",
+            "oracle_id": "oracle-a",
+            "name": "Direct Card",
+        },
+        {
+            "id": "sf-lower",
+            "arena_id": 400,
+            "oracle_id": "oracle-b",
+            "name": "Lower Card",
+            "colors": ["U"],
+            "cmc": 3,
+            "rarity": "common",
+            "type_line": "Creature",
+        },
+        {
+            "id": "sf-lower-reprint",
+            "arena_id": 600,
+            "oracle_id": "oracle-b",
+            "name": "Lower Card",
+            "colors": ["U"],
+            "cmc": 3,
+            "rarity": "common",
+            "type_line": "Creature",
+        },
+        {
+            "id": "sf-unmapped",
+            "oracle_id": "oracle-c",
+            "name": "Paper Only",
+        },
+    ]
+    bulk_path = tmp_path / "bulk.jsonl"
+    bulk_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+
+    database, grp_ids = moxgate_server.load_moxgate_card_data(bulk_path=bulk_path)
+
+    assert set(database.cards) == {400, 501, 600}
+    assert grp_ids == {
+        "sf-direct": 501,
+        "sf-other-printing": 501,
+        "sf-lower": 400,
+        "sf-lower-reprint": 600,
+    }
+
+
+def test_load_moxgate_card_data_reports_malformed_bulk_file(tmp_path: Path) -> None:
+    bulk_path = tmp_path / "bulk.jsonl"
+    bulk_path.write_text("not json\n", encoding="utf-8")
+
+    with pytest.raises(CardDatabaseError):
+        moxgate_server.load_moxgate_card_data(bulk_path=bulk_path)

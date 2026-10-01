@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- `draftomen watch --source moxgate --plain` starts the Moxgate receiver
+  instead of following Player.log and shows recommendations for each pack the
+  browser extension posts. `--moxgate-port` overrides the default port 47326.
+  Card data for all sets comes from one local Scryfall bulk file, `--bulk-file`
+  or the Mocked Draft download in the app dir, and watch fails at startup when
+  that file is missing. The Moxgate source needs `--plain` for now. (#832)
 - Tests run in parallel with pytest-xdist by default. The full suite takes
   about a quarter of the time it took before on a 10-core machine. Pass `-n 0`
   to run tests one at a time. The Moxgate receiver also checks for shutdown

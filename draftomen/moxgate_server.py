@@ -13,13 +13,21 @@ import socketserver
 import sys
 import threading
 import uuid
-from collections.abc import Callable, Mapping
+import zlib
+from collections.abc import Callable, Iterator, Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from draftomen.carddb import CardDatabase
+from draftomen.carddb import (
+    CardDatabase,
+    CardDatabaseError,
+    _iter_jsonl_objects,
+    _open_text_bulk_file,
+    build_card_database_from_scryfall_cards,
+)
 from draftomen.moxgate import MoxgateAdapter, MoxgateSnapshot, MoxgateSnapshotError
 from draftomen.session import LiveSession
 
@@ -34,6 +42,69 @@ MOXGATE_QUEUE_SIZE = 256
 MOXGATE_REQUEST_TIMEOUT_SECONDS = 5
 # serve_forever checks for shutdown this often, so stop() waits at most this long.
 MOXGATE_SHUTDOWN_POLL_SECONDS = 0.05
+
+
+def load_moxgate_card_data(
+    *, bulk_path: Path
+) -> tuple[CardDatabase, dict[str, int]]:
+    """Read a Scryfall bulk file once into a card database and a Scryfall id map.
+    Each id maps to its own arena_id, else the lowest grpId sharing its oracle id.
+    """
+
+    rows: list[tuple[str, str | None, int | None]] = []
+
+    def _cards() -> Iterator[Mapping[str, Any]]:
+        with _open_text_bulk_file(path=bulk_path) as bulk_file:
+            for card in _iter_jsonl_objects(lines=bulk_file, source=str(bulk_path)):
+                scryfall_id = card.get("id")
+                if isinstance(scryfall_id, str) and scryfall_id:
+                    arena_id = card.get("arena_id")
+                    rows.append(
+                        (
+                            scryfall_id,
+                            _oracle_id(card=card),
+                            arena_id if isinstance(arena_id, int) else None,
+                        )
+                    )
+
+                yield card
+
+    try:
+        database = build_card_database_from_scryfall_cards(cards=_cards())
+    except (OSError, EOFError, zlib.error) as error:
+        raise CardDatabaseError(
+            f"Failed to read Scryfall bulk file {bulk_path}: {error}"
+        ) from error
+
+    grp_ids_by_oracle_id: dict[str, int] = {}
+    for grp_id, info in database.cards.items():
+        if info.oracle_id is not None:
+            known = grp_ids_by_oracle_id.get(info.oracle_id)
+            if known is None or grp_id < known:
+                grp_ids_by_oracle_id[info.oracle_id] = grp_id
+
+    grp_ids_by_scryfall_id: dict[str, int] = {}
+    for scryfall_id, oracle_id, arena_id in rows:
+        if arena_id is not None and arena_id in database.cards:
+            grp_ids_by_scryfall_id[scryfall_id] = arena_id
+        elif oracle_id is not None and oracle_id in grp_ids_by_oracle_id:
+            grp_ids_by_scryfall_id[scryfall_id] = grp_ids_by_oracle_id[oracle_id]
+
+    return database, grp_ids_by_scryfall_id
+
+
+def _oracle_id(*, card: Mapping[str, Any]) -> str | None:
+    oracle_id = card.get("oracle_id")
+    if isinstance(oracle_id, str) and oracle_id:
+        return oracle_id
+
+    faces = card.get("card_faces")
+    if isinstance(faces, list) and faces and isinstance(faces[0], Mapping):
+        face_oracle_id = faces[0].get("oracle_id")
+        if isinstance(face_oracle_id, str) and face_oracle_id:
+            return face_oracle_id
+
+    return None
 
 
 class MoxgateReceiverError(RuntimeError):

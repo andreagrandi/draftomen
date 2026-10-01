@@ -24,6 +24,7 @@ from draftomen.audit import load_draft_audit_records
 from draftomen.carddb import CardDatabase, build_card_database_from_bulk_file
 from draftomen.cli import build_parser, main
 from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
+from draftomen.moxgate_server import MOXGATE_DEFAULT_PORT, MoxgateReceiver
 from draftomen.pool import DraftState, load_draft_state, save_draft_state
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_input_acquisition import (
@@ -1532,6 +1533,144 @@ def test_splash_is_default_on_and_each_user_flow_can_disable_it() -> None:
     assert parser.parse_args(args=["build", "--no-splash"]).allow_splash is False
     assert parser.parse_args(args=["backtest"]).splash_enabled is True
     assert parser.parse_args(args=["backtest", "--no-splash"]).splash_enabled is False
+
+
+def test_watch_parser_defaults_to_arena_source_and_moxgate_port() -> None:
+    args = build_parser().parse_args(args=["watch"])
+
+    assert args.source == "arena"
+    assert args.moxgate_port == MOXGATE_DEFAULT_PORT
+    assert build_parser().parse_args(args=["watch", "--source", "moxgate"]).source == (
+        "moxgate"
+    )
+
+
+def test_watch_moxgate_requires_plain(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        argv=["watch", "--source", "moxgate", "--app-dir", str(tmp_path / "app")]
+    )
+
+    assert exit_code == 2
+    assert "watch failed: --source moxgate requires --plain." in capsys.readouterr().err
+
+
+def test_watch_moxgate_rejects_out_of_range_port(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        argv=[
+            "watch",
+            "--source",
+            "moxgate",
+            "--plain",
+            "--moxgate-port",
+            "70000",
+            "--app-dir",
+            str(tmp_path / "app"),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "--moxgate-port must be between 0 and 65535" in capsys.readouterr().err
+
+
+def test_watch_moxgate_missing_bulk_file_fails_before_receiver_starts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_start(self: MoxgateReceiver) -> None:
+        raise AssertionError("receiver must not start")
+
+    monkeypatch.setattr(MoxgateReceiver, "start", fail_start)
+    missing = tmp_path / "missing.jsonl"
+
+    exit_code = main(
+        argv=[
+            "watch",
+            "--source",
+            "moxgate",
+            "--plain",
+            "--bulk-file",
+            str(missing),
+            "--app-dir",
+            str(tmp_path / "app"),
+        ]
+    )
+
+    assert exit_code == 1
+    assert f"watch failed: Scryfall bulk file not found: {missing}." in (
+        capsys.readouterr().err
+    )
+
+
+def test_watch_moxgate_interrupt_stops_receiver_and_frees_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ports: list[int] = []
+    real_start = MoxgateReceiver.start
+
+    def record_start(self: MoxgateReceiver) -> None:
+        real_start(self)
+        ports.append(self.port)
+
+    def interrupt(seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(MoxgateReceiver, "start", record_start)
+    monkeypatch.setattr("draftomen.watch.time.sleep", interrupt)
+
+    exit_code = main(
+        argv=[
+            "watch",
+            "--source",
+            "moxgate",
+            "--plain",
+            "--moxgate-port",
+            "0",
+            "--bulk-file",
+            str(SCRYFALL_BULK_SAMPLE_PATH),
+            "--app-dir",
+            str(tmp_path / "app"),
+            "--offline-profiles",
+        ]
+    )
+
+    assert exit_code == 130
+    assert len(ports) == 1
+    with MoxgateReceiver(port=ports[0]) as again:
+        assert again.port == ports[0]
+
+
+def test_watch_moxgate_port_in_use_reports_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with MoxgateReceiver(port=0) as busy:
+        exit_code = main(
+            argv=[
+                "watch",
+                "--source",
+                "moxgate",
+                "--plain",
+                "--moxgate-port",
+                str(busy.port),
+                "--bulk-file",
+                str(SCRYFALL_BULK_SAMPLE_PATH),
+                "--app-dir",
+                str(tmp_path / "app"),
+                "--once",
+                "--offline-profiles",
+            ]
+        )
+
+    assert exit_code == 1
+    assert "watch failed: Moxgate receiver could not listen" in capsys.readouterr().err
 
 
 def test_watch_plain_once_honors_log_path_override(
