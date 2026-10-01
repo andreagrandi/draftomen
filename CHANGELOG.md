@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Add a loopback receiver for Moxgate snapshots. It listens only on a loopback
+  address, accepts `POST /moxgate/snapshot` from `chrome-extension://` origins
+  that send the `X-Draftomen-Moxgate` header, caps the body at 256 KiB and
+  answers a malformed snapshot with 400. Accepted snapshots go on a queue that
+  the session thread turns into draft events. Nothing starts the receiver yet.
+  (#831)
 - Add a Moxgate snapshot adapter that turns successive draft page snapshots
   into the existing draft events. It derives each pick and its pack and pick
   coordinates from the change between snapshots, and rejects out-of-order,
