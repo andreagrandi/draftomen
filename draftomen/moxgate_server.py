@@ -32,6 +32,8 @@ MOXGATE_MAX_BODY_BYTES = 256 * 1024
 ALLOWED_ORIGIN_PREFIX = "chrome-extension://"
 MOXGATE_QUEUE_SIZE = 256
 MOXGATE_REQUEST_TIMEOUT_SECONDS = 5
+# serve_forever checks for shutdown this often, so stop() waits at most this long.
+MOXGATE_SHUTDOWN_POLL_SECONDS = 0.05
 
 
 class MoxgateReceiverError(RuntimeError):
@@ -300,6 +302,7 @@ class MoxgateReceiver:
 
         thread = threading.Thread(
             target=server.serve_forever,
+            kwargs={"poll_interval": MOXGATE_SHUTDOWN_POLL_SECONDS},
             name="draftomen-moxgate-receiver",
             daemon=True,
         )

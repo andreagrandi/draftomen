@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Tests run in parallel with pytest-xdist by default. The full suite takes
+  about a quarter of the time it took before on a 10-core machine. Pass `-n 0`
+  to run tests one at a time. The Moxgate receiver also checks for shutdown
+  every 0.05 seconds instead of 0.5, so stopping it is faster. The CI `tests`
+  job no longer runs the Qt test files, which the `gui` job already runs, and
+  a Qt adapter test now waits for each published state before reading it.
 - Add a loopback receiver for Moxgate snapshots. It listens only on a loopback
   address, accepts `POST /moxgate/snapshot` from `chrome-extension://` origins
   that send the `X-Draftomen-Moxgate` header, caps the body at 256 KiB and
