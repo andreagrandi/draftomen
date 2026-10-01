@@ -49,7 +49,15 @@ Before bumping the package version, promote the non-empty body under the exact
 ```
 
 Use the UTC release date, preserve the entries unchanged, and restore an empty
-`## [Unreleased]` heading immediately above the new dated section. Then run:
+`## [Unreleased]` heading immediately above the new dated section. Then write
+the website news page for the release from the promoted section:
+
+```bash
+python3 scripts/write_release_news.py --version X.Y.Z
+```
+
+The helper creates `website/src/content/news/X.Y.Z.md`. Do not edit it by hand;
+fix `CHANGELOG.md` and run the helper again. Then run:
 
 ```bash
 uv version X.Y.Z
@@ -72,7 +80,8 @@ Inspect the diff and run:
 uv run nox -s ci
 ```
 
-Stage only the version files and `CHANGELOG.md`, run `git diff --cached --check`,
+Stage only the version files, `CHANGELOG.md`, and
+`website/src/content/news/X.Y.Z.md`, run `git diff --cached --check`,
 and commit with `Release X.Y.Z`. Push the branch and open a ready PR against
 `master` with the mandatory `AGENTS.md` PR template. Use `gh pr checks --watch`,
 then merge the green PR with the repository's merge method and delete its remote
@@ -96,7 +105,8 @@ Find the exact `Publish release` run for tag `vX.Y.Z` with `gh`, then watch it
 through completion. The run takes about 30 minutes, most of it the signed
 Intel macOS build. The `validate`
 job checks that the tag matches `pyproject.toml` and `website/package.json`,
-builds the website, extracts the non-empty body under the exact
+builds the website, checks that the news page for the version exists and is
+linked from the news index, extracts the non-empty body under the exact
 `## [X.Y.Z] - YYYY-MM-DD` section from `CHANGELOG.md`, and runs the full CI
 gate. A missing, duplicate, or empty section fails the run; the workflow never
 falls back to generated notes. The native bundle jobs build and smoke-test both
@@ -131,6 +141,7 @@ Inspect `gh release view vX.Y.Z` and confirm:
 - a macOS DMG downloaded with `gh release download` matches the checksum file,
   passes `xcrun stapler validate`, and `spctl` accepts the DMG and the mounted
   `Draft Omen.app` as `Notarized Developer ID`;
+- <https://www.draftomen.com/news/X.Y.Z/> is live after the merge deploys;
 - local `master` is clean and synchronized.
 
 The browser download check on a Mac that has never run Draft Omen, described in

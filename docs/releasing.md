@@ -75,6 +75,12 @@ Unreleased entries unchanged into `## [X.Y.Z] - YYYY-MM-DD`, then restore an
 empty `## [Unreleased]` heading immediately above the dated section. Include
 that changelog promotion with the version change before merging and tagging.
 
+The website shows each release's notes on a News page. After the promotion, run
+`python3 scripts/write_release_news.py --version X.Y.Z`. The helper reuses the
+changelog extraction, reads the date from the dated heading, and writes
+`website/src/content/news/X.Y.Z.md`. Commit that file with the version change.
+The release workflow fails if the built website has no news page for the tag.
+
 ## Development releases
 
 Development releases are native-only builds for manual testing. The workflow creates or updates the GitHub prerelease with the mutable tag `development`; it does not create a version tag or invoke the stable release workflow. The rolling prerelease is always available at the stable URL:
