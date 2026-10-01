@@ -11,6 +11,11 @@ FIXTURES_DIRECTORY = PROJECT_ROOT / "tests" / "fixtures"
 GOLDEN_DIRECTORY = PROJECT_ROOT / "tests" / "golden"
 BULK_FILE_PATH = FIXTURES_DIRECTORY / "scryfall-default-cards-sample.jsonl"
 QML_DIRECTORY = PROJECT_ROOT / "draftomen" / "qml"
+QT_TEST_FILES = (
+    "tests/test_qt_adapter.py",
+    "tests/test_qt_mock.py",
+    "tests/test_qt_gui.py",
+)
 
 
 @nox.session(python=False)
@@ -22,9 +27,7 @@ def gui(session: nox.Session) -> None:
         "pytest",
         "tests/test_session.py",
         "tests/test_mock_session.py",
-        "tests/test_qt_adapter.py",
-        "tests/test_qt_mock.py",
-        "tests/test_qt_gui.py",
+        *QT_TEST_FILES,
         "tests/test_preferences.py",
     )
     session.run(
@@ -50,7 +53,14 @@ def gui(session: nox.Session) -> None:
 @nox.session(python=False)
 def ci(session: nox.Session) -> None:
     session.run("uv", "run", "ruff", "check", ".", external=True)
-    session.run("uv", "run", "pytest", external=True)
+    # The gui session runs the Qt tests, which time out on a busy 4-core runner.
+    session.run(
+        "uv",
+        "run",
+        "pytest",
+        *(f"--ignore={path}" for path in QT_TEST_FILES),
+        external=True,
+    )
     _run_replay_regressions(session=session)
     session.run("uv", "run", "draftomen-tui", "--version", external=True)
     session.run("git", "diff", "--check", external=True)

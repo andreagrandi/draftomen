@@ -1715,7 +1715,9 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
     try:
         _process_until(
             application=qcore_application,
-            predicate=lambda: bool(sessions) and bool(adapter.state),
+            predicate=lambda: bool(sessions)
+            and bool(adapter.state)
+            and bool(adapter.state["accounts"]),
             description="the live session initial state",
         )
         session = sessions[0]
@@ -1723,6 +1725,12 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
         account_id = adapter.state["accounts"][0]["account_id"]
 
         adapter.chooseAccount(account_id)
+        # The worker thread publishes the account's recommendations asynchronously.
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(adapter.state["recommendations"]["cards"]) > 1,
+            description="the chosen account recommendations",
+        )
         selected_grp_id = adapter.state["recommendations"]["cards"][1]["card"]["grp_id"]
 
         adapter.chooseRecommendation(selected_grp_id)
@@ -1738,6 +1746,11 @@ def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(
         adapter.setContextualScoringEnabled(False)
         adapter.requestRatings()
         adapter.requestBuild("BG")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool((adapter.state.get("build") or {}).get("spells")),
+            description="the requested build",
+        )
         build_grp_id = adapter.state["build"]["spells"][0]["card"]["grp_id"]
         adapter.focusBuildCard(build_grp_id)
         adapter.requestBacktest()
