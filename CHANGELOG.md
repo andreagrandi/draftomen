@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-01
+
 - Player-facing text now calls set profiles "ratings". The desktop status
   banner and Settings, the TUI, plain watch and the README use the new word.
   Code, URLs, manifest keys, cache paths and CLI commands keep "profile".
