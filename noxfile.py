@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).parent
 FIXTURES_DIRECTORY = PROJECT_ROOT / "tests" / "fixtures"
 GOLDEN_DIRECTORY = PROJECT_ROOT / "tests" / "golden"
 BULK_FILE_PATH = FIXTURES_DIRECTORY / "scryfall-default-cards-sample.jsonl"
+EXTENSIONS_DIRECTORY = PROJECT_ROOT / "extensions"
 QML_DIRECTORY = PROJECT_ROOT / "draftomen" / "qml"
 QT_TEST_FILES = (
     "tests/test_qt_adapter.py",
@@ -46,6 +47,18 @@ def gui(session: nox.Session) -> None:
         "--provider",
         "mock",
         "--smoke-test",
+        external=True,
+    )
+
+
+@nox.session(python=False)
+def extension(session: nox.Session) -> None:
+    session.run("npm", "ci", "--prefix", str(EXTENSIONS_DIRECTORY), external=True)
+    # Node expands the glob itself, which keeps the command the same on Node 24 and later.
+    session.run(
+        "node",
+        "--test",
+        "extensions/tests/*.test.js",
         external=True,
     )
 
