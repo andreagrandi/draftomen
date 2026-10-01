@@ -127,7 +127,7 @@ from draftomen.moxgate_server import (
     MoxgateReceiverError,
     load_moxgate_card_data,
 )
-from draftomen.tui import run_tui_watch
+from draftomen.tui import run_tui_moxgate_watch, run_tui_watch
 from draftomen.watch import run_plain_moxgate_watch, run_plain_watch
 
 DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
@@ -173,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="arena",
         help=(
             "Read drafts from the MTG Arena Player.log (arena) or from Moxgate "
-            "snapshots posted to a local port (moxgate, requires --plain)."
+            "snapshots posted to a local port (moxgate)."
         ),
     )
     watch_parser.add_argument(
@@ -1536,13 +1536,9 @@ def handle_watch(args: argparse.Namespace) -> int:
 
 
 def _handle_moxgate_watch(*, args: argparse.Namespace) -> int:
-    """Run watch --plain on Moxgate snapshots from the loopback receiver.
+    """Run watch on Moxgate snapshots from the loopback receiver.
     Card data comes from one Scryfall bulk file read at startup.
     """
-
-    if not args.plain:
-        print("watch failed: --source moxgate requires --plain.", file=sys.stderr)
-        return 2
 
     if not 0 <= args.moxgate_port <= 65535:
         print(
@@ -1584,6 +1580,20 @@ def _handle_moxgate_watch(*, args: argparse.Namespace) -> int:
                 else ProfileNetworkPolicy.ALLOWED
             ),
         )
+        if not args.plain:
+            return run_tui_moxgate_watch(
+                card_database=database,
+                canonical_grp_ids_by_scryfall_id=grp_ids_by_scryfall_id,
+                port=args.moxgate_port,
+                app_dir=args.app_dir,
+                profile_client=profile_client,
+                augmented_model_client=AugmentedModelClient(app_dir=args.app_dir),
+                poll_interval=args.poll_interval,
+                once=args.once,
+                mana_icons_enabled=args.mana_icons,
+                splash_enabled=args.splash_enabled,
+            )
+
         return run_plain_moxgate_watch(
             card_database=database,
             canonical_grp_ids_by_scryfall_id=grp_ids_by_scryfall_id,

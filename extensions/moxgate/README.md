@@ -15,7 +15,7 @@ contact any other server and does not read pages outside `www.moxgate.com`.
 ## Start Draft Omen
 
 ```
-draftomen-tui watch --source moxgate --plain
+draftomen-tui watch --source moxgate
 ```
 
 Draft Omen needs a Scryfall default-cards bulk file at startup. It uses the

@@ -28,6 +28,8 @@ from draftomen.carddb import (
 from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.draft_format import DraftFormat
 from draftomen.events import DraftStartedEvent, PackOfferedEvent, PickMadeEvent
+from draftomen.moxgate_server import MoxgateReceiver, MoxgateReceiverError
+from draftomen.moxgate_source import MoxgateRuntime, create_moxgate_runtime
 from draftomen.pickengine import ScoredCard
 from draftomen.pool import (
     DraftPick,
@@ -52,10 +54,12 @@ from draftomen.session import (
     ApplicationPhase,
     CardView,
     DataLoadPhase,
+    EventPublisher,
     LiveSessionEvent,
     LiveSessionSnapshot,
     OperationKind,
     SetCardDataLoader,
+    SnapshotPublisher,
 )
 from draftomen.set_profile import (
     AggregateEvidence,
@@ -69,6 +73,21 @@ from draftomen.set_profile import (
 )
 from draftomen.seventeen import QUICK_DRAFT_FORMAT
 from draftomen.splash import SplashAssessment
+from tests.test_moxgate import (
+    _all_grp_ids as _moxgate_all_grp_ids,
+)
+from tests.test_moxgate import (
+    _database as _moxgate_database,
+)
+from tests.test_moxgate import (
+    _packs as _moxgate_packs,
+)
+from tests.test_moxgate import (
+    _scryfall_map as _moxgate_scryfall_map,
+)
+from tests.test_moxgate import (
+    _snapshots as _moxgate_snapshots,
+)
 from draftomen.tui import (
     MANA_CARD_TYPE_GLYPHS,
     MANA_ICON_GLYPHS,
@@ -3987,3 +4006,90 @@ def _card_rating(
         average_last_seen_at=alsa,
     )
 
+
+
+MOXGATE_PACKS = _moxgate_packs(pack_count=3, pack_size=3)
+
+
+def _moxgate_tui_app(*, tmp_path: Path) -> DraftomenTuiApp:
+    grp_ids = _moxgate_all_grp_ids(MOXGATE_PACKS)
+
+    def factory(
+        *,
+        snapshot_publisher: SnapshotPublisher,
+        event_publisher: EventPublisher,
+        splash_enabled: bool,
+        augmentation_enabled: bool,
+    ) -> MoxgateRuntime:
+        return create_moxgate_runtime(
+            card_database=_moxgate_database(*grp_ids),
+            canonical_grp_ids_by_scryfall_id=_moxgate_scryfall_map(*grp_ids),
+            snapshot_publisher=snapshot_publisher,
+            event_publisher=event_publisher,
+            app_dir=tmp_path / "app",
+            port=0,
+            splash_enabled=splash_enabled,
+            augmentation_enabled=augmentation_enabled,
+        )
+
+    return DraftomenTuiApp(
+        moxgate_runtime_factory=factory,
+        app_dir=tmp_path / "app",
+        poll_interval=0.05,
+    )
+
+
+def test_tui_moxgate_snapshot_shows_offered_pack_and_recommendations(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_moxgate_snapshot_shows_pack(tmp_path=tmp_path))
+
+
+async def _assert_moxgate_snapshot_shows_pack(*, tmp_path: Path) -> None:
+    app = _moxgate_tui_app(tmp_path=tmp_path)
+    runtime = app._moxgate_runtime
+    assert runtime is not None
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#pack-table", DataTable)
+        assert table.row_count == 0
+        assert runtime.state.endpoint is not None
+        assert runtime.state.endpoint in str(app.query_one("#status-bar", Static).render())
+
+        runtime._receiver.snapshots.put(_moxgate_snapshots(MOXGATE_PACKS)[0][0])
+        for _ in range(100):
+            await pilot.pause(delay=0.05)
+            if table.row_count == 3:
+                break
+
+        title = str(app.query_one("#pack-title", Static).render())
+        rows = [" ".join(str(cell) for cell in table.get_row_at(index)) for index in range(3)]
+
+        assert "Pack 1 of 3, Pick 1 of 3" in title
+        for grp_id in MOXGATE_PACKS[0]:
+            assert any(f"Fixture {grp_id}" in row for row in rows)
+        assert runtime.state.phase == "receiving"
+
+
+def test_tui_moxgate_quit_stops_receiver_and_frees_port(tmp_path: Path) -> None:
+    asyncio.run(_assert_moxgate_quit_frees_port(tmp_path=tmp_path))
+
+
+async def _assert_moxgate_quit_frees_port(*, tmp_path: Path) -> None:
+    app = _moxgate_tui_app(tmp_path=tmp_path)
+    runtime = app._moxgate_runtime
+    assert runtime is not None
+    port = runtime.state.port
+
+    with pytest.raises(MoxgateReceiverError):
+        MoxgateReceiver(port=port).start()
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+
+    assert runtime.state.phase == "stopped"
+    with MoxgateReceiver(port=port) as again:
+        assert again.port == port

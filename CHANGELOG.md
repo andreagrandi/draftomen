@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- `draftomen-tui watch --source moxgate` shows Moxgate drafts in the TUI.
+  `--plain` is no longer required. Quitting the TUI stops the receiver and
+  frees the port. (#833)
 - The TUI account-cycling tests wait for the ChooseAccount worker to finish
   after pressing "a" instead of pausing once, which failed at random on a
   busy CI runner.

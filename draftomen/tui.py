@@ -11,7 +11,7 @@ from dataclasses import replace
 from os import PathLike
 from pathlib import Path
 from threading import Lock, get_ident
-from typing import TypeAlias
+from typing import Protocol, TypeAlias
 
 from rich.align import Align
 from rich.console import Group
@@ -57,6 +57,7 @@ from draftomen.events import (
     PickMadeEvent,
     QuickDraftDetectedEvent,
 )
+from draftomen.moxgate_source import MoxgateRuntime, create_moxgate_runtime
 from draftomen.pickengine import (
     ScoredCard,
     ScoredPack,
@@ -88,6 +89,7 @@ from draftomen.session import (
     ChangeSplashPreference,
     ChooseAccount,
     DataLoadPhase,
+    EventPublisher,
     LiveSession,
     LiveSessionCommand,
     LiveSessionEvent,
@@ -102,6 +104,7 @@ from draftomen.session import (
     RetryError,
     SessionError,
     SetCardDataLoader,
+    SnapshotPublisher,
 )
 from draftomen.setinfo import format_set_label
 from draftomen.seventeen import (
@@ -487,6 +490,21 @@ class MissingRatingsScreen(ModalScreen[bool]):
         self.dismiss(event.button.id == "download-ratings")
 
 
+class TuiMoxgateFactory(Protocol):
+    """Build a Moxgate runtime wired to the TUI's publishers and preferences.
+    The app calls it once while it is constructed.
+    """
+
+    def __call__(
+        self,
+        *,
+        snapshot_publisher: SnapshotPublisher,
+        event_publisher: EventPublisher,
+        splash_enabled: bool,
+        augmentation_enabled: bool,
+    ) -> MoxgateRuntime: ...
+
+
 class DraftomenTuiApp(App[None]):
     """Textual app for live Quick Draft recommendations.
     The app can tail a real log or accept fixture lines in tests.
@@ -621,9 +639,10 @@ class DraftomenTuiApp(App[None]):
     def __init__(
         self,
         *,
-        log_path: PathInput,
+        log_path: PathInput | None = None,
         card_database: CardDatabase | None = None,
         set_card_data_loader: SetCardDataLoader | None = None,
+        moxgate_runtime_factory: TuiMoxgateFactory | None = None,
         app_dir: PathInput | None = None,
         profile_client: ProfileClient | None = None,
         augmented_model_client: AugmentedModelClient | None = None,
@@ -639,15 +658,24 @@ class DraftomenTuiApp(App[None]):
         splash_enabled: bool | None = None,
     ) -> None:
         super().__init__()
-        if card_database is None and set_card_data_loader is None:
-            raise ValueError("card_database or set_card_data_loader is required.")
+        if moxgate_runtime_factory is None:
+            if log_path is None:
+                raise ValueError("log_path is required without a Moxgate runtime.")
+            if card_database is None and set_card_data_loader is None:
+                raise ValueError("card_database or set_card_data_loader is required.")
+        elif card_database is not None or set_card_data_loader is not None:
+            raise ValueError("A Moxgate runtime owns the card data.")
         if card_database is not None and set_card_data_loader is not None:
             raise ValueError(
                 "card_database and set_card_data_loader are mutually exclusive."
             )
         self._session_ingestion_may_block = set_card_data_loader is not None
 
-        self.log_path = Path(log_path).expanduser().resolve(strict=False)
+        self.log_path = (
+            None
+            if log_path is None
+            else Path(log_path).expanduser().resolve(strict=False)
+        )
         self._preferences_app_dir = app_dir
         if visibility_preferences is None:
             (
@@ -671,23 +699,36 @@ class DraftomenTuiApp(App[None]):
         self._profile_client = profile_client
         self._augmented_model_client = augmented_model_client
         self._augmented_request_in_flight: AugmentedModelRequest | None = None
-        self.session = LiveSession(
-            log_path=self.log_path,
-            card_database=card_database,
-            set_card_data_loader=set_card_data_loader,
-            app_dir=app_dir,
-            poll_interval=poll_interval,
-            previous_log_path=previous_log_path,
-            snapshot_publisher=self._publish_session_snapshot,
-            event_publisher=self._publish_session_event,
-            splash_enabled=self.visibility_preferences.splash_enabled,
-            augmentation_enabled=(
-                self.visibility_preferences.augmented_intelligence_enabled
-            ),
-            profile_client=profile_client,
-            augmented_model_client=augmented_model_client,
-        )
-        self.startup_scan = startup_scan
+        self._moxgate_runtime: MoxgateRuntime | None = None
+        if moxgate_runtime_factory is not None:
+            # A port in use raises here, before the TUI starts.
+            self._moxgate_runtime = moxgate_runtime_factory(
+                snapshot_publisher=self._publish_session_snapshot,
+                event_publisher=self._publish_session_event,
+                splash_enabled=self.visibility_preferences.splash_enabled,
+                augmentation_enabled=(
+                    self.visibility_preferences.augmented_intelligence_enabled
+                ),
+            )
+            self.session = self._moxgate_runtime.session
+        else:
+            self.session = LiveSession(
+                log_path=self.log_path,
+                card_database=card_database,
+                set_card_data_loader=set_card_data_loader,
+                app_dir=app_dir,
+                poll_interval=poll_interval,
+                previous_log_path=previous_log_path,
+                snapshot_publisher=self._publish_session_snapshot,
+                event_publisher=self._publish_session_event,
+                splash_enabled=self.visibility_preferences.splash_enabled,
+                augmentation_enabled=(
+                    self.visibility_preferences.augmented_intelligence_enabled
+                ),
+                profile_client=profile_client,
+                augmented_model_client=augmented_model_client,
+            )
+        self.startup_scan = startup_scan and self._moxgate_runtime is None
         self.once = once
         self.poll_enabled = poll_enabled
         self.poll_interval = poll_interval
@@ -841,6 +882,14 @@ class DraftomenTuiApp(App[None]):
         self._render_all()
 
         self._start_log_processing()
+
+    def on_unmount(self) -> None:
+        """Stop the Moxgate receiver when the app shuts down.
+        Closing is idempotent, so the runner can also close it as a backstop.
+        """
+
+        if self._moxgate_runtime is not None:
+            self._moxgate_runtime.close()
 
     def _start_log_processing(self) -> None:
         """Start polling after the shell is mounted.
@@ -1222,7 +1271,10 @@ class DraftomenTuiApp(App[None]):
             with self._ingestion_lock:
                 if worker.is_cancelled:
                     return
-                self.session.poll_once()
+                if self._moxgate_runtime is not None:
+                    self._moxgate_runtime.drain()
+                else:
+                    self.session.poll_once()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             self.call_from_thread(self._record_error, str(error))
             if exit_after:
@@ -2749,6 +2801,7 @@ class DraftomenTuiApp(App[None]):
         segments.extend(
             (
                 f"View: {self._view_mode}",
+                *self._moxgate_status_segments(),
                 f"Pair: {pair_label} ({self._commitment_label})",
                 *self._format_status_segments(),
                 f"Pick: {self._pick_label}",
@@ -2794,6 +2847,13 @@ class DraftomenTuiApp(App[None]):
             segments.insert(0, self._preferences_load_warning)
 
         status.update(" | ".join(segments))
+
+    def _moxgate_status_segments(self) -> tuple[str, ...]:
+        if self._moxgate_runtime is None:
+            return ()
+
+        endpoint = self._moxgate_runtime.state.endpoint
+        return (f"Moxgate: {endpoint}",)
 
     def _splash_status_label(self) -> str:
         enabled_label = "On" if self.visibility_preferences.splash_enabled else "Off"
@@ -4095,6 +4155,70 @@ def run_tui_watch(
     return 0
 
 
+
+def run_tui_moxgate_watch(
+    *,
+    card_database: CardDatabase,
+    canonical_grp_ids_by_scryfall_id: Mapping[str, int],
+    port: int,
+    app_dir: PathInput | None = None,
+    profile_client: ProfileClient | None = None,
+    augmented_model_client: AugmentedModelClient | None = None,
+    poll_interval: float = POLL_INTERVAL_SECONDS,
+    once: bool = False,
+    mana_icons_enabled: bool = False,
+    splash_enabled: bool | None = None,
+) -> int:
+    """Run the Textual watch on Moxgate snapshots and return an exit code.
+    A port in use raises MoxgateReceiverError before the TUI starts.
+    """
+
+    runtimes: list[MoxgateRuntime] = []
+
+    def factory(
+        *,
+        snapshot_publisher: SnapshotPublisher,
+        event_publisher: EventPublisher,
+        splash_enabled: bool,
+        augmentation_enabled: bool,
+    ) -> MoxgateRuntime:
+        runtime = create_moxgate_runtime(
+            card_database=card_database,
+            canonical_grp_ids_by_scryfall_id=canonical_grp_ids_by_scryfall_id,
+            snapshot_publisher=snapshot_publisher,
+            event_publisher=event_publisher,
+            app_dir=app_dir,
+            port=port,
+            host="127.0.0.1",
+            profile_client=profile_client,
+            augmented_model_client=augmented_model_client,
+            splash_enabled=splash_enabled,
+            augmentation_enabled=augmentation_enabled,
+        )
+        runtimes.append(runtime)
+        return runtime
+
+    app = DraftomenTuiApp(
+        moxgate_runtime_factory=factory,
+        app_dir=app_dir,
+        profile_client=profile_client,
+        augmented_model_client=augmented_model_client,
+        poll_interval=poll_interval,
+        once=once,
+        mana_icons_enabled=mana_icons_enabled,
+        splash_enabled=splash_enabled,
+    )
+    try:
+        app.run(headless=once)
+    except KeyboardInterrupt:
+        return 130
+    except Exception:
+        return _ERROR_EXIT_CODE
+    finally:
+        for runtime in runtimes:
+            runtime.close()
+
+    return 0
 
 
 def _row_cells(
