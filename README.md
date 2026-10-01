@@ -99,35 +99,35 @@ uv run draftomen
 
 The PySide6/QML desktop application loads card metadata when needed, watches
 Arena's standard log location, detects the set, and follows the draft
-automatically. Native and terminal live sessions use the shared set-profile
-lifecycle as their sole ratings authority. They load a validated local profile
-cache first, so a warm valid profile is active immediately while an allowed
-hosted-profile refresh proceeds. If the production manifest (or an explicit
-override) is absent, inaccessible, invalid, or has no profile for the set, the
-cached profile is retained; with no usable cache, deterministic fallback scoring
-remains active. Live sessions do not load ratings directly from 17Lands.
+automatically. Native and terminal live sessions take 17Lands ratings from the
+Draft Omen website, one file per set and format. They load cached ratings
+first, so ratings from an earlier session are active at once while a refresh
+checks for newer ones. If the website is unreachable, its ratings are invalid,
+or it has no ratings for the set, the cached ratings stay active. With no
+cached ratings, deterministic fallback scoring stays active. Live sessions do
+not load ratings directly from 17Lands.
 
 Native and terminal live commands use
 `https://www.draftomen.com/profiles/manifest.json` by default. For the desktop
 command, use `--profile-manifest-url URL` to select an explicit HTTPS manifest,
-or `--offline-profiles` to select profile-only offline mode:
+or `--offline-profiles` to use cached ratings only:
 
 ```bash
 draftomen --profile-manifest-url "$PROFILE_MANIFEST_URL"
 draftomen --offline-profiles
 ```
 
-`--offline-profiles` selects `ProfileNetworkPolicy.OFFLINE` and takes
-precedence over profile networking only. It does not disable Scryfall card
-metadata, card images, or static card-data networking.
+`--offline-profiles` selects `ProfileNetworkPolicy.OFFLINE` and stops only
+ratings downloads. It does not disable Scryfall card metadata, card images, or
+static card-data networking.
 
-The TUI `d` action and the native ratings refresh control use the existing
-shared profile-refresh command boundary. A newer validated profile reports an
-`updated` outcome and changes recommendations in place; an equal result reports
-`unchanged` and leaves the current ratings active. Failed, offline, or missing
-refreshes retain the last usable cache when ratings exist; with no usable
-profile, deterministic fallback scoring remains active. Repeated requests
-coalesce, and `watch --plain` has no command UI.
+The TUI `d` action and the desktop "Refresh hosted ratings" button run the
+same refresh. Newer ratings report an `updated` outcome and change
+recommendations in place; an equal result reports `unchanged` and leaves the
+current ratings active. Failed, offline, or missing refreshes keep the cached
+ratings when they exist; with no cached ratings, deterministic fallback
+scoring stays active. Repeated requests coalesce, and `watch --plain` has no
+command UI.
 
 ### Terminal interface
 
@@ -145,7 +145,7 @@ draftomen-tui watch --profile-manifest-url "$PROFILE_MANIFEST_URL"
 
 Terminal `watch` and `watch --plain` use the production hosted manifest by
 default. `--profile-manifest-url` selects an alternate HTTPS manifest, and
-`--offline-profiles` disables only profile networking; Scryfall card data,
+`--offline-profiles` stops only ratings downloads; Scryfall card data,
 images, and other static data sources retain their own network/cache behavior.
 
 To generate a deterministic set profile from pinned input files, use
@@ -200,12 +200,13 @@ In the TUI, press `r` to retry a recoverable card-data error. Network repair is
 available only before draft start; after `DraftStartedEvent`, retries use the
 local cache only.
 
-### Hosted set profiles and profile-only offline mode
+### Hosted ratings and offline ratings
 
-Native and terminal set-profile loading is local-first and hosted by default. A
-validated flat cache is used before any network refresh, so a warm valid cache
-remains active while the production manifest is checked. The default manifest
-for both live commands is:
+Native and terminal sessions load ratings from the local cache first, then
+check the Draft Omen website for newer ones. Cached ratings stay active while
+the check runs. Internally each set and format's ratings file is a set
+profile, described in [set profiles](docs/set-profiles.md). The default
+manifest for both live commands is:
 
 ```text
 https://www.draftomen.com/profiles/manifest.json
@@ -219,7 +220,7 @@ draftomen-tui watch --profile-manifest-url "$PROFILE_MANIFEST_URL"
 draftomen-tui watch --plain --profile-manifest-url "$PROFILE_MANIFEST_URL"
 ```
 
-Use `--offline-profiles` for profile-only offline operation:
+Use `--offline-profiles` to use cached ratings only:
 
 ```bash
 draftomen --offline-profiles
@@ -227,22 +228,19 @@ draftomen-tui watch --offline-profiles
 draftomen-tui watch --plain --offline-profiles
 ```
 
-This flag selects `ProfileNetworkPolicy.OFFLINE` for set profiles only and
-takes precedence over profile networking. It does not disable Scryfall card
-metadata, card images, or static card-data networking; those sources retain
-their own cache and network policies.
+This flag selects `ProfileNetworkPolicy.OFFLINE` and stops only ratings
+downloads. It does not disable Scryfall card metadata, card images, or static
+card-data networking; those sources keep their own cache and network policies.
 
-When a hosted manifest or artifact is missing, unreachable, invalid, or weaker
-than the cached profile, the last-good cache remains authoritative. If there
-is no usable cache, deterministic fallback scoring remains active; live
-sessions do not load ratings directly from 17Lands. The TUI `d` action and the
-native ratings refresh control request the same forced hosted-profile refresh.
-A newer validated profile reports an `updated` outcome and changes
-recommendations in place; an equal result reports `unchanged` and leaves
-ratings active. Failed, offline, or missing refreshes retain the last usable
-cache when ratings exist; with no usable profile, deterministic fallback
-scoring remains active. Repeated requests coalesce, and `watch --plain` has
-no command UI.
+When the hosted ratings are missing, unreachable, invalid, or weaker than the
+cached ratings, the cached ratings stay active. With no cached ratings,
+deterministic fallback scoring stays active; live sessions do not load ratings
+directly from 17Lands. The TUI `d` action and the desktop "Refresh hosted
+ratings" button force the same refresh. Newer ratings report an `updated`
+outcome and change recommendations in place; an equal result reports
+`unchanged` and leaves the current ratings active. Failed, offline, or missing
+refreshes keep the cached ratings when they exist. Repeated requests coalesce,
+and `watch --plain` has no command UI.
 
 Manual `refresh-profile` remains an explicit producer/client operation:
 
@@ -263,7 +261,7 @@ tracked data and emits deterministic artifacts for offline consumers.
 
 Use the arrow keys or `j`/`k` to browse cards, `s` to change the ranking,
 `b` to open the current build, `c` to configure the view and optional splash
-recommendations, `d` to refresh the hosted profile in the TUI, and `q` to quit.
+recommendations, `d` to refresh the hosted ratings in the TUI, and `q` to quit.
 
 ### Linting
 

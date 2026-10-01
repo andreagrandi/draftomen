@@ -123,7 +123,7 @@ Item {
                             Label { text: "Contextual pick scoring"; color: Theme.text; font.bold: true }
                             Label {
                                 Layout.fillWidth: true
-                                text: "Use available profile and pool evidence for contextual pick scoring; explanations show the evidence used."
+                                text: "Use available ratings and pool evidence for contextual pick scoring; explanations show the evidence used."
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.textPixelSize(11)
                                 wrapMode: Text.WordWrap
@@ -356,7 +356,7 @@ Item {
                         objectName: "settingsProfileStatusRow"
                         Layout.fillWidth: true
                         Label {
-                            text: qsTr("Set profile cache")
+                            text: qsTr("Ratings cache")
                             color: Theme.text
                             font.bold: true
                         }
@@ -376,7 +376,7 @@ Item {
                             horizontalAlignment: Text.AlignRight
                             elide: Text.ElideRight
                             Accessible.name: text
-                            Accessible.description: qsTr("Read-only set-profile cache and refresh status.")
+                            Accessible.description: qsTr("Read-only ratings cache and refresh status.")
                         }
                     }
                     Label {
@@ -384,11 +384,11 @@ Item {
                         Layout.fillWidth: true
                         text: root.sessionState.set_profile
                             ? root.sessionState.set_profile.message
-                            : qsTr("Set profile is not configured.")
+                            : qsTr("Ratings are not configured.")
                         color: Theme.textMuted
                         wrapMode: Text.WordWrap
                         Accessible.name: text
-                        Accessible.description: qsTr("Current set-profile status.")
+                        Accessible.description: qsTr("Current ratings source status.")
                     }
 
                     Label {
@@ -428,7 +428,7 @@ Item {
                         text: qsTr("Refresh hosted ratings")
                         Accessible.name: qsTr("Refresh hosted ratings")
                         Accessible.description: qsTr(
-                            "Refreshes the hosted set profile used for 17Lands ratings; "
+                            "Refreshes the hosted 17Lands ratings for this set; "
                                 + "cached ratings or deterministic fallback remain available."
                         )
                         onClicked: {
@@ -652,7 +652,7 @@ Item {
                 objectName: "settingsRatingsDownloadDialogMessage"
                 Layout.fillWidth: true
                 text: qsTr(
-                    "Check the hosted 17Lands profile for %1? "
+                    "Check the hosted 17Lands ratings for %1? "
                         + "Cached ratings or deterministic fallback remain available "
                         + "while it refreshes."
                 ).arg(root.sessionState.ratings.set_code)

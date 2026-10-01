@@ -2950,7 +2950,7 @@ def _source_summary(*, cards: tuple[ScoredCard, ...]) -> str:
     uses_basic_policy = any(card.freely_available_basic for card in cards)
     parts: list[str] = []
     if uses_profile:
-        parts.append("set profile")
+        parts.append("set ratings")
     parts.extend(exact_formats)
     parts.extend(f"{label} fallback" for label in fallback_labels)
 

@@ -4690,6 +4690,22 @@ assert banner.property("bannerTitle") == "Ratings unavailable"
 assert banner.property("bannerMessage") == "Ratings are not loaded."
 assert progress_bar.property("visible") is False
 
+loading_snapshot = replace(
+    ready_snapshot,
+    set_profile=replace(ready_snapshot.set_profile, phase=DataLoadPhase.LOADING),
+)
+provider._apply_snapshot(loading_snapshot)
+application.processEvents()
+assert banner.property("bannerTitle") == "Refreshing hosted ratings"
+
+failed_snapshot = replace(
+    ready_snapshot,
+    set_profile=replace(ready_snapshot.set_profile, phase=DataLoadPhase.FAILED),
+)
+provider._apply_snapshot(failed_snapshot)
+application.processEvents()
+assert banner.property("bannerTitle") == "Hosted ratings unavailable"
+
 preferences.shutdown()
 del root
 del engine
@@ -11062,3 +11078,29 @@ def test_gui_errors_reach_stderr_and_the_application_log(
     assert "Test Draft smoke failed: journey marker" in capsys.readouterr().err
     contents = (app_logs_dir / "draftomen.log").read_text(encoding="utf-8")
     assert "ERROR draftomen.qt_gui: Test Draft smoke failed: journey marker" in contents
+
+
+def test_qml_player_facing_text_says_ratings_instead_of_profile() -> None:
+    settings = (PROJECT_ROOT / "draftomen" / "qml" / "SettingsView.qml").read_text()
+    banner = (PROJECT_ROOT / "draftomen" / "qml" / "StateBanner.qml").read_text()
+
+    for text in (
+        "Use available ratings and pool evidence for contextual pick scoring; "
+        "explanations show the evidence used.",
+        'qsTr("Ratings cache")',
+        'qsTr("Read-only ratings cache and refresh status.")',
+        'qsTr("Ratings are not configured.")',
+        'qsTr("Current ratings source status.")',
+        '"Refreshes the hosted 17Lands ratings for this set; "',
+        '"Check the hosted 17Lands ratings for %1? "',
+    ):
+        assert text in settings
+    for text in (
+        '"Refreshing hosted ratings"',
+        '"Hosted ratings unavailable"',
+        '"Check the hosted 17Lands ratings for "',
+    ):
+        assert text in banner
+    for old_text in ("set profile", "set-profile", "hosted profile", "Hosted profile"):
+        assert old_text not in settings
+        assert old_text not in banner

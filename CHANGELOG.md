@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Player-facing text now calls set profiles "ratings". The desktop status
+  banner and Settings, the TUI, plain watch and the README use the new word.
+  Code, URLs, manifest keys, cache paths and CLI commands keep "profile".
+  (#820)
 - Add Reality Fracture (FRA) card data and early Premier, Traditional and
   Pick-Two profiles. Scryfall has no Arena ids for FRA yet, so this one-time
   export takes the 280 FRA Arena ids from 17Lands ratings and matches them to

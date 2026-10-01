@@ -36,8 +36,8 @@ Rectangle {
             return root.activeError.recoverable ? "Recoverable error" : "Application error"
         if (root.hasProfileStatus)
             return root.setProfile.phase === "loading"
-                ? "Refreshing hosted profile"
-                : "Hosted profile unavailable"
+                ? "Refreshing hosted ratings"
+                : "Hosted ratings unavailable"
         if (root.hasProgress)
             return "Working"
         if (root.hasWarning)
@@ -239,7 +239,7 @@ Rectangle {
             Label {
                 objectName: "ratingsDownloadDialogMessage"
                 Layout.fillWidth: true
-                text: "Check the hosted 17Lands profile for "
+                text: "Check the hosted 17Lands ratings for "
                     + root.ratings.set_code
                     + "? Cached ratings or deterministic fallback remain available while it refreshes."
                 color: Theme.text

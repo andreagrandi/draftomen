@@ -5510,7 +5510,7 @@ def test_live_session_forced_profile_failure_is_recoverable_and_retry_is_fresh(
         SessionError(
             error_id="ratings:TST",
             code="ratings_unavailable",
-            message="17Lands ratings failed for TST: hosted profile refresh failed.",
+            message="17Lands ratings failed for TST: hosted ratings refresh failed.",
             recoverable=True,
             operation=OperationKind.RATINGS,
         ),
@@ -5575,7 +5575,7 @@ def test_live_session_forced_refresh_without_hosted_profile_names_the_reason(
             code="ratings_unavailable",
             message=(
                 "17Lands ratings failed for TST: "
-                "no hosted profile exists for this set."
+                "no hosted ratings exist for this set."
             ),
             recoverable=True,
             operation=OperationKind.RATINGS,
@@ -5693,7 +5693,7 @@ def test_live_session_structured_forced_profile_failure_preserves_usable_state(
         SessionError(
             error_id="ratings:TST",
             code="ratings_unavailable",
-            message="17Lands ratings failed for TST: hosted profile refresh failed.",
+            message="17Lands ratings failed for TST: hosted ratings refresh failed.",
             recoverable=True,
             operation=OperationKind.RATINGS,
         ),
@@ -5959,7 +5959,7 @@ def test_live_session_logs_new_error_with_code_id_and_message(
     records = _session_error_records(caplog=caplog)
     assert [record.getMessage() for record in records] == [
         "Session error ratings_unavailable (ratings:TST): "
-        "17Lands ratings failed for TST: hosted profile refresh failed."
+        "17Lands ratings failed for TST: hosted ratings refresh failed."
     ]
 
 
@@ -9752,7 +9752,7 @@ def test_live_session_msh_replay_with_cached_early_profile_reports_ready_ratings
 
     assert snapshot.status.phase is ApplicationPhase.DRAFT_COMPLETE
     assert snapshot.ratings.phase is DataLoadPhase.READY
-    assert snapshot.ratings.message == "Profile ratings are ready for MSH."
+    assert snapshot.ratings.message == "MSH ratings are ready."
 
 
 def test_live_session_adopts_a_profile_refresh_that_lands_after_the_msh_replay_completes(
@@ -9786,5 +9786,5 @@ def test_live_session_adopts_a_profile_refresh_that_lands_after_the_msh_replay_c
     )
 
     assert session.snapshot.ratings.phase is DataLoadPhase.READY
-    assert session.snapshot.ratings.message == "Profile ratings are ready for MSH."
+    assert session.snapshot.ratings.message == "MSH ratings are ready."
 

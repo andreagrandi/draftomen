@@ -664,7 +664,7 @@ def test_plain_watch_auto_loads_conventional_profile_through_shared_session(
             )
         ]
     )
-    assert "Status: Profile: mature" in output
+    assert "Status: Ratings: mature" in output
 
     snapshot = watcher.session.snapshot
     scored_pack = snapshot.current_scored_pack
@@ -814,7 +814,7 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
         poll_started = time.monotonic()
         cached_status = watcher.poll_once()
         assert time.monotonic() - poll_started < 1.0
-        assert "Profile: mature (cached)" in cached_status
+        assert "Ratings: mature (cached)" in cached_status
         blocked_output = watcher.process_lines(
             lines=[
                 _pack_line(
@@ -828,7 +828,7 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
         )
         assert cached_calls == [("TST", QUICK_DRAFT_FORMAT)]
         assert refresh_calls == [("TST", QUICK_DRAFT_FORMAT, True)]
-        assert "Data source: set profile" in blocked_output
+        assert "Data source: set ratings" in blocked_output
         assert blocked_output.index("Cached First") < blocked_output.index("Cached Second")
 
         release.set()
@@ -838,7 +838,7 @@ def test_plain_watch_refreshes_profile_off_poll_loop_and_renders_shared_status(
         assert tuple(card.card.grp_id for card in snapshot.current_scored_pack.cards) == (2, 1)
         assert tuple(card.card.grp_id for card in snapshot.recommendations.cards) == (2, 1)
         refreshed_output = watcher.process_lines(lines=[])
-        assert "Status: Profile: mature (updated)" in refreshed_output
+        assert "Status: Ratings: mature (updated)" in refreshed_output
         assert "Recommendation:" not in refreshed_output
         assert snapshot.set_profile.profile_version == refreshed_profile.profile_version
     finally:
@@ -981,7 +981,7 @@ def test_plain_watch_hands_off_obsolete_refresh_to_same_set_lifecycle(
             for recommendation in stale_snapshot.recommendations.cards
         )
         rendered_outputs.append(watcher.process_lines(lines=[]))
-        assert f"Profile: {obsolete_profile.maturity.value}" not in rendered_outputs[-1]
+        assert f"Ratings: {obsolete_profile.maturity.value}" not in rendered_outputs[-1]
 
         replacement_release.set()
         assert replacement_published.wait(timeout=5.0)
@@ -1000,10 +1000,10 @@ def test_plain_watch_hands_off_obsolete_refresh_to_same_set_lifecycle(
             for recommendation in replacement_snapshot.recommendations.cards
         )
         rendered_outputs.append(watcher.process_lines(lines=[]))
-        assert f"Profile: {obsolete_profile.maturity.value}" not in "".join(
+        assert f"Ratings: {obsolete_profile.maturity.value}" not in "".join(
             rendered_outputs
         )
-        assert f"Profile: {replacement_profile.maturity.value}" in rendered_outputs[-1]
+        assert f"Ratings: {replacement_profile.maturity.value}" in rendered_outputs[-1]
     finally:
         first_release.set()
         replacement_release.set()
@@ -1209,7 +1209,7 @@ def test_plain_watch_loads_locked_pair_ratings_through_cached_profile(
     assert provider_calls == []
     assert "commitment 100% (locked)" in output
     assert "65.0%" in output
-    assert "Data source: set profile" in output
+    assert "Data source: set ratings" in output
     assert "GIH WR" in output
     assert output.index("All-Decks Leader (grpId 4)") < output.index(
         "Pair Upgrade (grpId 3)"
@@ -1275,7 +1275,7 @@ def test_plain_watch_scoring_never_requests_network_with_real_profile_client(
         "Pair Upgrade (grpId 3)"
     )
     assert "65.0%" in first_output
-    assert "Data source: set profile" in first_output
+    assert "Data source: set ratings" in first_output
     assert "Pack 2 of 3, Pick 3 of 14" in second_output
     assert "commitment 100% (locked)" in second_output
     assert "All-Decks Leader (grpId 4)" in output

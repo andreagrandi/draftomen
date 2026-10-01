@@ -35,7 +35,7 @@ def test_ready_mock_snapshot_covers_every_desktop_data_surface() -> None:
         source="mock",
         phase=DataLoadPhase.READY,
         refresh_outcome="unchanged",
-        message="Mock Quick Draft set profile is current.",
+        message="Mock Quick Draft ratings are current.",
     )
     assert snapshot.ratings.last_successful_update == (
         "2026-08-23T12:00:00+00:00"
