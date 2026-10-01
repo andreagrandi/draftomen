@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const [releaseTag, ...unexpectedArguments] = process.argv.slice(2);
@@ -98,9 +98,35 @@ async function main() {
         forbiddenContent.push(`a Windows executable link to ${href} in ${page}`);
       }
     }
-    if (/\b(?:unsigned|not signed)\b[^.]*\bWindows\b|\bWindows\b[^.]*\b(?:unsigned|not signed)\b/i.test(visibleText(pageHtml))) {
+    // Release notes are historical changelog text that legitimately mentions the
+    // old unsigned Windows executable, so only the other pages are scanned.
+    const isReleaseNote = page.startsWith(`news${sep}`);
+    if (!isReleaseNote && /\b(?:unsigned|not signed)\b[^.]*\bWindows\b|\bWindows\b[^.]*\b(?:unsigned|not signed)\b/i.test(visibleText(pageHtml))) {
       forbiddenContent.push(`text about an unsigned Windows build in ${page}`);
     }
+  }
+
+  const version = releaseTag.slice(1);
+  const newsHint = `Run \`python3 scripts/write_release_news.py --version ${version}\`, then rebuild the website`;
+  const newsMissing = [];
+  try {
+    const newsHtml = await readFile(join(distPath, 'news', version, 'index.html'), 'utf8');
+    if (!visibleText(newsHtml).includes(version)) {
+      newsMissing.push(`visible version ${version} in website/dist/news/${version}/index.html`);
+    }
+  } catch {
+    newsMissing.push(`website/dist/news/${version}/index.html`);
+  }
+  try {
+    const newsIndexHtml = await readFile(join(distPath, 'news', 'index.html'), 'utf8');
+    if (!anchors(newsIndexHtml).some(({ href }) => href === `/news/${version}/`)) {
+      newsMissing.push(`a link to /news/${version}/ in website/dist/news/index.html`);
+    }
+  } catch {
+    newsMissing.push('website/dist/news/index.html');
+  }
+  if (newsMissing.length > 0) {
+    missingChecks.push(`the release news page (${newsMissing.join('; ')}). ${newsHint}`);
   }
 
   if (missingChecks.length > 0) {
