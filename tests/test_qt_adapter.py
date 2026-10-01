@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import socket as socket_module
 import threading
 import time
 from collections import deque
@@ -11,6 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from os import PathLike
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -42,6 +44,12 @@ from draftomen.cardimages import CardImageService
 from draftomen.draft_format import DraftFormat, rules_for_format
 from draftomen.events import PackOfferedEvent
 from draftomen.mock_session import MockLiveSession
+from draftomen.moxgate_server import MOXGATE_SNAPSHOT_PATH, MoxgatePortInUseError
+from draftomen.moxgate_source import (
+    MoxgateRuntime,
+    MoxgateSourceState,
+    create_moxgate_runtime,
+)
 from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
 from draftomen.preferences import (
     GuiDisplayPreferences,
@@ -58,6 +66,7 @@ from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.qt_adapter import (
     GuiPreferencesAdapter,
     LiveSessionAdapter,
+    MoxgateFactory,
     RecommendationListModel,
     SessionAdapter,
     _to_qml_value,
@@ -104,6 +113,14 @@ from draftomen.set_profile import (
     dump_set_profile,
     load_set_profile,
 )
+from tests.test_moxgate import (
+    _all_grp_ids as _moxgate_all_grp_ids,
+    _database as _moxgate_database,
+    _packs as _moxgate_packs,
+    _scryfall_map as _moxgate_scryfall_map,
+    _snapshots as _moxgate_snapshots,
+)
+from tests.test_moxgate_server import _body as _moxgate_body, _post as _moxgate_post
 from draftomen.test_draft import (
     TestDraftController,
     TestDraftError,
@@ -6275,3 +6292,608 @@ def test_live_adapter_ignores_a_pick_with_the_wrong_card_count_without_failing(
     finally:
         adapter.shutdown()
         adapter.wait_for_shutdown()
+
+
+class _FakeMoxgateRuntime:
+    """Stand in for a started Moxgate runtime with a scripted drain."""
+
+    def __init__(self, *, port: int = 4111, drains: Iterable[int] = ()) -> None:
+        self.session = _FakeTestDraftSession()
+        self.state = MoxgateSourceState(
+            phase="waiting",
+            port=port,
+            endpoint=f"http://127.0.0.1:{port}{MOXGATE_SNAPSHOT_PATH}",
+        )
+        self.close_calls = 0
+        self.drain_thread_ids: list[int] = []
+        self._drains = deque(drains)
+
+    def drain(self) -> int:
+        self.drain_thread_ids.append(threading.get_ident())
+        taken = self._drains.popleft() if self._drains else 0
+        if taken and self.state.phase == "waiting":
+            self.state = replace(self.state, phase="receiving")
+        return taken
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.state = replace(self.state, phase="stopped")
+
+
+class _FakeMoxgateFactory:
+    """Record runtime requests and serve a scripted runtime or error."""
+
+    def __init__(
+        self,
+        *,
+        port: int = 4111,
+        runtime: _FakeMoxgateRuntime | None = None,
+        error: Exception | None = None,
+        blocker: threading.Event | None = None,
+    ) -> None:
+        self._port = port
+        self.runtime = runtime
+        self.error = error
+        self.blocker = blocker
+        self.create_calls: list[dict[str, object]] = []
+        self.create_thread_ids: list[int] = []
+
+    @property
+    def port(self) -> int:
+        return self._port
+
+    def create_runtime(
+        self,
+        *,
+        publisher: SnapshotPublisher,
+        splash_enabled: bool,
+        contextual_adjustments_enabled: bool,
+    ) -> MoxgateRuntime:
+        self.create_thread_ids.append(threading.get_ident())
+        self.create_calls.append(
+            {
+                "splash_enabled": splash_enabled,
+                "contextual_adjustments_enabled": contextual_adjustments_enabled,
+            }
+        )
+        if self.blocker is not None:
+            self.blocker.wait(timeout=3.0)
+        if self.error is not None:
+            raise self.error
+        assert self.runtime is not None
+        return cast(MoxgateRuntime, self.runtime)
+
+
+class _RealMoxgateFactory:
+    """Create real runtimes on one port with synthetic card data."""
+
+    def __init__(self, *, port: int, app_dir: Path) -> None:
+        self._port = port
+        self._app_dir = app_dir
+        self.runtimes: list[MoxgateRuntime] = []
+
+    @property
+    def port(self) -> int:
+        return self._port
+
+    def create_runtime(
+        self,
+        *,
+        publisher: SnapshotPublisher,
+        splash_enabled: bool,
+        contextual_adjustments_enabled: bool,
+    ) -> MoxgateRuntime:
+        grp_ids = _moxgate_all_grp_ids(_MOXGATE_PACKS)
+        runtime = create_moxgate_runtime(
+            card_database=_moxgate_database(*grp_ids),
+            canonical_grp_ids_by_scryfall_id=_moxgate_scryfall_map(*grp_ids),
+            snapshot_publisher=publisher,
+            app_dir=self._app_dir,
+            port=self._port,
+            splash_enabled=splash_enabled,
+            contextual_adjustments_enabled=contextual_adjustments_enabled,
+        )
+        self.runtimes.append(runtime)
+        return runtime
+
+
+_MOXGATE_PACKS = _moxgate_packs(pack_count=3, pack_size=3)
+
+
+def _start_moxgate_adapter(
+    *,
+    application: QCoreApplication,
+    factory: MoxgateFactory | None,
+    test_draft_factory: object | None = None,
+    augmentation_enabled: bool = False,
+) -> tuple[LiveSessionAdapter, _FakeSession]:
+    arenas: list[_FakeSession] = []
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=5,
+        moxgate_factory=factory,
+        test_draft_factory=cast("TestDraftFactory | None", test_draft_factory),
+        augmentation_enabled=augmentation_enabled,
+    )
+    adapter.start()
+    _process_until(
+        application=application,
+        predicate=lambda: bool(arenas) and adapter.state["pool"]["total_cards"] != 0,
+        description="the Arena snapshot",
+    )
+    return adapter, arenas[0]
+
+
+def _moxgate_phase(adapter: LiveSessionAdapter) -> object:
+    return adapter.state["moxgate"]["phase"]
+
+
+def _stop_adapter(adapter: LiveSessionAdapter) -> None:
+    adapter.shutdown()
+    adapter.wait_for_shutdown()
+
+
+def test_live_adapter_publishes_the_stopped_moxgate_state_before_the_worker_starts(
+    qcore_application: QCoreApplication,
+) -> None:
+    del qcore_application
+    adapter = LiveSessionAdapter(
+        session_factory=lambda publish: cast(LiveSession, _FakeSession(publish=publish)),
+        poll_interval_ms=5,
+        moxgate_factory=_FakeMoxgateFactory(port=4321),
+    )
+
+    assert adapter.state["moxgate"] == {
+        "enabled": True,
+        "active": False,
+        "phase": "stopped",
+        "port": 4321,
+        "endpoint": None,
+        "error": None,
+    }
+
+
+def test_live_adapter_without_a_moxgate_factory_publishes_a_disabled_source(
+    qcore_application: QCoreApplication,
+) -> None:
+    adapter, _ = _start_moxgate_adapter(application=qcore_application, factory=None)
+    try:
+        assert adapter.state["moxgate"]["enabled"] is False
+        adapter.startMoxgate()
+        qcore_application.processEvents()
+        assert adapter.state["moxgate"]["phase"] == "stopped"
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_publishes_starting_while_the_runtime_is_created(
+    qcore_application: QCoreApplication,
+) -> None:
+    blocker = threading.Event()
+    factory = _FakeMoxgateFactory(runtime=_FakeMoxgateRuntime(), blocker=blocker)
+    adapter, arena = _start_moxgate_adapter(
+        application=qcore_application, factory=factory
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "starting",
+            description="the starting phase",
+        )
+        # The GUI thread keeps running while the worker waits for card data.
+        assert factory.create_thread_ids
+        assert factory.create_thread_ids[0] != threading.get_ident()
+        assert adapter.state["moxgate"]["active"] is False
+        assert adapter.state["moxgate"]["port"] == 4111
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+        blocker.set()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting",
+            description="the waiting phase",
+        )
+    finally:
+        blocker.set()
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_publishes_waiting_with_the_endpoint_and_simulated_state(
+    qcore_application: QCoreApplication,
+) -> None:
+    runtime = _FakeMoxgateRuntime()
+    factory = _FakeMoxgateFactory(runtime=runtime)
+    adapter, arena = _start_moxgate_adapter(
+        application=qcore_application, factory=factory
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting"
+            and adapter.state["pool"]["total_cards"]
+            == runtime.session.snapshot.pool.total_cards
+            and bool(runtime.drain_thread_ids),
+            description="the waiting phase with the Moxgate snapshot",
+        )
+        assert adapter.state["moxgate"] == {
+            "enabled": True,
+            "active": True,
+            "phase": "waiting",
+            "port": 4111,
+            "endpoint": f"http://127.0.0.1:4111{MOXGATE_SNAPSHOT_PATH}",
+            "error": None,
+        }
+        assert arena.snapshot.pool.total_cards != runtime.session.snapshot.pool.total_cards
+        assert factory.create_calls == [
+            {"splash_enabled": True, "contextual_adjustments_enabled": True}
+        ]
+        assert runtime.drain_thread_ids
+        assert runtime.drain_thread_ids[0] != threading.get_ident()
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_publishes_receiving_after_a_drain_takes_a_snapshot(
+    qcore_application: QCoreApplication,
+) -> None:
+    runtime = _FakeMoxgateRuntime()
+    factory = _FakeMoxgateFactory(runtime=runtime)
+    adapter, _ = _start_moxgate_adapter(application=qcore_application, factory=factory)
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting",
+            description="the waiting phase",
+        )
+        runtime._drains.append(1)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "receiving",
+            description="the receiving phase",
+        )
+        assert adapter.state["moxgate"]["active"] is True
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_publishes_port_in_use_naming_the_port_and_stays_on_arena(
+    qcore_application: QCoreApplication,
+) -> None:
+    error = MoxgatePortInUseError(
+        "Moxgate receiver could not listen on 127.0.0.1:4111: in use.", port=4111
+    )
+    factory = _FakeMoxgateFactory(error=error)
+    adapter, arena = _start_moxgate_adapter(
+        application=qcore_application, factory=factory
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "port_in_use",
+            description="the port in use phase",
+        )
+        moxgate = adapter.state["moxgate"]
+        assert moxgate["port"] == 4111
+        assert "4111" in moxgate["error"]
+        assert moxgate["active"] is False
+        polls = len(arena.poll_thread_ids)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: len(arena.poll_thread_ids) > polls,
+            description="Arena polling to continue",
+        )
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+
+        adapter.stopMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "stopped",
+            description="the cleared error",
+        )
+        assert adapter.state["moxgate"]["error"] is None
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_publishes_failed_with_the_error_and_stays_on_arena(
+    qcore_application: QCoreApplication,
+) -> None:
+    factory = _FakeMoxgateFactory(error=RuntimeError("Scryfall bulk file not found: x."))
+    adapter, arena = _start_moxgate_adapter(
+        application=qcore_application, factory=factory
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "failed",
+            description="the failed phase",
+        )
+        assert adapter.state["moxgate"]["error"] == "Scryfall bulk file not found: x."
+        assert adapter.state["moxgate"]["active"] is False
+        assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_stop_moxgate_closes_the_runtime_once_and_restores_arena(
+    qcore_application: QCoreApplication,
+) -> None:
+    runtime = _FakeMoxgateRuntime()
+    factory = _FakeMoxgateFactory(runtime=runtime)
+    adapter, arena = _start_moxgate_adapter(
+        application=qcore_application, factory=factory
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting"
+            and adapter.state["pool"]["total_cards"]
+            == runtime.session.snapshot.pool.total_cards,
+            description="the Moxgate source",
+        )
+        polls_before_stop = len(arena.poll_thread_ids)
+
+        adapter.stopMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "stopped"
+            and adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards,
+            description="the restored Arena source",
+        )
+        assert runtime.close_calls == 1
+        assert len(arena.poll_thread_ids) > polls_before_stop
+        assert adapter.state["moxgate"]["active"] is False
+        assert adapter.state["moxgate"]["error"] is None
+        drains = len(runtime.drain_thread_ids)
+        qcore_application.processEvents()
+        time.sleep(0.05)
+        qcore_application.processEvents()
+        assert len(runtime.drain_thread_ids) == drains
+    finally:
+        _stop_adapter(adapter)
+
+    assert runtime.close_calls == 1
+
+
+def test_live_adapter_shutdown_closes_the_moxgate_runtime_once(
+    qcore_application: QCoreApplication,
+) -> None:
+    runtime = _FakeMoxgateRuntime()
+    factory = _FakeMoxgateFactory(runtime=runtime)
+    adapter, _ = _start_moxgate_adapter(application=qcore_application, factory=factory)
+    adapter.startMoxgate()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting",
+            description="the waiting phase",
+        )
+    finally:
+        _stop_adapter(adapter)
+
+    assert runtime.close_calls == 1
+
+
+def test_live_adapter_ignores_choose_account_while_moxgate_is_authoritative(
+    qcore_application: QCoreApplication,
+) -> None:
+    runtime = _FakeMoxgateRuntime()
+    factory = _FakeMoxgateFactory(runtime=runtime)
+    adapter, arena = _start_moxgate_adapter(
+        application=qcore_application, factory=factory
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting",
+            description="the waiting phase",
+        )
+        adapter.chooseAccount("someone")
+        adapter.setSplashEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: any(
+                isinstance(command, ChangeSplashPreference)
+                for command in runtime.session.commands
+            ),
+            description="the marker command",
+        )
+        assert not any(
+            isinstance(command, ChooseAccount)
+            for command in [*runtime.session.commands, *arena.commands]
+        )
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_enables_augmentation_on_the_moxgate_session(
+    qcore_application: QCoreApplication,
+) -> None:
+    runtime = _FakeMoxgateRuntime()
+    factory = _FakeMoxgateFactory(runtime=runtime)
+    adapter, _ = _start_moxgate_adapter(
+        application=qcore_application,
+        factory=factory,
+        augmentation_enabled=True,
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting",
+            description="the waiting phase",
+        )
+        assert ChangeAugmentation(enabled=True) in runtime.session.commands
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_starting_moxgate_releases_an_active_mocked_draft(
+    qcore_application: QCoreApplication,
+) -> None:
+    test_runtime = _FakeTestDraftRuntime(
+        session=_FakeTestDraftSession(),
+        controller=_FakeTestDraftController(),
+    )
+    test_factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=test_runtime)
+    moxgate_runtime = _FakeMoxgateRuntime()
+    adapter, arena = _start_moxgate_adapter(
+        application=qcore_application,
+        factory=_FakeMoxgateFactory(runtime=moxgate_runtime),
+        test_draft_factory=test_factory,
+    )
+    try:
+        adapter.startTestDraft("manual", "hob", "quick")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Mocked Draft offer",
+        )
+
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting"
+            and adapter.state["test_draft"]["active"] is False,
+            description="Moxgate replacing the Mocked Draft",
+        )
+        assert test_runtime.close_calls == 1
+        assert adapter.state["test_draft"]["phase"] == "idle"
+        assert adapter.state["test_draft"]["offer_generation"] == 0
+        assert arena.snapshot.pool.total_cards != 0
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_starting_a_mocked_draft_stops_moxgate_first(
+    qcore_application: QCoreApplication,
+) -> None:
+    test_runtime = _FakeTestDraftRuntime(
+        session=_FakeTestDraftSession(),
+        controller=_FakeTestDraftController(),
+    )
+    test_factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=test_runtime)
+    moxgate_runtime = _FakeMoxgateRuntime()
+    adapter, _ = _start_moxgate_adapter(
+        application=qcore_application,
+        factory=_FakeMoxgateFactory(runtime=moxgate_runtime),
+        test_draft_factory=test_factory,
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting",
+            description="the waiting phase",
+        )
+        adapter.startTestDraft("manual", "hob", "quick")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1
+            and _moxgate_phase(adapter) == "stopped",
+            description="the Mocked Draft replacing Moxgate",
+        )
+        assert moxgate_runtime.close_calls == 1
+        assert adapter.state["test_draft"]["active"] is True
+    finally:
+        _stop_adapter(adapter)
+
+
+def _port_is_free(port: int) -> bool:
+    with socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM) as probe:
+        # Connections left in TIME_WAIT by the posted snapshot must not count as in use.
+        probe.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def test_live_adapter_receives_a_real_snapshot_and_frees_the_port_on_stop(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    factory = _RealMoxgateFactory(port=0, app_dir=tmp_path / "app")
+    adapter, arena = _start_moxgate_adapter(
+        application=qcore_application, factory=factory
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting",
+            description="the real receiver",
+        )
+        port = adapter.state["moxgate"]["port"]
+        assert port != 0
+        assert str(port) in adapter.state["moxgate"]["endpoint"]
+        assert not _port_is_free(port)
+
+        first = _moxgate_snapshots(_MOXGATE_PACKS)[0][0]
+        status, _, _ = _moxgate_post(
+            SimpleNamespace(port=port), _moxgate_body(first)  # type: ignore[arg-type]
+        )
+        assert status == 202
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "receiving"
+            and sorted(
+                row["card"]["grp_id"]
+                for row in adapter.state["recommendations"]["cards"]
+            )
+            == sorted(_MOXGATE_PACKS[0]),
+            description="the pack from the posted snapshot",
+        )
+
+        adapter.stopMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "stopped"
+            and adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards,
+            description="the stopped receiver",
+        )
+        assert _port_is_free(port)
+        assert factory.runtimes[0].state.phase == "stopped"
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_reports_a_real_port_in_use_error_naming_the_port(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    with socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM) as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+        factory = _RealMoxgateFactory(port=port, app_dir=tmp_path / "app")
+        adapter, arena = _start_moxgate_adapter(
+            application=qcore_application, factory=factory
+        )
+        try:
+            adapter.startMoxgate()
+            _process_until(
+                application=qcore_application,
+                predicate=lambda: _moxgate_phase(adapter) == "port_in_use",
+                description="the port in use phase",
+            )
+            moxgate = adapter.state["moxgate"]
+            assert moxgate["port"] == port
+            assert str(port) in moxgate["error"]
+            assert adapter.state["pool"]["total_cards"] == arena.snapshot.pool.total_cards
+            assert factory.runtimes == []
+        finally:
+            _stop_adapter(adapter)

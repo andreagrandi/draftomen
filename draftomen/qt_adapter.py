@@ -38,6 +38,8 @@ from draftomen.augmented_model_client import (
 )
 from draftomen.draft_format import DraftFormat, rules_for_format
 from draftomen.draftmancer import MOCKED_DRAFT_FORMATS
+from draftomen.moxgate_server import MoxgatePortInUseError
+from draftomen.moxgate_source import MoxgateRuntime, MoxgateSourceState
 from draftomen.preferences import (
     GuiDisplayPreferences,
     load_gui_preferences,
@@ -84,7 +86,7 @@ _logger = logging.getLogger(__name__)
 SessionFactory = Callable[[SnapshotPublisher], LiveSession]
 
 TestDraftMode: TypeAlias = Literal["manual", "auto"]
-TestDraftSource: TypeAlias = Literal["arena", "test-draft"]
+TestDraftSource: TypeAlias = Literal["arena", "test-draft", "moxgate"]
 TestDraftPhase: TypeAlias = Literal["idle", "starting", "drafting", "completed", "failed"]
 
 TEST_DRAFT_MODES: tuple[TestDraftMode, ...] = ("manual", "auto")
@@ -168,6 +170,50 @@ class TestDraftFactory(Protocol):
 
     def release_server(self) -> None:
         ...
+
+
+class MoxgateFactory(Protocol):
+    """Create Moxgate runtimes for one configured port.
+    Creating a runtime loads card data and binds the receiver, so it can block.
+    """
+
+    @property
+    def port(self) -> int:
+        ...
+
+    def create_runtime(
+        self,
+        *,
+        publisher: SnapshotPublisher,
+        splash_enabled: bool,
+        contextual_adjustments_enabled: bool,
+    ) -> MoxgateRuntime:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class MoxgateSessionState:
+    """Publish the Moxgate source capability and receiver state to QML."""
+
+    enabled: bool = False
+    active: bool = False
+    phase: str = "stopped"
+    port: int | None = None
+    endpoint: str | None = None
+    error: str | None = None
+
+
+def _moxgate_session_state(
+    *, state: MoxgateSourceState, enabled: bool
+) -> MoxgateSessionState:
+    return MoxgateSessionState(
+        enabled=enabled,
+        active=state.phase in ("waiting", "receiving"),
+        phase=state.phase,
+        port=state.port,
+        endpoint=state.endpoint,
+        error=state.error,
+    )
 
 
 _ImageRequestKind: TypeAlias = Literal["selected", "recommendation", "recent"]
@@ -755,6 +801,7 @@ class SessionAdapter(QObject):
         self._test_draft_state: dict[str, Any] = _to_qml_value(
             TestDraftSessionState()
         )
+        self._moxgate_state: dict[str, Any] | None = None
         self._recommendations_model = RecommendationListModel(parent=self)
         self._publish(snapshot=LiveSessionSnapshot() if snapshot is None else snapshot)
 
@@ -869,6 +916,14 @@ class SessionAdapter(QObject):
     def downloadTestDraftCardData(self, set_code: str) -> None:
         del set_code
 
+    @Slot()
+    def startMoxgate(self) -> None:
+        return
+
+    @Slot()
+    def stopMoxgate(self) -> None:
+        return
+
     def setTestDraftFactory(self, test_draft_factory: TestDraftFactory | None) -> None:
         """Ignore a Mocked Draft factory change for frontends without the capability."""
 
@@ -906,11 +961,17 @@ class SessionAdapter(QObject):
     def _publish(self, *, snapshot: LiveSessionSnapshot) -> None:
         state = cast(dict[str, Any], _to_qml_value(snapshot))
         state["test_draft"] = self._test_draft_state_value()
+        moxgate_state = self._moxgate_state_value()
+        if moxgate_state is not None:
+            state["moxgate"] = moxgate_state
         state["draft_progress"] = _draft_progress_value(snapshot=snapshot)
         self._replace_state(state=state)
 
     def _test_draft_state_value(self) -> dict[str, Any]:
         return self._test_draft_state
+
+    def _moxgate_state_value(self) -> dict[str, Any] | None:
+        return self._moxgate_state
 
     def _replace_state(self, *, state: dict[str, Any]) -> None:
         if state == self._state:
@@ -1002,6 +1063,7 @@ class _LiveSessionWorker(QObject):
     _augmentedModelRequested = Signal(object)
     snapshotReady = Signal(object)
     testDraftStateReady = Signal(object)
+    moxgateStateReady = Signal(object)
     failed = Signal(str)
     finished = Signal()
 
@@ -1014,6 +1076,7 @@ class _LiveSessionWorker(QObject):
         profile_client: ProfileClient | None = None,
         augmented_model_client: AugmentedModelClient | None = None,
         test_draft_factory: TestDraftFactory | None = None,
+        moxgate_factory: MoxgateFactory | None = None,
         augmentation_enabled: bool = False,
     ) -> None:
         super().__init__()
@@ -1023,6 +1086,13 @@ class _LiveSessionWorker(QObject):
         self._profile_client = profile_client
         self._augmented_model_client = augmented_model_client
         self._test_draft_factory = test_draft_factory
+        self._moxgate_factory = moxgate_factory
+        self._moxgate_runtime: MoxgateRuntime | None = None
+        self._moxgate_state = MoxgateSourceState(
+            port=0 if moxgate_factory is None else moxgate_factory.port
+        )
+        self._moxgate_generation = 0
+        self._moxgate_timer: QTimer | None = None
         self._augmentation_enabled = augmentation_enabled
         self._session: LiveSession | None = None
         self._timer: QTimer | None = None
@@ -1088,6 +1158,21 @@ class _LiveSessionWorker(QObject):
 
         return publish
 
+    def _moxgate_snapshot_publisher(
+        self,
+        *,
+        moxgate_generation: int,
+    ) -> SnapshotPublisher:
+        def publish(snapshot: LiveSessionSnapshot) -> None:
+            if (
+                self._authoritative_source != "moxgate"
+                or moxgate_generation != self._moxgate_generation
+            ):
+                return
+            self._publish_snapshot(snapshot)
+
+        return publish
+
     def _test_draft_interrupted(self) -> bool:
         """Report a leave or shutdown that already owns the simulated teardown."""
         return self._stop_requested or self._test_draft_leaving
@@ -1123,6 +1208,8 @@ class _LiveSessionWorker(QObject):
         runtime = self._test_draft_runtime
         if self._authoritative_source == "test-draft" and runtime is not None:
             return runtime.session
+        if self._authoritative_source == "moxgate" and self._moxgate_runtime is not None:
+            return self._moxgate_runtime.session
         return self._session
 
     def _publish_snapshot(self, snapshot: LiveSessionSnapshot) -> None:
@@ -1173,7 +1260,9 @@ class _LiveSessionWorker(QObject):
         # Mocked Drafts bring their own profile client, so they need the
         # worker even when Arena has none.
         if (
-            self._profile_client is None and self._test_draft_factory is None
+            self._profile_client is None
+            and self._test_draft_factory is None
+            and self._moxgate_factory is None
         ) or self._profile_thread is not None:
             return
         thread = QThread(parent=self)
@@ -1263,6 +1352,8 @@ class _LiveSessionWorker(QObject):
             if self._test_draft_factory is not None and not self._stop_requested:
                 self._refresh_test_draft_capability()
                 self._publish_test_draft_state()
+            if self._moxgate_factory is not None and not self._stop_requested:
+                self._publish_moxgate_state()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
             if not self._stop_requested:
                 self.failed.emit(str(error))
@@ -1273,7 +1364,7 @@ class _LiveSessionWorker(QObject):
         session = self._active_session()
         if session is None or self._stop_requested:
             return
-        if self._authoritative_source == "test-draft" and isinstance(
+        if self._authoritative_source in ("test-draft", "moxgate") and isinstance(
             command, (ChooseAccount, RequestBacktest)
         ):
             return
@@ -1380,7 +1471,7 @@ class _LiveSessionWorker(QObject):
 
         if self._authoritative_source == "test-draft":
             return getattr(self._test_draft_runtime, "profile_client", None)
-        return self._profile_client
+        return self._profile_client  # Moxgate shares the Arena profile client.
 
     def _request_augmented_model(self) -> None:
         """Schedule the one pending augmentation model load off the session thread."""
@@ -1570,6 +1661,8 @@ class _LiveSessionWorker(QObject):
             return
         if self._test_draft_leaving:
             return
+        if self._moxgate_runtime is not None:
+            self.stop_moxgate()
         if mode not in TEST_DRAFT_MODES:
             self._test_draft_phase = "failed"
             self._test_draft_error = f"Unsupported Test Draft mode: {mode}"
@@ -1942,6 +2035,130 @@ class _LiveSessionWorker(QObject):
                 if not self._stop_requested:
                     self.failed.emit(str(error))
 
+    def _publish_moxgate_state(self) -> None:
+        if self._stop_requested:
+            return
+        self.moxgateStateReady.emit(self._moxgate_state)
+
+    def _set_moxgate_state(self, state: MoxgateSourceState) -> None:
+        self._moxgate_state = state
+        self._publish_moxgate_state()
+
+    def _close_moxgate_runtime(self) -> None:
+        """Stop the drain timer and close the owned Moxgate runtime once."""
+
+        timer = self._moxgate_timer
+        self._moxgate_timer = None
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+        runtime = self._moxgate_runtime
+        self._moxgate_runtime = None
+        self._moxgate_generation += 1
+        if runtime is not None:
+            try:
+                runtime.close()
+            except Exception as error:
+                if not self._stop_requested:
+                    self.failed.emit(str(error))
+
+    @Slot()
+    def start_moxgate(self) -> None:
+        """Bind the Moxgate receiver and make it the authoritative source."""
+
+        factory = self._moxgate_factory
+        if factory is None or self._stop_requested or self._moxgate_runtime is not None:
+            return
+        if self._test_draft_runtime is not None or self._authoritative_source == "test-draft":
+            self._release_test_draft_runtime()
+            self._reset_test_draft_progress()
+            self._publish_test_draft_state()
+        self._set_moxgate_state(
+            MoxgateSourceState(phase="starting", port=factory.port, error=None)
+        )
+        self._moxgate_generation += 1
+        generation = self._moxgate_generation
+        try:
+            runtime = factory.create_runtime(
+                publisher=self._moxgate_snapshot_publisher(
+                    moxgate_generation=generation
+                ),
+                splash_enabled=self._splash_enabled,
+                contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+            )
+        except MoxgatePortInUseError as error:
+            self._set_moxgate_state(
+                MoxgateSourceState(phase="port_in_use", port=error.port, error=str(error))
+            )
+            return
+        except Exception as error:
+            self._set_moxgate_state(
+                MoxgateSourceState(phase="failed", port=factory.port, error=str(error))
+            )
+            return
+        if self._stop_requested:
+            runtime.close()
+            return
+        try:
+            self._moxgate_runtime = runtime
+            self._switch_source(source="moxgate")
+            if self._augmentation_enabled:
+                runtime.session.dispatch(command=ChangeAugmentation(enabled=True))
+            self._set_moxgate_state(runtime.state)
+            self._publish_snapshot(runtime.session.snapshot)
+            timer = QTimer(self)
+            timer.setInterval(self._poll_interval_ms)
+            timer.timeout.connect(self._drain_moxgate)
+            self._moxgate_timer = timer
+            timer.start()
+            self._request_one_card_image()
+            self._request_profile_refresh()
+            self._request_augmented_model()
+        except Exception as error:  # pragma: no cover - defensive UI boundary.
+            self.failed.emit(str(error))
+
+    @Slot()
+    def _drain_moxgate(self) -> None:
+        runtime = self._moxgate_runtime
+        if self._authoritative_source != "moxgate" or runtime is None:
+            return
+        if self._stop_requested:
+            return
+        try:
+            phase = runtime.state.phase
+            taken = runtime.drain()
+            if runtime.state.phase != phase:
+                self._set_moxgate_state(runtime.state)
+            if taken > 0:
+                self._request_one_card_image()
+                self._request_profile_refresh()
+                self._request_augmented_model()
+        except Exception as error:  # pragma: no cover - defensive UI boundary.
+            self.failed.emit(str(error))
+
+    @Slot()
+    def stop_moxgate(self) -> None:
+        """Close the Moxgate runtime, free its port, and return to Arena."""
+
+        factory = self._moxgate_factory
+        if factory is None or self._stop_requested:
+            return
+        if self._moxgate_runtime is None:
+            if self._moxgate_state.phase in ("port_in_use", "failed"):
+                self._set_moxgate_state(
+                    MoxgateSourceState(phase="stopped", port=self._moxgate_state.port)
+                )
+            return
+        port = self._moxgate_state.port
+        self._close_moxgate_runtime()
+        self._switch_source(source="arena")
+        try:
+            self._restore_arena_preferences()
+        except Exception as error:
+            self.failed.emit(str(error))
+        self._poll()
+        self._set_moxgate_state(MoxgateSourceState(phase="stopped", port=port))
+
     def _restore_arena_preferences(self) -> None:
         session = self._session
         if session is None:
@@ -1971,6 +2188,7 @@ class _LiveSessionWorker(QObject):
             return
         if self._timer is not None:
             self._timer.stop()
+        self._close_moxgate_runtime()
         self._close_test_draft_runtime()
         if self._session is not None:
             try:
@@ -2014,6 +2232,8 @@ class LiveSessionAdapter(SessionAdapter):
     _testDraftDownloadRequested = Signal()
     _testDraftCardDataDownloadRequested = Signal(str)
     _testDraftFactoryChanged = Signal(object)
+    _moxgateStartRequested = Signal()
+    _moxgateStopRequested = Signal()
     _stopRequested = Signal()
 
     def __init__(
@@ -2025,6 +2245,7 @@ class LiveSessionAdapter(SessionAdapter):
         profile_client: ProfileClient | None = None,
         augmented_model_client: AugmentedModelClient | None = None,
         test_draft_factory: TestDraftFactory | None = None,
+        moxgate_factory: MoxgateFactory | None = None,
         augmentation_enabled: bool = False,
         parent: QObject | None = None,
     ) -> None:
@@ -2038,12 +2259,22 @@ class LiveSessionAdapter(SessionAdapter):
         self._augmented_model_client = augmented_model_client
         self._augmentation_enabled = augmentation_enabled
         self._test_draft_factory = test_draft_factory
+        self._moxgate_factory = moxgate_factory
         self.thread: QThread | None = None
         self._worker: _LiveSessionWorker | None = None
         self._test_draft_state: dict[str, Any] = _to_qml_value(
             TestDraftSessionState(enabled=test_draft_factory is not None)
         )
-        self._replace_state(state=self._state | {"test_draft": self._test_draft_state})
+        self._moxgate_state = _to_qml_value(
+            MoxgateSessionState(
+                enabled=moxgate_factory is not None,
+                port=None if moxgate_factory is None else moxgate_factory.port,
+            )
+        )
+        self._replace_state(
+            state=self._state
+            | {"test_draft": self._test_draft_state, "moxgate": self._moxgate_state}
+        )
 
     @Slot()
     def start(self) -> None:
@@ -2058,6 +2289,7 @@ class LiveSessionAdapter(SessionAdapter):
             augmented_model_client=self._augmented_model_client,
             augmentation_enabled=self._augmentation_enabled,
             test_draft_factory=self._test_draft_factory,
+            moxgate_factory=self._moxgate_factory,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.start)
@@ -2084,6 +2316,18 @@ class LiveSessionAdapter(SessionAdapter):
         )
         self._testDraftFactoryChanged.connect(
             worker.set_test_draft_factory,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._moxgateStartRequested.connect(
+            worker.start_moxgate,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._moxgateStopRequested.connect(
+            worker.stop_moxgate,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        worker.moxgateStateReady.connect(
+            self._apply_moxgate_state,
             Qt.ConnectionType.QueuedConnection,
         )
         worker.snapshotReady.connect(
@@ -2165,6 +2409,36 @@ class LiveSessionAdapter(SessionAdapter):
         if self._test_draft_state.get("enabled") is not True or self._worker is None:
             return
         self._testDraftCardDataDownloadRequested.emit(set_code)
+
+    @Slot()
+    def startMoxgate(self) -> None:
+        if self._moxgate_factory is None or self._worker is None:
+            return
+        self._moxgateStartRequested.emit()
+
+    @Slot()
+    def stopMoxgate(self) -> None:
+        if self._moxgate_factory is None or self._worker is None:
+            return
+        self._moxgateStopRequested.emit()
+
+    @Slot(object)
+    def _apply_moxgate_state(self, state: MoxgateSourceState) -> None:
+        value = cast(
+            dict[str, Any],
+            _to_qml_value(
+                _moxgate_session_state(
+                    state=state, enabled=self._moxgate_factory is not None
+                )
+            ),
+        )
+        if value == self._moxgate_state:
+            return
+        self._moxgate_state = value
+        self._replace_state(state=self._state | {"moxgate": value})
+
+    def _moxgate_state_value(self) -> dict[str, Any] | None:
+        return self._moxgate_state
 
     def setTestDraftFactory(self, test_draft_factory: TestDraftFactory | None) -> None:
         """Install or clear the developer Mocked Draft capability at runtime."""

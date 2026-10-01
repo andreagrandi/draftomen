@@ -14,6 +14,11 @@ Rectangle {
     signal testDraftRequested(var opener)
 
     readonly property var testDraft: root.sessionState.test_draft || null
+    readonly property var moxgate: root.sessionState.moxgate || null
+    readonly property bool moxgateRunning: root.moxgate !== null
+        && (root.moxgate.phase === "starting"
+            || root.moxgate.phase === "waiting"
+            || root.moxgate.phase === "receiving")
 
     color: Theme.surfaceLow
     implicitHeight: 68
@@ -103,6 +108,23 @@ Rectangle {
             Accessible.name: "Representative state"
             Accessible.description: "Choose deterministic visual-development data."
             onActivated: root.provider.selectScenario(currentText)
+        }
+
+        DimensionalComboBox {
+            id: sourceSelector
+            objectName: "sourceSelector"
+            Layout.preferredWidth: 110
+            visible: root.moxgate !== null && root.moxgate.enabled === true
+            model: ["Arena", "Moxgate"]
+            currentIndex: root.moxgateRunning ? 1 : 0
+            Accessible.name: "Draft source"
+            Accessible.description: "Choose whether drafts come from the Arena log or the Moxgate browser extension."
+            onActivated: {
+                if (currentIndex === 1)
+                    root.provider.startMoxgate()
+                else
+                    root.provider.stopMoxgate()
+            }
         }
 
         DimensionalButton {
