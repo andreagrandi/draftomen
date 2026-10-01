@@ -1545,16 +1545,74 @@ def test_watch_parser_defaults_to_arena_source_and_moxgate_port() -> None:
     )
 
 
-def test_watch_moxgate_requires_plain(
+def test_watch_moxgate_without_plain_runs_the_tui(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr("draftomen.cli.run_tui_moxgate_watch", fake_run)
+
+    exit_code = main(
+        argv=[
+            "watch",
+            "--source",
+            "moxgate",
+            "--moxgate-port",
+            "0",
+            "--bulk-file",
+            str(SCRYFALL_BULK_SAMPLE_PATH),
+            "--app-dir",
+            str(tmp_path / "app"),
+            "--poll-interval",
+            "0.5",
+            "--mana-icons",
+            "--no-splash",
+            "--once",
+            "--offline-profiles",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["port"] == 0
+    assert call["app_dir"] == tmp_path / "app"
+    assert call["poll_interval"] == 0.5
+    assert call["once"] is True
+    assert call["mana_icons_enabled"] is True
+    assert call["splash_enabled"] is False
+    assert call["augmented_model_client"] is not None
+    assert call["profile_client"] is not None
+
+
+def test_watch_moxgate_tui_port_in_use_reports_error(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    exit_code = main(
-        argv=["watch", "--source", "moxgate", "--app-dir", str(tmp_path / "app")]
-    )
+    with MoxgateReceiver(port=0) as busy:
+        exit_code = main(
+            argv=[
+                "watch",
+                "--source",
+                "moxgate",
+                "--moxgate-port",
+                str(busy.port),
+                "--bulk-file",
+                str(SCRYFALL_BULK_SAMPLE_PATH),
+                "--app-dir",
+                str(tmp_path / "app"),
+                "--once",
+                "--offline-profiles",
+            ]
+        )
 
-    assert exit_code == 2
-    assert "watch failed: --source moxgate requires --plain." in capsys.readouterr().err
+    assert exit_code == 1
+    assert "watch failed: Moxgate receiver could not listen" in capsys.readouterr().err
 
 
 def test_watch_moxgate_rejects_out_of_range_port(

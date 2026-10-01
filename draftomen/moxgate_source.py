@@ -21,7 +21,7 @@ from draftomen.moxgate_server import (
 )
 from draftomen.paths import PathInput
 from draftomen.profile_client import ProfileClient
-from draftomen.session import LiveSession, SnapshotPublisher
+from draftomen.session import EventPublisher, LiveSession, SnapshotPublisher
 
 MoxgatePhase = Literal[
     "stopped", "starting", "waiting", "receiving", "port_in_use", "failed"
@@ -120,6 +120,8 @@ def create_moxgate_runtime(
     augmented_model_client: AugmentedModelClient | None = None,
     splash_enabled: bool = SPLASH.enabled_by_default,
     contextual_adjustments_enabled: bool = True,
+    event_publisher: EventPublisher | None = None,
+    augmentation_enabled: bool = False,
 ) -> MoxgateRuntime:
     """Bind the receiver, then build the session and feeder around it.
     A bind failure raises MoxgatePortInUseError and leaves nothing running.
@@ -135,6 +137,8 @@ def create_moxgate_runtime(
             card_database=card_database,
             profile_client=profile_client,
             snapshot_publisher=snapshot_publisher,
+            event_publisher=event_publisher,
+            augmentation_enabled=augmentation_enabled,
             card_image_service=card_image_service,
             augmented_model_client=augmented_model_client,
             splash_enabled=splash_enabled,
