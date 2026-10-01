@@ -214,6 +214,26 @@
       "name": "Final Fantasy",
       "profiles": {}
     },
+    "fra": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 52747,
+        "sha256": "d7e434d0c8a11cd8bde785b5c3fd9887ecd5f450acfe72ec70e02a152b7ba391",
+        "url": "https://www.draftomen.com/card-data/fra.json.gz"
+      },
+      "name": "Reality Fracture",
+      "profiles": {
+        "picktwodraft": {
+          "maturity": "early"
+        },
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
     "grn": {
       "augmented": null,
       "card_data": {

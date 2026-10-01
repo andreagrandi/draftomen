@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- Add Reality Fracture (FRA) card data and early Premier, Traditional and
+  Pick-Two profiles. Scryfall has no Arena ids for FRA yet, so this one-time
+  export takes the 280 FRA Arena ids from 17Lands ratings and matches them to
+  Scryfall prints by name. The 10 Special Guests cards are left out, as in
+  other sets, and so are basic lands, because 17Lands does not rate them. The
+  daily refresh keeps this file until it is invalid, so a later re-export
+  with Scryfall's own ids is a manual step.
 - The README, PRD, website and Store listing now describe Quick, Premier,
   Traditional and Pick-Two drafts instead of Quick Draft only. The README has a
   format table and names the limits of human drafts, including that Traditional
