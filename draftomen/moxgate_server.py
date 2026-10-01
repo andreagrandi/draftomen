@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 MOXGATE_DEFAULT_PORT = 47326
 MOXGATE_SNAPSHOT_PATH = "/moxgate/snapshot"
+# Moxgate snapshots carry no account, so watch saves their drafts under this one.
+MOXGATE_ACCOUNT_ID = "moxgate"
 MOXGATE_REQUEST_HEADER = "X-Draftomen-Moxgate"
 MOXGATE_MAX_BODY_BYTES = 256 * 1024
 ALLOWED_ORIGIN_PREFIX = "chrome-extension://"

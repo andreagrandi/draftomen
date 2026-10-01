@@ -14,12 +14,14 @@ from draftomen import moxgate_server
 from draftomen.carddb import CardDatabaseError
 from draftomen.moxgate import MoxgateSnapshot
 from draftomen.moxgate_server import (
+    MOXGATE_ACCOUNT_ID,
     MOXGATE_REQUEST_HEADER,
     MOXGATE_SNAPSHOT_PATH,
     MoxgateReceiver,
     MoxgateReceiverError,
     MoxgateSessionFeeder,
 )
+from draftomen.pool import load_draft_state
 from draftomen.session import ApplicationPhase, LiveSession
 from tests.test_moxgate import (
     _all_grp_ids,
@@ -147,6 +149,35 @@ def test_posted_snapshots_drive_a_session_to_draft_complete(
         tuple(pool_card.card.grp_id for pool_card in session.snapshot.pool.cards)
         == picked
     )
+
+
+def test_complete_draft_is_saved_under_the_moxgate_account(
+    receiver: MoxgateReceiver, tmp_path: Path
+) -> None:
+    packs = _packs(pack_count=3, pack_size=3)
+    snapshots = _snapshots(packs)
+    session = _session(tmp_path, packs)
+    grp_ids = _all_grp_ids(packs)
+    feeder = MoxgateSessionFeeder(
+        snapshots=receiver.snapshots,
+        session=session,
+        card_database=_database(*grp_ids),
+        canonical_grp_ids_by_scryfall_id=_scryfall_map(*grp_ids),
+        account_id=MOXGATE_ACCOUNT_ID,
+        draft_id_factory=lambda: "moxgate-draft",
+    )
+
+    for snapshot, _ in snapshots:
+        assert _post(receiver, _body(snapshot))[0] == 202
+    feeder.drain()
+
+    assert session.snapshot.status.phase is ApplicationPhase.DRAFT_COMPLETE
+    state = load_draft_state(
+        account_id="moxgate",
+        draft_id="moxgate-draft",
+        app_dir=tmp_path / "app",
+    )
+    assert state.pool_grp_ids == tuple(pick for _, pick in snapshots[:-1])
 
 
 def test_second_pack_is_offered_after_the_first_pack_is_picked(

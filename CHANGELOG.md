@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- `draftomen-tui watch --source moxgate --plain` saves Moxgate drafts under the
+  fixed account id `moxgate` and prints a deck build sheet after "Draft
+  complete". Moxgate snapshots carry no account id, so these drafts were not
+  saved before. (#839)
 - The Qt adapter startup coalescing test waits for the post-start state to
   arrive instead of reading the observed states as soon as the session is
   ready, which failed at random in the parallel CI `gui` job. The `gui` nox
