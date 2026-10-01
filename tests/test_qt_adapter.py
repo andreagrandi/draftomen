@@ -1625,8 +1625,16 @@ def test_live_adapter_coalesces_historical_startup_snapshots(
         adapter.start()
         _process_until(
             application=qcore_application,
+            # The session sets post_start_ready before it publishes, so wait for the state itself.
             predicate=lambda: bool(sessions)
-            and sessions[0].post_start_ready.is_set(),
+            and sessions[0].post_start_ready.is_set()
+            and bool(observer.states)
+            and len(
+                cast(dict[str, object], observer.states[-1]["recommendations"])[
+                    "cards"
+                ]
+            )
+            == 1,
             description="the post-start live snapshot",
         )
 
