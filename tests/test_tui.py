@@ -91,6 +91,21 @@ SCRYFALL_BULK_SAMPLE_PATH = (
 )
 
 
+async def _cycle_account(*, pilot: Pilot[None]) -> None:
+    """Press the account key and wait for the ChooseAccount worker to finish.
+    One pause is not enough on a busy runner because the command runs on a thread.
+    """
+
+    await pilot.press("a")
+    workers = [
+        worker
+        for worker in pilot.app.workers
+        if worker.group == "session-commands"
+    ]
+    await pilot.app.workers.wait_for_complete(workers)
+    await pilot.pause()
+
+
 def test_tui_renders_shared_setup_guidance_before_draft(tmp_path: Path) -> None:
     asyncio.run(_assert_tui_renders_shared_setup_guidance(tmp_path=tmp_path))
 
@@ -1050,15 +1065,13 @@ async def _assert_cycle_binds_unmatched_login_name_to_observed_legacy_draft(
 
         assert (tmp_path / "app" / "accounts" / "legacy-account.json").exists()
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
 
         assert "Account: MagoAnubiTest#26785" in _status_text(app=app)
 
     restarted_app = _tui_app(tmp_path=tmp_path)
     async with restarted_app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
 
         assert "Account: MagoAnubiTest#26785" in _status_text(app=restarted_app)
 
@@ -1146,21 +1159,18 @@ async def _assert_account_cycle_visits_each_account_once_and_uses_its_latest_dra
         save_draft_state(state=state, app_dir=tmp_path / "app")
 
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == "alpha-account"
         assert app._draft_id == "alpha-latest"
         assert "Account: Alpha" in _status_text(app=app)
         assert "alpha-account" not in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == "beta-account"
         assert app._draft_id == "beta-draft"
         assert "Account: Beta" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == "alpha-account"
         assert app._draft_id == "alpha-latest"
 
@@ -1212,8 +1222,7 @@ async def _assert_account_cycle_pack_state_is_atomic(tmp_path: Path) -> None:
         save_draft_state(state=state, app_dir=tmp_path / "app")
 
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
 
         assert app.session.snapshot.active_account is not None
         assert app.session.snapshot.active_account.account_id == "alpha-account"
@@ -1221,8 +1230,7 @@ async def _assert_account_cycle_pack_state_is_atomic(tmp_path: Path) -> None:
         assert app.session.snapshot.current_pack_event.account_id == "alpha-account"
         assert app._current_pack_event is not None
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
 
         snapshot = app.session.snapshot
         assert snapshot.active_account is not None
@@ -1260,21 +1268,18 @@ async def _assert_account_cycle_returns_to_live_account_without_a_saved_draft(
         await pilot.pause()
         assert app._active_account_id == live_account_id
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == recovered_account_id
         assert app._draft_id == "recovered-draft"
         assert "Account: MagoAnubiTest" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == live_account_id
         assert app._draft_id is None
         assert app._pool_grp_ids == ()
         assert "Account: MagoAnubi" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == recovered_account_id
         assert app._draft_id == "recovered-draft"
 
@@ -1332,19 +1337,16 @@ async def _assert_login_name_resolves_profile_only_account_and_cycles_back_to_it
         assert app._active_account_id == recovered_account_id
         assert "Account: MagoAnubiTest" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == live_account_id
         assert app._draft_id is None
         assert "Account: MagoAnubi" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == recovered_account_id
         assert "Account: MagoAnubiTest" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == live_account_id
         assert app._draft_id is None
         assert "Account: MagoAnubi" in _status_text(app=app)
@@ -1375,13 +1377,11 @@ async def _assert_login_name_resolves_profile_only_account_and_cycles_back_to_it
             app_dir=app_dir,
         ).exists()
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == recovered_account_id
         assert "Account: MagoAnubiTest" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert app._active_account_id == live_account_id
         assert app._draft_id == "live-draft"
         assert table.row_count == 14
@@ -1418,22 +1418,19 @@ async def _assert_newer_account_name_survives_cycling_a_cached_legacy_draft(
     )
 
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert "Account: OldName" in _status_text(app=app)
 
         app.process_lines(lines=[_auth_line(client_id=account_id, screen_name="NewName")])
         await pilot.pause()
         assert "Account: NewName" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
         assert "Account: NewName" in _status_text(app=app)
 
     restarted_app = _tui_app(tmp_path=tmp_path)
     async with restarted_app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
 
         assert "Account: NewName" in _status_text(app=restarted_app)
 
@@ -1496,8 +1493,7 @@ async def _assert_selected_account_handles_draft_events_without_account_id(
     )
 
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
 
         app.process_lines(
             lines=[
@@ -2900,8 +2896,7 @@ async def _assert_account_key_cycles_recovered_drafts(tmp_path: Path) -> None:
 
         assert "Account: FixturePlayer" in _status_text(app=app)
 
-        await pilot.press("a")
-        await pilot.pause()
+        await _cycle_account(pilot=pilot)
 
         assert "Account: TestUser" in _status_text(app=app)
         assert "Draft: test-draft" not in app.build_view_text

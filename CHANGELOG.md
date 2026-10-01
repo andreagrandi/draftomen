@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- The TUI account-cycling tests wait for the ChooseAccount worker to finish
+  after pressing "a" instead of pausing once, which failed at random on a
+  busy CI runner.
 - The desktop app has a draft source selector next to Settings. Choosing
   Moxgate starts the receiver on 127.0.0.1:47326 and shows whether it is
   loading card data, waiting for the extension or receiving a draft. Choosing
