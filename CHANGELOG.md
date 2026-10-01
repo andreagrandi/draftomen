@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Add a Moxgate snapshot adapter that turns successive draft page snapshots
+  into the existing draft events. It derives each pick and its pack and pick
+  coordinates from the change between snapshots, and rejects out-of-order,
+  skipped or unresolvable snapshots with an error. (#826)
 - The website has a News page that shows the release notes of each version,
   taken from this changelog. Releases now write the page with
   `scripts/write_release_news.py`, and the release check fails if it is missing.
