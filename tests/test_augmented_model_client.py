@@ -4,6 +4,9 @@ import gzip
 import hashlib
 import io
 import json
+import logging
+import socket
+import urllib.error
 from pathlib import Path
 from typing import Any
 import pytest
@@ -469,3 +472,62 @@ def test_non_canonical_manifest_returns_invalid(tmp_path: Path) -> None:
     loaded = client.load("tst", allow_network=True)
     assert loaded.outcome is AugmentedModelOutcome.INVALID
     assert loaded.available is False
+
+
+@pytest.mark.parametrize(
+    ("error", "cause"),
+    [
+        (urllib.error.URLError(socket.gaierror(8, "nodename nor servname")), "gaierror"),
+        (
+            urllib.error.HTTPError(
+                AUGMENTED_MANIFEST_URL, 403, "Forbidden", None, None  # type: ignore[arg-type]
+            ),
+            "403",
+        ),
+    ],
+)
+def test_manifest_fetch_failure_is_logged_with_url_and_cause(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+    cause: str,
+) -> None:
+    def opener(request: Any, *, timeout: float) -> _Response:
+        del request, timeout
+        raise error
+
+    client = AugmentedModelClient(
+        app_dir=tmp_path, manifest_url=AUGMENTED_MANIFEST_URL, opener=opener
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = client.load("tst", allow_network=True)
+
+    assert result.outcome is AugmentedModelOutcome.UNREACHABLE
+    assert "Could not fetch augmented model artifact" in result.message
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "draftomen.augmented_model_client"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert AUGMENTED_MANIFEST_URL in warnings[0].getMessage()
+    assert cause in warnings[0].getMessage()
+
+
+def test_successful_load_logs_no_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    payload, digest, size, manifest = _served()
+    client, _ = _client(
+        tmp_path,
+        objects={f"{AUGMENTED_OBJECTS_BASE_URL}{digest}.json.gz": payload},
+        manifest=manifest,
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        result = client.load("tst", allow_network=True)
+
+    assert result.available is True
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []

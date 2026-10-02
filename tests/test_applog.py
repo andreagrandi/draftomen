@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import email.message
 import logging
+import ssl
 import sys
 import threading
+import urllib.error
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import TracebackType
@@ -29,6 +32,97 @@ def test_configure_logging_creates_the_log_file_with_a_startup_line(
     contents = _read_log(path=log_path)
     assert f"Draft Omen {__version__} starting on " in contents
     assert " INFO " in contents
+
+
+def test_configure_logging_logs_the_run_mode_and_tls_setup_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cafile = Path.home() / "missing-ssl" / "cert.pem"
+    verify_paths = ssl.DefaultVerifyPaths(
+        cafile=None,
+        capath=None,
+        openssl_cafile_env="SSL_CERT_FILE",
+        openssl_cafile=str(cafile),
+        openssl_capath_env="SSL_CERT_DIR",
+        openssl_capath="/opt/ssl/certs",
+    )
+    monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: verify_paths)
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+
+    contents = _read_log(path=applog.configure_logging(logs_dir=tmp_path / "logs"))
+
+    tls_lines = [line for line in contents.splitlines() if "Running from " in line]
+    assert len(tls_lines) == 1
+    assert " INFO " in tls_lines[0]
+    assert "Running from source with " in tls_lines[0]
+    assert ssl.OPENSSL_VERSION in tls_lines[0]
+    assert "default cafile ~/missing-ssl/cert.pem (missing)" in tls_lines[0]
+    assert "capath /opt/ssl/certs" in tls_lines[0]
+
+
+def test_configure_logging_reports_an_existing_cafile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cafile = tmp_path / "cert.pem"
+    cafile.write_text("certificate", encoding="utf-8")
+    verify_paths = ssl.DefaultVerifyPaths(
+        cafile=str(cafile),
+        capath=None,
+        openssl_cafile_env="SSL_CERT_FILE",
+        openssl_cafile=str(cafile),
+        openssl_capath_env="SSL_CERT_DIR",
+        openssl_capath="",
+    )
+    monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: verify_paths)
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+
+    contents = _read_log(path=applog.configure_logging(logs_dir=tmp_path / "logs"))
+
+    assert f"default cafile {cafile} (exists), capath none" in contents
+
+
+def test_configure_logging_reports_the_cafile_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    override = tmp_path / "override.pem"
+    monkeypatch.setenv("SSL_CERT_FILE", str(override))
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path / "certs"))
+
+    contents = _read_log(path=applog.configure_logging(logs_dir=tmp_path / "logs"))
+
+    assert f"default cafile {override} (missing), capath {tmp_path / 'certs'}" in contents
+
+
+def test_describe_fetch_error_names_the_http_status() -> None:
+    error = urllib.error.HTTPError(
+        url="https://example.test/a",
+        code=403,
+        msg="Forbidden",
+        hdrs=email.message.Message(),
+        fp=None,
+    )
+
+    assert applog.describe_fetch_error(error) == "HTTP status 403"
+
+
+def test_describe_fetch_error_names_the_inner_url_error_reason() -> None:
+    reason = ssl.SSLCertVerificationError(1, "certificate verify failed")
+
+    description = applog.describe_fetch_error(urllib.error.URLError(reason))
+
+    assert description.startswith("SSLCertVerificationError: ")
+    assert "certificate verify failed" in description
+
+
+def test_describe_fetch_error_names_other_exceptions_and_hides_home() -> None:
+    error = OSError(f"cannot open {Path.home() / 'data.json'}")
+
+    assert applog.describe_fetch_error(error) == "OSError: cannot open ~/data.json"
 
 
 def test_configure_logging_uses_the_default_logs_dir_without_an_argument(

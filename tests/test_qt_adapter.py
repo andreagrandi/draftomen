@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
 import socket as socket_module
 import threading
 import time
@@ -438,6 +439,16 @@ class _FailingFirstPollSession(_FakeSession):
         self.recovery_allowed.wait(timeout=3.0)
         self.recovered.set()
         return self.snapshot
+
+
+class _AlwaysFailingPollSession(_FakeSession):
+    def __init__(self, *, publish: SnapshotPublisher) -> None:
+        super().__init__(publish=publish)
+        self.poll_count = 0
+
+    def poll_once(self) -> LiveSessionSnapshot:
+        self.poll_count += 1
+        raise RuntimeError("poll worker failure marker")
 
 
 class _ImageFakeSession(_FakeSession):
@@ -1714,6 +1725,47 @@ def test_live_adapter_retains_initial_poll_failure_until_recovery(
 
     assert adapter.thread is not None
     assert not adapter.thread.isRunning()
+
+
+def test_live_adapter_logs_a_repeated_poll_failure_once_with_its_traceback(
+    qcore_application: QCoreApplication,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sessions: list[_AlwaysFailingPollSession] = []
+
+    def factory(publish: SnapshotPublisher) -> LiveSession:
+        session = _AlwaysFailingPollSession(publish=publish)
+        sessions.append(session)
+        return cast(LiveSession, session)
+
+    adapter = LiveSessionAdapter(
+        session_factory=factory,
+        poll_interval_ms=5,
+    )
+    caplog.set_level(logging.ERROR, logger="draftomen.qt_adapter")
+
+    try:
+        adapter.start()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(sessions) and sessions[0].poll_count >= 3,
+            description="three failed polls",
+        )
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()
+
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "Live session poll failed"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None
+    assert isinstance(records[0].exc_info[1], RuntimeError)
+    assert str(records[0].exc_info[1]) == "poll worker failure marker"
+    assert adapter.state["errors"][0]["message"] == "poll worker failure marker"
 
 
 def test_live_adapter_queues_explicit_commands_and_shutdown_is_safe(

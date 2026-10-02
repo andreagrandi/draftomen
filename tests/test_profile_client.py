@@ -7,8 +7,10 @@ import hashlib
 import io
 from dataclasses import replace
 import json
+import logging
 from pathlib import Path
 from typing import Any
+import urllib.error
 
 import pytest
 
@@ -1042,3 +1044,50 @@ def test_concurrent_refreshes_expose_only_whole_profiles(tmp_path: Path) -> None
     assert all(outcome in {ProfileRefreshOutcome.UPDATED, ProfileRefreshOutcome.UNCHANGED} for outcome in outcomes)
     assert loaded.to_bytes() in {old.to_bytes(), new.to_bytes()}
     assert path.read_bytes() in {old.to_bytes(), new.to_bytes()}
+
+
+def _profile_client_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "draftomen.profile_client" and record.levelno == logging.WARNING
+    ]
+
+
+def test_manifest_fetch_failure_logs_cause_and_diagnostics(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    def unavailable(_request: Any, *, timeout: float) -> _Response:
+        del timeout
+        raise urllib.error.URLError(OSError("connection refused"))
+
+    client = ProfileClient(tmp_path, manifest_url=MANIFEST_URL, opener=unavailable)
+
+    with caplog.at_level(logging.WARNING):
+        result = client.refresh("TST", "QuickDraft", force=True)
+
+    assert result.outcome is ProfileRefreshOutcome.REMOTE_FAILED
+    messages = _profile_client_warnings(caplog)
+    assert len(messages) == 2
+    assert MANIFEST_URL in messages[0]
+    assert "connection refused" in messages[0]
+    assert "manifest:network-URLError" in messages[1]
+    assert "TST QuickDraft" in messages[1]
+
+
+def test_successful_refresh_logs_no_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    artifact, packed = _artifact(_schema_two_profile())
+    client = ProfileClient(
+        tmp_path,
+        manifest_url=MANIFEST_URL,
+        opener=_opener_for({MANIFEST_URL: _manifest(artifact), ARTIFACT_URL: packed}),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        result = client.refresh("TST", "QuickDraft", force=True)
+
+    assert result.outcome is ProfileRefreshOutcome.UPDATED
+    assert result.diagnostics == ()
+    assert _profile_client_warnings(caplog) == []
