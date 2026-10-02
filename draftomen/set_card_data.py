@@ -69,10 +69,15 @@ class SetCardDataError(ValueError):
     """Raised when a per-set card artifact is invalid or non-canonical."""
 
 
-def _exact_keys(value: Mapping[str, Any], expected: frozenset[str], label: str) -> None:
+def _check_keys(
+    value: Mapping[str, Any], expected: frozenset[str], label: str, *, strict: bool
+) -> None:
     keys = set(value)
     if any(not isinstance(key, str) for key in keys):
         raise SetCardDataError(f"{label} keys must be strings.")
+    if not strict:
+        # Unknown keys are ignored so published files can gain fields.
+        keys &= expected
     if keys != expected:
         missing = sorted(expected - keys)
         unknown = sorted(keys - expected)
@@ -202,10 +207,10 @@ def _face_to_json(face: CardFace, *, field_name: str) -> dict[str, object]:
     }
 
 
-def _face_from_json(value: Any, *, field_name: str) -> CardFace:
+def _face_from_json(value: Any, *, field_name: str, strict: bool) -> CardFace:
     if not isinstance(value, Mapping):
         raise SetCardDataError(f"{field_name} must be an object.")
-    _exact_keys(value, _FACE_KEYS, field_name)
+    _check_keys(value, _FACE_KEYS, field_name, strict=strict)
     return CardFace(
         name=_optional_string(value["name"], f"{field_name}.name"),
         oracle_text=_optional_string(value["oracle_text"], f"{field_name}.oracle_text"),
@@ -282,16 +287,18 @@ def _card_to_json(card: CardInfo, *, set_code: str, index: int) -> dict[str, obj
     }
 
 
-def _card_from_json(value: Any, *, index: int) -> CardInfo:
+def _card_from_json(value: Any, *, index: int, strict: bool) -> CardInfo:
     if not isinstance(value, Mapping):
         raise SetCardDataError(f"cards[{index}] must be an object.")
-    _exact_keys(value, _CARD_KEYS, f"cards[{index}]")
+    _check_keys(value, _CARD_KEYS, f"cards[{index}]", strict=strict)
     arena_id = _positive_integer(value["arena_id"], f"cards[{index}].arena_id")
     faces_value = value["faces"]
     if not isinstance(faces_value, list):
         raise SetCardDataError(f"cards[{index}].faces must be an array.")
     faces = tuple(
-        _face_from_json(face, field_name=f"cards[{index}].faces[{face_index}]")
+        _face_from_json(
+            face, field_name=f"cards[{index}].faces[{face_index}]", strict=strict
+        )
         for face_index, face in enumerate(faces_value)
     )
     return CardInfo(
@@ -511,12 +518,15 @@ class SetCardData:
         *,
         expected_set_code: str | None = None,
         expected_set_name: str | None = None,
+        strict: bool = True,
     ) -> Self:
-        """Parse one artifact object with strict schema and value checks."""
+        """Parse one artifact object and check every value.
+        Strict parsing rejects unknown keys; otherwise they are ignored.
+        """
 
         if not isinstance(data, Mapping):
             raise SetCardDataError("Card data must be a JSON object.")
-        _exact_keys(data, _TOP_LEVEL_KEYS, "card data")
+        _check_keys(data, _TOP_LEVEL_KEYS, "card data", strict=strict)
         schema_version = data["schema_version"]
         if isinstance(schema_version, bool) or not isinstance(schema_version, int):
             raise SetCardDataError("schema_version must be an integer.")
@@ -530,7 +540,10 @@ class SetCardData:
         cards_value = data["cards"]
         if not isinstance(cards_value, list):
             raise SetCardDataError("cards must be an array.")
-        cards = tuple(_card_from_json(card, index=index) for index, card in enumerate(cards_value))
+        cards = tuple(
+            _card_from_json(card, index=index, strict=strict)
+            for index, card in enumerate(cards_value)
+        )
         image_value = data["image_uris_by_name"]
         if not isinstance(image_value, Mapping):
             raise SetCardDataError("image_uris_by_name must be an object.")
@@ -563,8 +576,11 @@ class SetCardData:
         *,
         expected_set_code: str | None = None,
         expected_set_name: str | None = None,
+        strict: bool = True,
     ) -> Self:
-        """Parse raw bytes and reject malformed or non-canonical JSON."""
+        """Parse raw bytes and reject malformed JSON.
+        Strict parsing also rejects unknown keys and non-canonical JSON.
+        """
 
         if not isinstance(payload, bytes):
             raise SetCardDataError("Card data bytes must be bytes.")
@@ -582,8 +598,9 @@ class SetCardData:
             value,
             expected_set_code=expected_set_code,
             expected_set_name=expected_set_name,
+            strict=strict,
         )
-        if payload != result.to_bytes():
+        if strict and payload != result.to_bytes():
             raise SetCardDataError("Card data JSON is not canonical.")
         return result
 
@@ -595,8 +612,11 @@ class SetCardData:
         max_decompressed_bytes: int = CARD_DATA_MAX_DECOMPRESSED_BYTES,
         expected_set_code: str | None = None,
         expected_set_name: str | None = None,
+        strict: bool = True,
     ) -> Self:
-        """Parse a bounded gzip artifact and reject non-canonical containers."""
+        """Parse a bounded gzip artifact.
+        Strict parsing also rejects unknown keys and non-canonical containers.
+        """
 
         if not isinstance(payload, bytes):
             raise SetCardDataError("Card data gzip bytes must be bytes.")
@@ -605,8 +625,9 @@ class SetCardData:
             raw,
             expected_set_code=expected_set_code,
             expected_set_name=expected_set_name,
+            strict=strict,
         )
-        if payload != result.to_gzip_bytes():
+        if strict and payload != result.to_gzip_bytes():
             raise SetCardDataError("Card data gzip bytes are not canonical.")
         return result
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from typing import Any
 
 import pytest
 
@@ -262,6 +263,58 @@ def test_unknown_and_missing_keys_are_rejected() -> None:
         SetCardData.from_json(
             {**value, "cards": [missing_card_set_code, *value["cards"][1:]]}
         )
+
+
+def _with_unknown_keys(value: dict[str, Any]) -> dict[str, Any]:
+    cards = []
+    for card in value["cards"]:
+        faces = [{**face, "future_face_field": 1} for face in card["faces"]]
+        cards.append({**card, "faces": faces, "future_card_field": "x"})
+    return {**value, "cards": cards, "future_field": True}
+
+
+def test_loader_ignores_unknown_keys_and_returns_the_same_cards() -> None:
+    artifact = _artifact()
+    value = _with_unknown_keys(artifact.to_json())
+    assert any(card["faces"] for card in value["cards"])
+    payload = gzip.compress(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+    )
+
+    loaded = SetCardData.from_gzip_bytes(payload, strict=False)
+
+    assert loaded == artifact
+    assert SetCardData.from_json(value, strict=False) == artifact
+
+
+def test_loader_still_rejects_missing_keys() -> None:
+    value = _with_unknown_keys(_artifact().to_json())
+    missing = dict(value)
+    del missing["source"]
+    with pytest.raises(SetCardDataError, match="missing source"):
+        SetCardData.from_json(missing, strict=False)
+    card = dict(value["cards"][0])
+    del card["rarity"]
+    with pytest.raises(SetCardDataError, match="missing rarity"):
+        SetCardData.from_json({**value, "cards": [card, *value["cards"][1:]]}, strict=False)
+    face_card = next(card for card in value["cards"] if card["faces"])
+    face = dict(face_card["faces"][0])
+    del face["name"]
+    broken = {**face_card, "faces": [face, *face_card["faces"][1:]]}
+    cards = [broken if card is face_card else card for card in value["cards"]]
+    with pytest.raises(SetCardDataError, match="missing name"):
+        SetCardData.from_json({**value, "cards": cards}, strict=False)
+
+
+def test_strict_parsing_rejects_unknown_keys_at_every_level() -> None:
+    value = _with_unknown_keys(_artifact().to_json())
+    with pytest.raises(SetCardDataError, match="unknown future_field"):
+        SetCardData.from_json(value)
+    payload = gzip.compress(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+    )
+    with pytest.raises(SetCardDataError):
+        SetCardData.from_gzip_bytes(payload)
 
 
 def test_duplicate_json_object_keys_are_rejected() -> None:
