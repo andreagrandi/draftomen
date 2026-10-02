@@ -43,21 +43,34 @@ Item {
     )
     // The pool keeps enough height for the whole mana curve, so the preview
     // gives up height first, down to the smallest size that fits its image
-    // frame and stats.
+    // frame and stats. On short windows the layout stays wide: the pool
+    // gives up height next and scrolls, then the preview shrinks too.
     readonly property int wideCardPreviewPreferredHeight: 430
     readonly property int wideCardPreviewMinimumHeight: 290
     readonly property int widePoolDetailsMinimumHeight: 270
-    readonly property int wideRecommendationsMinimumHeight:
-        root.wideCardPreviewMinimumHeight + Theme.gutter
-            + root.widePoolDetailsMinimumHeight
+    readonly property int widePoolDetailsShortMinimumHeight: 110
     readonly property real wideRecommendationsAvailableHeight:
         root.height - draftHeader.implicitHeight
             - (stateBanner.visible ? stateBanner.implicitHeight : 0)
             - Theme.gutter * 2
+    readonly property real widePoolDetailsCurrentMinimumHeight: Math.max(
+        root.widePoolDetailsShortMinimumHeight,
+        Math.min(
+            root.widePoolDetailsMinimumHeight,
+            root.wideRecommendationsAvailableHeight
+                - root.wideCardPreviewMinimumHeight - Theme.gutter
+        )
+    )
+    readonly property real wideCardPreviewCurrentMinimumHeight: Math.max(
+        0,
+        Math.min(
+            root.wideCardPreviewMinimumHeight,
+            root.wideRecommendationsAvailableHeight - Theme.gutter
+                - root.widePoolDetailsCurrentMinimumHeight
+        )
+    )
     readonly property bool wideRecommendations: !root.narrow
         && root.width >= root.wideRecommendationsMinimumWidth
-        && root.wideRecommendationsAvailableHeight
-            >= root.wideRecommendationsMinimumHeight
 
     // Preserve the normal recommendation/detail balance while reserving
     // enough height for the details tab at the supported compact minimum.
@@ -673,14 +686,18 @@ Item {
                     objectName: "wideLiveCardPreview"
                     Layout.fillWidth: true
                     Layout.preferredHeight: Math.max(
-                        root.wideCardPreviewMinimumHeight,
+                        root.wideCardPreviewCurrentMinimumHeight,
                         Math.min(
                             root.wideCardPreviewPreferredHeight,
-                            wideCardDetailsColumn.height - Theme.gutter
-                                - widePoolDetails.manaCurveRequiredHeight
+                            root.wideRecommendationsAvailableHeight
+                                - Theme.gutter
+                                - Math.max(
+                                    root.widePoolDetailsCurrentMinimumHeight,
+                                    widePoolDetails.manaCurveRequiredHeight
+                                )
                         )
                     )
-                    Layout.minimumHeight: root.wideCardPreviewMinimumHeight
+                    Layout.minimumHeight: root.wideCardPreviewCurrentMinimumHeight
                     recommendation: root.selectedRecommendation
                     detailedIntel: true
                     detailedImageMaximumWidth: 250
@@ -695,7 +712,7 @@ Item {
                     objectName: "wideLivePoolDetails"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.minimumHeight: root.widePoolDetailsMinimumHeight
+                    Layout.minimumHeight: root.widePoolDetailsCurrentMinimumHeight
                     pool: root.sessionState.pool
                     narrow: root.narrow
                 }
