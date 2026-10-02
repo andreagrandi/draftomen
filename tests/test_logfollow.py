@@ -6,7 +6,42 @@ from pathlib import Path
 import pytest
 
 import draftomen.logfollow as logfollow_module
-from draftomen.logfollow import LogFollower, log_offset_path
+from draftomen.logfollow import LogFollower, detailed_logs_disabled, log_offset_path
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    (
+        ("Initialize engine version\nDETAILED LOGS: DISABLED\n", True),
+        ("Initialize engine version\nDETAILED LOGS: ENABLED\n", False),
+        ("Initialize engine version\n", False),
+    ),
+)
+def test_detailed_logs_disabled_reads_arena_header(
+    tmp_path: Path,
+    header: str,
+    expected: bool,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(header + "later line\n", encoding="utf-8")
+
+    assert detailed_logs_disabled(path=log_path) is expected
+
+
+def test_detailed_logs_disabled_ignores_marker_past_the_header(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    padding = "x" * logfollow_module.DETAILED_LOGS_HEADER_BYTES
+    log_path.write_text(padding + "\nDETAILED LOGS: DISABLED\n", encoding="utf-8")
+
+    assert detailed_logs_disabled(path=log_path) is False
+
+
+def test_detailed_logs_disabled_treats_missing_log_as_unknown(
+    tmp_path: Path,
+) -> None:
+    assert detailed_logs_disabled(path=tmp_path / "Player.log") is False
 
 
 def test_partial_lines_are_buffered_and_offset_resumes_across_restarts(

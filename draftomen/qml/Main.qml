@@ -25,6 +25,7 @@ ApplicationWindow {
     property string pendingCompletedDraftBuildContext: ""
     property string previousPublishedDraftContext: ""
     property bool previousDraftCompleted: false
+    property bool detailedLogsIssueActive: false
     readonly property string desktopApplicationVersion: applicationVersion
 
     function observePublishedDraftState() {
@@ -50,6 +51,22 @@ ApplicationWindow {
             window.currentSurface = "build"
         }
         Qt.callLater(window.requestCompletedDraftBuild)
+    }
+
+    function observeSetupIssue() {
+        const state = window.sessionState
+        const status = state ? state.status : null
+        const active = Boolean(
+            status && status.setup_issue === "detailed_logs_disabled"
+        )
+        if (active === window.detailedLogsIssueActive)
+            return
+
+        window.detailedLogsIssueActive = active
+        if (active)
+            detailedLogsDialog.open()
+        else
+            detailedLogsDialog.close()
     }
 
     function requestCompletedDraftBuild() {
@@ -88,8 +105,14 @@ ApplicationWindow {
     }
 
     onCurrentSurfaceChanged: Qt.callLater(window.requestCompletedDraftBuild)
-    onSessionStateChanged: window.observePublishedDraftState()
-    Component.onCompleted: window.observePublishedDraftState()
+    onSessionStateChanged: {
+        window.observePublishedDraftState()
+        window.observeSetupIssue()
+    }
+    Component.onCompleted: {
+        window.observePublishedDraftState()
+        window.observeSetupIssue()
+    }
 
     header: AppBar {
         narrow: window.narrow
@@ -116,6 +139,10 @@ ApplicationWindow {
 
     PrivacyDialog {
         id: privacyDialog
+    }
+
+    DetailedLogsDialog {
+        id: detailedLogsDialog
     }
 
     TestDraftDialog {

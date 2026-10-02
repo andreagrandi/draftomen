@@ -2100,6 +2100,215 @@ assert guidance.property("text") == LOG_SETUP_GUIDANCE
     assert completed.returncode == 0, completed.stderr
 
 
+def test_qml_detailed_logs_dialog_follows_setup_issue_offscreen() -> None:
+    probe = """
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QPoint, QPointF, QUrl, Qt
+from PySide6.QtGui import QAccessible, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+from draftomen.session import (
+    DETAILED_LOGS_DISABLED_GUIDANCE,
+    LOG_SETUP_GUIDANCE,
+    SetupIssue,
+)
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+preferences_dir = TemporaryDirectory()
+session = MockLiveSession(scenario="empty")
+base_snapshot = session.snapshot
+
+
+def snapshot_with(issue):
+    message = {
+        None: base_snapshot.status.message,
+        SetupIssue.LOG_UNREADABLE: LOG_SETUP_GUIDANCE,
+        SetupIssue.DETAILED_LOGS_DISABLED: DETAILED_LOGS_DISABLED_GUIDANCE,
+    }[issue]
+    return replace(
+        base_snapshot,
+        status=replace(
+            base_snapshot.status,
+            message=message,
+            setup_guidance=issue is not None,
+            setup_issue=issue,
+        ),
+    )
+
+
+provider = MockSessionAdapter(session=session)
+provider._publish(snapshot=snapshot_with(SetupIssue.DETAILED_LOGS_DISABLED))
+assert provider.state["status"]["setup_issue"] == "detailed_logs_disabled"
+preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 900)
+context.setContextProperty("initialWindowHeight", 700)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+assert engine.rootObjects()
+root = engine.rootObjects()[0]
+application.processEvents()
+
+dialog = root.findChild(QObject, "detailedLogsDialog")
+assert dialog is not None
+
+
+def publish(issue):
+    provider._publish(snapshot=snapshot_with(issue))
+    application.processEvents()
+
+
+def is_open() -> bool:
+    return dialog.property("visible") is True
+
+
+assert is_open()
+assert dialog.property("modal") is True
+assert dialog.property("title") == "Turn on Detailed Logs"
+title = root.findChild(QObject, "detailedLogsDialogTitle")
+assert title is not None and title.property("text") == "Turn on Detailed Logs"
+body = root.findChild(QObject, "detailedLogsDialogBody")
+assert body is not None
+assert body.property("text") == (
+    "Arena's Detailed Logs are turned off, so Draft Omen cannot follow your drafts."
+)
+for name, expected in (
+    ("detailedLogsDialogStep1", "1. In Arena, open Settings \u2192 Account."),
+    ("detailedLogsDialogStep2", "2. Turn on Detailed Logs (Plugin Support)."),
+    ("detailedLogsDialogStep3", "3. Restart Arena."),
+    (
+        "detailedLogsDialogNote",
+        "Draft Omen picks up the change after Arena restarts.",
+    ),
+):
+    label = root.findChild(QObject, name)
+    assert label is not None and label.property("text") == expected
+close = root.findChild(QObject, "detailedLogsDialogCloseButton")
+assert close is not None and close.property("text") == "OK"
+accessible_close = QAccessible.queryAccessibleInterface(close)
+assert accessible_close is not None
+assert accessible_close.text(QAccessible.Text.Name) == "Close Detailed Logs dialog"
+
+position = close.mapToItem(
+    root.contentItem(), QPointF(close.width() / 2, close.height() / 2)
+)
+QTest.mouseClick(
+    root,
+    Qt.LeftButton,
+    Qt.NoModifier,
+    QPoint(round(position.x()), round(position.y())),
+)
+application.processEvents()
+assert not is_open()
+
+publish(SetupIssue.DETAILED_LOGS_DISABLED)
+assert not is_open()
+
+publish(None)
+assert not is_open()
+publish(SetupIssue.DETAILED_LOGS_DISABLED)
+assert is_open()
+
+publish(None)
+assert not is_open()
+
+publish(SetupIssue.LOG_UNREADABLE)
+assert not is_open()
+publish(SetupIssue.DETAILED_LOGS_DISABLED)
+assert is_open()
+publish(SetupIssue.LOG_UNREADABLE)
+assert not is_open()
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_detailed_logs_dialog_stays_closed_without_setup_issue_offscreen() -> None:
+    probe = """
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+from draftomen.session import LOG_SETUP_GUIDANCE, SetupIssue
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+preferences_dir = TemporaryDirectory()
+for issue in (None, SetupIssue.LOG_UNREADABLE):
+    session = MockLiveSession(scenario="empty")
+    snapshot = session.snapshot
+    if issue is not None:
+        snapshot = replace(
+            snapshot,
+            status=replace(
+                snapshot.status,
+                message=LOG_SETUP_GUIDANCE,
+                setup_guidance=True,
+                setup_issue=issue,
+            ),
+        )
+    provider = MockSessionAdapter(session=session)
+    provider._publish(snapshot=snapshot)
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", _fixed_font_family())
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", __version__)
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "live")
+    context.setContextProperty("initialWindowWidth", 900)
+    context.setContextProperty("initialWindowHeight", 700)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+    dialog = root.findChild(QObject, "detailedLogsDialog")
+    assert dialog is not None
+    assert dialog.property("visible") is False
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
 _DRAFT_FORMAT_PROBE_SETUP = """
 from dataclasses import replace
 from pathlib import Path

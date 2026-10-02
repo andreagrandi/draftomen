@@ -74,7 +74,9 @@ from draftomen.profile_client import (
     ProfileRefreshResult,
 )
 from draftomen.session import (
+    DETAILED_LOGS_DISABLED_GUIDANCE,
     LOG_SETUP_GUIDANCE,
+    SetupIssue,
     AccountIdentity,
     ApplicationPhase,
     ApplicationStatus,
@@ -855,6 +857,7 @@ def test_live_session_guides_when_player_log_is_missing_or_unreadable(
 
     assert status.phase == ApplicationPhase.WAITING_FOR_DRAFT
     assert status.setup_guidance is True
+    assert status.setup_issue == SetupIssue.LOG_UNREADABLE
     assert status.message == LOG_SETUP_GUIDANCE
     for requirement in (
         "No draft or readable Player.log",
@@ -877,6 +880,47 @@ def test_live_session_uses_ordinary_waiting_for_readable_empty_log(
     session = LiveSession(log_path=log_path, app_dir=tmp_path / "app")
 
     assert session.snapshot.status == ApplicationStatus(
+        phase=ApplicationPhase.WAITING_FOR_DRAFT,
+        message="Waiting for a draft.",
+        setup_guidance=False,
+    )
+
+
+def test_live_session_guides_when_arena_detailed_logs_are_disabled(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("DETAILED LOGS: DISABLED\n", encoding="utf-8")
+
+    session = LiveSession(log_path=log_path, app_dir=tmp_path / "app")
+
+    assert session.snapshot.status == ApplicationStatus(
+        phase=ApplicationPhase.WAITING_FOR_DRAFT,
+        message=DETAILED_LOGS_DISABLED_GUIDANCE,
+        setup_guidance=True,
+        setup_issue=SetupIssue.DETAILED_LOGS_DISABLED,
+    )
+    for requirement in (
+        "Detailed Logs are turned off",
+        "Detailed Logs (Plugin Support)",
+        "Account settings",
+        "restart Arena",
+    ):
+        assert requirement in session.snapshot.status.message
+
+
+def test_live_session_clears_disabled_guidance_after_arena_restarts_with_logs(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("DETAILED LOGS: DISABLED\n", encoding="utf-8")
+    session = LiveSession(log_path=log_path, app_dir=tmp_path / "app")
+    assert session.snapshot.status.setup_guidance is True
+
+    log_path.write_text("DETAILED LOGS: ENABLED\n", encoding="utf-8")
+    snapshot = session.poll_once()
+
+    assert snapshot.status == ApplicationStatus(
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
         message="Waiting for a draft.",
         setup_guidance=False,
@@ -4516,6 +4560,7 @@ def test_live_session_startup_scan_refreshes_setup_for_account_only_previous_log
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
         message=LOG_SETUP_GUIDANCE,
         setup_guidance=True,
+        setup_issue=SetupIssue.LOG_UNREADABLE,
     )
 
 

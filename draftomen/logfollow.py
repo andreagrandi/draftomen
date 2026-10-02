@@ -24,6 +24,9 @@ OFFSET_DIRECTORY_NAME = "logfollow"
 OFFSET_SCHEMA_VERSION = 1
 STATE_HASH_LENGTH = 16
 FINGERPRINT_SAMPLE_BYTES = 4096
+# Arena writes the Detailed Logs state within the first kilobyte of each session.
+DETAILED_LOGS_HEADER_BYTES = 16384
+DETAILED_LOGS_DISABLED_MARKER = b"DETAILED LOGS: DISABLED"
 
 
 class LogFollowError(RuntimeError):
@@ -369,6 +372,19 @@ def is_log_readable(*, path: PathInput) -> bool:
             return True
     except OSError:
         return False
+
+
+def detailed_logs_disabled(*, path: PathInput) -> bool:
+    """Return whether Arena's log header says Detailed Logs are turned off.
+    A missing header or unreadable file is unknown and returns False.
+    """
+
+    try:
+        with Path(path).expanduser().resolve(strict=False).open("rb") as handle:
+            header = handle.read(DETAILED_LOGS_HEADER_BYTES)
+    except OSError:
+        return False
+    return DETAILED_LOGS_DISABLED_MARKER in header
 
 
 def _read_complete_lines(*, handle: BinaryIO, offset: int) -> _ReadResult:
