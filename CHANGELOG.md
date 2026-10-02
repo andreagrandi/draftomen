@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Draft Omen keeps following a human draft after Arena restarts in the
+  middle of it. The parser picks the draft up from the in-progress course in
+  the EventGetCoursesV2 course list, so the packs after the restart show up.
+  Arena does not log the picks made before the restart. When Draft Omen saved
+  them before the restart, recommendations and the pool still use them, and
+  the full pool from DraftCompleteDraft fills any gap at the end. (#856)
 - `watch` and `replay` no longer fail in the middle of a human draft when
   Arena answers a failed pick with the table state. The parser drops the
   failed pick and records the card from the resubmitted request. Other
