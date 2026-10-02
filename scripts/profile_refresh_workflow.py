@@ -26,6 +26,7 @@ from draftomen.card_data_export import (
     prepare_set_data_export,
     publish_set_data_export,
 )
+from draftomen.carddb import CardDatabase
 from draftomen.profile_batch_generation import (
     ProfileBatchGenerationError,
     generate_staged_profile_batch,
@@ -66,6 +67,7 @@ from draftomen.refresh_plan import (
     PlannedEnvironment,
     RefreshPlan,
 )
+from draftomen.set_card_data import SetCardData, SetCardDataError
 from draftomen.seventeen import (
     HTTP_TIMEOUT_SECONDS,
     SEVENTEEN_LANDS_ATTRIBUTION,
@@ -297,10 +299,20 @@ def render_summary(report: Mapping[str, Any]) -> str:
             f"- Data attribution: {SEVENTEEN_LANDS_ATTRIBUTION}",
             f"- Planning complete: {_safe_summary_text(profiles.get('planning_complete'))}",
             f"- Manifest changed: {_safe_summary_text(profiles.get('manifest_changed'))}",
-            "### Selected pairs",
-            "",
         ]
     )
+    fallback_sets = (
+        profiles.get("card_metadata_fallbacks")
+        if isinstance(profiles.get("card_metadata_fallbacks"), list)
+        else []
+    )
+    if fallback_sets:
+        listed = ", ".join(_safe_summary_text(code) for code in fallback_sets)
+        lines.append(
+            "- Card metadata from committed card data because Scryfall has no Arena ids: "
+            + listed
+        )
+    lines.extend(["### Selected pairs", ""])
     if selected_pairs:
         for pair in selected_pairs:
             if isinstance(pair, Mapping):
@@ -685,6 +697,43 @@ def _empty_static() -> dict[str, Any]:
     }
 
 
+def _card_metadata_adapter_with_static_fallback(
+    adapter: CardMetadataAdapter | None,
+    *,
+    profile_plan: ProfilePlan,
+    fallback_sets: set[str],
+) -> CardMetadataAdapter:
+    """Wrap an adapter so a set Scryfall cannot match uses committed card data.
+    The wrapped fetcher runs once and the file is read only when no card matches.
+    """
+
+    base = adapter if adapter is not None else CardMetadataAdapter()
+    original = base.fetch_database
+    static_paths = {pair.set_code.casefold(): pair.static_path for pair in profile_plan.pairs}
+
+    def fetch_database(*, set_code: str, timeout_seconds: int) -> CardDatabase:
+        database = original(set_code=set_code, timeout_seconds=timeout_seconds)
+        requested = set_code.casefold()
+        if not isinstance(database, CardDatabase) or any(
+            card.set_code is not None and card.set_code.casefold() == requested
+            for card in database.cards.values()
+        ):
+            return database
+        path = static_paths.get(requested)
+        if path is None:
+            return database
+        try:
+            card_data = SetCardData.from_gzip_bytes(
+                path.read_bytes(), expected_set_code=set_code
+            )
+        except (OSError, SetCardDataError):
+            return database
+        fallback_sets.add(requested)
+        return card_data.to_card_database()
+
+    return replace(base, fetch_database=fetch_database)
+
+
 def generate_website(
     *,
     base_commit: str,
@@ -729,6 +778,7 @@ def generate_website(
             "selected": [],
             "successful": [],
             "card_ratings": [],
+            "card_metadata_fallbacks": [],
             "manifest_changed": False,
         },
         "failures": [],
@@ -864,6 +914,12 @@ def generate_website(
                 policy=DEFAULT_PROFILE_REFRESH_CACHE_POLICY,
                 clock=clock,
             )
+            card_metadata_fallbacks: set[str] = set()
+            effective_card_metadata_adapter = _card_metadata_adapter_with_static_fallback(
+                card_metadata_adapter,
+                profile_plan=profile_plan,
+                fallback_sets=card_metadata_fallbacks,
+            )
             effective_ratings_adapter = ratings_adapter
             if effective_ratings_adapter is None:
                 def fetch_ratings(
@@ -907,7 +963,7 @@ def generate_website(
                             cache=cache,
                             output_dir=staged_dir,
                             offline=False,
-                            card_metadata_adapter=card_metadata_adapter,
+                            card_metadata_adapter=effective_card_metadata_adapter,
                             ratings_adapter=effective_ratings_adapter,
                             public_draft_adapter=public_draft_adapter,
                             clock=clock,
@@ -1017,6 +1073,7 @@ def generate_website(
                 for pair in successful_pairs
                 if _pair_key(pair) in rating_counts
             ]
+            report["profiles"]["card_metadata_fallbacks"] = sorted(card_metadata_fallbacks)
             report["profiles"]["manifest_changed"] = manifest_changed
 
     try:

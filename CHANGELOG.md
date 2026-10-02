@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- The daily profile refresh uses the committed card data for a set when
+  Scryfall has no Arena ids for it, so sets such as FRA no longer fail with
+  card-metadata-unavailable. The refresh summary lists the sets that used it.
 - Draft Omen keeps following a human draft after Arena restarts in the
   middle of it. The parser picks the draft up from the in-progress course in
   the EventGetCoursesV2 course list, so the packs after the restart show up.

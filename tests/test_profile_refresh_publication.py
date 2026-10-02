@@ -1578,3 +1578,27 @@ def test_publish_rejects_master_protected_root_change_before_pr_creation(
         summary_file=summary,
     ) == 1
     assert "protected website data changed" in summary.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "fallbacks",
+    [None, "new", ["NEW"], [1], ["../new"]],
+)
+def test_prepare_rejects_malformed_card_metadata_fallbacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fallbacks: Any,
+) -> None:
+    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
+    result = json.loads((bundle / "result.json").read_text(encoding="utf-8"))
+    assert result["profiles"]["card_metadata_fallbacks"] == []
+    result["profiles"]["card_metadata_fallbacks"] = fallbacks
+    (bundle / "result.json").write_text(json.dumps(result), encoding="utf-8")
+
+    with pytest.raises(publication.ProfileRefreshPublicationError):
+        publication.prepare_publication(
+            bundle_dir=bundle,
+            repo_root=candidate,
+            expected_base=report["base_commit"],
+            master_commit=report["base_commit"],
+        )

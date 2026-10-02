@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1989,3 +1990,116 @@ def test_schema_four_profile_replaces_historical_enriched_manifest_entry(
     assert hashlib.sha256(replacement_bytes).hexdigest() == replacement.gzip_sha256
     assert legacy_object_path.read_bytes() == legacy_bytes
     assert public_calls == []
+
+
+def _generate_with_card_fetcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    unmatched_scryfall: bool,
+) -> tuple[dict[str, Any], Path, list[str]]:
+    import draftomen.card_data_export as card_export
+
+    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
+    monkeypatch.setattr(workflow, "_base_bytes", lambda *args, **kwargs: None)
+    root = tmp_path / "checkout"
+    _static(root / "website/public/card-data", set_code="old", set_name="Old Set")
+    inventory, bulk = _source(tmp_path)
+    _manifest(root)
+    card_adapter, ratings_adapter, public_adapter, _, _ = _fixture_adapters()
+    fetch_calls: list[str] = []
+    original = card_adapter.fetch_database
+
+    def fetch_database(*, set_code: str, timeout_seconds: int) -> CardDatabase:
+        fetch_calls.append(set_code.casefold())
+        if unmatched_scryfall:
+            return _database(set_code="old", set_name="Old Set")
+        return original(set_code=set_code, timeout_seconds=timeout_seconds)
+
+    bundle = tmp_path / "bundle"
+    report = workflow.generate_website(
+        base_commit="base",
+        selection_mode="one",
+        selector="new",
+        repo_root=root,
+        bundle_dir=bundle,
+        cache_dir=tmp_path / "cache",
+        inventory_file=inventory,
+        bulk_file=bulk,
+        fetch_json=lambda url, timeout: {
+            "formats_by_expansion": {"NEW": ["PremierDraft"]},
+            "live_formats_by_expansion": {},
+        },
+        clock=lambda: NOW,
+        card_metadata_adapter=replace(card_adapter, fetch_database=fetch_database),
+        ratings_adapter=ratings_adapter,
+        public_draft_adapter=public_adapter,
+    )
+    return report, bundle, fetch_calls
+
+
+def test_matching_scryfall_metadata_does_not_read_card_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_read(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("card data must not be read when Scryfall matches the set")
+
+    monkeypatch.setattr(
+        workflow, "SetCardData", SimpleNamespace(from_gzip_bytes=fail_read)
+    )
+
+    report, bundle, fetch_calls = _generate_with_card_fetcher(
+        tmp_path, monkeypatch, unmatched_scryfall=False
+    )
+
+    assert report["status"] == "success"
+    assert report["profiles"]["card_metadata_fallbacks"] == []
+    assert fetch_calls == ["new"]
+    summary = (bundle / "summary.md").read_text(encoding="utf-8")
+    assert "committed card data" not in summary
+
+
+def test_unmatched_scryfall_metadata_falls_back_to_committed_card_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report, bundle, fetch_calls = _generate_with_card_fetcher(
+        tmp_path, monkeypatch, unmatched_scryfall=True
+    )
+
+    assert report["status"] == "success"
+    assert report["profiles"]["successful"][0]["set_code"] == "new"
+    assert report["profiles"]["card_metadata_fallbacks"] == ["new"]
+    assert fetch_calls == ["new"]
+    summary = (bundle / "summary.md").read_text(encoding="utf-8")
+    assert (
+        "- Card metadata from committed card data because Scryfall has no Arena ids: new"
+        in summary
+    )
+
+
+def test_invalid_card_data_keeps_the_card_metadata_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def invalid(*args: Any, **kwargs: Any) -> None:
+        raise workflow.SetCardDataError("invalid card data")
+
+    monkeypatch.setattr(
+        workflow, "SetCardData", SimpleNamespace(from_gzip_bytes=invalid)
+    )
+
+    report, _bundle, fetch_calls = _generate_with_card_fetcher(
+        tmp_path, monkeypatch, unmatched_scryfall=True
+    )
+
+    assert report["status"] != "success"
+    assert report["profiles"]["successful"] == []
+    assert report["profiles"]["card_metadata_fallbacks"] == []
+    assert fetch_calls == ["new"]
+    assert any(
+        failure["stage"] == "profile-execution"
+        and failure["category"] == "refresh-execution-failed"
+        for failure in report["failures"]
+    )
