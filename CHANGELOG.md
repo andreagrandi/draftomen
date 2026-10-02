@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-02
+
 - `scripts/patch_scryfall_arena_ids.py` adds Arena ids from 17Lands card
   ratings to Scryfall default-cards data. Use its output with
   `export-set-data --bulk-file` for a set Scryfall has no Arena ids for.
