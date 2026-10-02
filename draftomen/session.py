@@ -963,6 +963,7 @@ class LiveSession:
         self._card_data_requested_set_code: str | None = None
         self._card_data_detection_event_name: str | None = None
         self._human_card_data_identity: tuple[str | None, str, str | None] | None = None
+        self._logged_draft_start_event_name: str | None = None
         self._configured_set_profile = set_profile
         self._set_profile = set_profile
         self._profile_client = profile_client
@@ -1225,6 +1226,12 @@ class LiveSession:
                         phase=DataLoadPhase.READY,
                         refresh_outcome=outcome,
                     )
+                )
+                logger.info(
+                    "Ratings for %s updated: source remote, version %s, generated %s",
+                    active_set_code,
+                    profile.profile_version or "none",
+                    profile.generated_at or "none",
                 )
                 if authority_changed:
                     candidate_snapshot = replace(
@@ -2189,6 +2196,8 @@ class LiveSession:
         Frontends remain responsible for timers, workers, and event-loop teardown.
         """
 
+        if self._card_image_service is not None:
+            self._card_image_service.log_failure_summary()
         with self._state_lock:
             self._retire_profile_refresh_locked()
             self._profile_refresh_lifecycle_identity = None
@@ -2317,6 +2326,34 @@ class LiveSession:
             transition_generation=transition_generation,
         )
 
+    def _log_draft_started(self, *, set_code: str, event_name: str) -> None:
+        """Log one new draft with its card data and ratings provenance."""
+
+        self._logged_draft_start_event_name = event_name
+        snapshot = self.snapshot
+        card_data = snapshot.card_data
+        profile = snapshot.set_profile
+        ratings = snapshot.ratings
+        logger.info(
+            "Draft started: set %s, event %s, format %s",
+            set_code,
+            event_name,
+            self._active_draft_format.value,
+        )
+        if card_data.phase is DataLoadPhase.READY:
+            card_detail = f"generated {card_data.last_successful_update or 'none'}"
+        else:
+            card_detail = f"unavailable ({card_data.message})"
+        logger.info("Card data for %s: %s", set_code, card_detail)
+        logger.info(
+            "Ratings for %s: source %s, version %s, generated %s, maturity %s",
+            set_code,
+            profile.source or "none",
+            profile.profile_version or "none",
+            ratings.last_successful_update or "none",
+            profile.maturity or "none",
+        )
+
     def _prepare_card_data_for_human_pack(
         self,
         *,
@@ -2349,6 +2386,13 @@ class LiveSession:
         if not self._transition_is_current(generation=transition_generation):
             return False
         self._card_data_network_open = False
+        # Draft adapters send a DraftStartedEvent first and already logged it.
+        if self._logged_draft_start_event_name == event.event_name:
+            self._logged_draft_start_event_name = None
+        else:
+            self._log_draft_started(
+                set_code=event.set_code, event_name=event.event_name
+            )
         return loaded
 
     def _finish_card_data_load(
@@ -4159,6 +4203,9 @@ class LiveSession:
                 transition_generation=transition_generation,
             ):
                 return
+            self._log_draft_started(
+                set_code=event.set_code, event_name=event.event_name
+            )
             return
 
         if isinstance(event, PackOfferedEvent):
@@ -4295,6 +4342,9 @@ class LiveSession:
                 transition_generation=transition_generation,
             ):
                 return
+            self._log_draft_started(
+                set_code=event.set_code, event_name=event.event_name
+            )
         elif isinstance(event, PackOfferedEvent):
             if not self._prepare_card_data_for_human_pack(
                 event=event,

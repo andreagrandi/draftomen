@@ -333,7 +333,12 @@ class CardDataClient:
             cached_payload, cached = self._load_cached(destination, normalized_set_code)
             if not allow_network:
                 if cached is not None:
-                    return cached.to_card_database()
+                    return self._log_source(
+                        cached.to_card_database(),
+                        set_code=normalized_set_code,
+                        source="cache, network off",
+                        payload=cached_payload,
+                    )
                 raise CardDataClientError(
                     f"Card-data cache missing or invalid for set {normalized_set_code!r}; "
                     "network access is disabled."
@@ -343,7 +348,12 @@ class CardDataClient:
                 expected_sha256 is None
                 or hashlib.sha256(cached_payload).hexdigest() == expected_sha256
             ):
-                return cached.to_card_database()
+                return self._log_source(
+                    cached.to_card_database(),
+                    set_code=normalized_set_code,
+                    source="cache, matches manifest",
+                    payload=cached_payload,
+                )
             try:
                 payload = self._fetch(normalized_set_code)
                 if (
@@ -363,7 +373,12 @@ class CardDataClient:
             except (CardDataClientError, OSError, SetCardDataError, TypeError, ValueError) as error:
                 # A failed update keeps the previous valid cache in use.
                 if cached is not None:
-                    return cached.to_card_database()
+                    return self._log_source(
+                        cached.to_card_database(),
+                        set_code=normalized_set_code,
+                        source="cache, download failed",
+                        payload=cached_payload,
+                    )
                 if isinstance(error, CardDataClientError):
                     raise
                 raise CardDataClientError(
@@ -375,7 +390,27 @@ class CardDataClient:
                 raise CardDataClientError(
                     f"Could not install card-data cache for set {normalized_set_code!r}."
                 ) from error
-            return card_data.to_card_database()
+            return self._log_source(
+                card_data.to_card_database(),
+                set_code=normalized_set_code,
+                source="download",
+                payload=payload,
+            )
+
+    @staticmethod
+    def _log_source(
+        database: CardDatabase, *, set_code: str, source: str, payload: bytes
+    ) -> CardDatabase:
+        generated_at = database.generated_at
+        # Hosted artifacts may lack a generation time, so the checksum identifies the version.
+        logger.info(
+            "Card data for %s from %s, sha256 %s, generated %s",
+            set_code,
+            source,
+            hashlib.sha256(payload).hexdigest()[:12],
+            "none" if generated_at is None else generated_at.isoformat(),
+        )
+        return database
 
     def _load_cached(
         self, destination: Path, set_code: str

@@ -5,13 +5,17 @@ Keep optional behavior and layout choices stable across app restarts.
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from dataclasses import asdict, dataclass
 from os import PathLike
 from pathlib import Path
 from typing import Literal, TypeAlias
 
+from draftomen.applog import redact_home
 from draftomen.paths import app_data_dir
+
+logger = logging.getLogger(__name__)
 
 PathInput: TypeAlias = str | PathLike[str]
 CardImagePreviewMode: TypeAlias = Literal["auto", "show", "hide"]
@@ -42,6 +46,11 @@ class TuiVisibilityPreferences:
     card_image_preview: CardImagePreviewMode = "auto"
 
 
+def _log_preferences_problem(*, message: str | None) -> None:
+    if message is not None:
+        logger.warning("%s", redact_home(message))
+
+
 def tui_preferences_path(*, app_dir: PathInput | None = None) -> Path:
     """Return the path used for persisted TUI visibility preferences.
     The file lives directly in Draftomen's per-user application directory.
@@ -51,7 +60,7 @@ def tui_preferences_path(*, app_dir: PathInput | None = None) -> Path:
     return root / TUI_PREFERENCES_FILE_NAME
 
 
-def load_tui_preferences(
+def _read_tui_preferences(
     *,
     app_dir: PathInput | None = None,
 ) -> tuple[TuiVisibilityPreferences, str | None]:
@@ -115,7 +124,7 @@ def load_tui_preferences(
     return preferences, f"TUI preferences used defaults for invalid fields: {fields}."
 
 
-def save_tui_preferences(
+def _write_tui_preferences(
     *,
     preferences: TuiVisibilityPreferences,
     app_dir: PathInput | None = None,
@@ -161,6 +170,33 @@ def save_tui_preferences(
     return None
 
 
+def load_tui_preferences(
+    *,
+    app_dir: PathInput | None = None,
+) -> tuple[TuiVisibilityPreferences, str | None]:
+    """Load persisted preferences, falling back safely to defaults.
+    A problem is logged and returned as a message without blocking startup.
+    """
+
+    preferences, message = _read_tui_preferences(app_dir=app_dir)
+    _log_preferences_problem(message=message)
+    return preferences, message
+
+
+def save_tui_preferences(
+    *,
+    preferences: TuiVisibilityPreferences,
+    app_dir: PathInput | None = None,
+) -> str | None:
+    """Atomically save preferences and return a non-fatal error message.
+    A failure is also logged so it shows up in diagnostics.
+    """
+
+    message = _write_tui_preferences(preferences=preferences, app_dir=app_dir)
+    _log_preferences_problem(message=message)
+    return message
+
+
 GUI_PREFERENCES_FILE_NAME = "gui-preferences.json"
 GUI_PREFERENCES_SCHEMA_VERSION = 1
 GUI_TEXT_FIELDS = frozenset(
@@ -201,7 +237,7 @@ def gui_preferences_path(*, app_dir: PathInput | None = None) -> Path:
     return root / GUI_PREFERENCES_FILE_NAME
 
 
-def load_gui_preferences(
+def _read_gui_preferences(
     *,
     app_dir: PathInput | None = None,
 ) -> tuple[GuiDisplayPreferences, str | None]:
@@ -262,7 +298,7 @@ def load_gui_preferences(
     )
 
 
-def save_gui_preferences(
+def _write_gui_preferences(
     *,
     preferences: GuiDisplayPreferences,
     app_dir: PathInput | None = None,
@@ -305,3 +341,30 @@ def save_gui_preferences(
                 pass
 
     return None
+
+
+def load_gui_preferences(
+    *,
+    app_dir: PathInput | None = None,
+) -> tuple[GuiDisplayPreferences, str | None]:
+    """Load persisted preferences, falling back safely to defaults.
+    A problem is logged and returned as a message without blocking startup.
+    """
+
+    preferences, message = _read_gui_preferences(app_dir=app_dir)
+    _log_preferences_problem(message=message)
+    return preferences, message
+
+
+def save_gui_preferences(
+    *,
+    preferences: GuiDisplayPreferences,
+    app_dir: PathInput | None = None,
+) -> str | None:
+    """Atomically save preferences and return a non-fatal error message.
+    A failure is also logged so it shows up in diagnostics.
+    """
+
+    message = _write_gui_preferences(preferences=preferences, app_dir=app_dir)
+    _log_preferences_problem(message=message)
+    return message

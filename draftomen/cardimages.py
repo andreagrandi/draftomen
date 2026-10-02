@@ -7,6 +7,7 @@ from __future__ import annotations
 import http.client
 import hashlib
 import json
+import logging
 import tempfile
 import time
 import urllib.error
@@ -16,11 +17,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any, TypeAlias
 
 from draftomen.carddb import SCRYFALL_USER_AGENT, CardDatabase, CardInfo
 from draftomen.paths import app_data_dir
+
+logger = logging.getLogger(__name__)
 
 PathInput: TypeAlias = str | PathLike[str]
 ImageUrlOpener: TypeAlias = Callable[..., Any]
@@ -90,6 +93,25 @@ class CardImageService:
         compare=False,
     )
 
+    _failure_lock: Lock = field(
+        default_factory=Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _warned_hosts: set[str] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _suppressed_failures: dict[str, int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
     def __post_init__(self) -> None:
         if self.max_bytes <= 0:
             raise ValueError("Card-image byte limit must be positive.")
@@ -147,35 +169,40 @@ class CardImageService:
             },
         )
         try:
-            self._wait_for_metadata_request_slot()
-            with self.metadata_opener(
-                request,
-                timeout=self.timeout_seconds,
-            ) as response:
-                payload = response.read(self.metadata_max_bytes + 1)
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                return None
-            raise CardImageError(f"Card metadata lookup failed: {error}") from error
-        except (http.client.HTTPException, OSError, urllib.error.URLError) as error:
-            raise CardImageError(f"Card metadata lookup failed: {error}") from error
+            try:
+                self._wait_for_metadata_request_slot()
+                with self.metadata_opener(
+                    request,
+                    timeout=self.timeout_seconds,
+                ) as response:
+                    payload = response.read(self.metadata_max_bytes + 1)
+            except urllib.error.HTTPError as error:
+                if error.code == 404:
+                    return None
+                raise CardImageError(f"Card metadata lookup failed: {error}") from error
+            except (http.client.HTTPException, OSError, urllib.error.URLError) as error:
+                raise CardImageError(f"Card metadata lookup failed: {error}") from error
 
-        if not isinstance(payload, bytes):
-            raise CardImageError("Card metadata lookup returned malformed response.")
-        if len(payload) > self.metadata_max_bytes:
-            raise CardImageError("Card metadata lookup failed: response too large.")
-        try:
-            card_object = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise CardImageError(
-                f"Card metadata lookup returned malformed JSON: {error}"
-            ) from error
-        if not isinstance(card_object, dict):
-            raise CardImageError("Card metadata lookup returned malformed JSON object.")
+            if not isinstance(payload, bytes):
+                raise CardImageError("Card metadata lookup returned malformed response.")
+            if len(payload) > self.metadata_max_bytes:
+                raise CardImageError("Card metadata lookup failed: response too large.")
+            try:
+                card_object = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise CardImageError(
+                    f"Card metadata lookup returned malformed JSON: {error}"
+                ) from error
+            if not isinstance(card_object, dict):
+                raise CardImageError("Card metadata lookup returned malformed JSON object.")
+        except CardImageError as error:
+            self._record_failure(url=request.full_url, cause=error)
+            raise
 
         image_uri = _scryfall_card_image_uri(card=card_object)
         if image_uri is not None:
             self._metadata_uris_by_name[name_key] = image_uri
+        self._record_success(url=request.full_url)
         return image_uri
 
     def _wait_for_metadata_request_slot(self) -> None:
@@ -231,14 +258,54 @@ class CardImageService:
                 continue
 
             if len(image_data) > self.max_bytes:
-                raise CardImageError("Image fetch failed: response too large.")
+                failure = CardImageError("Image fetch failed: response too large.")
+                self._record_failure(url=image_uri, cause=failure)
+                raise failure
 
+            self._record_success(url=image_uri)
             return self._write_image(image_path=image_path, image_data=image_data)
 
         detail = "unknown network error" if last_error is None else str(last_error)
-        raise CardImageError(
+        failure = CardImageError(
             f"Image fetch failed after {self.max_attempts} attempts: {detail}"
-        ) from last_error
+        )
+        self._record_failure(url=image_uri, cause=failure)
+        raise failure from last_error
+
+    def log_failure_summary(self) -> None:
+        """Log suppressed failure counts for every host and reset them.
+        Call this when image work ends so late failures are not lost.
+        """
+
+        with self._failure_lock:
+            counts = {
+                host: count
+                for host, count in self._suppressed_failures.items()
+                if count > 0
+            }
+            self._suppressed_failures.clear()
+        for host, count in counts.items():
+            logger.warning("%d more card image downloads from %s failed", count, host)
+
+    def _record_failure(self, *, url: str, cause: Exception) -> None:
+        host = urllib.parse.urlsplit(url).hostname or "unknown host"
+        with self._failure_lock:
+            first_failure = host not in self._warned_hosts
+            if first_failure:
+                self._warned_hosts.add(host)
+            else:
+                self._suppressed_failures[host] = (
+                    self._suppressed_failures.get(host, 0) + 1
+                )
+        if first_failure:
+            logger.warning("Card image download from %s failed: %s", host, cause)
+
+    def _record_success(self, *, url: str) -> None:
+        host = urllib.parse.urlsplit(url).hostname or "unknown host"
+        with self._failure_lock:
+            count = self._suppressed_failures.pop(host, 0)
+        if count > 0:
+            logger.warning("%d more card image downloads from %s failed", count, host)
 
     def _write_image(self, *, image_path: Path, image_data: bytes) -> Path:
         self.cache_dir.mkdir(parents=True, exist_ok=True)

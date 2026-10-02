@@ -365,3 +365,80 @@ def test_gui_preferences_recover_from_invalid_schema_and_fields(
     _, unsupported_warning = load_gui_preferences(app_dir=path.parent)
     assert unsupported_warning is not None
     assert "unsupported settings version" in unsupported_warning
+
+
+def test_load_preferences_logs_one_warning_for_read_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tui_preferences_path(app_dir=tmp_path).mkdir()
+    gui_preferences_path(app_dir=tmp_path).mkdir()
+
+    with caplog.at_level("WARNING", logger="draftomen.preferences"):
+        _, tui_message = load_tui_preferences(app_dir=tmp_path)
+        _, gui_message = load_gui_preferences(app_dir=tmp_path)
+
+    assert tui_message is not None
+    assert gui_message is not None
+    assert [record.getMessage() for record in caplog.records] == [
+        tui_message,
+        gui_message,
+    ]
+    assert {record.levelname for record in caplog.records} == {"WARNING"}
+
+
+def test_load_preferences_logs_nothing_for_missing_file(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("DEBUG", logger="draftomen.preferences"):
+        load_tui_preferences(app_dir=tmp_path)
+        load_gui_preferences(app_dir=tmp_path)
+
+    assert caplog.records == []
+
+
+def test_save_preferences_logs_one_warning_for_write_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def failing_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        raise PermissionError(f"cannot create {self}")
+
+    monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+
+    with caplog.at_level("WARNING", logger="draftomen.preferences"):
+        tui_message = save_tui_preferences(
+            preferences=TuiVisibilityPreferences(),
+            app_dir=tmp_path / "tui",
+        )
+        gui_message = save_gui_preferences(
+            preferences=GuiDisplayPreferences(),
+            app_dir=tmp_path / "gui",
+        )
+
+    assert tui_message is not None
+    assert gui_message is not None
+    assert [record.getMessage() for record in caplog.records] == [
+        tui_message,
+        gui_message,
+    ]
+
+
+def test_preferences_warning_redacts_home_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    tui_preferences_path(app_dir=tmp_path).mkdir()
+
+    with caplog.at_level("WARNING", logger="draftomen.preferences"):
+        _, message = load_tui_preferences(app_dir=tmp_path)
+
+    assert message is not None
+    assert str(tmp_path) in message
+    assert len(caplog.records) == 1
+    assert str(tmp_path) not in caplog.records[0].getMessage()
+    assert "~" in caplog.records[0].getMessage()
