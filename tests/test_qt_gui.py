@@ -1325,7 +1325,7 @@ class _StubManualSmokeWindow:
         self.grow_pool = True
         self.provider = _StubManualSmokeProvider()
         self.items: dict[str, _StubSmokeItem] = {
-            "testDraftButton": _StubSmokeItem(),
+            "sourceSelector": _StubSmokeItem(),
             "testDraftDialog": _StubSmokeItem(visible=False),
             "testDraftManualModeButton": _StubSmokeItem(),
             "testDraftStartButton": _StubSmokeItem(),
@@ -1347,11 +1347,17 @@ class _StubManualSmokeWindow:
         self.activations.append(name)
         self._apply(name)
 
+    def choose(self, name: str, value: str) -> None:
+        item = self.find(name)
+        assert item is not None, name
+        assert item.property("visible") is True, name
+        self.activations.append(f"{name}={value}")
+        if (name, value) == ("sourceSelector", "test-draft"):
+            self.items["testDraftDialog"].publish("visible", True)
+
     def _apply(self, name: str) -> None:
         """Apply the state change the activated control causes."""
-        if name == "testDraftButton":
-            self.items["testDraftDialog"].publish("visible", True)
-        elif name == "testDraftStartButton":
+        if name == "testDraftStartButton":
             self._start()
         elif name == "testDraftCloseButton":
             self.items["testDraftDialog"].publish("visible", False)
@@ -1456,12 +1462,12 @@ def test_test_draft_manual_smoke_driver_confirms_five_picks_and_reports(
 
     assert exit_codes == [None] * (len(exit_codes) - 1) + [0]
     assert window.activations == [
-        "testDraftButton",
+        "sourceSelector=test-draft",
         "testDraftManualModeButton",
         "testDraftStartButton",
         "wideRecommendationRow2",
         *["testDraftPickButton"] * TEST_DRAFT_MANUAL_PICK_COUNT,
-        "testDraftButton",
+        "sourceSelector=test-draft",
         "testDraftLeaveButton",
     ]
     recommendations = window.provider.state["recommendations"]
@@ -1492,12 +1498,12 @@ def test_test_draft_manual_smoke_driver_falls_back_to_the_narrow_row(
 
     assert exit_codes == [None] * (len(exit_codes) - 1) + [0]
     assert window.activations == [
-        "testDraftButton",
+        "sourceSelector=test-draft",
         "testDraftManualModeButton",
         "testDraftStartButton",
         "narrowRecommendationRow2",
         *["testDraftPickButton"] * TEST_DRAFT_MANUAL_PICK_COUNT,
-        "testDraftButton",
+        "sourceSelector=test-draft",
         "testDraftLeaveButton",
     ]
     assert _manual_smoke_summaries(capsys.readouterr().out) == [
@@ -1534,7 +1540,7 @@ def test_test_draft_manual_smoke_driver_reports_an_absent_start_control(
 
     assert exit_codes[-1] == 1
     assert exit_codes[:-1] == [None] * (len(exit_codes) - 1)
-    assert window.activations == ["testDraftButton", "testDraftManualModeButton"]
+    assert window.activations == ["sourceSelector=test-draft", "testDraftManualModeButton"]
     assert capsys.readouterr().err == (
         "Test Draft smoke failed: the testDraftStartButton control is not available\n"
     )
@@ -1552,7 +1558,7 @@ def test_test_draft_manual_smoke_driver_requires_the_pool_to_grow(
     assert exit_codes[-1] == 1
     assert exit_codes[:-1] == [None] * (len(exit_codes) - 1)
     assert window.activations == [
-        "testDraftButton",
+        "sourceSelector=test-draft",
         "testDraftManualModeButton",
         "testDraftStartButton",
         "wideRecommendationRow2",
@@ -1579,7 +1585,7 @@ def test_test_draft_manual_smoke_driver_times_out_when_the_draft_never_starts(
     now[0] = TEST_DRAFT_SMOKE_TIMEOUT_SECONDS + 1.0
 
     assert driver.advance() == 1
-    assert window.activations == ["testDraftButton", "testDraftManualModeButton"]
+    assert window.activations == ["sourceSelector=test-draft", "testDraftManualModeButton"]
     assert "timed out after 900 seconds" in capsys.readouterr().err
 
 
@@ -8898,18 +8904,18 @@ application.processEvents()
 
 arena_row = find_visual_item(root.contentItem(), "wideRecommendationRow1")
 assert arena_row is not None and arena_row.isVisible()
-test_draft_button = root.findChild(QObject, "testDraftButton")
+source_selector = root.findChild(QObject, "sourceSelector")
 pick_button = root.findChild(QObject, "testDraftPickButton")
 dialog = root.findChild(QObject, "testDraftDialog")
 indicator = root.findChild(QObject, "testDraftIndicator")
 error_label = root.findChild(QObject, "testDraftError")
-assert test_draft_button is not None
+assert source_selector is not None
 assert pick_button is not None
 assert dialog is not None
 assert indicator is not None
 assert error_label is not None
-assert test_draft_button.property("visible") is False
-assert test_draft_button.isVisible() is False
+assert "test-draft" not in [option["key"] for option in source_selector.property("model")]
+assert source_selector.isVisible() is False
 assert pick_button.property("visible") is False
 assert pick_button.isVisible() is False
 assert dialog.property("visible") is False
@@ -9052,6 +9058,9 @@ class StubMoxgateProvider(MockSessionAdapter):
     def _moxgate_state_value(self):
         return self.moxgate_state
 
+    def _test_draft_state_value(self):
+        return {"enabled": False}
+
     def publish_moxgate(self, **changes) -> None:
         base = {
             "enabled": True,
@@ -9111,13 +9120,17 @@ assert selector.isVisible() is False
 provider.publish_moxgate()
 application.processEvents()
 assert selector.isVisible() is True
-assert selector.property("currentIndex") == 0
+assert [option["key"] for option in selector.property("model")] == [
+    "arena",
+    "moxgate",
+]
+assert selector.property("currentValue") == "arena"
 assert indicator.isVisible() is False
 assert error_label.isVisible() is False
 
 provider.publish_moxgate(phase="starting", active=False)
 application.processEvents()
-assert selector.property("currentIndex") == 1
+assert selector.property("currentValue") == "moxgate"
 assert indicator.isVisible() is True
 assert indicator.property("text") == "Moxgate \u00b7 loading card data"
 
@@ -9125,7 +9138,7 @@ provider.publish_moxgate(
     phase="waiting", active=True, endpoint="http://127.0.0.1:4111/snapshot"
 )
 application.processEvents()
-assert selector.property("currentIndex") == 1
+assert selector.property("currentValue") == "moxgate"
 assert indicator.property("text") == (
     "Moxgate \u00b7 waiting for the extension on http://127.0.0.1:4111/snapshot"
 )
@@ -9139,16 +9152,300 @@ assert indicator.property("text") == "Moxgate \u00b7 receiving a draft"
 
 provider.publish_moxgate(phase="port_in_use", error="Port 4111 is already in use.")
 application.processEvents()
-assert selector.property("currentIndex") == 0
+assert selector.property("currentValue") == "arena"
 assert indicator.isVisible() is False
 assert error_label.isVisible() is True
 assert error_label.property("text") == "Port 4111 is already in use."
 
-selector.setProperty("currentIndex", 1)
-selector.activated.emit(1)
-selector.setProperty("currentIndex", 0)
-selector.activated.emit(0)
+keys = [option["key"] for option in selector.property("model")]
+moxgate_index = keys.index("moxgate")
+arena_index = keys.index("arena")
+selector.setProperty("currentIndex", moxgate_index)
+selector.activated.emit(moxgate_index)
+provider.publish_moxgate(phase="waiting", active=True)
+application.processEvents()
+selector.setProperty("currentIndex", arena_index)
+selector.activated.emit(arena_index)
 assert provider.calls == ["start", "stop"], provider.calls
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_moxgate_source_locks_the_account_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.session import ChooseAccount
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubMoxgateProvider(MockSessionAdapter):
+    def __init__(self) -> None:
+        self.moxgate_state = None
+        self.commands: list[object] = []
+        super().__init__(session=MockLiveSession(scenario="ready"))
+
+    def _moxgate_state_value(self):
+        return self.moxgate_state
+
+    def _test_draft_state_value(self):
+        return {"enabled": True}
+
+    def _dispatch(self, *, command) -> None:
+        self.commands.append(command)
+        super()._dispatch(command=command)
+
+    def publish_moxgate(self, *, phase: str) -> None:
+        self.moxgate_state = {
+            "enabled": True,
+            "active": phase in ("waiting", "receiving"),
+            "phase": phase,
+            "port": 4111,
+            "endpoint": None,
+            "error": None,
+        }
+        self._replace_state(
+            state=self.state
+            | {"moxgate": self.moxgate_state, "test_draft": {"enabled": True}}
+        )
+
+
+def choose_account_commands() -> int:
+    return sum(isinstance(command, ChooseAccount) for command in provider.commands)
+
+
+def try_choosing_account() -> None:
+    account_selector.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    QTest.keyClick(root, Qt.Key_Return)
+    application.processEvents()
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubMoxgateProvider()
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+account_selector = root.findChild(QObject, "accountSelector")
+source_selector = root.findChild(QObject, "sourceSelector")
+assert account_selector is not None and source_selector is not None
+arena_account_text = provider.state["active_account"]["screen_name"]
+
+provider.publish_moxgate(phase="stopped")
+application.processEvents()
+assert source_selector.property("currentValue") == "arena"
+assert account_selector.isVisible() is True
+assert account_selector.property("enabled") is True
+assert account_selector.property("displayText") == arena_account_text
+
+for phase in ("starting", "waiting", "receiving"):
+    provider.publish_moxgate(phase=phase)
+    application.processEvents()
+    assert source_selector.property("currentValue") == "moxgate", phase
+    assert account_selector.isVisible() is True, phase
+    assert account_selector.property("enabled") is False, phase
+    assert account_selector.property("displayText") == "moxgate", phase
+
+try_choosing_account()
+assert choose_account_commands() == 0, provider.commands
+
+provider.publish_moxgate(phase="stopped")
+application.processEvents()
+assert source_selector.property("currentValue") == "arena"
+assert account_selector.property("enabled") is True
+assert account_selector.property("displayText") == arena_account_text
+
+try_choosing_account()
+assert choose_account_commands() == 1, provider.commands
+
+preferences.shutdown()
+del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_source_selector_offers_mocked_draft_and_opens_its_dialog_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QMetaObject, QObject, QUrl, Slot
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class StubSourceProvider(MockSessionAdapter):
+    def __init__(self) -> None:
+        self.test_draft_state = {"enabled": False}
+        self.moxgate_state = {"enabled": False}
+        self.calls: list[str] = []
+        super().__init__(session=MockLiveSession(scenario="ready"))
+
+    def _test_draft_state_value(self) -> dict:
+        return dict(self.test_draft_state)
+
+    def _moxgate_state_value(self) -> dict:
+        return dict(self.moxgate_state)
+
+    def publish(self, *, test_draft: dict | None = None, moxgate: dict | None = None) -> None:
+        if test_draft is not None:
+            self.test_draft_state = test_draft
+        if moxgate is not None:
+            self.moxgate_state = moxgate
+        self._replace_state(
+            state=self.state
+            | {
+                "test_draft": dict(self.test_draft_state),
+                "moxgate": dict(self.moxgate_state),
+            }
+        )
+
+    @Slot()
+    def startMoxgate(self) -> None:
+        self.calls.append("startMoxgate")
+
+    @Slot()
+    def stopMoxgate(self) -> None:
+        self.calls.append("stopMoxgate")
+
+    @Slot()
+    def leaveTestDraft(self) -> None:
+        self.calls.append("leaveTestDraft")
+
+
+def labels() -> list[str]:
+    return [option["label"] for option in selector.property("model")]
+
+
+def choose(value: str) -> None:
+    keys = [option["key"] for option in selector.property("model")]
+    index = keys.index(value)
+    selector.setProperty("currentIndex", index)
+    selector.activated.emit(index)
+    application.processEvents()
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = StubSourceProvider()
+preference_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preference_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1440)
+context.setContextProperty("initialWindowHeight", 900)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+selector = root.findChild(QObject, "sourceSelector")
+dialog = root.findChild(QObject, "testDraftDialog")
+assert selector is not None and dialog is not None
+
+# Only Arena is offered, so the selector stays hidden.
+assert labels() == ["Arena"]
+assert selector.isVisible() is False
+
+provider.publish(moxgate={"enabled": True, "active": False, "phase": "stopped"})
+application.processEvents()
+assert labels() == ["Arena", "Moxgate"]
+assert selector.isVisible() is True
+
+test_draft_idle = {
+    "enabled": True,
+    "active": False,
+    "phase": "idle",
+    "supported_formats": [{"key": "quick", "label": "Quick Draft"}],
+    "supported_sets": [
+        {"code": "hob", "name": "The Hobbit", "card_data_cached": True}
+    ],
+    "default_set_code": "hob",
+}
+provider.publish(test_draft=test_draft_idle)
+application.processEvents()
+assert labels() == ["Arena", "Mocked Draft", "Moxgate"]
+assert selector.isVisible() is True
+assert selector.property("currentValue") == "arena"
+
+# Choosing Mocked Draft opens the dialog and keeps Arena selected until a draft runs.
+assert dialog.property("visible") is False
+choose("test-draft")
+assert dialog.property("visible") is True
+assert selector.property("currentValue") == "arena"
+assert QMetaObject.invokeMethod(dialog, "close")
+application.processEvents()
+assert dialog.property("visible") is False
+assert selector.property("currentValue") == "arena"
+assert provider.calls == []
+
+# A running test draft makes the selector show Mocked Draft.
+provider.publish(test_draft=test_draft_idle | {"active": True, "phase": "drafting"})
+application.processEvents()
+assert selector.property("currentValue") == "test-draft"
+assert dialog.property("visible") is False
+
+# Choosing it again reopens the dialog and leaves the draft running.
+choose("test-draft")
+assert dialog.property("visible") is True
+assert selector.property("currentValue") == "test-draft"
+assert provider.calls == []
+assert QMetaObject.invokeMethod(dialog, "close")
+application.processEvents()
+
+# Choosing Arena leaves the test draft and does not touch the Moxgate receiver.
+choose("arena")
+assert provider.calls == ["leaveTestDraft"], provider.calls
+
+preferences.shutdown()
+del engine
 """
     completed = _run_qml_probe(probe)
 
@@ -9227,12 +9524,18 @@ root = engine.rootObjects()[0]
 application.processEvents()
 
 switch = root.findChild(QObject, "settingsMockedDraftSwitch")
-test_draft_button = root.findChild(QObject, "testDraftButton")
+source_selector = root.findChild(QObject, "sourceSelector")
 assert switch is not None
-assert test_draft_button is not None
+assert source_selector is not None
+
+
+def source_keys() -> list[str]:
+    return [option["key"] for option in source_selector.property("model")]
+
+
 assert switch.property("checked") is False
-assert test_draft_button.property("visible") is False
-assert test_draft_button.isVisible() is False
+assert "test-draft" not in source_keys()
+assert source_selector.isVisible() is False
 assert provider.installed == []
 
 switch.forceActiveFocus()
@@ -9242,8 +9545,8 @@ assert switch.property("checked") is True
 assert preferences.mockedDraftEnabled is True
 assert len(provider.installed) == 1
 assert isinstance(provider.installed[0], StubMockedDraftFactory)
-assert test_draft_button.property("visible") is True
-assert test_draft_button.isVisible() is True
+assert "test-draft" in source_keys()
+assert source_selector.isVisible() is True
 
 QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
@@ -9251,8 +9554,8 @@ assert switch.property("checked") is False
 assert preferences.mockedDraftEnabled is False
 assert len(provider.installed) == 2
 assert provider.installed[1] is None
-assert test_draft_button.property("visible") is False
-assert test_draft_button.isVisible() is False
+assert "test-draft" not in source_keys()
+assert source_selector.isVisible() is False
 
 wait_for_saved(preferences)
 preferences.shutdown()
@@ -9747,15 +10050,18 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
+source_selector = root.findChild(QObject, "sourceSelector")
 dialog = root.findChild(QObject, "testDraftDialog")
 selector = root.findChild(QObject, "testDraftSetSelector")
 format_selector = root.findChild(QObject, "testDraftFormatSelector")
 manual_button = root.findChild(QObject, "testDraftManualModeButton")
 auto_button = root.findChild(QObject, "testDraftAutoModeButton")
 start_button = root.findChild(QObject, "testDraftStartButton")
-assert test_draft_button is not None and test_draft_button.isVisible()
-assert test_draft_button.property("text") == "Mocked Draft"
+assert source_selector is not None and source_selector.isVisible()
+assert [option["label"] for option in source_selector.property("model")] == [
+    "Arena",
+    "Mocked Draft",
+]
 assert dialog is not None
 assert dialog.property("title") == "Mocked Draft"
 assert selector is not None
@@ -9765,8 +10071,11 @@ assert auto_button is not None
 assert start_button is not None
 assert dialog.property("visible") is False
 
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 assert dialog.property("visible") is True
 assert dialog.property("modal") is True
@@ -9886,10 +10195,13 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
-assert test_draft_button is not None and test_draft_button.isVisible()
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+source_selector = root.findChild(QObject, "sourceSelector")
+assert source_selector is not None and source_selector.isVisible()
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 
 dialog = root.findChild(QObject, "testDraftDialog")
@@ -10363,10 +10675,13 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
-assert test_draft_button is not None and test_draft_button.isVisible()
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+source_selector = root.findChild(QObject, "sourceSelector")
+assert source_selector is not None and source_selector.isVisible()
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 dialog = root.findChild(QObject, "testDraftDialog")
 assert dialog is not None and dialog.property("visible") is True
@@ -10525,10 +10840,13 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
-assert test_draft_button is not None and test_draft_button.isVisible()
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+source_selector = root.findChild(QObject, "sourceSelector")
+assert source_selector is not None and source_selector.isVisible()
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 dialog = root.findChild(QObject, "testDraftDialog")
 assert dialog is not None and dialog.property("visible") is True
@@ -10618,10 +10936,13 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
-assert test_draft_button is not None and test_draft_button.isVisible()
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+source_selector = root.findChild(QObject, "sourceSelector")
+assert source_selector is not None and source_selector.isVisible()
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 dialog = root.findChild(QObject, "testDraftDialog")
 assert dialog is not None and dialog.property("visible") is True
@@ -10716,9 +11037,13 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+source_selector = root.findChild(QObject, "sourceSelector")
+assert source_selector is not None and source_selector.isVisible()
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 
 dialog = root.findChild(QObject, "testDraftDialog")
@@ -10895,10 +11220,13 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
-assert test_draft_button is not None and test_draft_button.isVisible()
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+source_selector = root.findChild(QObject, "sourceSelector")
+assert source_selector is not None and source_selector.isVisible()
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 
 dialog = root.findChild(QObject, "testDraftDialog")
@@ -11045,10 +11373,13 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
-assert test_draft_button is not None and test_draft_button.isVisible()
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+source_selector = root.findChild(QObject, "sourceSelector")
+assert source_selector is not None and source_selector.isVisible()
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 
 dialog = root.findChild(QObject, "testDraftDialog")
@@ -11188,9 +11519,13 @@ engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
 root = engine.rootObjects()[0]
 application.processEvents()
 
-test_draft_button = root.findChild(QObject, "testDraftButton")
-test_draft_button.forceActiveFocus()
-QTest.keyClick(root, Qt.Key_Space)
+source_selector = root.findChild(QObject, "sourceSelector")
+assert source_selector is not None and source_selector.isVisible()
+mocked_draft_index = [option["key"] for option in source_selector.property("model")].index(
+    "test-draft"
+)
+source_selector.setProperty("currentIndex", mocked_draft_index)
+source_selector.activated.emit(mocked_draft_index)
 application.processEvents()
 dialog = root.findChild(QObject, "testDraftDialog")
 start_button = root.findChild(QObject, "testDraftStartButton")

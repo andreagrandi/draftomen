@@ -19,6 +19,21 @@ Rectangle {
         && (root.moxgate.phase === "starting"
             || root.moxgate.phase === "waiting"
             || root.moxgate.phase === "receiving")
+    readonly property bool testDraftRunning: root.testDraft !== null
+        && root.testDraft.active === true
+    readonly property var sourceOptions: {
+        const options = [{ key: "arena", label: "Arena" }]
+        if (root.testDraft !== null && root.testDraft.enabled === true)
+            options.push({ key: "test-draft", label: "Mocked Draft" })
+        if (root.moxgate !== null && root.moxgate.enabled === true)
+            options.push({ key: "moxgate", label: "Moxgate" })
+        return options
+    }
+    readonly property string activeSource: root.moxgateRunning
+        ? "moxgate"
+        : root.testDraftRunning ? "test-draft" : "arena"
+    readonly property int activeSourceIndex: Math.max(
+        0, root.sourceOptions.findIndex(option => option.key === root.activeSource))
 
     color: Theme.surfaceLow
     implicitHeight: 68
@@ -73,8 +88,11 @@ Rectangle {
             id: accountSelector
             objectName: "accountSelector"
             Layout.preferredWidth: 180
-            visible: root.sessionState.accounts
-                && root.sessionState.accounts.length > 0
+            visible: root.moxgateRunning
+                || (root.sessionState.accounts
+                    && root.sessionState.accounts.length > 0)
+            // Moxgate drafts are always saved under the fixed moxgate account.
+            enabled: !root.moxgateRunning
             model: root.sessionState.accounts || []
             textRole: "screen_name"
             valueRole: "account_id"
@@ -88,7 +106,9 @@ Rectangle {
                 }
                 return -1
             }
-            displayText: root.sessionState.active_account
+            displayText: root.moxgateRunning
+                ? "moxgate"
+                : root.sessionState.active_account
                 ? root.sessionState.active_account.screen_name
                     || root.sessionState.active_account.account_id
                 : "Choose Arena account"
@@ -113,29 +133,31 @@ Rectangle {
         DimensionalComboBox {
             id: sourceSelector
             objectName: "sourceSelector"
-            Layout.preferredWidth: 110
-            visible: root.moxgate !== null && root.moxgate.enabled === true
-            model: ["Arena", "Moxgate"]
-            currentIndex: root.moxgateRunning ? 1 : 0
+            Layout.preferredWidth: 140
+            visible: root.sourceOptions.length > 1
+            model: root.sourceOptions
+            textRole: "label"
+            valueRole: "key"
+            currentIndex: root.activeSourceIndex
             Accessible.name: "Draft source"
-            Accessible.description: "Choose whether drafts come from the Arena log or the Moxgate browser extension."
-            onActivated: {
-                if (currentIndex === 1)
-                    root.provider.startMoxgate()
-                else
-                    root.provider.stopMoxgate()
+            Accessible.description: "Choose whether drafts come from the Arena log, a developer Mocked Draft, or the Moxgate browser extension."
+            onActivated: index => {
+                const key = root.sourceOptions[index].key
+                if (key === "test-draft") {
+                    // The dialog starts or leaves the draft. Until a draft is
+                    // under way the selector keeps showing the current source.
+                    sourceSelector.currentIndex = Qt.binding(() => root.activeSourceIndex)
+                    root.testDraftRequested(sourceSelector)
+                } else if (key === "moxgate") {
+                    if (!root.moxgateRunning)
+                        root.provider.startMoxgate()
+                } else {
+                    if (root.moxgateRunning)
+                        root.provider.stopMoxgate()
+                    if (root.testDraftRunning)
+                        root.provider.leaveTestDraft()
+                }
             }
-        }
-
-        DimensionalButton {
-            id: testDraftButton
-            objectName: "testDraftButton"
-            visible: root.testDraft !== null && root.testDraft.enabled === true
-            accented: root.testDraft !== null && root.testDraft.active === true
-            text: "Mocked Draft"
-            Accessible.name: "Open Mocked Draft controls"
-            Accessible.description: "Start or leave a developer simulated draft."
-            onClicked: root.testDraftRequested(testDraftButton)
         }
 
         DimensionalButton {
