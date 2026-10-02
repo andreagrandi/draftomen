@@ -134,7 +134,11 @@ The notify has no event name, so the pack belongs to the last draft event the pa
 
 A `==> EventPlayerDraftMakePick` request carries a string-encoded JSON `request` with `DraftId`, `Pack`, `Pick` and `GrpIds`. `Pack` and `Pick` are 1-based like the notify. `GrpIds` holds one or more selected cards: one in Premier and Traditional, two in Pick-Two. A pick whose card count does not match the format is still recorded as logged, and the parser writes a warning.
 
-The response arrives as a `<== EventPlayerDraftMakePick(<id>)` marker followed by a JSON body on the next line. `IsPickSuccessful: false` drops the pick. `IsPickingCompleted: true` completes the draft. A request with no logged response is still recorded when the next pack or completion arrives. A repeated request or response counts once.
+The response arrives as a `<== EventPlayerDraftMakePick(<id>)` marker followed by a JSON body on the next line. `IsPickSuccessful: false` drops the pick. `IsPickingCompleted: true` completes the draft.
+
+When Arena fails a pick it can answer with the table state instead. That body is a JSON object with `TableInfo`, which holds `SelfPack`, `PickedCards` and `Players`, plus `PickInfo`, which holds `PackCards`, `SelfPack`, `SelfPick`, `NumCardsToPick` and `TimeoutSec`, and `PackInfo`. `PickedCards` does not include the failed pick. The client then sends a request for the same pack and pick again, and that request can name a different card. The parser treats this body like `IsPickSuccessful: false`: it drops the pending pick, and the resubmitted request records the pick. Any other JSON object after a pick response marker is ignored and never stops the parse.
+
+A request with no logged response is still recorded when the next pack or completion arrives. A repeated request or response counts once.
 
 ### Draft completed
 
