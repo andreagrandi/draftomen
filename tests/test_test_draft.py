@@ -1713,6 +1713,9 @@ def test_create_test_draft_runtime_accepts_a_card_image_service(
             fetched_uris.append(image_uri)
             return image_path
 
+        def log_failure_summary(self) -> None:
+            return None
+
     socket = _FakeSocket()
     with _create_runtime(
         sources=sources,

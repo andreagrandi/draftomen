@@ -7890,6 +7890,9 @@ class _ControlledCardImageService:
         self._released: dict[str, threading.Event] = {}
         self._finished: dict[str, threading.Event] = {}
 
+    def log_failure_summary(self) -> None:
+        return None
+
     def started(self, *, image_uri: str) -> threading.Event:
         return self._started.setdefault(image_uri, threading.Event())
 
@@ -9925,3 +9928,159 @@ def test_resumed_pack_uses_saved_pool_for_snapshot(tmp_path: Path) -> None:
     assert {item.quantity for item in snapshot.pool.cards} == {1}
     assert snapshot.current_pack_event is not None
     assert snapshot.current_pack_event.pool_grp_ids == (104976, 105080)
+
+
+def _info_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        record for record in caplog.records if record.levelno >= logging.INFO
+    ]
+
+
+def test_live_session_logs_one_start_card_data_and_ratings_line_per_draft(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = LiveSession(
+        log_path=None,
+        app_dir=tmp_path / "app",
+        card_database=replace(
+            _fixture_card_database(),
+            generated_at=datetime(2026, 8, 23, 12, 0, tzinfo=UTC),
+        ),
+    )
+    events = (
+        AccountEvent(client_id="direct-account", screen_name="Direct"),
+        DraftStartedEvent(
+            event_name=CONTEXT_EVENT_NAME,
+            set_code="TST",
+            course_id="direct-draft",
+            account_id="direct-account",
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        session.process_events(events=events)
+
+    messages = [
+        record.getMessage()
+        for record in _info_records(caplog)
+        if record.name == "draftomen.session"
+    ]
+    assert len([m for m in messages if m.startswith("Draft started:")]) == 1
+    assert (
+        f"Draft started: set TST, event {CONTEXT_EVENT_NAME}, format quick"
+        in messages
+    )
+    assert (
+        "Card data for TST: generated 2026-08-23T12:00:00+00:00" in messages
+    )
+    ratings = [m for m in messages if m.startswith("Ratings for TST:")]
+    assert len(ratings) == 1
+    assert "source" in ratings[0]
+    assert "maturity" in ratings[0]
+
+
+def test_live_session_logs_remote_profile_refresh_only_when_it_changes(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    older = _fixture_empirical_profile_with_authority(
+        source_format="premierdraft",
+        fallback_reason="missing-exact-evidence",
+        profile_version="empirical-1.0",
+        generated_at="2026-08-29T00:00:00+00:00",
+    )
+    newer = _fixture_empirical_profile_with_authority(
+        source_format="quickdraft",
+        fallback_reason=None,
+        profile_version="empirical-2.0",
+        generated_at="2026-08-30T00:00:00+00:00",
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_fixture_set_card_database(set_code="TST"),
+        profile_client=_ProfileClientStub({"TST": older}),
+    )
+    session.process_lines(
+        lines=_profiled_history_lines(
+            pool_before_pick=_fixture_pool_before_pick(
+                pack_number=CONTEXT_PACK_NUMBER,
+                pick_number=CONTEXT_PICK_NUMBER,
+            )
+        )
+    )
+    request = session.profile_refresh_request()
+    assert request is not None
+
+    with caplog.at_level(logging.INFO):
+        session.complete_profile_refresh(
+            request=request,
+            result=ProfileRefreshResult(
+                profile=newer,
+                outcome=ProfileRefreshOutcome.UPDATED,
+            ),
+        )
+
+    updates = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Ratings for TST updated")
+    ]
+    assert updates == [
+        "Ratings for TST updated: source remote, version empirical-2.0, "
+        "generated 2026-08-30T00:00:00+00:00"
+    ]
+
+
+def test_live_session_stop_logs_card_image_failure_summary(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class _Service:
+        def log_failure_summary(self) -> None:
+            calls.append("summary")
+
+    session = LiveSession(
+        log_path=None,
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+        card_image_service=_Service(),  # type: ignore[arg-type]
+    )
+
+    session.stop()
+
+    assert calls == ["summary"]
+
+
+@pytest.mark.parametrize(
+    "fixture_name", ["premier-draft-complete.log", "quick-draft-msh-player.log"]
+)
+def test_live_session_replaying_a_full_draft_stays_within_the_log_budget(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    fixture_name: str,
+) -> None:
+    fixture_lines = (
+        (PROJECT_ROOT / "tests" / "fixtures" / fixture_name)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    log_path = tmp_path / "Player.log"
+    log_path.write_text("", encoding="utf-8")
+    session = LiveSession(
+        log_path=log_path,
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+    )
+
+    with caplog.at_level(logging.INFO):
+        session.process_lines(lines=fixture_lines)
+
+    assert session.snapshot.status.phase in {
+        ApplicationPhase.DRAFTING,
+        ApplicationPhase.DRAFT_COMPLETE,
+    }
+    records = _info_records(caplog)
+    assert 1 <= len(records) <= 10, [r.getMessage() for r in records]

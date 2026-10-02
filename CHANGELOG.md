@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- The app log now records the Arena log file being followed and, for each new
+  draft, the set, event and format. It also records where card data came from,
+  the cache or a download with the artifact checksum, and which ratings
+  version is in use. A card image host that keeps failing logs one warning and
+  a count of later failures. Preferences that cannot be loaded or saved log a
+  warning. (#880)
 - Fixed the macOS app failing to verify HTTPS certificates on Macs without
   Homebrew OpenSSL. Card data, ratings, 17Lands data and card images could not
   download there, because the bundled OpenSSL looked for its certificate file

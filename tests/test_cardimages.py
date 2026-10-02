@@ -283,3 +283,135 @@ def _card(
         image_uri=image_uri,
     )
 
+
+
+def _failing_opener(request: object, timeout: float) -> object:
+    raise urllib.error.URLError("connection refused")
+
+
+def _failure_records(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "draftomen.cardimages" and record.levelname == "WARNING"
+    ]
+
+
+def test_card_image_service_warns_once_per_host_for_repeated_failures(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = CardImageService(
+        cache_dir=tmp_path,
+        max_attempts=1,
+        opener=_failing_opener,
+    )
+
+    with caplog.at_level("WARNING", logger="draftomen.cardimages"):
+        for name in ("a", "b", "c"):
+            with pytest.raises(CardImageError):
+                service.fetch(image_uri=f"https://cards.example/{name}.png")
+
+    messages = _failure_records(caplog)
+    assert len(messages) == 1
+    assert messages[0].startswith("Card image download from cards.example failed: ")
+    assert "connection refused" in messages[0]
+
+
+def test_card_image_service_warns_separately_for_each_host(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = CardImageService(
+        cache_dir=tmp_path,
+        max_attempts=1,
+        opener=_failing_opener,
+    )
+
+    with caplog.at_level("WARNING", logger="draftomen.cardimages"):
+        for uri in (
+            "https://one.example/a.png",
+            "https://two.example/a.png",
+            "https://one.example/b.png",
+        ):
+            with pytest.raises(CardImageError):
+                service.fetch(image_uri=uri)
+
+    messages = _failure_records(caplog)
+    assert len(messages) == 2
+    assert "one.example" in messages[0]
+    assert "two.example" in messages[1]
+
+
+def test_card_image_service_reports_suppressed_failures_after_success(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fail = True
+
+    def opener(request: object, timeout: float) -> object:
+        if fail:
+            raise urllib.error.URLError("down")
+        return _ImageResponse(image_data=b"ok")
+
+    service = CardImageService(cache_dir=tmp_path, max_attempts=1, opener=opener)
+
+    with caplog.at_level("WARNING", logger="draftomen.cardimages"):
+        for name in ("a", "b", "c"):
+            with pytest.raises(CardImageError):
+                service.fetch(image_uri=f"https://cards.example/{name}.png")
+        fail = False
+        service.fetch(image_uri="https://cards.example/d.png")
+        fail = True
+        with pytest.raises(CardImageError):
+            service.fetch(image_uri="https://cards.example/e.png")
+
+    messages = _failure_records(caplog)
+    assert len(messages) == 2
+    assert messages[1] == "2 more card image downloads from cards.example failed"
+
+
+def test_card_image_service_failure_summary_reports_and_resets_counts(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = CardImageService(
+        cache_dir=tmp_path,
+        max_attempts=1,
+        opener=_failing_opener,
+    )
+    for name in ("a", "b", "c"):
+        with pytest.raises(CardImageError):
+            service.fetch(image_uri=f"https://cards.example/{name}.png")
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="draftomen.cardimages"):
+        service.log_failure_summary()
+        service.log_failure_summary()
+
+    assert _failure_records(caplog) == [
+        "2 more card image downloads from cards.example failed",
+    ]
+
+
+def test_card_image_service_warns_for_metadata_lookup_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = CardImageService(
+        cache_dir=tmp_path,
+        metadata_opener=_failing_opener,
+        sleep=lambda seconds: None,
+    )
+    card = _card(grp_id=1, name="Lookup Card")
+
+    with caplog.at_level("WARNING", logger="draftomen.cardimages"):
+        with pytest.raises(CardImageError):
+            service.resolve_focused_image_uri(
+                card=card,
+                card_database=CardDatabase(cards={card.grp_id: card}),
+            )
+
+    messages = _failure_records(caplog)
+    assert len(messages) == 1
+    assert "api.scryfall.com" in messages[0]

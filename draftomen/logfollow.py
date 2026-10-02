@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import time
@@ -15,8 +16,11 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, BinaryIO, TypeAlias
 
+from draftomen.applog import redact_home
 from draftomen.config import POLL_INTERVAL_SECONDS
 from draftomen.paths import app_data_dir
+
+logger = logging.getLogger(__name__)
 
 PathInput: TypeAlias = str | PathLike[str]
 
@@ -167,6 +171,14 @@ class LogFollower:
             previous_log_path=previous_log_path,
         )
         self.offset_path = log_offset_path(log_path=self.log_path, app_dir=self.app_dir)
+        if self.previous_log_path is None:
+            logger.info("Following Arena log %s", redact_home(str(self.log_path)))
+        else:
+            logger.info(
+                "Following Arena log %s (previous %s)",
+                redact_home(str(self.log_path)),
+                redact_home(str(self.previous_log_path)),
+            )
 
     def poll(self) -> tuple[str, ...]:
         """Read complete lines appended since the persisted offset.

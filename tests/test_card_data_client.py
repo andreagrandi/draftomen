@@ -663,3 +663,104 @@ def test_successful_load_logs_no_warning(
         client.load("tst", allow_network=True)
 
     assert _card_data_warnings(caplog) == []
+
+
+def _card_data_info(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "draftomen.card_data_client"
+        and record.levelno == logging.INFO
+    ]
+
+
+def test_cache_load_logs_its_source(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    destination = card_data_cache_path(set_code="tst", app_dir=tmp_path)
+    destination.parent.mkdir(parents=True)
+    payload = _artifact().to_gzip_bytes()
+    destination.write_bytes(payload)
+
+    with caplog.at_level(logging.INFO):
+        CardDataClient(app_dir=tmp_path).load("tst", allow_network=False)
+
+    assert _card_data_info(caplog) == [
+        f"Card data for tst from cache, network off, sha256 {_short_sha(payload)}, "
+        "generated none"
+    ]
+
+
+def test_download_logs_its_source(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    payload = _artifact().to_gzip_bytes()
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=None,
+        opener=_opener(payload, [], url=f"{CARD_DATA_BASE_URL}tst.json.gz"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        client.load("tst", allow_network=True)
+
+    assert _card_data_info(caplog) == [
+        f"Card data for tst from download, sha256 {_short_sha(payload)}, generated none"
+    ]
+
+
+def test_cache_matching_the_manifest_logs_its_source(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    payload = _artifact().to_gzip_bytes()
+    destination = card_data_cache_path(set_code="tst", app_dir=tmp_path)
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(payload)
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener(
+            {SETS_MANIFEST_URL: _manifest_bytes(("tst", payload))}, []
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        client.load("tst", allow_network=True)
+
+    assert _card_data_info(caplog) == [
+        f"Card data for tst from cache, matches manifest, sha256 {_short_sha(payload)}, "
+        "generated none"
+    ]
+
+
+def test_cache_after_a_failed_download_logs_its_source_at_info(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    cached = _artifact().to_gzip_bytes()
+    published = _two_card_artifact().to_gzip_bytes()
+    destination = card_data_cache_path(set_code="tst", app_dir=tmp_path)
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(cached)
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener(
+            {
+                SETS_MANIFEST_URL: _manifest_bytes(("tst", published)),
+                _CARD_URL: published + b"\x00",
+            },
+            [],
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        client.load("tst", allow_network=True)
+
+    assert _card_data_info(caplog) == [
+        f"Card data for tst from cache, download failed, sha256 {_short_sha(cached)}, "
+        "generated none"
+    ]
+
+
+def _short_sha(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()[:12]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -283,3 +284,36 @@ def test_startup_scan_does_not_suppress_unreadable_previous_log(
     with pytest.raises(OSError, match="temporary previous-log read failure"):
         follower.scan_startup_files()
 
+
+
+def test_log_follower_logs_the_followed_path_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    log_path = tmp_path / "Player.log"
+
+    with caplog.at_level(logging.INFO, logger="draftomen.logfollow"):
+        follower = LogFollower(log_path=log_path, app_dir=tmp_path / "app")
+        follower.poll()
+        follower.poll()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 1
+    assert messages[0].startswith("Following Arena log ")
+    assert str(log_path.name) in messages[0]
+
+
+def test_log_follower_logs_the_previous_path_when_it_is_set(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    previous = tmp_path / "Player-prev.log"
+
+    with caplog.at_level(logging.INFO, logger="draftomen.logfollow"):
+        LogFollower(
+            log_path=tmp_path / "Player.log",
+            app_dir=tmp_path / "app",
+            previous_log_path=previous,
+        )
+
+    (message,) = [record.getMessage() for record in caplog.records]
+    assert "(previous " in message
+    assert "Player-prev.log" in message
