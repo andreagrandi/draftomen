@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- `scripts/patch_scryfall_arena_ids.py` adds Arena ids from 17Lands card
+  ratings to Scryfall default-cards data. Use its output with
+  `export-set-data --bulk-file` for a set Scryfall has no Arena ids for.
+  `docs/set-profiles.md` describes the steps. (#861)
 - The daily profile refresh uses the committed card data for a set when
   Scryfall has no Arena ids for it, so sets such as FRA no longer fail with
   card-metadata-unavailable. The refresh summary lists the sets that used it.

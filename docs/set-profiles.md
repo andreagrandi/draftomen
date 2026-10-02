@@ -70,6 +70,28 @@ copies instead. Before publication, all pending candidates are validated; the
 all-set command publishes in set-code order and reruns skip only strict valid
 siblings, so an interrupted run resumes at the first pending set.
 
+### Sets without Scryfall Arena ids
+
+Card data keys on Arena ids. When Scryfall has none for a new set,
+`export-set-data` cannot export it. Take the ids from 17Lands instead:
+
+1. Download the 17Lands card ratings for the set, for example from
+   `https://www.17lands.com/card_ratings/data?expansion=SET&format=PremierDraft`,
+   then run
+   `uv run python scripts/patch_scryfall_arena_ids.py SET --ratings-file RATINGS.json --output patched.jsonl.gz`.
+   The script adds `arena_id` to the lowest collector number print of each
+   rated card and leaves existing Scryfall ids alone. Add `--bulk-file PATH` to
+   use a local default-cards copy instead of downloading one.
+2. Run `draftomen-tui export-set-data SET --bulk-file patched.jsonl.gz`.
+3. Run `draftomen-tui refresh-profile-data SET`.
+4. `refresh-profile-data` does not update the sets manifest, so regenerate it
+   with
+   `uv run python -c "from pathlib import Path; from draftomen.sets_manifest import write_sets_manifest; write_sets_manifest(public_dir=Path('website/public'))"`.
+
+While Scryfall has no Arena ids for the set, the daily refresh builds profiles
+from the committed card data. Once Scryfall adds ids, the daily refresh still
+never replaces the card data file, so re-exporting the set is a manual step.
+
 Live mode detects the set from the draft before loading card data. Its selected
 artifact is cached at the application-data
 `card-data/<lowercase-set-code>.json.gz` path (normally
