@@ -25,10 +25,12 @@ classifiers = [
     "Topic :: Games/Entertainment",
 ]
 dependencies = [
+    "certifi>=2026.7.22",
     "pyside6>=6.9,<7",
     "python-socketio[client]>=5.16.4,<6",
     "textual>=8.2.8",
     "textual-image>=0.13.2",
+    "truststore>=0.10.0",
 ]
 
 [project.scripts]

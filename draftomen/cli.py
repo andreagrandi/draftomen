@@ -127,6 +127,7 @@ from draftomen.moxgate_server import (
     load_hosted_moxgate_card_data,
     load_moxgate_card_data,
 )
+from draftomen.tls import use_system_trust_store
 from draftomen.tui import run_tui_moxgate_watch, run_tui_watch
 from draftomen.watch import run_plain_moxgate_watch, run_plain_watch
 
@@ -2069,6 +2070,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
 
     configure_logging()
+    use_system_trust_store()
     parser = build_parser()
     raw_args = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(args=raw_args)

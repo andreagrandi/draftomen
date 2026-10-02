@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Fixed the macOS app failing to verify HTTPS certificates on Macs without
+  Homebrew OpenSSL. Card data, ratings, 17Lands data and card images could not
+  download there, because the bundled OpenSSL looked for its certificate file
+  in a Homebrew folder. The app now uses the system certificate store and falls
+  back to the certifi file it bundles. (#879)
 - The app log now says why a hosted download failed. Card data, the sets
   manifest, ratings and the augmented model each log the URL and the cause,
   such as an HTTP status or a certificate error. A ratings refresh that ends

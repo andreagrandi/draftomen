@@ -348,6 +348,7 @@ jobs:
           fi
           uv run python tests/bundle_smoke.py \
             --timeout "${{ matrix.smoke_timeout }}" \
+            --https-check https://www.draftomen.com/sets/manifest.json \
             "$mountpoint/$BUNDLE"
           detach_image
           trap - EXIT
