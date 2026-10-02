@@ -78,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SERVER_URL,
         help="Draftmancer server the Auto and Manual Test Draft journeys connect to.",
     )
+    parser.add_argument(
+        "--https-check",
+        metavar="URL",
+        default=None,
+        help="Also download this URL from the bundle with the Homebrew CA paths unreachable.",
+    )
     return parser
 
 
@@ -136,6 +142,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout=timeout,
             environment=environment,
         )
+        if args.https_check is not None:
+            _run_https_check(
+                executable=executable,
+                directory=directory,
+                url=args.https_check,
+                timeout=timeout,
+                environment=environment,
+            )
 
     return 0
 
@@ -235,6 +249,55 @@ def _run_live_launch(
     if not screenshot_path.is_file() or screenshot_path.stat().st_size == 0:
         raise RuntimeError(
             f"Live smoke test did not render a window screenshot: {screenshot_path}"
+        )
+
+
+def _run_https_check(
+    *,
+    executable: Path,
+    directory: Path,
+    url: str,
+    timeout: int,
+    environment: Mapping[str, str],
+) -> None:
+    """Download the URL from the bundle with no CA file or folder reachable by OpenSSL."""
+
+    https_directory = directory / "https"
+    https_directory.mkdir(parents=True, exist_ok=True)
+    empty_cert_directory = https_directory / "empty-certs"
+    empty_cert_directory.mkdir(exist_ok=True)
+    # The bundled Homebrew OpenSSL looks for its CA file under a Homebrew prefix that
+    # a user's Mac does not have. Pointing both variables at nothing gives the same
+    # result here, so only the app's own certificate handling can make the download work.
+    https_environment = {
+        **environment,
+        "SSL_CERT_FILE": str(https_directory / "missing-ca-file.pem"),
+        "SSL_CERT_DIR": str(empty_cert_directory),
+    }
+    command = [
+        str(executable),
+        "--https-check",
+        url,
+        "--app-dir",
+        str(https_directory / "app"),
+    ]
+    result = subprocess.run(
+        args=command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        cwd=executable.parent,
+        env=https_environment,
+        timeout=timeout,
+    )
+    # The certifi fallback would also pass, so require the truststore context class.
+    if result.returncode != 0 or "truststore" not in result.stdout:
+        raise RuntimeError(
+            f"HTTPS check exited with code {result.returncode} or without truststore; "
+            f"last stdout lines: {result.stdout.splitlines()[-10:]}; "
+            f"last stderr lines: {result.stderr.splitlines()[-10:]}"
         )
 
 

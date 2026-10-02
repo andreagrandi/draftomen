@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
+import ssl
 import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import truststore
 
 from draftomen import applog
 from draftomen.card_data_client import CardDataClient
@@ -64,3 +66,24 @@ def _isolated_application_log(
     sys.excepthook = excepthook
     threading.excepthook = threading_excepthook
     applog._handler = None
+
+
+@pytest.fixture(autouse=True)
+def _undo_truststore_injection() -> Iterator[None]:
+    """Remove the process-wide truststore injection that main() installs.
+    Without this, one test that calls main() would change SSL for every later test.
+    """
+
+    yield
+    if ssl.SSLContext is truststore.SSLContext:
+        truststore.extract_from_ssl()
+
+
+@pytest.fixture(autouse=True)
+def _restore_ssl_cert_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore SSL_CERT_FILE after tests, since main() sets it on the certifi fallback."""
+
+    if "SSL_CERT_FILE" in os.environ:
+        monkeypatch.setenv("SSL_CERT_FILE", os.environ["SSL_CERT_FILE"])
+    else:
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)

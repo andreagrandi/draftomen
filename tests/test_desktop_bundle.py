@@ -186,6 +186,57 @@ def test_bundle_smoke_main_configures_launch_timeout(
     assert environments[2] == environments[3]
 
 
+def test_bundle_smoke_https_check_runs_with_unreachable_ca_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The HTTPS check hides every OpenSSL CA path from the bundle and fails on a bad exit."""
+
+    bundle_path = tmp_path / "Draftomen.exe"
+    bundle_path.write_bytes(b"executable")
+    https_calls: list[dict[str, object]] = []
+    https_exit_code = [0]
+    https_stdout = ["HTTPS check passed: status 200, 5 bytes, truststore._api.SSLContext\n"]
+
+    def fake_run(**kwargs: object) -> subprocess.CompletedProcess[str] | None:
+        command = kwargs["args"]
+        assert isinstance(command, list)
+        if "--https-check" in command:
+            https_calls.append(kwargs)
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=https_exit_code[0],
+                stdout=https_stdout[0],
+                stderr="certificate verify failed",
+            )
+        if "--screenshot" in command:
+            Path(command[command.index("--screenshot") + 1]).write_bytes(b"png")
+            return _completed_process(command=command)
+        return None
+
+    monkeypatch.setattr(bundle_smoke.subprocess, "run", fake_run)
+    url = "https://example.test/manifest.json"
+
+    assert bundle_smoke.main([str(bundle_path), "--https-check", url]) == 0
+
+    assert len(https_calls) == 1
+    command = https_calls[0]["args"]
+    assert isinstance(command, list)
+    assert command[command.index("--https-check") + 1] == url
+    environment = https_calls[0]["env"]
+    assert isinstance(environment, dict)
+    assert not Path(environment["SSL_CERT_FILE"]).exists()
+    assert environment["SSL_CERT_DIR"] != ""
+
+    https_stdout[0] = "HTTPS check passed: status 200, 5 bytes, ssl.SSLContext\n"
+    with pytest.raises(RuntimeError, match="without truststore"):
+        bundle_smoke.main([str(bundle_path), "--https-check", url])
+
+    https_exit_code[0] = 1
+    with pytest.raises(RuntimeError, match="certificate verify failed"):
+        bundle_smoke.main([str(bundle_path), "--https-check", url])
+
+
 def test_bundle_smoke_main_runs_mock_then_default_live_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -981,6 +1032,11 @@ def test_native_builds_sync_the_locked_draftmancer_transport_and_socketio() -> N
     for spec_path in SPEC_PATHS.values():
         nuitka_args = shlex.split(_read_spec(path=spec_path)["nuitka"]["extra_args"])
         assert "--include-package=socketio" in nuitka_args
+        assert {
+            "--include-package=truststore",
+            "--include-package=certifi",
+            "--include-package-data=certifi",
+        } <= set(nuitka_args)
         assert BASELINE_PROFILE_MAPPING in nuitka_args
         assert {"--quiet", "--noinclude-qt-translations"} <= set(nuitka_args)
 

@@ -208,6 +208,13 @@ after the run, no profile-cache entry under that app directory, and a non-empty
 screenshot. This launch proves a live start renders and shuts down with no Arena
 log to follow, no profile network access, and no simulator or other service.
 
+With `--https-check URL`, the helper then runs the bundle once more with the
+hidden `--https-check URL` flag. That run downloads the URL with the default SSL
+context while `SSL_CERT_FILE` points at a missing file and `SSL_CERT_DIR` at an
+empty folder, which is what a Mac without Homebrew OpenSSL sees. The macOS CI
+job passes the hosted sets manifest URL. The bundle ships `truststore` and
+`certifi` so this download verifies its certificate.
+
 Mock mode avoids network, Arena logs, card downloads, and machine-specific
 runtime caches, so the bundle can be visually inspected without live services.
 The helper defaults to a 60-second process timeout, which applies to each

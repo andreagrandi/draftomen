@@ -8,7 +8,9 @@ import argparse
 import hashlib
 import json
 import logging
+import ssl
 import sys
+import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +72,7 @@ from draftomen.test_draft import (
     default_test_draft_checkout_dir,
     supported_test_draft_sets,
 )
+from draftomen.tls import use_system_trust_store
 from draftomen.profile_client import (
     BUNDLED_PROFILE_BYTES,
     BUNDLED_PROFILE_EVENT_FORMAT,
@@ -191,6 +194,7 @@ def _parser(*, forced_provider: ProviderName | None = None) -> argparse.Argument
     parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--app-dir", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--https-check", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--verify-bundled-profile",
         action="store_true",
@@ -1255,6 +1259,29 @@ def _test_draft_smoke_driver(
     return _TestDraftSmokeDriver(provider=provider)
 
 
+def _run_https_check(*, url: str) -> int:
+    """Download the URL with the default SSL context and print the result.
+    The bundle smoke test uses this to prove certificate verification works.
+    """
+
+    # The hosted site rejects urllib's default User-Agent with a 403.
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "draftomen-https-check"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status = response.status
+            body = response.read()
+    except OSError as error:
+        _report_error(f"HTTPS check failed for {url}: {type(error).__name__}: {error}")
+        return 1
+    # The smoke helper reads the context class to tell truststore from a fallback.
+    context_class = f"{ssl.SSLContext.__module__}.{ssl.SSLContext.__qualname__}"
+    print(f"HTTPS check passed: status {status}, {len(body)} bytes, {context_class}")
+    return 0
+
+
 def run_gui(
     *,
     argv: Sequence[str] | None = None,
@@ -1263,6 +1290,9 @@ def run_gui(
     args = _parser(forced_provider=forced_provider).parse_args(argv)
     if forced_provider is not None:
         args.provider = forced_provider
+
+    if args.https_check is not None:
+        return _run_https_check(url=args.https_check)
 
     if args.verify_bundled_profile and not _preflight_bundled_profile(
         app_dir=args.app_dir,
@@ -1388,6 +1418,7 @@ def run_gui(
 
 def main() -> int:
     configure_logging()
+    use_system_trust_store()
     _install_qt_message_handler()
     return run_gui()
 
