@@ -205,7 +205,14 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
     profiles = _mapping(report["profiles"], label="profiles")
     _exact_keys(
         profiles,
-        {"planning_complete", "selected", "successful", "card_ratings", "manifest_changed"},
+        {
+            "planning_complete",
+            "selected",
+            "successful",
+            "card_ratings",
+            "card_metadata_fallbacks",
+            "manifest_changed",
+        },
         label="profiles",
     )
     if not isinstance(profiles["planning_complete"], bool) or not isinstance(profiles["manifest_changed"], bool):
@@ -230,6 +237,10 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
         successful_pairs.add(identity)
     if not isinstance(profiles["card_ratings"], list):
         _fail("profiles.card_ratings must be an array")
+    if not isinstance(profiles["card_metadata_fallbacks"], list):
+        _fail("profiles.card_metadata_fallbacks must be an array")
+    for index, value in enumerate(profiles["card_metadata_fallbacks"]):
+        _safe_code(value, label=f"profiles.card_metadata_fallbacks[{index}]")
     counted_pairs: set[tuple[str, str]] = set()
     for index, value in enumerate(profiles["card_ratings"]):
         label = f"profiles.card_ratings[{index}]"
