@@ -532,6 +532,23 @@ class MoxgateSessionFeeder:
         self._draft_id_factory = draft_id_factory
         self._adapter: MoxgateAdapter | None = None
         self._last_accepted: MoxgateSnapshot | None = None
+        self._last_error: str | None = None
+
+    @property
+    def has_accepted(self) -> bool:
+        """Return whether any snapshot has been accepted.
+        Rejected snapshots never count.
+        """
+
+        return self._last_accepted is not None
+
+    @property
+    def last_error(self) -> str | None:
+        """Return why the last snapshot was rejected.
+        It is None once a later snapshot is accepted.
+        """
+
+        return self._last_error
 
     def drain(self) -> int:
         """Process every queued snapshot without blocking.
@@ -569,6 +586,7 @@ class MoxgateSessionFeeder:
             events = adapter.process(snapshot=snapshot)
         except MoxgateSnapshotError as error:
             logger.warning("Ignored Moxgate snapshot: %s", error)
+            self._last_error = str(error)
             if is_new_draft:
                 self._adapter = None
 
@@ -576,5 +594,6 @@ class MoxgateSessionFeeder:
 
         self._adapter = adapter
         self._last_accepted = snapshot
+        self._last_error = None
         if events:
             self._session.process_events(events=events)

@@ -1272,7 +1272,11 @@ class DraftomenTuiApp(App[None]):
                 if worker.is_cancelled:
                     return
                 if self._moxgate_runtime is not None:
+                    error = self._moxgate_runtime.state.error
                     self._moxgate_runtime.drain()
+                    # A rejected snapshot publishes nothing, so redraw the error here.
+                    if self._moxgate_runtime.state.error != error:
+                        self.call_from_thread(self._render_status_bar)
                 else:
                     self.session.poll_once()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
@@ -2858,8 +2862,11 @@ class DraftomenTuiApp(App[None]):
         if self._moxgate_runtime is None:
             return ()
 
-        endpoint = self._moxgate_runtime.state.endpoint
-        return (f"Moxgate: {endpoint}",)
+        state = self._moxgate_runtime.state
+        if state.error is not None:
+            return (f"Moxgate: {state.endpoint}", f"Moxgate error: {state.error}")
+
+        return (f"Moxgate: {state.endpoint}",)
 
     def _splash_status_label(self) -> str:
         enabled_label = "On" if self.visibility_preferences.splash_enabled else "Off"

@@ -102,6 +102,58 @@ def test_posted_snapshot_moves_to_receiving_and_shows_the_pack(
         runtime.close()
 
 
+def test_rejected_first_snapshot_stays_waiting_and_keeps_the_error(
+    tmp_path: Path,
+) -> None:
+    runtime = _create(tmp_path)
+    try:
+        runtime._receiver.snapshots.put(_snapshots(PACKS)[1][0])
+
+        assert runtime.drain() == 1
+        assert runtime.state.phase == "waiting"
+        assert runtime.state.error is not None
+        assert "Joining a Moxgate draft after its first pick" in runtime.state.error
+        assert runtime.session.current_pack_event is None
+    finally:
+        runtime.close()
+
+
+def test_accepted_snapshot_clears_the_error_and_moves_to_receiving(
+    tmp_path: Path,
+) -> None:
+    runtime = _create(tmp_path)
+    try:
+        snapshots = [snapshot for snapshot, _ in _snapshots(PACKS)]
+        runtime._receiver.snapshots.put(snapshots[1])
+        runtime.drain()
+        assert runtime.state.error is not None
+
+        runtime._receiver.snapshots.put(snapshots[0])
+
+        assert runtime.drain() == 1
+        assert runtime.state.phase == "receiving"
+        assert runtime.state.error is None
+    finally:
+        runtime.close()
+
+
+def test_rejected_snapshot_after_an_accepted_one_keeps_receiving(
+    tmp_path: Path,
+) -> None:
+    runtime = _create(tmp_path)
+    try:
+        snapshots = [snapshot for snapshot, _ in _snapshots(PACKS)]
+        runtime._receiver.snapshots.put(snapshots[0])
+        runtime.drain()
+        runtime._receiver.snapshots.put(snapshots[2])
+
+        assert runtime.drain() == 1
+        assert runtime.state.phase == "receiving"
+        assert runtime.state.error is not None
+    finally:
+        runtime.close()
+
+
 def test_close_frees_the_port_and_is_idempotent(tmp_path: Path) -> None:
     runtime = _create(tmp_path)
     port = runtime.state.port

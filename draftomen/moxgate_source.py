@@ -31,7 +31,7 @@ MoxgatePhase = Literal[
 @dataclass(frozen=True, slots=True)
 class MoxgateSourceState:
     """Describe where the Moxgate source is in its lifecycle.
-    The endpoint is the URL the browser extension posts to, once known.
+    The error names a failed start or why the last snapshot was rejected.
     """
 
     phase: MoxgatePhase = "stopped"
@@ -75,19 +75,24 @@ class MoxgateRuntime:
     @property
     def state(self) -> MoxgateSourceState:
         """Return the current source state.
-        It is waiting until a drain takes a snapshot, then receiving.
+        It is waiting until a snapshot is accepted, then receiving.
         """
 
         return self._state
 
     def drain(self) -> int:
-        """Feed every queued snapshot to the session.
-        Returns how many snapshots were taken and moves the phase to receiving.
+        """Feed every queued snapshot to the session and return how many were taken.
+        An accepted snapshot moves the phase to receiving; error holds the last rejection.
         """
 
         taken = self._feeder.drain()
-        if taken and self._state.phase == "waiting":
-            self._state = replace(self._state, phase="receiving")
+        if taken:
+            phase = self._state.phase
+            if phase == "waiting" and self._feeder.has_accepted:
+                phase = "receiving"
+            self._state = replace(
+                self._state, phase=phase, error=self._feeder.last_error
+            )
 
         return taken
 
