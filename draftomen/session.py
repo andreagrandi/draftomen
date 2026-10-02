@@ -58,7 +58,7 @@ from draftomen.events import (
     PickMadeEvent,
     QuickDraftDetectedEvent,
 )
-from draftomen.logfollow import LogFollower, is_log_readable
+from draftomen.logfollow import LogFollower, detailed_logs_disabled, is_log_readable
 from draftomen.pickengine import (
     ContextualScoreBreakdown,
     PickEngine,
@@ -127,6 +127,12 @@ LOG_SETUP_GUIDANCE = (
     "required, then return to Draft Omen and try again while Arena is running."
 )
 
+DETAILED_LOGS_DISABLED_GUIDANCE = (
+    "Arena's Detailed Logs are turned off, so Draft Omen cannot follow your "
+    "drafts. Enable Detailed Logs (Plugin Support) in Arena's Account settings "
+    "(usually Settings → Account), then restart Arena."
+)
+
 WAITING_FOR_DRAFT_MESSAGE = "Waiting for a draft."
 RECENT_PICK_LIMIT = 24
 
@@ -167,6 +173,15 @@ class DataLoadPhase(StrEnum):
     FAILED = "failed"
 
 
+class SetupIssue(StrEnum):
+    """Name an Arena log setup problem that blocks following drafts.
+    Frontends map each issue to their own guidance presentation.
+    """
+
+    LOG_UNREADABLE = "log_unreadable"
+    DETAILED_LOGS_DISABLED = "detailed_logs_disabled"
+
+
 @dataclass(frozen=True, slots=True)
 class ApplicationStatus:
     """Describe the current application phase and concise status message.
@@ -176,6 +191,7 @@ class ApplicationStatus:
     phase: ApplicationPhase = ApplicationPhase.STARTING
     message: str = "Starting Draft Omen."
     setup_guidance: bool = False
+    setup_issue: SetupIssue | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -915,10 +931,10 @@ class LiveSession:
 
         if log_path is None:
             self.log_path = None
-            initial_log_readable = True
+            initial_setup_issue = None
         else:
             self.log_path = Path(log_path).expanduser().resolve(strict=False)
-            initial_log_readable = is_log_readable(path=self.log_path)
+            initial_setup_issue = _log_setup_issue(log_path=self.log_path)
         self.follower = (
             None
             if log_path is None
@@ -1021,7 +1037,7 @@ class LiveSession:
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
             contextual_evidence=self._current_contextual_evidence_locked(),
             augmentation=self._current_augmentation_state_locked(),
-            status=_waiting_for_draft_status(setup_guidance=not initial_log_readable),
+            status=_waiting_for_draft_status(setup_issue=initial_setup_issue),
             accounts=self._known_accounts(),
             card_data=card_data,
             ratings=ratings_state,
@@ -1585,15 +1601,13 @@ class LiveSession:
         if self.log_path is None:
             return self.snapshot
 
-        log_readable = is_log_readable(path=self.log_path)
+        setup_issue = _log_setup_issue(log_path=self.log_path)
         with self._state_lock:
             snapshot = self.snapshot
             if not _log_setup_refresh_is_eligible(snapshot=snapshot):
                 return snapshot
 
-            next_status = _waiting_for_draft_status(
-                setup_guidance=not log_readable,
-            )
+            next_status = _waiting_for_draft_status(setup_issue=setup_issue)
             if snapshot.status == next_status:
                 return snapshot
 
@@ -5080,11 +5094,30 @@ def _last_successful_update(*, database: CardDatabase) -> str | None:
     return generated_at.astimezone(UTC).isoformat()
 
 
-def _waiting_for_draft_status(*, setup_guidance: bool) -> ApplicationStatus:
+def _log_setup_issue(*, log_path: Path) -> SetupIssue | None:
+    if not is_log_readable(path=log_path):
+        return SetupIssue.LOG_UNREADABLE
+    if detailed_logs_disabled(path=log_path):
+        return SetupIssue.DETAILED_LOGS_DISABLED
+    return None
+
+
+_SETUP_ISSUE_GUIDANCE = {
+    SetupIssue.LOG_UNREADABLE: LOG_SETUP_GUIDANCE,
+    SetupIssue.DETAILED_LOGS_DISABLED: DETAILED_LOGS_DISABLED_GUIDANCE,
+}
+
+
+def _waiting_for_draft_status(*, setup_issue: SetupIssue | None) -> ApplicationStatus:
     return ApplicationStatus(
         phase=ApplicationPhase.WAITING_FOR_DRAFT,
-        message=LOG_SETUP_GUIDANCE if setup_guidance else WAITING_FOR_DRAFT_MESSAGE,
-        setup_guidance=setup_guidance,
+        message=(
+            WAITING_FOR_DRAFT_MESSAGE
+            if setup_issue is None
+            else _SETUP_ISSUE_GUIDANCE[setup_issue]
+        ),
+        setup_guidance=setup_issue is not None,
+        setup_issue=setup_issue,
     )
 
 

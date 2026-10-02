@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Draft Omen tells you when Arena's Detailed Logs are turned off. Arena still
+  writes `Player.log` without them, so before this change the app waited for a
+  draft that never showed up. It now reads the header Arena writes at startup,
+  shows a dialog with the steps to enable Detailed Logs (Plugin Support) and
+  restart Arena, and keeps the same guidance in the main window. The dialog
+  and the guidance clear once Arena restarts with the setting on.
 - The live draft view keeps the card list beside the card details and pool
   panels when the window is short, as on a 14-inch laptop. The card list
   scrolls, the pool panel shrinks and scrolls, and the view only switches to
