@@ -36,14 +36,17 @@ from draftomen.applog import configure_logging
 from draftomen.augmented_model_client import AugmentedModelClient
 from draftomen.card_data_client import CardDataClient, cached_card_data_set_codes
 from draftomen.carddb import (
-    CardDatabase,
     build_card_database_from_bulk_file,
     download_scryfall_default_cards_bulk_file,
 )
 from draftomen.cardimages import CardImageService, card_image_cache_dir
 from draftomen.draft_format import DraftFormat
 from draftomen.draftmancer_server import MockedDraftServer
-from draftomen.moxgate_server import MOXGATE_DEFAULT_PORT, load_moxgate_card_data
+from draftomen.moxgate_server import (
+    MOXGATE_DEFAULT_PORT,
+    MoxgateCardData,
+    load_hosted_moxgate_card_data,
+)
 from draftomen.moxgate_source import MoxgateRuntime, create_moxgate_runtime
 from draftomen.mock_session import MOCK_SCENARIOS, MockLiveSession
 from draftomen.paths import resolve_player_log_path
@@ -606,37 +609,35 @@ class _GuiTestDraftFactory:
 
 
 class _GuiMoxgateFactory:
-    """Create Moxgate runtimes from the Mocked Draft Scryfall bulk file.
-    Card data loads once per bulk file version and is reused across runtimes.
+    """Create Moxgate runtimes from the hosted per-set card data.
+    The card data loads once after the first success and is reused across runtimes.
     """
 
     def __init__(
         self,
         *,
         args: argparse.Namespace,
-        preferences: Callable[[], GuiDisplayPreferences],
         profile_client: ProfileClient,
         augmented_model_client: AugmentedModelClient | None,
         port: int = MOXGATE_DEFAULT_PORT,
+        card_data_loader: Callable[[], MoxgateCardData] | None = None,
     ) -> None:
         self._args = args
-        self._preferences = preferences
         self._profile_client = profile_client
         self._augmented_model_client = augmented_model_client
         self._port = port
-        self._card_data_key: tuple[Path, int] | None = None
-        self._card_data: tuple[CardDatabase, dict[str, int]] | None = None
+        self._card_data_loader = (
+            card_data_loader
+            if card_data_loader is not None
+            else lambda: load_hosted_moxgate_card_data(
+                card_data_client=CardDataClient(app_dir=args.app_dir)
+            )
+        )
+        self._card_data: MoxgateCardData | None = None
 
     @property
     def port(self) -> int:
         return self._port
-
-    def _card_data_for(self, *, bulk_path: Path) -> tuple[CardDatabase, dict[str, int]]:
-        key = (bulk_path, bulk_path.stat().st_mtime_ns)
-        if self._card_data is None or key != self._card_data_key:
-            self._card_data = load_moxgate_card_data(bulk_path=bulk_path)
-            self._card_data_key = key
-        return self._card_data
 
     def create_runtime(
         self,
@@ -647,19 +648,14 @@ class _GuiMoxgateFactory:
     ) -> MoxgateRuntime:
         """Load the card data, then bind the receiver and start the isolated session."""
 
-        bulk_path = _mocked_draft_sources(
-            args=self._args, preferences=self._preferences()
-        ).scryfall_bulk_file
-        if not bulk_path.is_file():
-            raise FileNotFoundError(
-                f"Scryfall bulk file not found: {bulk_path}. Set the Mocked Draft "
-                "Scryfall bulk file in Settings or pass --scryfall-bulk-file."
-            )
-        card_database, grp_ids_by_scryfall_id = self._card_data_for(bulk_path=bulk_path)
+        if self._card_data is None:
+            self._card_data = self._card_data_loader()
+        card_data = self._card_data
         app_dir = self._args.app_dir
         return create_moxgate_runtime(
-            card_database=card_database,
-            canonical_grp_ids_by_scryfall_id=grp_ids_by_scryfall_id,
+            card_database=card_data.card_database,
+            canonical_grp_ids_by_scryfall_id=card_data.grp_ids_by_scryfall_id,
+            grp_ids_by_name=card_data.grp_ids_by_name,
             snapshot_publisher=publisher,
             app_dir=app_dir,
             port=self._port,
@@ -679,7 +675,6 @@ def _build_provider(
     *,
     args: argparse.Namespace,
     preferences: GuiDisplayPreferences,
-    preferences_source: Callable[[], GuiDisplayPreferences] | None = None,
 ) -> SessionAdapter:
     if args.provider == "mock":
         return MockSessionAdapter(
@@ -726,9 +721,6 @@ def _build_provider(
         test_draft_factory=test_draft_factory,
         moxgate_factory=_GuiMoxgateFactory(
             args=args,
-            preferences=(
-                preferences_source if preferences_source is not None else lambda: preferences
-            ),
             profile_client=profile_client,
             augmented_model_client=augmented_model_client,
         ),
@@ -1295,11 +1287,7 @@ def run_gui(
     _configure_application_metadata(application=application)
 
     preferences = GuiPreferencesAdapter(app_dir=args.app_dir, parent=application)
-    provider = _build_provider(
-        args=args,
-        preferences=preferences.preferences,
-        preferences_source=lambda: preferences.preferences,
-    )
+    provider = _build_provider(args=args, preferences=preferences.preferences)
 
     def apply_mocked_draft_enabled(_enabled: bool) -> None:
         """Apply the Mocked Draft setting the user just toggled."""

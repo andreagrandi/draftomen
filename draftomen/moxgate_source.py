@@ -122,6 +122,7 @@ def create_moxgate_runtime(
     contextual_adjustments_enabled: bool = True,
     event_publisher: EventPublisher | None = None,
     augmentation_enabled: bool = False,
+    grp_ids_by_name: Mapping[str, tuple[int, ...]] | None = None,
 ) -> MoxgateRuntime:
     """Bind the receiver, then build the session and feeder around it.
     A bind failure raises MoxgatePortInUseError and leaves nothing running.
@@ -151,6 +152,7 @@ def create_moxgate_runtime(
                 card_database=card_database,
                 canonical_grp_ids_by_scryfall_id=canonical_grp_ids_by_scryfall_id,
                 account_id=MOXGATE_ACCOUNT_ID,
+                grp_ids_by_name=grp_ids_by_name,
             )
             return MoxgateRuntime(
                 receiver=receiver, session=session, feeder=feeder, host=host

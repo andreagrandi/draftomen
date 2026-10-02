@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from draftomen import moxgate_server
-from draftomen.carddb import CardDatabaseError
+from draftomen.card_data_client import CardDataClientError
+from draftomen.carddb import CardDatabase, CardDatabaseError, CardInfo
 from draftomen.moxgate import MoxgateSnapshot
 from draftomen.moxgate_server import (
     MOXGATE_ACCOUNT_ID,
@@ -532,3 +533,169 @@ def test_load_moxgate_card_data_reports_malformed_bulk_file(tmp_path: Path) -> N
 
     with pytest.raises(CardDatabaseError):
         moxgate_server.load_moxgate_card_data(bulk_path=bulk_path)
+
+
+class _FakeCardDataClient:
+    def __init__(
+        self,
+        *,
+        app_dir: Path,
+        codes: tuple[str, ...] | None,
+        databases: dict[str, CardDatabase | Exception],
+    ) -> None:
+        self.app_dir = app_dir
+        self._codes = codes
+        self._databases = databases
+        self.loaded: list[tuple[str, bool]] = []
+
+    def published_set_codes(self) -> tuple[str, ...] | None:
+        return self._codes
+
+    def load(self, set_code: str, *, allow_network: bool) -> CardDatabase:
+        self.loaded.append((set_code, allow_network))
+        result = self._databases[set_code]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def _hosted_database(
+    *, grp_id: int, name: str, set_code: str, scryfall_id: str | None
+) -> CardDatabase:
+    image_uri = (
+        None
+        if scryfall_id is None
+        else f"https://cards.scryfall.io/normal/front/{scryfall_id[0]}/"
+        f"{scryfall_id[1]}/{scryfall_id}.jpg?1789"
+    )
+    return CardDatabase(
+        cards={
+            grp_id: CardInfo(
+                grp_id=grp_id,
+                name=name,
+                colors=("W",),
+                mana_value=2.0,
+                rarity="common",
+                types=("Creature",),
+                set_code=set_code,
+                image_uri=image_uri,
+            )
+        },
+        image_uris_by_name={name.casefold(): image_uri} if image_uri else {},
+    )
+
+
+_SF_ONE = "79dd5c54-5ea5-47b5-8f9b-50ed57a5ea45"
+_SF_TWO = "1b2c3d4e-0000-4000-8000-0123456789ab"
+
+
+def test_load_hosted_moxgate_card_data_maps_image_ids_across_sets(tmp_path: Path) -> None:
+    client = _FakeCardDataClient(
+        app_dir=tmp_path,
+        codes=("aaa", "bbb"),
+        databases={
+            "aaa": _hosted_database(
+                grp_id=7, name="Card // Back", set_code="aaa", scryfall_id=_SF_ONE
+            ),
+            "bbb": _hosted_database(
+                grp_id=3, name="Card // Back", set_code="bbb", scryfall_id=_SF_TWO
+            ),
+        },
+    )
+
+    data = moxgate_server.load_hosted_moxgate_card_data(card_data_client=client)  # type: ignore[arg-type]
+
+    assert data.grp_ids_by_scryfall_id == {_SF_ONE: 7, _SF_TWO: 3}
+    assert data.grp_ids_by_name == {"card // back": (3, 7)}
+    assert set(data.card_database.cards) == {3, 7}
+    assert client.loaded == [("aaa", True), ("bbb", True)]
+
+
+def test_load_hosted_moxgate_card_data_keeps_lowest_grp_id_for_a_shared_scryfall_id(
+    tmp_path: Path,
+) -> None:
+    client = _FakeCardDataClient(
+        app_dir=tmp_path,
+        codes=("aaa", "bbb"),
+        databases={
+            "aaa": _hosted_database(grp_id=9, name="A", set_code="aaa", scryfall_id=_SF_ONE),
+            "bbb": _hosted_database(grp_id=4, name="A", set_code="bbb", scryfall_id=_SF_ONE),
+        },
+    )
+
+    data = moxgate_server.load_hosted_moxgate_card_data(card_data_client=client)  # type: ignore[arg-type]
+
+    assert data.grp_ids_by_scryfall_id == {_SF_ONE: 4}
+
+
+def test_load_hosted_moxgate_card_data_skips_a_failing_set_with_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = _FakeCardDataClient(
+        app_dir=tmp_path,
+        codes=("aaa", "bad"),
+        databases={
+            "aaa": _hosted_database(grp_id=7, name="A", set_code="aaa", scryfall_id=_SF_ONE),
+            "bad": CardDataClientError("download broke"),
+        },
+    )
+
+    with caplog.at_level(logging.WARNING, logger="draftomen.moxgate_server"):
+        data = moxgate_server.load_hosted_moxgate_card_data(card_data_client=client)  # type: ignore[arg-type]
+
+    assert data.grp_ids_by_scryfall_id == {_SF_ONE: 7}
+    assert "bad" in caplog.text
+    assert "download broke" in caplog.text
+
+
+def test_load_hosted_moxgate_card_data_falls_back_to_cached_set_codes(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "card-data"
+    cache_dir.mkdir()
+    (cache_dir / "ccc.json.gz").write_bytes(b"cached")
+    client = _FakeCardDataClient(
+        app_dir=tmp_path,
+        codes=None,
+        databases={
+            "ccc": _hosted_database(grp_id=8, name="C", set_code="ccc", scryfall_id=_SF_TWO)
+        },
+    )
+
+    data = moxgate_server.load_hosted_moxgate_card_data(card_data_client=client)  # type: ignore[arg-type]
+
+    assert data.grp_ids_by_scryfall_id == {_SF_TWO: 8}
+
+
+def test_load_hosted_moxgate_card_data_raises_when_nothing_loads(tmp_path: Path) -> None:
+    failing = _FakeCardDataClient(
+        app_dir=tmp_path,
+        codes=("aaa",),
+        databases={"aaa": CardDataClientError("down")},
+    )
+    empty = _FakeCardDataClient(app_dir=tmp_path, codes=None, databases={})
+
+    for client in (failing, empty):
+        with pytest.raises(CardDatabaseError, match="Hosted card data could not be loaded"):
+            moxgate_server.load_hosted_moxgate_card_data(card_data_client=client)  # type: ignore[arg-type]
+
+
+def test_feeder_resolves_unknown_scryfall_ids_by_name_when_given_a_name_map(
+    receiver: MoxgateReceiver, tmp_path: Path
+) -> None:
+    packs = _packs(pack_count=1, pack_size=3)
+    grp_ids = _all_grp_ids(packs)
+    session = _session(tmp_path, packs)
+    partial_map = _scryfall_map(*grp_ids[:2])
+    feeder = MoxgateSessionFeeder(
+        snapshots=receiver.snapshots,
+        session=session,
+        card_database=_database(*grp_ids),
+        canonical_grp_ids_by_scryfall_id=partial_map,
+        grp_ids_by_name={f"fixture {grp_ids[2]}": (grp_ids[2],)},
+    )
+    receiver.snapshots.put(_snapshots(packs)[0][0])
+
+    feeder.drain()
+
+    assert session.snapshot.status.phase is ApplicationPhase.DRAFTING

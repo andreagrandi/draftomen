@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Moxgate drafts no longer need a Scryfall bulk file. Draft Omen matches each
+  card by the Scryfall id in its hosted card data, or by name for other
+  printings, so sets such as FRA that Scryfall has no Arena ids for work on
+  release day. (#868)
+
 ## [0.6.0] - 2026-10-02
 
 - `scripts/patch_scryfall_arena_ids.py` adds Arena ids from 17Lands card

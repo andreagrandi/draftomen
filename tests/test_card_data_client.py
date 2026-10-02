@@ -472,3 +472,60 @@ def test_unreachable_manifest_still_allows_a_cold_download(tmp_path: Path) -> No
 
     assert client.load("tst", allow_network=True).lookup(grp_id=1).name == "Test Card"
     assert requested == [SETS_MANIFEST_URL, _CARD_URL]
+
+
+def test_published_set_codes_lists_manifest_sets_and_fetches_the_manifest_once(
+    tmp_path: Path,
+) -> None:
+    payload = _artifact().to_gzip_bytes()
+    requested: list[str] = []
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener(
+            {
+                SETS_MANIFEST_URL: _manifest_bytes(("zzz", payload), ("tst", payload)),
+                _CARD_URL: payload,
+            },
+            requested,
+        ),
+    )
+
+    assert client.published_set_codes() == ("tst", "zzz")
+    assert client.load("tst", allow_network=True).lookup(grp_id=1).name == "Test Card"
+    assert client.published_set_codes() == ("tst", "zzz")
+    assert requested == [SETS_MANIFEST_URL, _CARD_URL]
+
+
+def test_published_set_codes_is_none_when_the_manifest_is_disabled(tmp_path: Path) -> None:
+    requested: list[str] = []
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=None,
+        opener=_routing_opener({}, requested),
+    )
+
+    assert client.published_set_codes() is None
+    assert requested == []
+
+
+def test_published_set_codes_is_none_when_the_manifest_cannot_be_fetched(
+    tmp_path: Path,
+) -> None:
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener({SETS_MANIFEST_URL: OSError("offline")}, []),
+    )
+
+    assert client.published_set_codes() is None
+
+
+def test_published_set_codes_is_none_when_the_manifest_is_invalid(tmp_path: Path) -> None:
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener({SETS_MANIFEST_URL: b"not json"}, []),
+    )
+
+    assert client.published_set_codes() is None
