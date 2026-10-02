@@ -890,6 +890,9 @@ class _SmokeControls(Protocol):
     def activate(self, name: str) -> None:
         ...
 
+    def choose(self, name: str, value: str) -> None:
+        ...
+
 
 def _find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
     """Find one descendant item by object name.
@@ -929,6 +932,22 @@ class _QmlSmokeControls:
             raise RuntimeError(f"the {name} control is not visible")
         cast(QQuickItem, item).forceActiveFocus()
         QTest.keyClick(self._window, Qt.Key_Space)
+        QCoreApplication.processEvents()
+
+    def choose(self, name: str, value: str) -> None:
+        """Select the option with the given value in the named ComboBox."""
+        item = self.find(name)
+        if item is None:
+            raise RuntimeError(f"the {name} control is not available")
+        if item.property("visible") is not True:
+            raise RuntimeError(f"the {name} control is not visible")
+        model = item.property("model")
+        keys = [option.get("key") for option in model] if model else []
+        if value not in keys:
+            raise RuntimeError(f"the {name} control has no {value} option")
+        index = keys.index(value)
+        item.setProperty("currentIndex", index)
+        item.activated.emit(index)
         QCoreApplication.processEvents()
 
 
@@ -1005,7 +1024,7 @@ class _TestDraftManualSmokeDriver:
     def _run_step(self) -> str | None:
         """Run the current journey step and report the requirement it failed."""
         if self._step == self._STEP_OPEN_DIALOG:
-            self._controls.activate("testDraftButton")
+            self._controls.choose("sourceSelector", "test-draft")
             self._step = self._STEP_DIALOG_VISIBLE
         elif self._step == self._STEP_DIALOG_VISIBLE:
             if self._control_visible("testDraftDialog"):
@@ -1077,7 +1096,7 @@ class _TestDraftManualSmokeDriver:
                     else self._STEP_PICK
                 )
         elif self._step == self._STEP_LEAVE_DIALOG:
-            self._controls.activate("testDraftButton")
+            self._controls.choose("sourceSelector", "test-draft")
             self._step = self._STEP_LEAVE_VISIBLE
         elif self._step == self._STEP_LEAVE_VISIBLE:
             if self._control_visible("testDraftDialog"):
