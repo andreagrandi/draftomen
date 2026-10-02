@@ -4074,6 +4074,43 @@ async def _assert_moxgate_snapshot_shows_pack(*, tmp_path: Path) -> None:
         assert runtime.state.phase == "receiving"
 
 
+def test_tui_moxgate_status_line_shows_a_rejected_snapshot_error(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_moxgate_status_line_shows_error(tmp_path=tmp_path))
+
+
+async def _assert_moxgate_status_line_shows_error(*, tmp_path: Path) -> None:
+    app = _moxgate_tui_app(tmp_path=tmp_path)
+    runtime = app._moxgate_runtime
+    assert runtime is not None
+    snapshots = [snapshot for snapshot, _ in _moxgate_snapshots(MOXGATE_PACKS)]
+
+    async with app.run_test(size=(240, 40)) as pilot:
+        await pilot.pause()
+        status = app.query_one("#status-bar", Static)
+
+        runtime._receiver.snapshots.put(snapshots[1])
+        for _ in range(100):
+            await pilot.pause(delay=0.05)
+            if "Moxgate error:" in str(status.render()):
+                break
+
+        assert "Moxgate error: Joining a Moxgate draft after its first pick" in str(
+            status.render()
+        )
+        assert runtime.state.phase == "waiting"
+
+        runtime._receiver.snapshots.put(snapshots[0])
+        for _ in range(100):
+            await pilot.pause(delay=0.05)
+            if "Moxgate error:" not in str(status.render()):
+                break
+
+        assert "Moxgate error:" not in str(status.render())
+        assert runtime.state.phase == "receiving"
+
+
 def test_tui_moxgate_waiting_panel_names_the_extension(tmp_path: Path) -> None:
     asyncio.run(_assert_moxgate_waiting_panel_copy(tmp_path=tmp_path))
 

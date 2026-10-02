@@ -15,6 +15,11 @@
   card by the Scryfall id in its hosted card data, or by name for other
   printings, so sets such as FRA that Scryfall has no Arena ids for work on
   release day. (#868)
+- When Draft Omen rejects a Moxgate snapshot, for example because a card is
+  unknown, the desktop app shows the reason under the Moxgate status and the
+  TUI shows it in the status line. The status stays on waiting until a
+  snapshot is accepted, and the next accepted snapshot clears the error.
+  (#869)
 
 ## [0.6.0] - 2026-10-02
 

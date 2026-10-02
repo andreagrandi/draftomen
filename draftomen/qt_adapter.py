@@ -2125,9 +2125,9 @@ class _LiveSessionWorker(QObject):
         if self._stop_requested:
             return
         try:
-            phase = runtime.state.phase
+            state = runtime.state
             taken = runtime.drain()
-            if runtime.state.phase != phase:
+            if runtime.state != state:
                 self._set_moxgate_state(runtime.state)
             if taken > 0:
                 self._request_one_card_image()

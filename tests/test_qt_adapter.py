@@ -6307,9 +6307,13 @@ class _FakeMoxgateRuntime:
         self.close_calls = 0
         self.drain_thread_ids: list[int] = []
         self._drains = deque(drains)
+        self._rejections: deque[str] = deque()
 
     def drain(self) -> int:
         self.drain_thread_ids.append(threading.get_ident())
+        if self._rejections:
+            self.state = replace(self.state, error=self._rejections.popleft())
+            return 1
         taken = self._drains.popleft() if self._drains else 0
         if taken and self.state.phase == "waiting":
             self.state = replace(self.state, phase="receiving")
@@ -6559,6 +6563,34 @@ def test_live_adapter_publishes_receiving_after_a_drain_takes_a_snapshot(
             predicate=lambda: _moxgate_phase(adapter) == "receiving",
             description="the receiving phase",
         )
+        assert adapter.state["moxgate"]["active"] is True
+    finally:
+        _stop_adapter(adapter)
+
+
+def test_live_adapter_publishes_the_rejected_snapshot_error_while_waiting(
+    qcore_application: QCoreApplication,
+) -> None:
+    runtime = _FakeMoxgateRuntime()
+    factory = _FakeMoxgateFactory(runtime=runtime)
+    adapter, _ = _start_moxgate_adapter(application=qcore_application, factory=factory)
+    message = (
+        "Moxgate card 'Fixture Card' with Scryfall id 'unknown-id' has no Arena grpId"
+    )
+    try:
+        adapter.startMoxgate()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: _moxgate_phase(adapter) == "waiting",
+            description="the waiting phase",
+        )
+        runtime._rejections.append(message)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["moxgate"]["error"] == message,
+            description="the rejected snapshot error",
+        )
+        assert adapter.state["moxgate"]["phase"] == "waiting"
         assert adapter.state["moxgate"]["active"] is True
     finally:
         _stop_adapter(adapter)
