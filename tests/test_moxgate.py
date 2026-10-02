@@ -525,3 +525,133 @@ def test_live_session_completes_a_moxgate_draft_with_the_picked_pool(tmp_path: P
     picked = tuple(pick for _, pick in _snapshots(packs)[:-1])
     assert session.snapshot.status.phase is ApplicationPhase.DRAFT_COMPLETE
     assert tuple(pool_card.card.grp_id for pool_card in session.snapshot.pool.cards) == picked
+
+
+def _name_database() -> CardDatabase:
+    def info(grp_id: int, name: str, set_code: str) -> CardInfo:
+        return CardInfo(
+            grp_id=grp_id,
+            name=name,
+            colors=("W",),
+            mana_value=2.0,
+            rarity="common",
+            types=("Creature",),
+            set_code=set_code,
+        )
+
+    return CardDatabase(
+        cards={
+            5: info(5, "Dup", "old"),
+            10: info(10, "Fixture 10", "new"),
+            11: info(11, "Fixture 11", "new"),
+            20: info(20, "Dup", "new"),
+        }
+    )
+
+
+def _name_adapter(
+    *, grp_ids_by_name: dict[str, tuple[int, ...]] | None
+) -> MoxgateAdapter:
+    return MoxgateAdapter(
+        card_database=_name_database(),
+        canonical_grp_ids_by_scryfall_id={
+            "scryfall-10": 10,
+            "scryfall-11": 11,
+        },
+        draft_id=DRAFT_ID,
+        account_id=ACCOUNT_ID,
+        grp_ids_by_name=grp_ids_by_name,
+    )
+
+
+_NAMES = {"dup": (5, 20), "fixture 10": (10,), "fixture 11": (11,)}
+
+
+def _name_snapshot(*cards: MoxgateSnapshotCard) -> MoxgateSnapshot:
+    return MoxgateSnapshot(
+        schema_version=MOXGATE_SCHEMA_VERSION,
+        pick_index=0,
+        total_picks=len(cards),
+        pack=cards,
+        pool=(),
+    )
+
+
+def test_unknown_scryfall_id_resolves_by_name_in_the_draft_set() -> None:
+    adapter = _name_adapter(grp_ids_by_name=_NAMES)
+    snapshot = _name_snapshot(
+        _card(10),
+        _card(11),
+        MoxgateSnapshotCard(scryfall_id="scryfall-other-print", name="DUP"),
+    )
+
+    events = adapter.process(snapshot=snapshot)
+
+    assert isinstance(events[0], DraftStartedEvent)
+    assert events[0].set_code == "NEW"
+    assert isinstance(events[1], PackOfferedEvent)
+    assert events[1].offered_grp_ids == (10, 11, 20)
+
+
+def test_first_snapshot_without_id_matches_uses_lowest_name_candidates() -> None:
+    adapter = _name_adapter(grp_ids_by_name=_NAMES)
+    snapshot = _name_snapshot(
+        MoxgateSnapshotCard(scryfall_id="x-1", name="Dup"),
+        MoxgateSnapshotCard(scryfall_id="x-2", name="Fixture 10"),
+        MoxgateSnapshotCard(scryfall_id="x-3", name="Fixture 11"),
+    )
+
+    events = adapter.process(snapshot=snapshot)
+
+    assert isinstance(events[0], DraftStartedEvent)
+    assert events[0].set_code == "NEW"
+    assert isinstance(events[1], PackOfferedEvent)
+    assert events[1].offered_grp_ids == (20, 10, 11)
+
+
+def test_later_snapshot_resolves_by_name_in_the_stored_draft_set() -> None:
+    adapter = _name_adapter(grp_ids_by_name=_NAMES)
+    adapter.process(
+        snapshot=_name_snapshot(
+            _card(10),
+            _card(11),
+            MoxgateSnapshotCard(scryfall_id="x-1", name="Dup"),
+        )
+    )
+    second = MoxgateSnapshot(
+        schema_version=MOXGATE_SCHEMA_VERSION,
+        pick_index=1,
+        total_picks=3,
+        pack=(
+            _card(11),
+            MoxgateSnapshotCard(scryfall_id="x-1", name="Dup"),
+        ),
+        pool=(_card(10),),
+    )
+
+    events = adapter.process(snapshot=second)
+
+    assert isinstance(events[1], PackOfferedEvent)
+    assert events[1].offered_grp_ids == (11, 20)
+
+
+def test_unknown_id_without_a_name_match_still_raises() -> None:
+    adapter = _name_adapter(grp_ids_by_name=_NAMES)
+    snapshot = _name_snapshot(
+        _card(10),
+        MoxgateSnapshotCard(scryfall_id="scryfall-missing", name="Lost Card"),
+    )
+
+    with pytest.raises(MoxgateSnapshotError, match=r"'Lost Card'.*has no Arena grpId"):
+        adapter.process(snapshot=snapshot)
+
+
+def test_name_fallback_is_off_without_a_name_map() -> None:
+    adapter = _name_adapter(grp_ids_by_name=None)
+    snapshot = _name_snapshot(
+        _card(10),
+        MoxgateSnapshotCard(scryfall_id="scryfall-other-print", name="Dup"),
+    )
+
+    with pytest.raises(MoxgateSnapshotError, match="has no Arena grpId"):
+        adapter.process(snapshot=snapshot)

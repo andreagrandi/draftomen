@@ -119,12 +119,12 @@ from draftomen.test_draft import (
     DEFAULT_TEST_DRAFT_TIMEOUT_SECONDS,
     TestDraftError,
     TestDraftRunResult,
-    default_test_draft_bulk_file,
     run_test_draft_auto,
 )
 from draftomen.moxgate_server import (
     MOXGATE_DEFAULT_PORT,
     MoxgateReceiverError,
+    load_hosted_moxgate_card_data,
     load_moxgate_card_data,
 )
 from draftomen.tui import run_tui_moxgate_watch, run_tui_watch
@@ -212,8 +212,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Resolve card names from a local Scryfall JSONL(.gz) bulk file "
-            "instead of the cached card database. With --source moxgate it is "
-            "required and defaults to the Mocked Draft bulk file in the app dir."
+            "instead of the cached card database. With --source moxgate it "
+            "replaces the hosted card data and matches cards by Scryfall id only."
         ),
     )
     watch_parser.add_argument(
@@ -1537,7 +1537,7 @@ def handle_watch(args: argparse.Namespace) -> int:
 
 def _handle_moxgate_watch(*, args: argparse.Namespace) -> int:
     """Run watch on Moxgate snapshots from the loopback receiver.
-    Card data comes from one Scryfall bulk file read at startup.
+    Card data comes from the hosted card data, or from --bulk-file when given.
     """
 
     if not 0 <= args.moxgate_port <= 65535:
@@ -1551,21 +1551,26 @@ def _handle_moxgate_watch(*, args: argparse.Namespace) -> int:
         print("watch failed: --poll-interval must be greater than zero.", file=sys.stderr)
         return 2
 
-    bulk_path = (
-        args.bulk_file
-        if args.bulk_file is not None
-        else default_test_draft_bulk_file(app_dir=args.app_dir)
-    )
-    if not bulk_path.is_file():
+    if args.bulk_file is not None and not args.bulk_file.is_file():
         print(
-            f"watch failed: Scryfall bulk file not found: {bulk_path}. "
-            "Pass --bulk-file with a Scryfall default-cards file.",
+            f"watch failed: Scryfall bulk file not found: {args.bulk_file}.",
             file=sys.stderr,
         )
         return 1
 
     try:
-        database, grp_ids_by_scryfall_id = load_moxgate_card_data(bulk_path=bulk_path)
+        grp_ids_by_name: dict[str, tuple[int, ...]] | None = None
+        if args.bulk_file is not None:
+            database, grp_ids_by_scryfall_id = load_moxgate_card_data(
+                bulk_path=args.bulk_file
+            )
+        else:
+            hosted = load_hosted_moxgate_card_data(
+                card_data_client=CardDataClient(app_dir=args.app_dir)
+            )
+            database = hosted.card_database
+            grp_ids_by_scryfall_id = dict(hosted.grp_ids_by_scryfall_id)
+            grp_ids_by_name = dict(hosted.grp_ids_by_name)
         profile_manifest_url = (
             DEFAULT_PROFILE_MANIFEST_URL
             if args.profile_manifest_url is None
@@ -1592,6 +1597,7 @@ def _handle_moxgate_watch(*, args: argparse.Namespace) -> int:
                 once=args.once,
                 mana_icons_enabled=args.mana_icons,
                 splash_enabled=args.splash_enabled,
+                grp_ids_by_name=grp_ids_by_name,
             )
 
         return run_plain_moxgate_watch(
@@ -1603,6 +1609,7 @@ def _handle_moxgate_watch(*, args: argparse.Namespace) -> int:
             once=args.once,
             splash_enabled=True if args.splash_enabled is None else args.splash_enabled,
             profile_client=profile_client,
+            grp_ids_by_name=grp_ids_by_name,
         )
     except KeyboardInterrupt:
         return 130

@@ -131,12 +131,14 @@ class MoxgateAdapter:
         canonical_grp_ids_by_scryfall_id: Mapping[str, int],
         draft_id: str,
         account_id: str | None,
+        grp_ids_by_name: Mapping[str, tuple[int, ...]] | None = None,
     ) -> None:
         if not isinstance(draft_id, str) or draft_id == "":
             raise MoxgateSnapshotError("Moxgate draft_id must be a non-empty string")
 
         self._card_database = card_database
         self._grp_ids_by_scryfall_id = canonical_grp_ids_by_scryfall_id
+        self._grp_ids_by_name = grp_ids_by_name
         self._draft_id = draft_id
         self._account_id = account_id
         self._last_snapshot: MoxgateSnapshot | None = None
@@ -168,8 +170,13 @@ class MoxgateAdapter:
                 "Moxgate draft is already complete; no more snapshots expected"
             )
 
-        pack = self._resolve_cards(cards=snapshot.pack)
-        pool = self._resolve_cards(cards=snapshot.pool)
+        preferred_set = (
+            self._set_code
+            if self._last_snapshot is not None
+            else self._first_pack_set_hint(cards=snapshot.pack)
+        )
+        pack = self._resolve_cards(cards=snapshot.pack, preferred_set=preferred_set)
+        pool = self._resolve_cards(cards=snapshot.pool, preferred_set=preferred_set)
         if self._last_snapshot is None:
             return self._process_first(snapshot=snapshot, pack=pack)
 
@@ -325,12 +332,60 @@ class MoxgateAdapter:
     def _event_name(self) -> str:
         return f"QuickDraft_{self._set_code}_Moxgate_{self._draft_id}"
 
+    def _first_pack_set_hint(self, *, cards: tuple[MoxgateSnapshotCard, ...]) -> str:
+        """Return the set to prefer for name-only cards before the draft set is known.
+        Cards matched by Scryfall id vote first; with none, the lowest name matches vote.
+        """
+
+        if self._grp_ids_by_name is None:
+            return ""
+
+        by_id = tuple(
+            grp_id
+            for card in cards
+            if (grp_id := self._grp_ids_by_scryfall_id.get(card.scryfall_id))
+            is not None
+            and not self._card_database.unresolved_grp_ids(grp_ids=(grp_id,))
+        )
+        voters = by_id or tuple(
+            grp_id
+            for card in cards
+            if (grp_id := self._grp_id_by_name(card=card, preferred_set=""))
+            is not None
+            and not self._card_database.unresolved_grp_ids(grp_ids=(grp_id,))
+        )
+        try:
+            return self._majority_set_code(pack=voters)
+        except MoxgateSnapshotError:
+            return ""
+
+    def _grp_id_by_name(
+        self, *, card: MoxgateSnapshotCard, preferred_set: str
+    ) -> int | None:
+        if self._grp_ids_by_name is None:
+            return None
+
+        candidates = self._grp_ids_by_name.get(card.name.casefold())
+        if not candidates:
+            return None
+
+        if preferred_set:
+            for grp_id in candidates:
+                if grp_id in self._card_database.cards and (
+                    self._card_database.lookup(grp_id=grp_id).set_code or ""
+                ).casefold() == preferred_set.casefold():
+                    return grp_id
+
+        return min(candidates)
+
     def _resolve_cards(
-        self, *, cards: tuple[MoxgateSnapshotCard, ...]
+        self, *, cards: tuple[MoxgateSnapshotCard, ...], preferred_set: str = ""
     ) -> tuple[int, ...]:
         grp_ids: list[int] = []
         for card in cards:
             grp_id = self._grp_ids_by_scryfall_id.get(card.scryfall_id)
+            if grp_id is None:
+                grp_id = self._grp_id_by_name(card=card, preferred_set=preferred_set)
             if grp_id is None:
                 raise MoxgateSnapshotError(
                     f"Moxgate card {card.name!r} with Scryfall id {card.scryfall_id!r} "

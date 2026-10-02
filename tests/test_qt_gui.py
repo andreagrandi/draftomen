@@ -30,10 +30,11 @@ from draftomen.augmented_model_client import (
     AugmentedModelClient,
 )
 from draftomen.card_data_client import CardDataClient, card_data_cache_path
-from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.carddb import CardDatabase, CardDatabaseError, CardInfo
 from draftomen.session import AugmentationStatus, ChangeAugmentation
 from draftomen.set_card_data import SetCardData
 from draftomen.profile_client import ProfileClient, ProfileNetworkPolicy
+from draftomen.moxgate_server import MoxgateCardData
 from draftomen.pool import load_draft_state
 from draftomen.preferences import GuiDisplayPreferences
 from draftomen.qt_gui import (
@@ -8928,13 +8929,11 @@ assert error_label.isVisible() is False
 
 
 def _moxgate_factory(
-    *, tmp_path: Path, bulk_file: Path | None, preferences: GuiDisplayPreferences | None = None
+    *, tmp_path: Path, card_data_loader: Callable[[], MoxgateCardData]
 ) -> _GuiMoxgateFactory:
-    flags = [] if bulk_file is None else ["--scryfall-bulk-file", str(bulk_file)]
-    args = _parser().parse_args(["--app-dir", str(tmp_path / "app"), *flags])
+    args = _parser().parse_args(["--app-dir", str(tmp_path / "app")])
     return _GuiMoxgateFactory(
         args=args,
-        preferences=lambda: GuiDisplayPreferences() if preferences is None else preferences,
         profile_client=ProfileClient(
             app_dir=args.app_dir,
             manifest_url=qt_gui.DEFAULT_PROFILE_MANIFEST_URL,
@@ -8942,61 +8941,29 @@ def _moxgate_factory(
         ),
         augmented_model_client=None,
         port=0,
+        card_data_loader=card_data_loader,
     )
 
 
-def test_moxgate_factory_names_the_missing_bulk_file(tmp_path: Path) -> None:
-    missing = tmp_path / "missing.jsonl"
-    factory = _moxgate_factory(tmp_path=tmp_path, bulk_file=missing)
-
-    with pytest.raises(FileNotFoundError) as raised:
-        factory.create_runtime(
-            publisher=lambda snapshot: None,
-            splash_enabled=True,
-            contextual_adjustments_enabled=True,
-        )
-
-    assert str(raised.value) == (
-        f"Scryfall bulk file not found: {missing}. Set the Mocked Draft Scryfall "
-        "bulk file in Settings or pass --scryfall-bulk-file."
-    )
-
-
-def test_moxgate_factory_resolves_the_bulk_file_from_current_preferences(
-    tmp_path: Path,
-) -> None:
-    configured = tmp_path / "from-settings.jsonl"
-    factory = _moxgate_factory(
-        tmp_path=tmp_path,
-        bulk_file=None,
-        preferences=GuiDisplayPreferences(
-            mocked_draft_scryfall_bulk_file=str(configured)
-        ),
-    )
-
-    with pytest.raises(FileNotFoundError, match="from-settings.jsonl"):
-        factory.create_runtime(
-            publisher=lambda snapshot: None,
-            splash_enabled=True,
-            contextual_adjustments_enabled=True,
-        )
-
-
-def test_moxgate_factory_loads_card_data_once_per_bulk_file_version(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bulk_file = tmp_path / "bulk.jsonl"
-    bulk_file.write_text("{}\n")
+def _moxgate_card_data() -> MoxgateCardData:
     grp_ids = _all_grp_ids(_packs(pack_count=1, pack_size=3))
-    loads: list[Path] = []
+    return MoxgateCardData(
+        card_database=_database(*grp_ids),
+        grp_ids_by_scryfall_id=_scryfall_map(*grp_ids),
+        grp_ids_by_name={f"fixture {grp_id}": (grp_id,) for grp_id in grp_ids},
+    )
 
-    def load_card_data(*, bulk_path: Path) -> tuple[CardDatabase, dict[str, int]]:
-        loads.append(bulk_path)
-        return _database(*grp_ids), _scryfall_map(*grp_ids)
 
-    monkeypatch.setattr(qt_gui, "load_moxgate_card_data", load_card_data)
-    factory = _moxgate_factory(tmp_path=tmp_path, bulk_file=bulk_file)
+def test_moxgate_factory_starts_without_any_bulk_file_and_loads_card_data_once(
+    tmp_path: Path,
+) -> None:
+    loads: list[int] = []
+
+    def load_card_data() -> MoxgateCardData:
+        loads.append(1)
+        return _moxgate_card_data()
+
+    factory = _moxgate_factory(tmp_path=tmp_path, card_data_loader=load_card_data)
 
     for _ in range(2):
         runtime = factory.create_runtime(
@@ -9009,17 +8976,36 @@ def test_moxgate_factory_loads_card_data_once_per_bulk_file_version(
         finally:
             runtime.close()
 
-    assert loads == [bulk_file]
+    assert loads == [1]
 
-    stat = bulk_file.stat()
-    os.utime(bulk_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+def test_moxgate_factory_raises_a_load_failure_and_retries_on_the_next_start(
+    tmp_path: Path,
+) -> None:
+    attempts: list[int] = []
+
+    def load_card_data() -> MoxgateCardData:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise CardDatabaseError("Hosted card data could not be loaded.")
+        return _moxgate_card_data()
+
+    factory = _moxgate_factory(tmp_path=tmp_path, card_data_loader=load_card_data)
+
+    with pytest.raises(CardDatabaseError, match="Hosted card data could not be loaded"):
+        factory.create_runtime(
+            publisher=lambda snapshot: None,
+            splash_enabled=False,
+            contextual_adjustments_enabled=True,
+        )
+
     factory.create_runtime(
         publisher=lambda snapshot: None,
         splash_enabled=False,
         contextual_adjustments_enabled=True,
     ).close()
 
-    assert loads == [bulk_file, bulk_file]
+    assert len(attempts) == 2
 
 
 def test_live_provider_always_offers_the_moxgate_source(tmp_path: Path) -> None:

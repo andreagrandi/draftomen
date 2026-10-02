@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 import queue
+import re
 import socket
 import socketserver
 import sys
@@ -15,15 +16,23 @@ import threading
 import uuid
 import zlib
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import TracebackType
 from typing import Any
+from urllib.parse import urlsplit
 
+from draftomen.card_data_client import (
+    CardDataClient,
+    CardDataClientError,
+    cached_card_data_set_codes,
+)
 from draftomen.carddb import (
     CardDatabase,
     CardDatabaseError,
+    CardInfo,
     _iter_jsonl_objects,
     _open_text_bulk_file,
     build_card_database_from_scryfall_cards,
@@ -44,6 +53,79 @@ MOXGATE_QUEUE_SIZE = 256
 MOXGATE_REQUEST_TIMEOUT_SECONDS = 5
 # serve_forever checks for shutdown this often, so stop() waits at most this long.
 MOXGATE_SHUTDOWN_POLL_SECONDS = 0.05
+
+_SCRYFALL_ID_RE = re.compile(
+    r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.[a-z]+$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MoxgateCardData:
+    """Card lookups built from the hosted per-set card data.
+    Cards match by Scryfall id first, then by casefolded name.
+    """
+
+    card_database: CardDatabase
+    grp_ids_by_scryfall_id: Mapping[str, int]
+    grp_ids_by_name: Mapping[str, tuple[int, ...]]
+
+
+def load_hosted_moxgate_card_data(
+    *, card_data_client: CardDataClient
+) -> MoxgateCardData:
+    """Load every published set into one card database with id and name lookups.
+    Raises CardDatabaseError when no set can be loaded.
+    """
+
+    set_codes = card_data_client.published_set_codes()
+    if set_codes is None:
+        set_codes = cached_card_data_set_codes(app_dir=card_data_client.app_dir)
+
+    cards: dict[int, CardInfo] = {}
+    image_uris_by_name: dict[str, str] = {}
+    for set_code in set_codes:
+        try:
+            database = card_data_client.load(set_code, allow_network=True)
+        except CardDataClientError as error:
+            logger.warning(
+                "Skipping hosted card data for set %s: %s", set_code, error
+            )
+            continue
+
+        cards.update(database.cards)
+        for name, image_uri in database.image_uris_by_name.items():
+            image_uris_by_name.setdefault(name, image_uri)
+
+    if not cards:
+        raise CardDatabaseError(
+            "Hosted card data could not be loaded, so Moxgate cards cannot be "
+            "matched. Check the network connection and try again."
+        )
+
+    grp_ids_by_scryfall_id: dict[str, int] = {}
+    names: dict[str, list[int]] = {}
+    for grp_id, info in cards.items():
+        scryfall_id = _scryfall_id_from_image_uri(image_uri=info.image_uri)
+        if scryfall_id is not None:
+            known = grp_ids_by_scryfall_id.get(scryfall_id)
+            if known is None or grp_id < known:
+                grp_ids_by_scryfall_id[scryfall_id] = grp_id
+
+        names.setdefault(info.name.casefold(), []).append(grp_id)
+
+    return MoxgateCardData(
+        card_database=CardDatabase(cards=cards, image_uris_by_name=image_uris_by_name),
+        grp_ids_by_scryfall_id=grp_ids_by_scryfall_id,
+        grp_ids_by_name={name: tuple(sorted(ids)) for name, ids in names.items()},
+    )
+
+
+def _scryfall_id_from_image_uri(*, image_uri: str | None) -> str | None:
+    if not image_uri:
+        return None
+
+    match = _SCRYFALL_ID_RE.search(urlsplit(image_uri).path.lower())
+    return None if match is None else match.group(1)
 
 
 def load_moxgate_card_data(
@@ -439,11 +521,13 @@ class MoxgateSessionFeeder:
         canonical_grp_ids_by_scryfall_id: Mapping[str, int],
         account_id: str | None = None,
         draft_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
+        grp_ids_by_name: Mapping[str, tuple[int, ...]] | None = None,
     ) -> None:
         self._snapshots = snapshots
         self._session = session
         self._card_database = card_database
         self._grp_ids_by_scryfall_id = canonical_grp_ids_by_scryfall_id
+        self._grp_ids_by_name = grp_ids_by_name
         self._account_id = account_id
         self._draft_id_factory = draft_id_factory
         self._adapter: MoxgateAdapter | None = None
@@ -477,6 +561,7 @@ class MoxgateSessionFeeder:
                 canonical_grp_ids_by_scryfall_id=self._grp_ids_by_scryfall_id,
                 draft_id=self._draft_id_factory(),
                 account_id=self._account_id,
+                grp_ids_by_name=self._grp_ids_by_name,
             )
 
         assert adapter is not None

@@ -390,6 +390,23 @@ class CardDataClient:
         None means the manifest is disabled, unreachable, invalid, or does not list the set.
         """
 
+        manifest = self._manifest()
+        if manifest is None:
+            return None
+        entry = manifest.select(set_code=set_code)
+        return None if entry is None else entry.card_data.sha256
+
+    def published_set_codes(self) -> tuple[str, ...] | None:
+        """Return the sorted set codes listed in the sets manifest.
+        None means the manifest is disabled, unreachable, or invalid.
+        """
+
+        manifest = self._manifest()
+        if manifest is None:
+            return None
+        return tuple(sorted(entry.set_code.casefold() for entry in manifest.entries))
+
+    def _manifest(self) -> SetsManifest | None:
         if self.sets_manifest_url is None:
             return None
         with self._sets_manifest_lock:
@@ -407,10 +424,7 @@ class CardDataClient:
                     )
                 except (CardDataClientError, SetsManifestError):
                     self._sets_manifest = None
-        if self._sets_manifest is None:
-            return None
-        entry = self._sets_manifest.select(set_code=set_code)
-        return None if entry is None else entry.card_data.sha256
+            return self._sets_manifest
 
     def _fetch(self, set_code: str) -> bytes:
         return self._fetch_url(

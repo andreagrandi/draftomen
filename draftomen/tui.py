@@ -4174,6 +4174,7 @@ def run_tui_moxgate_watch(
     once: bool = False,
     mana_icons_enabled: bool = False,
     splash_enabled: bool | None = None,
+    grp_ids_by_name: Mapping[str, tuple[int, ...]] | None = None,
 ) -> int:
     """Run the Textual watch on Moxgate snapshots and return an exit code.
     A port in use raises MoxgateReceiverError before the TUI starts.
@@ -4200,6 +4201,7 @@ def run_tui_moxgate_watch(
             augmented_model_client=augmented_model_client,
             splash_enabled=splash_enabled,
             augmentation_enabled=augmentation_enabled,
+            grp_ids_by_name=grp_ids_by_name,
         )
         runtimes.append(runtime)
         return runtime

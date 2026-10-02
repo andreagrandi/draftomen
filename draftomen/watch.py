@@ -527,6 +527,7 @@ def run_plain_moxgate_watch(
     stop_after_empty_polls: int | None = None,
     splash_enabled: bool = True,
     profile_client: ProfileClient | None = None,
+    grp_ids_by_name: Mapping[str, tuple[int, ...]] | None = None,
 ) -> int:
     """Run watch --plain on Moxgate snapshots until interrupted or a test stop fires.
     The receiver and the watcher are always released, including on interrupt.
@@ -554,6 +555,7 @@ def run_plain_moxgate_watch(
                 card_database=card_database,
                 canonical_grp_ids_by_scryfall_id=canonical_grp_ids_by_scryfall_id,
                 account_id=MOXGATE_ACCOUNT_ID,
+                grp_ids_by_name=grp_ids_by_name,
             )
             host_label = f"[{host}]" if ":" in host else host
             output.write("Draft Omen watch\n")

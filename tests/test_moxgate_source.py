@@ -224,3 +224,25 @@ def test_runtime_passes_the_event_publisher_to_its_session(tmp_path: Path) -> No
         runtime.close()
 
     assert events
+
+
+def test_runtime_passes_the_name_map_to_its_feeder(tmp_path: Path) -> None:
+    grp_ids = _all_grp_ids(PACKS)
+    events: list[object] = []
+    runtime = create_moxgate_runtime(
+        card_database=_database(*grp_ids),
+        canonical_grp_ids_by_scryfall_id={},
+        snapshot_publisher=None,
+        event_publisher=events.append,
+        app_dir=tmp_path / "app",
+        port=0,
+        splash_enabled=False,
+        grp_ids_by_name={f"fixture {grp_id}": (grp_id,) for grp_id in grp_ids},
+    )
+    try:
+        runtime._receiver.snapshots.put(_snapshots(PACKS)[0][0])
+        runtime.drain()
+    finally:
+        runtime.close()
+
+    assert events

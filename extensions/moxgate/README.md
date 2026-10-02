@@ -18,12 +18,11 @@ contact any other server and does not read pages outside `www.moxgate.com`.
 draftomen-tui watch --source moxgate
 ```
 
-Draft Omen needs a Scryfall default-cards bulk file at startup. It uses the
-file from `--bulk-file`, or else the Mocked Draft download in the app data
-directory. If neither exists, watch exits with an error and does not start the
-receiver. The receiver listens on port 47326. The extension has this port fixed,
-so `--moxgate-port` only works if you also edit `RECEIVER_URL` in
-`service_worker.js` and `popup.js`.
+Draft Omen matches cards with its hosted card data, which it downloads and
+caches on first use. The CLI still accepts `--bulk-file` to use a local
+Scryfall bulk file instead. The receiver listens on port 47326. The extension
+has this port fixed, so `--moxgate-port` only works if you also edit
+`RECEIVER_URL` in `service_worker.js` and `popup.js`.
 
 ## Popup
 

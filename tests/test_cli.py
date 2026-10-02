@@ -21,10 +21,18 @@ from draftomen import __version__
 from draftomen import cli
 from draftomen import config
 from draftomen.audit import load_draft_audit_records
-from draftomen.carddb import CardDatabase, build_card_database_from_bulk_file
+from draftomen.carddb import (
+    CardDatabase,
+    CardDatabaseError,
+    build_card_database_from_bulk_file,
+)
 from draftomen.cli import build_parser, main
 from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
-from draftomen.moxgate_server import MOXGATE_DEFAULT_PORT, MoxgateReceiver
+from draftomen.moxgate_server import (
+    MOXGATE_DEFAULT_PORT,
+    MoxgateCardData,
+    MoxgateReceiver,
+)
 from draftomen.pool import DraftState, load_draft_state, save_draft_state
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_input_acquisition import (
@@ -3968,3 +3976,63 @@ def test_tui_writes_to_the_application_log(
     assert exit_code == 0
     contents = (app_logs_dir / "draftomen.log").read_text(encoding="utf-8")
     assert f"Draft Omen {__version__} starting on " in contents
+
+
+def test_watch_moxgate_without_bulk_file_uses_the_hosted_card_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hosted = MoxgateCardData(
+        card_database=CardDatabase(cards={}),
+        grp_ids_by_scryfall_id={"sf-1": 1},
+        grp_ids_by_name={"card": (1,)},
+    )
+    clients: list[object] = []
+    calls: list[dict[str, object]] = []
+
+    def fake_load(*, card_data_client: object) -> MoxgateCardData:
+        clients.append(card_data_client)
+        return hosted
+
+    def fake_run(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr("draftomen.cli.load_hosted_moxgate_card_data", fake_load)
+    monkeypatch.setattr("draftomen.cli.run_plain_moxgate_watch", fake_run)
+
+    exit_code = main(
+        argv=[
+            "watch",
+            "--source",
+            "moxgate",
+            "--plain",
+            "--app-dir",
+            str(tmp_path / "app"),
+            "--offline-profiles",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(clients) == 1
+    assert calls[0]["card_database"] is hosted.card_database
+    assert calls[0]["canonical_grp_ids_by_scryfall_id"] == {"sf-1": 1}
+    assert calls[0]["grp_ids_by_name"] == {"card": (1,)}
+
+
+def test_watch_moxgate_reports_a_hosted_card_data_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_load(*, card_data_client: object) -> MoxgateCardData:
+        raise CardDatabaseError("Hosted card data could not be loaded.")
+
+    monkeypatch.setattr("draftomen.cli.load_hosted_moxgate_card_data", fake_load)
+
+    exit_code = main(
+        argv=["watch", "--source", "moxgate", "--plain", "--app-dir", str(tmp_path / "app")]
+    )
+
+    assert exit_code == 1
+    assert "watch failed: Hosted card data could not be loaded." in capsys.readouterr().err
