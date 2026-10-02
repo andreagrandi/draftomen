@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- The live draft view keeps the card list beside the card details and pool
+  panels when the window is short, as on a 14-inch laptop. The card list
+  scrolls, the pool panel shrinks and scrolls, and the view only switches to
+  the stacked layout when the window is too narrow.
 - Quick Draft uses the PremierDraft ratings when a set has no QuickDraft
   profile yet, as Traditional and Pick-Two already do. Arena opens Quick Draft
   weeks after a set releases, so Quick Drafts and Moxgate drafts of a new set

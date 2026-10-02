@@ -5629,7 +5629,7 @@ application.processEvents()
 assert find_visual_item(root.contentItem(), "liveStateBanner").isVisible() is False
 root.resize(1280, 720)
 application.processEvents()
-assert live_view.property("wideRecommendations") is False
+assert live_view.property("wideRecommendations") is True
 root.resize(1352, 799)
 application.processEvents()
 assert live_view.property("wideRecommendations") is True
@@ -5706,7 +5706,51 @@ root.resize(1440, 900)
 application.processEvents()
 assert live_view.property("wideRecommendations") is True
 
-root.resize(1440, 738)
+# A short window keeps the wide layout: the list scrolls, the pool shrinks
+# and scrolls, and both side panels stay inside the details column.
+root.resize(1440, 640)
+application.processEvents()
+assert live_view.property("wideRecommendations") is True
+short_list_row = find_visual_item(root.contentItem(), "wideRecommendationRow1")
+short_details = find_visual_item(root.contentItem(), "wideCardDetailsColumn")
+short_preview = find_visual_item(root.contentItem(), "wideLiveCardPreview")
+short_pool = find_visual_item(root.contentItem(), "wideLivePoolDetails")
+assert short_list_row is not None and short_list_row.isVisible()
+assert short_preview is not None and short_preview.isVisible()
+assert short_pool is not None and short_pool.isVisible()
+assert find_visual_item(
+    root.contentItem(), "narrowRecommendationList"
+).isVisible() is False
+assert short_preview.height() >= float(
+    live_view.property("wideCardPreviewCurrentMinimumHeight")
+) - 1
+assert short_preview.height() >= 200
+assert short_pool.height() >= int(
+    live_view.property("widePoolDetailsShortMinimumHeight")
+) - 1
+assert short_pool.y() + short_pool.height() <= short_details.height() + 1
+assert_visual_item_inside(live_view, short_details)
+# An empty pool needs no mana curve room, so the preview must not take the
+# whole column and push the view past the bottom of the window.
+state_with_pool = provider.state
+state_with_empty_pool = dict(state_with_pool)
+state_with_empty_pool["pool"] = dict(
+    state_with_pool["pool"],
+    total_cards=0,
+    recent_picks=[],
+    mana_curve=[],
+    color_distribution=[],
+)
+provider._replace_state(state=state_with_empty_pool)
+application.processEvents()
+assert live_view.property("wideRecommendations") is True
+assert_visual_item_inside(live_view, short_details)
+assert_visual_item_inside(live_view, short_list_row.parentItem().parentItem())
+assert short_pool.y() + short_pool.height() <= short_details.height() + 1
+provider._replace_state(state=state_with_pool)
+application.processEvents()
+
+root.resize(1100, 738)
 application.processEvents()
 assert live_view.property("wideRecommendations") is False
 fallback_wide_preview = find_visual_item(
