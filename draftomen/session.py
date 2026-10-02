@@ -1640,6 +1640,7 @@ class LiveSession:
                 self._log_account_id = state.account_id
                 if _event_is_missing_account(event=event):
                     event = replace(event, account_id=state.account_id)
+                event = _resumed_pack_with_saved_pool(event=event, state=state)
             self._consume_event(event=event, state=state)
             self._publish_event(event=event)
         return self.snapshot
@@ -5107,6 +5108,18 @@ def _draft_coordinates(
 
     pick = max(state.picks, key=lambda candidate: candidate.coordinate)
     return pick.coordinate
+
+
+def _resumed_pack_with_saved_pool(*, event: DraftEvent, state: DraftState) -> DraftEvent:
+    # A resumed pack only lists post-restart picks; the saved pick holds the full pool.
+    if not isinstance(event, PackOfferedEvent) or not event.resumed:
+        return event
+
+    pick = state.pick_for(pack_number=event.pack_number, pick_number=event.pick_number)
+    if pick is None or pick.pool_before_pick is None:
+        return event
+
+    return replace(event, pool_grp_ids=pick.pool_before_pick)
 
 
 def _pending_pack_event(*, state: DraftState) -> PackOfferedEvent | None:

@@ -72,6 +72,9 @@ HOSTED_GOLDEN_REPLAY_PATH = (
 PREMIER_REPLAY_LOG_PATH = (
     Path(__file__).parent / "fixtures" / "premier-draft-replay.log"
 )
+PREMIER_RESUMED_REPLAY_LOG_PATH = (
+    Path(__file__).parent / "fixtures" / "premier-draft-resumed.log"
+)
 PICK_TWO_REPLAY_LOG_PATH = (
     Path(__file__).parent / "fixtures" / "pick-two-draft-replay.log"
 )
@@ -132,6 +135,41 @@ def test_replay_fixture_matches_committed_golden_output(
     assert exit_code == 0
     assert captured.out == GOLDEN_REPLAY_PATH.read_text(encoding="utf-8")
     assert captured.err == ""
+
+
+def test_replay_of_a_resumed_draft_shows_every_pack_after_the_restart(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        argv=[
+            "replay",
+            str(PREMIER_RESUMED_REPLAY_LOG_PATH),
+            "--bulk-file",
+            str(SCRYFALL_BULK_SAMPLE_PATH),
+            "--app-dir",
+            str(tmp_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    output_lines = captured.out.splitlines()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    pack_indexes = [
+        index for index, line in enumerate(output_lines) if line.startswith("Pack ")
+    ]
+    assert [output_lines[index] for index in pack_indexes] == [
+        "Pack 2 Pick 14",
+        "Pack 3 Pick 1",
+        "Pack 3 Pick 2",
+    ]
+    assert [output_lines[index + 1].rsplit(" ", 1)[1] for index in pack_indexes] == [
+        "4",
+        "5",
+        "6",
+    ]
 
 
 def test_replay_output_is_byte_identical_across_runs() -> None:

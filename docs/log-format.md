@@ -150,6 +150,18 @@ The draft completes once, from the first of:
 
 The completed pool holds the recorded picks. A missing pick stays a gap. When Arena's `CardPool` holds every recorded card plus the missing ones, Draft Omen saves that full pool instead, so a draft with gaps still keeps all 42 cards. A `CardPool` that lacks a recorded card leaves the pool unchanged, and the parser writes a warning.
 
+### Resumed draft
+
+When Arena restarts during a human draft, the new log has a login line but no `EventJoin` and no table draft queue line. The only record of the draft is a course in the `Courses` list of the `<== EventGetCoursesV2(<id>)` response. The body is one JSON line, `{"Courses": [...]}`, and the list holds many courses.
+
+The parser resumes a draft from a course with `CurrentModule` set to `PlayerDraft`. The course needs a non-empty `CourseId`, `InternalEventName` and `DraftId`, and a `CardPool` that is a list of positive integers. A missing `CardPool` counts as empty. The event name must belong to a human-draft format, so a Quick Draft course never resumes. `DraftId` equals the `draftId` of the `Draft.Notify` lines that follow.
+
+The parser adopts the course only when no draft is active and exactly one course qualifies. Arena also logs this list during a draft, and those later snapshots change nothing. A list with two qualifying courses is ambiguous and is ignored.
+
+In real logs the `CardPool` is empty even at pack 2 or 3. After the list, Arena sends the `EventPlayerDraftMakePick` request for the current pick before any `Draft.Notify`, and notifies follow for the next picks. The first pack after the restart therefore carries only the picks made since the restart, plus the `CardPool` cards when the list has any.
+
+Pack offers and the completion of a resumed draft carry `resumed: true`. The pool of a resumed pack may lack picks made before the restart, so the pool store checks only that the saved pool contains the completion picks. It also adds the `CardPool` cards it never saw as picks to the saved pool. The `CardPool` in the `DraftCompleteDraft` response holds all 42 cards and gives the full pool.
+
 ### Known limits
 
 - No real Traditional drafting log has been captured. Traditional support rests on the synthetic fixture and the protocol it shares with Premier.

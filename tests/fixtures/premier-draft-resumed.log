@@ -1,0 +1,26 @@
+[Accounts - Login] Logged in successfully. Display Name: Resumed Premier#12345
+{"authenticateResponse":{"clientId":"PREMIERRESUMEDACCOUNT","screenName":"Resumed Premier"}}
+[UnityCrossThreadLogger]==> EventGetCoursesV2 {"id":"resume-courses-1","request":"{}"}
+<== EventGetCoursesV2(resume-courses-1)
+{"Courses":[{"CourseId":"resumed-other-course","InternalEventName":"Constructed_Event_2026","CurrentModule":"CreateMatchGameRules","ModulePayload":"","CourseDeckSummary":{},"CardPool":[],"CardStyles":[],"DraftId":null},{"CourseId":"resumed-draft-course","InternalEventName":"PremierDraft_MSH_20260930","CurrentModule":"PlayerDraft","ModulePayload":"","CourseDeckSummary":{},"CardPool":[105002,105003,105004],"CardStyles":[],"DraftId":"premier-resumed-draft"}]}
+[UnityCrossThreadLogger]==> EventPlayerDraftMakePick {"id":"resumed-pick-2-13","request":"{\"DraftId\":\"premier-resumed-draft\",\"GrpIds\":[105005],\"Pack\":2,\"Pick\":13}"}
+<== EventPlayerDraftMakePick(resumed-pick-2-13)
+{"IsPickSuccessful":true}
+[UnityCrossThreadLogger]Draft.Notify {"draftId":"premier-resumed-draft","SelfPick":14,"SelfPack":2,"PackCards":"105006"}
+[UnityCrossThreadLogger]==> EventPlayerDraftMakePick {"id":"resumed-pick-2-14","request":"{\"DraftId\":\"premier-resumed-draft\",\"GrpIds\":[105006],\"Pack\":2,\"Pick\":14}"}
+<== EventPlayerDraftMakePick(resumed-pick-2-14)
+{"IsPickSuccessful":true}
+[UnityCrossThreadLogger]==> EventGetCoursesV2 {"id":"resume-courses-2","request":"{}"}
+<== EventGetCoursesV2(resume-courses-2)
+{"Courses":[{"CourseId":"resumed-draft-course","InternalEventName":"PremierDraft_MSH_20260930","CurrentModule":"PlayerDraft","ModulePayload":"","CourseDeckSummary":{},"CardPool":[],"CardStyles":[],"DraftId":"premier-resumed-draft"}]}
+[UnityCrossThreadLogger]Draft.Notify {"draftId":"premier-resumed-draft","SelfPick":1,"SelfPack":3,"PackCards":"105007,105008,105009"}
+[UnityCrossThreadLogger]==> EventPlayerDraftMakePick {"id":"resumed-pick-3-1","request":"{\"DraftId\":\"premier-resumed-draft\",\"GrpIds\":[105007],\"Pack\":3,\"Pick\":1}"}
+<== EventPlayerDraftMakePick(resumed-pick-3-1)
+{"IsPickSuccessful":true}
+[UnityCrossThreadLogger]Draft.Notify {"draftId":"premier-resumed-draft","SelfPick":2,"SelfPack":3,"PackCards":"105008,105009"}
+[UnityCrossThreadLogger]==> EventPlayerDraftMakePick {"id":"resumed-pick-3-2","request":"{\"DraftId\":\"premier-resumed-draft\",\"GrpIds\":[105008],\"Pack\":3,\"Pick\":2}"}
+<== EventPlayerDraftMakePick(resumed-pick-3-2)
+{"IsPickSuccessful":true,"IsPickingCompleted":true}
+[UnityCrossThreadLogger]==> DraftCompleteDraft {"id":"resumed-complete","request":"{\"EventName\":\"PremierDraft_MSH_20260930\",\"IsBotDraft\":false}"}
+<== DraftCompleteDraft(resumed-complete)
+{"CourseId":"resumed-draft-course","InternalEventName":"PremierDraft_MSH_20260930","CurrentModule":"DeckSelect","ModulePayload":"{}","CardPool":[105002,105003,105004,105005,105006,105007,105008],"DraftId":"premier-resumed-draft"}

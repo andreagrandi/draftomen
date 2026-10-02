@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -1461,3 +1462,211 @@ def test_queue_marker_for_another_set_replaces_the_context() -> None:
 )
 def test_unknown_or_malformed_queue_marker_produces_nothing(marker: str) -> None:
     assert list(parse_events([marker, _notify()])) == []
+
+
+RESUME_FIXTURE = Path(__file__).parent / "fixtures" / "premier-draft-resumed.log"
+RESUME_EVENT = "PremierDraft_TST_20260101"
+
+
+def _course(
+    *,
+    event_name: str = RESUME_EVENT,
+    module: str = "PlayerDraft",
+    draft_id: object = DRAFT_ID,
+    card_pool: object = (),
+    course_id: str = "course-1",
+) -> dict[str, object]:
+    return {
+        "CourseId": course_id,
+        "InternalEventName": event_name,
+        "CurrentModule": module,
+        "ModulePayload": "",
+        "CardPool": list(card_pool) if isinstance(card_pool, tuple) else card_pool,
+        "DraftId": draft_id,
+    }
+
+
+def _courses_lines(*, courses: Sequence[object]) -> list[str]:
+    return ["<== EventGetCoursesV2(courses-1)", json.dumps({"Courses": list(courses)})]
+
+
+def _resume_lines(*, card_pool: tuple[int, ...] = (7001, 7002)) -> list[str]:
+    return [
+        *_courses_lines(
+            courses=[_course(module="DeckBuilder", draft_id=None), _course(card_pool=card_pool)]
+        ),
+        _pick_request(pack=2, pick=13, cards=[7003]),
+        *_pick_response(),
+        _notify(pack=2, pick=14, card_count=1, first_grp_id=7100),
+    ]
+
+
+def test_resumed_fixture_yields_a_pack_for_each_notify_after_the_snapshot() -> None:
+    lines = RESUME_FIXTURE.read_text(encoding="utf-8").splitlines()
+
+    events = _pack_events(lines=lines)
+
+    assert [(e.pack_number, e.pick_number) for e in events] == [(1, 13), (2, 0), (2, 1)]
+    assert {e.event_name for e in events} == {"PremierDraft_MSH_20260930"}
+    assert {e.draft_format for e in events} == {DraftFormat.PREMIER}
+    assert [len(e.pool_grp_ids) for e in events] == [4, 5, 6]
+    assert events[0].pool_grp_ids == (105002, 105003, 105004, 105005)
+    assert all(event.resumed for event in events)
+
+
+def test_resumed_fixture_completion_matches_the_card_pool_without_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    lines = RESUME_FIXTURE.read_text(encoding="utf-8").splitlines()
+
+    with caplog.at_level(logging.WARNING, logger="draftomen.events"):
+        completions = _completions(events=parse_events(lines))
+
+    assert len(completions) == 1
+    assert completions[0].resumed is True
+    assert Counter(completions[0].pool_grp_ids) == Counter(
+        [105002, 105003, 105004, 105005, 105006, 105007, 105008]
+    )
+    assert caplog.records == []
+
+
+def test_resume_pack_pool_starts_from_the_course_card_pool_and_later_picks_extend_it() -> None:
+    lines = [
+        *_resume_lines(),
+        _pick_request(request_id="pick-2", pack=2, pick=14, cards=[7100]),
+        *_pick_response(request_id="pick-2"),
+        _notify(pack=3, pick=1, card_count=2, first_grp_id=7200),
+    ]
+
+    packs = _pack_events(lines=lines)
+
+    assert [pack.pool_grp_ids for pack in packs] == [
+        (7001, 7002, 7003),
+        (7001, 7002, 7003, 7100),
+    ]
+    assert all(pack.resumed for pack in packs)
+    assert packs[0].event_name == RESUME_EVENT
+    assert packs[0].draft_format is DraftFormat.PREMIER
+
+
+def test_resume_with_an_empty_card_pool_gives_only_the_post_restart_picks() -> None:
+    packs = _pack_events(lines=_resume_lines(card_pool=()))
+
+    assert [pack.pool_grp_ids for pack in packs] == [(7003,)]
+    assert packs[0].resumed is True
+
+
+def test_normal_human_draft_is_not_marked_resumed() -> None:
+    lines = [
+        _join_request(event_name=RESUME_EVENT),
+        _notify(),
+        _pick_request(cards=[1000]),
+        *_pick_response(),
+        _notify(pick=2),
+        _pick_request(request_id="pick-2", pick=2, cards=[1001]),
+        *_pick_response(request_id="pick-2"),
+        _complete_request(),
+    ]
+
+    events = list(parse_events(lines))
+
+    assert [pack.resumed for pack in _pack_events(lines=lines)] == [False, False]
+    assert [completion.resumed for completion in _completions(events=events)] == [False]
+
+
+@pytest.mark.parametrize(
+    "courses",
+    [
+        [_course(module="DeckBuilder")],
+        [_course(event_name="QuickDraft_TST_20260101")],
+        [_course(event_name="Sealed_TST_20260101")],
+        [_course(draft_id=None)],
+        [_course(draft_id="")],
+        [_course(course_id="")],
+        [_course(card_pool=[1, True])],
+        [_course(card_pool=[1, -2])],
+        [_course(card_pool="1,2")],
+        [_course(), _course(draft_id=OTHER_DRAFT_ID, course_id="course-2")],
+        ["garbage", 7, None],
+    ],
+)
+def test_unqualified_or_ambiguous_courses_leave_the_context_unchanged(
+    courses: list[object],
+) -> None:
+    lines = [*_courses_lines(courses=courses), _notify()]
+
+    assert _pack_events(lines=lines) == []
+
+
+def test_snapshot_without_a_courses_list_or_with_courses_not_a_list_is_ignored() -> None:
+    lines = [
+        "<== EventGetCoursesV2(courses-1)",
+        json.dumps({"Courses": "nope"}),
+        _notify(),
+    ]
+
+    assert _pack_events(lines=lines) == []
+
+
+def test_periodic_snapshot_does_not_reset_the_picks_of_a_normal_draft() -> None:
+    lines = [
+        _join_request(event_name=RESUME_EVENT),
+        _notify(),
+        _pick_request(cards=[1000]),
+        *_pick_response(),
+        *_courses_lines(courses=[_course(card_pool=())]),
+        _notify(pick=2),
+    ]
+
+    packs = _pack_events(lines=lines)
+
+    assert [pack.pool_grp_ids for pack in packs] == [(), (1000,)]
+    assert [pack.resumed for pack in packs] == [False, False]
+
+
+def test_periodic_snapshot_does_not_reset_the_picks_of_a_resumed_draft() -> None:
+    lines = [
+        *_resume_lines(),
+        _pick_request(request_id="pick-2", pack=2, pick=14, cards=[7100]),
+        *_pick_response(request_id="pick-2"),
+        *_courses_lines(courses=[_course(card_pool=())]),
+        _notify(pack=3, pick=1, card_count=2, first_grp_id=7200),
+    ]
+
+    packs = _pack_events(lines=lines)
+
+    assert packs[-1].pool_grp_ids == (7001, 7002, 7003, 7100)
+    assert packs[-1].resumed is True
+
+
+def test_stale_player_draft_course_does_not_replace_the_active_draft() -> None:
+    lines = [
+        _join_request(event_name=RESUME_EVENT),
+        _notify(),
+        _pick_request(cards=[1000]),
+        *_pick_response(),
+        *_courses_lines(
+            courses=[
+                _course(
+                    event_name="TradDraft_TST_20260101",
+                    draft_id=OTHER_DRAFT_ID,
+                    card_pool=(9001,),
+                )
+            ]
+        ),
+        _notify(pick=2),
+    ]
+
+    packs = _pack_events(lines=lines)
+
+    assert [pack.event_name for pack in packs] == [RESUME_EVENT, RESUME_EVENT]
+    assert packs[1].pool_grp_ids == (1000,)
+    assert packs[1].resumed is False
+
+
+def test_login_after_a_resume_forgets_the_resumed_draft() -> None:
+    login = "[Accounts - Login] Logged in successfully. Display Name: Tester#12345"
+
+    packs = _pack_events(lines=[*_resume_lines(), login, _notify(pack=3, pick=1)])
+
+    assert len(packs) == 1

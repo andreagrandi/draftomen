@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -802,3 +803,268 @@ def _index_after_pick(*, events: list[DraftEvent], pick_count: int) -> int:
                 return index
 
     raise AssertionError(f"Fixture does not contain {pick_count} picks.")
+
+
+RESUME_EVENT_NAME = "PremierDraft_ABC_20260703"
+
+
+def test_resumed_pack_uses_saved_pool_as_pool_before_pick(tmp_path: Path) -> None:
+    store = _saved_resume_store(tmp_path=tmp_path)
+
+    state = store.consume(event=_resumed_pack(pick_number=2, pool_grp_ids=()))
+
+    pick = state.pick_for(pack_number=0, pick_number=2)
+    assert pick is not None
+    assert pick.pool_before_pick == (101, 102)
+    assert state.pool_grp_ids == (101, 102)
+
+
+def test_resumed_pack_replay_keeps_saved_pool(tmp_path: Path) -> None:
+    store = _saved_resume_store(tmp_path=tmp_path)
+    store.consume(event=_resumed_pack(pick_number=2, pool_grp_ids=()))
+    store.consume(
+        event=PickMadeEvent(
+            event_name=RESUME_EVENT_NAME,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=2,
+            selected_grp_ids=(103,),
+            account_id="ACCOUNT-A",
+        )
+    )
+
+    state = store.consume(event=_resumed_pack(pick_number=2, pool_grp_ids=(103,)))
+
+    pick = state.pick_for(pack_number=0, pick_number=2)
+    assert pick is not None
+    assert pick.pool_before_pick == (101, 102)
+    assert state.pool_grp_ids == (101, 102, 103)
+
+
+def test_resumed_pack_adds_missing_seed_cards_to_saved_pool(tmp_path: Path) -> None:
+    store = _saved_resume_store(tmp_path=tmp_path)
+
+    state = store.consume(event=_resumed_pack(pick_number=2, pool_grp_ids=(999,)))
+
+    pick = state.pick_for(pack_number=0, pick_number=2)
+    assert pick is not None
+    assert Counter(state.pool_grp_ids) == Counter((101, 102, 999))
+    assert pick.pool_before_pick == state.pool_grp_ids
+
+
+def test_resumed_pack_with_seed_and_saved_picks_completes_to_card_pool(
+    tmp_path: Path,
+) -> None:
+    store = _saved_resume_store(tmp_path=tmp_path)
+    store.consume(event=_resumed_pack(pick_number=2, pool_grp_ids=(900,)))
+    store.consume(
+        event=PickMadeEvent(
+            event_name=RESUME_EVENT_NAME,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=2,
+            selected_grp_ids=(103,),
+            account_id="ACCOUNT-A",
+        )
+    )
+    store.consume(event=_resumed_pack(pick_number=3, pool_grp_ids=(900, 103)))
+
+    state = store.consume(
+        event=_resumed_completion(
+            picked_grp_ids=(900, 103),
+            card_pool_grp_ids=(101, 102, 103, 900),
+        )
+    )
+
+    assert state.completed is True
+    assert Counter(state.pool_grp_ids) == Counter((101, 102, 103, 900))
+
+
+def test_non_resumed_pack_with_partial_pool_still_raises(tmp_path: Path) -> None:
+    store = _saved_resume_store(tmp_path=tmp_path)
+
+    with pytest.raises(DraftPoolError, match="accumulated pool"):
+        store.consume(
+            event=replace(
+                _resumed_pack(pick_number=2, pool_grp_ids=()),
+                resumed=False,
+            )
+        )
+
+
+def test_resumed_completion_merges_card_pool_and_replays(tmp_path: Path) -> None:
+    store = _saved_resume_store(tmp_path=tmp_path)
+    store.consume(event=_resumed_pack(pick_number=2, pool_grp_ids=()))
+    store.consume(
+        event=PickMadeEvent(
+            event_name=RESUME_EVENT_NAME,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=2,
+            selected_grp_ids=(103,),
+            account_id="ACCOUNT-A",
+        )
+    )
+    completion = _resumed_completion(
+        picked_grp_ids=(103,),
+        card_pool_grp_ids=(101, 102, 103),
+    )
+
+    state = store.consume(event=completion)
+    replayed = store.consume(event=completion)
+
+    assert state.completed is True
+    assert Counter(state.pool_grp_ids) == Counter((101, 102, 103))
+    assert replayed.pool_grp_ids == state.pool_grp_ids
+
+
+def test_resumed_completion_replay_after_card_pool_replaced_pool(tmp_path: Path) -> None:
+    store = _saved_resume_store(tmp_path=tmp_path)
+    store.consume(
+        event=PickMadeEvent(
+            event_name=RESUME_EVENT_NAME,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=2,
+            selected_grp_ids=(103,),
+            account_id="ACCOUNT-A",
+        )
+    )
+    store.consume(
+        event=_resumed_completion(
+            picked_grp_ids=(103,),
+            card_pool_grp_ids=(101, 102, 103, 104),
+        )
+    )
+
+    state = store.consume(
+        event=_resumed_completion(
+            picked_grp_ids=(103,),
+            card_pool_grp_ids=(101, 102, 103, 104),
+        )
+    )
+
+    assert Counter(state.pool_grp_ids) == Counter((101, 102, 103, 104))
+
+
+def test_resumed_completion_with_pick_missing_from_saved_pool_raises(
+    tmp_path: Path,
+) -> None:
+    store = _saved_resume_store(tmp_path=tmp_path)
+
+    with pytest.raises(DraftPoolError, match="does not match accumulated pool"):
+        store.consume(
+            event=_resumed_completion(
+                picked_grp_ids=(999,),
+                card_pool_grp_ids=None,
+            )
+        )
+
+
+def test_resumed_draft_without_saved_state_completes_to_card_pool(
+    tmp_path: Path,
+) -> None:
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name="First"))
+
+    store.consume(
+        event=PickMadeEvent(
+            event_name=RESUME_EVENT_NAME,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=2,
+            selected_grp_ids=(103,),
+            account_id="ACCOUNT-A",
+        )
+    )
+    store.consume(event=_resumed_pack(pick_number=3, pool_grp_ids=(103,)))
+    store.consume(
+        event=PickMadeEvent(
+            event_name=RESUME_EVENT_NAME,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=3,
+            selected_grp_ids=(104,),
+            account_id="ACCOUNT-A",
+        )
+    )
+    state = store.consume(
+        event=_resumed_completion(
+            picked_grp_ids=(103, 104),
+            card_pool_grp_ids=(101, 102, 103, 104),
+        )
+    )
+
+    assert state.completed is True
+    assert Counter(state.pool_grp_ids) == Counter((101, 102, 103, 104))
+
+
+def _saved_resume_store(*, tmp_path: Path) -> DraftPoolStore:
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name="First"))
+    store.consume(
+        event=DraftStartedEvent(
+            event_name=RESUME_EVENT_NAME,
+            set_code="ABC",
+            course_id="resume-course",
+            account_id="ACCOUNT-A",
+        )
+    )
+    for pick_number, card, pool in ((0, 101, ()), (1, 102, (101,))):
+        store.consume(
+            event=PackOfferedEvent(
+                event_name=RESUME_EVENT_NAME,
+                set_code="ABC",
+                pack_number=0,
+                pick_number=pick_number,
+                offered_grp_ids=(card, 103),
+                pool_grp_ids=pool,
+                account_id="ACCOUNT-A",
+            )
+        )
+        store.consume(
+            event=PickMadeEvent(
+                event_name=RESUME_EVENT_NAME,
+                set_code="ABC",
+                pack_number=0,
+                pick_number=pick_number,
+                selected_grp_ids=(card,),
+                account_id="ACCOUNT-A",
+            )
+        )
+    return store
+
+
+def _resumed_pack(
+    *,
+    pick_number: int,
+    pool_grp_ids: tuple[int, ...],
+) -> PackOfferedEvent:
+    return PackOfferedEvent(
+        event_name=RESUME_EVENT_NAME,
+        set_code="ABC",
+        pack_number=0,
+        pick_number=pick_number,
+        offered_grp_ids=(103, 104),
+        pool_grp_ids=pool_grp_ids,
+        account_id="ACCOUNT-A",
+        resumed=True,
+    )
+
+
+def _resumed_completion(
+    *,
+    picked_grp_ids: tuple[int, ...],
+    card_pool_grp_ids: tuple[int, ...] | None,
+) -> DraftCompletedEvent:
+    return DraftCompletedEvent(
+        event_name=RESUME_EVENT_NAME,
+        set_code="ABC",
+        pack_number=0,
+        pick_number=3,
+        picked_grp_ids=picked_grp_ids,
+        inferred=False,
+        account_id="ACCOUNT-A",
+        card_pool_grp_ids=card_pool_grp_ids,
+        resumed=True,
+    )

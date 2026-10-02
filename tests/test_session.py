@@ -9788,3 +9788,76 @@ def test_live_session_adopts_a_profile_refresh_that_lands_after_the_msh_replay_c
     assert session.snapshot.ratings.phase is DataLoadPhase.READY
     assert session.snapshot.ratings.message == "MSH ratings are ready."
 
+
+def test_resumed_pack_uses_saved_pool_for_snapshot(tmp_path: Path) -> None:
+    event_name = "PremierDraft_TST_20261001"
+    session = LiveSession(
+        log_path=None,
+        app_dir=tmp_path / "app",
+        card_database=_fixture_card_database(),
+    )
+    session.process_events(
+        events=(
+            AccountEvent(client_id="resume-account", screen_name="Resume"),
+            DraftStartedEvent(
+                event_name=event_name,
+                set_code="TST",
+                course_id="resume-course",
+                account_id="resume-account",
+            ),
+            PackOfferedEvent(
+                event_name=event_name,
+                set_code="TST",
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(104976, 105080),
+                pool_grp_ids=(),
+                account_id="resume-account",
+            ),
+            PickMadeEvent(
+                event_name=event_name,
+                set_code="TST",
+                pack_number=0,
+                pick_number=0,
+                selected_grp_ids=(104976,),
+                account_id="resume-account",
+            ),
+            PackOfferedEvent(
+                event_name=event_name,
+                set_code="TST",
+                pack_number=0,
+                pick_number=1,
+                offered_grp_ids=(105080,),
+                pool_grp_ids=(104976,),
+                account_id="resume-account",
+            ),
+            PickMadeEvent(
+                event_name=event_name,
+                set_code="TST",
+                pack_number=0,
+                pick_number=1,
+                selected_grp_ids=(105080,),
+                account_id="resume-account",
+            ),
+        )
+    )
+
+    snapshot = session.process_events(
+        events=(
+            PackOfferedEvent(
+                event_name=event_name,
+                set_code="TST",
+                pack_number=0,
+                pick_number=2,
+                offered_grp_ids=(104976, 105080),
+                pool_grp_ids=(),
+                account_id="resume-account",
+                resumed=True,
+            ),
+        )
+    )
+
+    assert snapshot.pool.total_cards == 2
+    assert {item.quantity for item in snapshot.pool.cards} == {1}
+    assert snapshot.current_pack_event is not None
+    assert snapshot.current_pack_event.pool_grp_ids == (104976, 105080)

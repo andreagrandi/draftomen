@@ -118,6 +118,9 @@ class PackOfferedEvent:
     draft_format: DraftFormat = DraftFormat.QUICK
     # Pick-Two takes two cards for each logical pick.
     cards_per_pick: int = QUICK_RULES.cards_per_pick
+    # Set after Arena restarted mid-draft. The pool then lacks the picks made
+    # before the restart that the course CardPool did not list.
+    resumed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +157,9 @@ class DraftCompletedEvent:
     # Set only when Arena's CardPool holds every picked card plus cards whose
     # submissions the log never recorded.
     card_pool_grp_ids: tuple[int, ...] | None = None
+    # Set after Arena restarted mid-draft. The picked cards then lack the picks
+    # made before the restart that the course CardPool did not list.
+    resumed: bool = False
 
     @property
     def pool_grp_ids(self) -> tuple[int, ...]:
@@ -203,6 +209,9 @@ class _HumanDraftRecord:
     picks: dict[tuple[int, int], tuple[int, ...]] = field(default_factory=dict)
     completed: bool = False
     card_pool_emitted: bool = False
+    # A resume from the course list seeds the cards Arena listed before the restart.
+    seed_cards: tuple[int, ...] = ()
+    resumed: bool = False
 
 
 @dataclass(slots=True)
@@ -596,9 +605,8 @@ def _parse_draft_notify(*, body: str, state: _ParserState) -> tuple[DraftEvent, 
     # pick for the previous coordinate must be recorded and yielded first.
     pick_events = _flush_pending_pick(state=state)
     record = state.human_draft
-    pool_grp_ids = _recorded_cards(
-        record=record if record is not None and record.draft_id == draft_id else None
-    )
+    matching = record if record is not None and record.draft_id == draft_id else None
+    pool_grp_ids = _recorded_cards(record=matching)
     return (
         *pick_events,
         PackOfferedEvent(
@@ -612,6 +620,7 @@ def _parse_draft_notify(*, body: str, state: _ParserState) -> tuple[DraftEvent, 
             picks_per_pack=rules.picks_per_pack,
             draft_format=rules.draft_format,
             cards_per_pick=rules.cards_per_pick,
+            resumed=matching is not None and matching.resumed,
         ),
     )
 
@@ -901,7 +910,8 @@ def _recorded_cards(*, record: _HumanDraftRecord | None) -> tuple[int, ...]:
     if record is None:
         return ()
 
-    return tuple(card for _, cards in sorted(record.picks.items()) for card in cards)
+    picked = tuple(card for _, cards in sorted(record.picks.items()) for card in cards)
+    return (*record.seed_cards, *picked)
 
 
 def _complete_human_draft(
@@ -951,6 +961,7 @@ def _complete_human_draft(
                     inferred=False,
                     account_id=state.account_id,
                     card_pool_grp_ids=full_card_pool,
+                    resumed=record.resumed,
                 ),
             )
 
@@ -1046,6 +1057,64 @@ def _remember_player_draft_course(*, data: dict[str, Any], state: _ParserState) 
         and isinstance(event_name, str)
     ):
         _remember_draft_event(event_name=event_name, state=state)
+
+    _resume_draft_from_courses(data=data, state=state)
+
+
+def _resume_draft_from_courses(*, data: dict[str, Any], state: _ParserState) -> None:
+    """Adopt the one human draft listed in an EventGetCoursesV2 course list.
+    An active draft or an ambiguous list leaves the parser state untouched.
+    """
+
+    courses = data.get("Courses")
+    if not isinstance(courses, list) or state.draft_context is not None:
+        return
+
+    candidates = [
+        candidate
+        for candidate in (_resumable_course(course=course) for course in courses)
+        if candidate is not None
+    ]
+    if len(candidates) != 1:
+        return
+
+    event_name, draft_id, seed_cards = candidates[0]
+    _remember_draft_event(event_name=event_name, state=state)
+    if state.draft_context is None:
+        return
+
+    state.human_draft = _HumanDraftRecord(
+        draft_id=draft_id,
+        seed_cards=seed_cards,
+        resumed=True,
+    )
+
+
+def _resumable_course(*, course: Any) -> tuple[str, str, tuple[int, ...]] | None:
+    if not isinstance(course, dict) or course.get("CurrentModule") != "PlayerDraft":
+        return None
+
+    event_name = course.get("InternalEventName")
+    draft_id = course.get("DraftId")
+    course_id = course.get("CourseId")
+    card_pool = course.get("CardPool", [])
+    if (
+        not isinstance(event_name, str)
+        or event_name == ""
+        or not isinstance(draft_id, str)
+        or draft_id == ""
+        or not isinstance(course_id, str)
+        or course_id == ""
+        or not isinstance(card_pool, list)
+        or not all(_is_plain_int(card) and card > 0 for card in card_pool)
+    ):
+        return None
+
+    draft_format = detect_draft_format(event_name=event_name)
+    if draft_format is None or draft_format is DraftFormat.QUICK:
+        return None
+
+    return event_name, draft_id, tuple(card_pool)
 
 
 def _parse_account(

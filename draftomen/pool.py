@@ -570,18 +570,34 @@ class DraftPoolStore:
             )
             existing_pick = None
 
+        pool_grew = False
         if existing_pick is None or not existing_pick.is_picked:
-            _ensure_pool_snapshot(state=state, pool_grp_ids=event.pool_grp_ids)
+            if event.resumed:
+                # Course seed cards were never seen as picks, so add them to the saved pool.
+                missing = Counter(event.pool_grp_ids) - Counter(state.pool_grp_ids)
+                state = replace(
+                    state,
+                    pool_grp_ids=state.pool_grp_ids + tuple(missing.elements()),
+                )
+                pool_grew = bool(missing)
+            else:
+                _ensure_pool_snapshot(state=state, pool_grp_ids=event.pool_grp_ids)
 
+        # A resumed event only knows the picks made after the restart, so the
+        # saved pool is the fuller record of what the player held.
         merged_pick = _merge_pick(
             existing_pick=existing_pick,
             pack_number=event.pack_number,
             pick_number=event.pick_number,
             offered_grp_ids=event.offered_grp_ids,
-            pool_before_pick=event.pool_grp_ids,
+            pool_before_pick=_pool_before_pick_for_pack(
+                state=state,
+                existing_pick=existing_pick,
+                event=event,
+            ),
             selected_grp_ids=(),
         )
-        if existing_pick == merged_pick:
+        if existing_pick == merged_pick and not pool_grew:
             return state
 
         updated = replace(
@@ -634,7 +650,11 @@ class DraftPoolStore:
 
             # After Arena's card pool replaced the saved pool, a replayed
             # completion still matches the recorded picks.
-            if not _same_pool_contents(_selected_cards(state=state), event.picked_grp_ids):
+            if not _pool_matches_picks(
+                pool_grp_ids=_selected_cards(state=state),
+                picked_grp_ids=event.picked_grp_ids,
+                resumed=event.resumed,
+            ):
                 raise DraftPoolError(
                     f"Completion for draft {state.draft_id!r} conflicts with saved pool."
                 )
@@ -655,7 +675,11 @@ class DraftPoolStore:
             return updated
 
         pool_grp_ids = event.picked_grp_ids if not state.pool_grp_ids else state.pool_grp_ids
-        if not _same_pool_contents(pool_grp_ids, event.picked_grp_ids):
+        if not _pool_matches_picks(
+            pool_grp_ids=pool_grp_ids,
+            picked_grp_ids=event.picked_grp_ids,
+            resumed=event.resumed,
+        ):
             raise DraftPoolError(
                 f"Completion for draft {state.draft_id!r} does not match accumulated pool."
             )
@@ -1088,12 +1112,38 @@ def _ensure_metadata(
         )
 
 
+def _pool_before_pick_for_pack(
+    *,
+    state: DraftState,
+    existing_pick: DraftPick | None,
+    event: PackOfferedEvent,
+) -> tuple[int, ...]:
+    if not event.resumed:
+        return event.pool_grp_ids
+    if existing_pick is None or not existing_pick.is_picked:
+        return state.pool_grp_ids
+    if existing_pick.pool_before_pick is not None:
+        return existing_pick.pool_before_pick
+    return event.pool_grp_ids
+
+
 def _ensure_pool_snapshot(*, state: DraftState, pool_grp_ids: tuple[int, ...]) -> None:
     if not _same_pool_contents(state.pool_grp_ids, pool_grp_ids):
         raise DraftPoolError(
             f"Pack for draft {state.draft_id!r} saw pool {pool_grp_ids!r}, "
             f"but accumulated pool is {state.pool_grp_ids!r}."
         )
+
+
+def _pool_matches_picks(
+    *,
+    pool_grp_ids: tuple[int, ...],
+    picked_grp_ids: tuple[int, ...],
+    resumed: bool,
+) -> bool:
+    if resumed:
+        return Counter(pool_grp_ids) >= Counter(picked_grp_ids)
+    return _same_pool_contents(pool_grp_ids, picked_grp_ids)
 
 
 def _same_pool_contents(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
