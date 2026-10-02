@@ -2307,9 +2307,9 @@ def test_live_session_loads_and_refreshes_the_detected_format_profile(
     [
         (
             DraftFormat.QUICK,
-            [("TST", "QuickDraft")],
-            "QuickDraft",
-            ContextualEvidenceStatus.UNAVAILABLE,
+            [("TST", "QuickDraft"), ("TST", "PremierDraft")],
+            "PremierDraft",
+            ContextualEvidenceStatus.FALLBACK,
         ),
         (
             DraftFormat.PREMIER,
@@ -2357,15 +2357,12 @@ def test_live_session_applies_the_fallback_table_when_the_exact_profile_is_missi
             "Contextual · PremierDraft fallback"
         )
         assert session._set_profile == premier
-    if draft_format is DraftFormat.QUICK:
-        assert snapshot.set_profile.maturity == "generic"
-        assert session._set_profile is None
 
 
 @pytest.mark.parametrize(
     ("draft_format", "fallback_format"),
     [
-        (DraftFormat.QUICK, None),
+        (DraftFormat.QUICK, "PremierDraft"),
         (DraftFormat.PREMIER, None),
         (DraftFormat.TRADITIONAL, "PremierDraft"),
         (DraftFormat.PICK_TWO, "PremierDraft"),
@@ -2401,6 +2398,9 @@ def test_live_session_refreshes_the_fallback_format_after_a_missing_profile(
     if fallback_format is None:
         assert fallback is None
         assert session.snapshot.set_profile.refresh_outcome == "missing"
+        assert session.snapshot.set_profile.message == (
+            "No ratings are published for TST yet; generic scoring is active."
+        )
         return
     assert fallback == replace(exact, event_format=fallback_format)
     premier = _profile_for_format(event_format=fallback_format)
@@ -2420,8 +2420,17 @@ def test_live_session_refreshes_the_fallback_format_after_a_missing_profile(
     assert snapshot.contextual_evidence.status is ContextualEvidenceStatus.FALLBACK
 
 
+@pytest.mark.parametrize(
+    ("draft_format", "exact_format"),
+    [
+        (DraftFormat.QUICK, "QuickDraft"),
+        (DraftFormat.TRADITIONAL, "TradDraft"),
+    ],
+)
 def test_live_session_exact_format_profile_replaces_a_fallback_profile(
     tmp_path: Path,
+    draft_format: DraftFormat,
+    exact_format: str,
 ) -> None:
     premier = _profile_for_format(event_format="PremierDraft")
     client = _FormatProfileClientStub({("TST", "premierdraft"): premier})
@@ -2431,25 +2440,26 @@ def test_live_session_exact_format_profile_replaces_a_fallback_profile(
         card_database=_fixture_set_card_database(set_code="TST"),
         profile_client=client,
     )
-    _activate_format(session=session, draft_format=DraftFormat.TRADITIONAL)
+    _activate_format(session=session, draft_format=draft_format)
+    assert session._set_profile == premier
     exact = session.profile_refresh_request()
     assert exact is not None
-    assert exact.event_format == "TradDraft"
+    assert exact.event_format == exact_format
 
-    trad = replace(
-        _profile_for_format(event_format="TradDraft"),
+    exact_profile = replace(
+        _profile_for_format(event_format=exact_format),
         generated_at="2026-08-01T00:00:00+00:00",
     )
     session.complete_profile_refresh(
         request=exact,
         result=ProfileRefreshResult(
-            profile=trad,
+            profile=exact_profile,
             outcome=ProfileRefreshOutcome.UPDATED,
         ),
     )
 
-    assert session._set_profile == trad
-    assert session.snapshot.set_profile.event_format == "TradDraft"
+    assert session._set_profile == exact_profile
+    assert session.snapshot.set_profile.event_format == exact_format
     assert session.snapshot.contextual_evidence.status is (
         ContextualEvidenceStatus.EXACT
     )
@@ -5564,6 +5574,15 @@ def test_live_session_forced_refresh_without_hosted_profile_names_the_reason(
         request=request,
         result=ProfileRefreshResult(
             profile=SetProfile.generic(set_code="TST", event_format="QuickDraft"),
+            outcome=ProfileRefreshOutcome.MISSING,
+        ),
+    )
+    fallback = session.profile_refresh_request()
+    assert fallback == replace(request, event_format="PremierDraft")
+    session.complete_profile_refresh(
+        request=fallback,
+        result=ProfileRefreshResult(
+            profile=SetProfile.generic(set_code="TST", event_format="PremierDraft"),
             outcome=ProfileRefreshOutcome.MISSING,
         ),
     )

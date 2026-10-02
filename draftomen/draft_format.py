@@ -128,7 +128,7 @@ PREMIER_EVENT_FORMAT = "PremierDraft"
 
 # 17Lands event formats to try for ratings, exact format first.
 RATINGS_FORMATS: dict[DraftFormat, tuple[str, ...]] = {
-    DraftFormat.QUICK: ("QuickDraft",),
+    DraftFormat.QUICK: ("QuickDraft", PREMIER_EVENT_FORMAT),
     DraftFormat.PREMIER: (PREMIER_EVENT_FORMAT,),
     DraftFormat.TRADITIONAL: ("TradDraft", PREMIER_EVENT_FORMAT),
     DraftFormat.PICK_TWO: ("PickTwoDraft", PREMIER_EVENT_FORMAT),

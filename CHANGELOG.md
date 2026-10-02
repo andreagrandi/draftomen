@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- Quick Draft uses the PremierDraft ratings when a set has no QuickDraft
+  profile yet, as Traditional and Pick-Two already do. Arena opens Quick Draft
+  weeks after a set releases, so Quick Drafts and Moxgate drafts of a new set
+  such as FRA showed neutral scores for every card. The ratings read
+  `Premier*` until a QuickDraft profile is published. When no format has a
+  profile, the ratings status says none are published yet instead of saying
+  the refresh failed. (#871)
 - Moxgate drafts no longer need a Scryfall bulk file. Draft Omen matches each
   card by the Scryfall id in its hosted card data, or by name for other
   printings, so sets such as FRA that Scryfall has no Arena ids for work on
