@@ -840,6 +840,79 @@ def test_rejected_pick_produces_nothing_and_the_retry_is_recorded() -> None:
     assert events == [_pick(pack=0, pick=0, cards=(12,))]
 
 
+def _resync_body(*, pack: int = 1, pick: int = 1) -> dict[str, object]:
+    pack_cards = [11, 12, 13]
+    return {
+        "TableInfo": {
+            "SelfPack": pack_cards,
+            "PickedCards": [],
+            "Players": [{"SeatId": 0}],
+        },
+        "PickInfo": {
+            "PackCards": pack_cards,
+            "SelfPack": pack,
+            "SelfPick": pick,
+            "NumCardsToPick": 1,
+            "TimeoutSec": 30,
+        },
+        "PackInfo": {"PackCards": pack_cards},
+    }
+
+
+@pytest.mark.parametrize("retry_id", ["retry", "first"])
+def test_resync_response_drops_the_pick_and_the_resubmitted_card_is_recorded(
+    retry_id: str,
+) -> None:
+    events = list(
+        parse_events(
+            [
+                _join_request(event_name=PREMIER),
+                _pick_request(request_id="first", cards=[11]),
+                *_pick_response(request_id="first", **_resync_body()),
+                _pick_request(request_id=retry_id, cards=[12]),
+                *_pick_response(request_id=retry_id),
+            ]
+        )
+    )
+
+    assert events == [_pick(pack=0, pick=0, cards=(12,))]
+
+
+def test_resync_response_with_no_retry_is_never_emitted() -> None:
+    lines = [
+        _join_request(event_name=PREMIER),
+        _pick_request(request_id="first", cards=[11]),
+        *_pick_response(request_id="first", **_resync_body()),
+        _pick_request(request_id="next", pick=2, cards=[12]),
+        *_pick_response(request_id="next"),
+    ]
+
+    assert _picks(events=parse_events(lines)) == [_pick(pack=0, pick=1, cards=(12,))]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"Unexpected": True},
+        {"PickedCards": [11], "Players": []},
+        {"DraftStatus": "Unknown", "DraftPack": ["11"]},
+        {"CardPool": [11], "InternalEventName": PREMIER},
+    ],
+)
+def test_unknown_pick_response_shape_does_not_raise_or_drop_the_pick(
+    body: dict[str, object],
+) -> None:
+    lines = [
+        _join_request(event_name=PREMIER),
+        _pick_request(request_id="first", cards=[11]),
+        "<== EventPlayerDraftMakePick(first)",
+        json.dumps(body),
+    ]
+
+    assert list(parse_events(lines)) == [_pick(pack=0, pick=0, cards=(11,))]
+
+
 def test_rejected_pick_with_no_retry_is_never_emitted() -> None:
     lines = [
         _join_request(event_name=PREMIER),

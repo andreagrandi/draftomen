@@ -204,6 +204,40 @@ def _with_failed_response_and_retry(
     ]
 
 
+def _with_resync_response_and_resubmit(
+    *,
+    lines: Sequence[str],
+    pack: int,
+    pick: int,
+    failed_card: int,
+) -> list[str]:
+    index = _request_index(lines=lines, pack=pack, pick=pick)
+    request, response_header, response_body = lines[index : index + 3]
+    chosen = re.search(r'\\"GrpIds\\":\[(\d+)', request)
+    assert chosen is not None
+    resync = {
+        "TableInfo": {"SelfPack": [], "PickedCards": [], "Players": []},
+        "PickInfo": {
+            "PackCards": [],
+            "SelfPack": pack,
+            "SelfPick": pick,
+            "NumCardsToPick": 1,
+            "TimeoutSec": 30,
+        },
+        "PackInfo": {},
+    }
+    return [
+        *lines[:index],
+        request.replace(chosen.group(1), str(failed_card), 1),
+        response_header,
+        json.dumps(resync),
+        request,
+        response_header,
+        response_body,
+        *lines[index + 3 :],
+    ]
+
+
 def _with_repeated_notify(*, lines: Sequence[str], pack: int, pick: int) -> list[str]:
     index = _notify_index(lines=lines, pack=pack, pick=pick)
     return [*lines[: index + 1], lines[index], *lines[index + 1 :]]
@@ -467,6 +501,28 @@ def test_failed_pick_response_without_retry_records_no_pick(
     assert len(picks) == case.logical_picks - 1
     assert state.chosen_pick_count == case.logical_picks - 1
     assert len(state.pool_grp_ids) == TOTAL_CARDS
+
+
+def test_premier_resync_response_replays_the_resubmitted_card_and_completes(
+    tmp_path: Path,
+) -> None:
+    pack, pick = PICK_COORDINATE
+    base_lines = _fixture_lines(case=PREMIER_CASE)
+    lines = _with_resync_response_and_resubmit(
+        lines=base_lines,
+        pack=pack,
+        pick=pick,
+        failed_card=105182,
+    )
+
+    picks = _events_of(lines=lines, kind=PickMadeEvent)
+    base_picks = _events_of(lines=base_lines, kind=PickMadeEvent)
+    output = _replay_output(lines=lines, tmp_path=tmp_path)
+
+    assert picks == base_picks
+    assert len(_chosen_lines(output=output)) == PREMIER_CASE.logical_picks
+    assert f"Draft complete: {TOTAL_CARDS} cards" in output
+    assert "Arena's card pool" not in output
 
 
 @pytest.mark.parametrize("case", ALL_CASES)

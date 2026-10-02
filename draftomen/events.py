@@ -813,8 +813,14 @@ def _parse_response_body(
 
     token, response_id = expected
     if token == _MAKE_PICK_TOKEN:
-        if "IsPickSuccessful" not in data and "IsPickingCompleted" not in data:
-            return None
+        if (
+            "IsPickSuccessful" not in data
+            and "IsPickingCompleted" not in data
+            and not _is_pick_resync(data=data)
+        ):
+            # Every object after a pick marker is a pick response, so an unknown
+            # shape is skipped instead of reaching the general parser and raising.
+            return ()
 
         return _parse_pick_response(response_id=response_id, data=data, state=state)
 
@@ -834,12 +840,15 @@ def _parse_pick_response(
     if context is None:
         return ()
 
-    failed = data.get("IsPickSuccessful") is False
+    failed = data.get("IsPickSuccessful") is False or _is_pick_resync(data=data)
     pending = state.pending_pick
     events: tuple[DraftEvent, ...] = ()
     if pending is not None and pending.request_id == response_id:
         if failed:
+            # The client resubmits the pick, possibly with the same id, so the
+            # next request for this coordinate replaces the failed one.
             state.pending_pick = None
+            state.seen_pick_request_ids.discard(response_id)
             return ()
 
         events = _flush_pending_pick(state=state)
@@ -857,6 +866,13 @@ def _parse_pick_response(
         events = (*events, *_complete_human_draft(state=state, card_pool=None, draft_id=None))
 
     return events
+
+
+def _is_pick_resync(*, data: dict[str, Any]) -> bool:
+    """Return whether a pick response is Arena's table state after a failed pick.
+    The table state never includes the failed pick, and the client sends it again.
+    """
+    return "TableInfo" in data or "PickInfo" in data
 
 
 def _parse_complete_response(

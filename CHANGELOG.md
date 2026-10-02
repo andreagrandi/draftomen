@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- `watch` and `replay` no longer fail in the middle of a human draft when
+  Arena answers a failed pick with the table state. The parser drops the
+  failed pick and records the card from the resubmitted request. Other
+  unknown pick response bodies are ignored. (#855)
 - Before the first draft arrives, `draftomen-tui watch --source moxgate` says
   it is waiting for the Moxgate extension to send a draft instead of waiting
   for Arena. (#851)
