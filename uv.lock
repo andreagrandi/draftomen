@@ -254,7 +254,7 @@ requires-dist = [
     { name = "pyside6", specifier = ">=6.9,<7" },
     { name = "python-socketio", extras = ["client"], specifier = ">=5.16.4,<6" },
     { name = "textual", specifier = ">=8.2.8" },
-    { name = "textual-image", specifier = ">=0.13.2" },
+    { name = "textual-image", specifier = ">=0.14.1" },
     { name = "truststore", specifier = ">=0.10.0" },
 ]
 
@@ -898,15 +898,15 @@ wheels = [
 
 [[package]]
 name = "textual-image"
-version = "0.14.0"
+version = "0.14.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pillow" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7d/3f/2cb7f2ca8bcc2d16b207e1c986a26df1dd67695d9f72b17e1a076d0728d0/textual_image-0.14.0.tar.gz", hash = "sha256:230e2c38738a3d96ca3bcf99c6680b898917003bb21bd5fa7e22cbb16e843235", size = 172914, upload-time = "2026-09-13T20:33:38.706Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/19/fb4bca0ed5ff657f15b4d31cd3f415c62bc7c69cbd1ccb87457e025348bc/textual_image-0.14.1.tar.gz", hash = "sha256:502542955452ca6d67e4e0701021eed6bebbe2e1ccee8dfcb42e5083c9573eda", size = 175108, upload-time = "2026-09-25T20:41:48.657Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/e6/1900f281cd37521c91da1497e457a2489422d34b6ab5c8f6c6e870dc895a/textual_image-0.14.0-py3-none-any.whl", hash = "sha256:7af0d29edf02c917416230528dfe77c0d6e93bc6bbcbf21236622082defb0415", size = 180520, upload-time = "2026-09-13T20:33:37.101Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/43/e94a80f76b6e613a44f77ec06abcac078c5c918e8824402fb353f490488a/textual_image-0.14.1-py3-none-any.whl", hash = "sha256:fbc72aa8009c138edfdd7f57f4cd264d7da102bcc9ddbc2527ebc3491f489941", size = 183536, upload-time = "2026-09-25T20:41:46.862Z" },
 ]
 
 [[package]]
