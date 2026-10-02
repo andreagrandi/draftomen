@@ -111,7 +111,7 @@ def test_rules_reject_non_positive_values(
 @pytest.mark.parametrize(
     ("draft_format", "expected"),
     [
-        (DraftFormat.QUICK, ("QuickDraft",)),
+        (DraftFormat.QUICK, ("QuickDraft", "PremierDraft")),
         (DraftFormat.PREMIER, ("PremierDraft",)),
         (DraftFormat.TRADITIONAL, ("TradDraft", "PremierDraft")),
         (DraftFormat.PICK_TWO, ("PickTwoDraft", "PremierDraft")),

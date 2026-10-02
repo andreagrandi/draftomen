@@ -3804,7 +3804,15 @@ class LiveSession:
         resolved_source = source or (
             "generic" if profile.maturity is ProfileMaturity.GENERIC else f"local-{maturity}"
         )
-        if phase is DataLoadPhase.FAILED:
+        if (
+            refresh_outcome == ProfileRefreshOutcome.MISSING.value
+            and profile.maturity is ProfileMaturity.GENERIC
+        ):
+            message = (
+                f"No ratings are published for {set_code} yet; "
+                "generic scoring is active."
+            )
+        elif phase is DataLoadPhase.FAILED:
             message = (
                 f"Ratings refresh failed for {set_code}; "
                 "using the last good ratings."
