@@ -5,9 +5,12 @@ Both the desktop app and the terminal app log to the same file.
 from __future__ import annotations
 
 import logging
+import os
 import platform
+import ssl
 import sys
 import threading
+import urllib.error
 from logging.handlers import RotatingFileHandler
 from os import PathLike
 from pathlib import Path
@@ -74,7 +77,57 @@ def configure_logging(*, logs_dir: Path | None = None) -> Path | None:
         platform.platform(),
         platform.python_version(),
     )
+    _log_tls_setup()
     return log_path
+
+
+def describe_fetch_error(error: BaseException) -> str:
+    """Return the cause of a failed hosted fetch for the application log.
+    The text names the HTTP status, the inner URLError reason or the exception type.
+    """
+
+    if isinstance(error, urllib.error.HTTPError):
+        return f"HTTP status {error.code}"
+    if isinstance(error, urllib.error.URLError):
+        reason = error.reason
+        if isinstance(reason, BaseException):
+            return redact_home(f"{type(reason).__name__}: {reason}")
+        return redact_home(f"URLError: {reason}")
+    return redact_home(f"{type(error).__name__}: {error}")
+
+
+def redact_home(text: str) -> str:
+    """Replace the user's home directory with ~ in text bound for the log."""
+
+    home = str(Path.home())
+    if len(home) <= 1:
+        return text
+    return text.replace(home, "~")
+
+
+def _running_mode() -> str:
+    # Nuitka defines __compiled__ in every module of a pyside6-deploy bundle.
+    if "__compiled__" in globals() or getattr(sys, "frozen", False):
+        return "bundle"
+    return "source"
+
+
+def _log_tls_setup() -> None:
+    """Log the run mode and the CA locations OpenSSL will use."""
+
+    verify_paths = ssl.get_default_verify_paths()
+    # SSL_CERT_FILE and SSL_CERT_DIR replace the compiled-in paths when set.
+    cafile = os.environ.get(verify_paths.openssl_cafile_env) or verify_paths.openssl_cafile
+    capath = os.environ.get(verify_paths.openssl_capath_env) or verify_paths.openssl_capath
+    cafile_state = "exists" if cafile and Path(cafile).is_file() else "missing"
+    logger.info(
+        "Running from %s with %s; default cafile %s (%s), capath %s",
+        _running_mode(),
+        ssl.OPENSSL_VERSION,
+        redact_home(cafile or "none"),
+        cafile_state,
+        redact_home(capath or "none"),
+    )
 
 
 def _install_excepthooks() -> None:

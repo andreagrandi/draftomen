@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import hashlib
+import logging
 import math
 import os
 from os import PathLike
@@ -16,10 +17,13 @@ from urllib.parse import urlsplit
 import urllib.request
 
 
+from draftomen.applog import describe_fetch_error
 from draftomen.carddb import CardDatabase
 from draftomen.paths import app_data_dir
 from draftomen.set_card_data import SetCardData, SetCardDataError
 from draftomen.sets_manifest import SETS_MANIFEST_URL, SetsManifest, SetsManifestError
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_URL_OPENER = urllib.request.urlopen
 
@@ -424,7 +428,15 @@ class CardDataClient:
                             accept="application/json",
                         )
                     )
-                except (CardDataClientError, SetsManifestError):
+                except CardDataClientError:
+                    # _fetch_url already logged the cause.
+                    self._sets_manifest = None
+                except SetsManifestError as error:
+                    logger.warning(
+                        "Sets manifest from %s is invalid: %s",
+                        self.sets_manifest_url,
+                        error,
+                    )
                     self._sets_manifest = None
             return self._sets_manifest
 
@@ -463,9 +475,16 @@ class CardDataClient:
                         _OriginRedirectHandler(origin)
                     ).open
             response = opener(request, timeout=self.timeout_seconds)
-        except CardDataClientError:
+        except CardDataClientError as error:
+            logger.warning("Could not fetch %s from %s: %s", label, url, error)
             raise
         except Exception as error:
+            logger.warning(
+                "Could not fetch %s from %s: %s",
+                label,
+                url,
+                describe_fetch_error(error),
+            )
             raise CardDataClientError(f"Could not fetch {label}.") from error
         try:
             final_url = _response_url(response) or url
@@ -476,9 +495,16 @@ class CardDataClient:
                     f"Hosted card-data request returned HTTP status {status}."
                 )
             return _read_bounded(response, limit=limit)
-        except CardDataClientError:
+        except CardDataClientError as error:
+            logger.warning("Could not read %s from %s: %s", label, url, error)
             raise
         except Exception as error:
+            logger.warning(
+                "Could not read %s from %s: %s",
+                label,
+                url,
+                describe_fetch_error(error),
+            )
             raise CardDataClientError(f"Could not read {label}.") from error
         finally:
             _close_response(response)

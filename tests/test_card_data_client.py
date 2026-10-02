@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import gzip
+import email.message
 import hashlib
 import io
 import json
+import logging
 from pathlib import Path
+import ssl
 import threading
 import time
 from typing import Any
+import urllib.error
 
 import pytest
 
@@ -556,3 +560,106 @@ def test_published_set_codes_is_none_when_the_manifest_is_invalid(tmp_path: Path
     )
 
     assert client.published_set_codes() is None
+
+
+def _card_data_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == "draftomen.card_data_client"
+        and record.levelno == logging.WARNING
+    ]
+
+
+def test_ssl_failure_is_logged_with_url_and_cause(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    error = urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed"))
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=None,
+        opener=_routing_opener({_CARD_URL: error}, []),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(CardDataClientError, match="Could not fetch card-data artifact"):
+            client.load("tst", allow_network=True)
+
+    warnings = _card_data_warnings(caplog)
+    assert len(warnings) == 1
+    assert _CARD_URL in warnings[0].getMessage()
+    assert "SSLCertVerificationError" in warnings[0].getMessage()
+
+
+def test_http_error_status_is_logged_with_url(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    error = urllib.error.HTTPError(_CARD_URL, 403, "Forbidden", email.message.Message(), None)
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=None,
+        opener=_routing_opener({_CARD_URL: error}, []),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(CardDataClientError):
+            client.load("tst", allow_network=True)
+
+    warnings = _card_data_warnings(caplog)
+    assert len(warnings) == 1
+    assert _CARD_URL in warnings[0].getMessage()
+    assert "403" in warnings[0].getMessage()
+
+
+def test_unreachable_sets_manifest_is_logged_with_url(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener({SETS_MANIFEST_URL: OSError("offline")}, []),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert client.published_set_codes() is None
+
+    warnings = _card_data_warnings(caplog)
+    assert len(warnings) == 1
+    assert SETS_MANIFEST_URL in warnings[0].getMessage()
+    assert "offline" in warnings[0].getMessage()
+
+
+def test_unparsable_sets_manifest_is_logged_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener({SETS_MANIFEST_URL: b"not json"}, []),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert client.published_set_codes() is None
+
+    warnings = _card_data_warnings(caplog)
+    assert len(warnings) == 1
+    assert SETS_MANIFEST_URL in warnings[0].getMessage()
+
+
+def test_successful_load_logs_no_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    payload = _artifact().to_gzip_bytes()
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=SETS_MANIFEST_URL,
+        opener=_routing_opener(
+            {SETS_MANIFEST_URL: _manifest_bytes(("tst", payload)), _CARD_URL: payload},
+            [],
+        ),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        client.load("tst", allow_network=True)
+
+    assert _card_data_warnings(caplog) == []

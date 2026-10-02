@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from enum import Enum
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -25,6 +26,7 @@ from urllib.parse import urlsplit
 import urllib.request
 import zlib
 
+from draftomen.applog import describe_fetch_error
 from draftomen.paths import app_data_dir
 from draftomen.profile_manifest import (
     PROFILE_MANIFEST_SCHEMA_VERSION,
@@ -42,6 +44,8 @@ from draftomen.set_profile import (
     load_set_profile,
     set_profile_path,
 )
+
+logger = logging.getLogger(__name__)
 
 PathInput: TypeAlias = str | os.PathLike[str]
 ProfileOpener: TypeAlias = Callable[..., Any]
@@ -307,6 +311,29 @@ class ProfileClient:
     ) -> ProfileRefreshResult:
         """Synchronously refresh one profile while retaining the last good cache."""
 
+        result = self._refresh(
+            set_code=set_code,
+            event_format=event_format,
+            force=force,
+            network_policy=network_policy,
+        )
+        if result.diagnostics:
+            logger.warning(
+                "Ratings refresh for %s %s ended with diagnostics: %s",
+                set_code,
+                event_format,
+                ", ".join(result.diagnostics),
+            )
+        return result
+
+    def _refresh(
+        self,
+        set_code: str,
+        event_format: str,
+        *,
+        force: bool,
+        network_policy: ProfileNetworkPolicy | str | None,
+    ) -> ProfileRefreshResult:
         normalized_set = _safe_component(set_code, "set_code")
         normalized_format = _safe_component(event_format, "format")
         cached_result = self.load_cached(normalized_set, normalized_format)
@@ -494,6 +521,7 @@ class ProfileClient:
         except ProfileClientError:
             raise
         except Exception as error:
+            logger.warning("Could not fetch %s: %s", url, describe_fetch_error(error))
             raise ProfileClientError(f"network-{type(error).__name__}") from error
         final_url = _response_url(response) or url
         try:

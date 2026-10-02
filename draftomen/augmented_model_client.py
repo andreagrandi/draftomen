@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
+import logging
 import math
 import os
 from os import PathLike
@@ -17,6 +18,7 @@ from typing import Any, TypeAlias
 from urllib.parse import urlsplit
 import urllib.request
 
+from draftomen.applog import describe_fetch_error
 from draftomen.augmented_artifact import (
     AUGMENTED_ARTIFACT_COMPATIBILITY,
     AUGMENTED_ARTIFACT_SCHEMA_VERSION,
@@ -29,6 +31,8 @@ from draftomen.augmented_manifest import (
     AugmentedManifestError,
 )
 from draftomen.paths import app_data_dir
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_URL_OPENER = urllib.request.urlopen
 
@@ -604,9 +608,11 @@ class AugmentedModelClient:
                         _OriginRedirectHandler(self._origin)
                     ).open
             response = opener(request, timeout=self.timeout_seconds)
-        except AugmentedModelClientError:
+        except AugmentedModelClientError as error:
+            logger.warning("Could not fetch %s: %s", url, error)
             raise
         except Exception as error:
+            logger.warning("Could not fetch %s: %s", url, describe_fetch_error(error))
             raise AugmentedModelClientError(
                 "Could not fetch augmented model artifact."
             ) from error
@@ -631,9 +637,11 @@ class AugmentedModelClient:
                 else self.max_compressed_bytes
             )
             return _read_bounded(response, limit=limit)
-        except AugmentedModelClientError:
+        except AugmentedModelClientError as error:
+            logger.warning("Could not read %s: %s", url, error)
             raise
         except Exception as error:
+            logger.warning("Could not read %s: %s", url, describe_fetch_error(error))
             raise AugmentedModelClientError(
                 "Could not read augmented model artifact."
             ) from error

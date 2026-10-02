@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- The app log now says why a hosted download failed. Card data, the sets
+  manifest, ratings and the augmented model each log the URL and the cause,
+  such as an HTTP status or a certificate error. A ratings refresh that ends
+  with problems logs them in one line. The startup lines also say whether the
+  app runs as a bundle and which certificate file OpenSSL uses. An unexpected
+  error in a desktop app worker now writes its traceback to the log. (#878)
 - Draft Omen tells you when Arena's Detailed Logs are turned off. Arena still
   writes `Player.log` without them, so before this change the app waited for a
   draft that never showed up. It now reads the header Arena writes at startup,

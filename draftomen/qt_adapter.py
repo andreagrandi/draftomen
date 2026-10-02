@@ -36,6 +36,7 @@ from draftomen.augmented_model_client import (
     AugmentedModelLoad,
     AugmentedModelOutcome,
 )
+from draftomen.cardimages import CardImageError
 from draftomen.draft_format import DraftFormat, rules_for_format
 from draftomen.draftmancer import MOCKED_DRAFT_FORMATS
 from draftomen.moxgate_server import MoxgatePortInUseError
@@ -999,7 +1000,10 @@ class _CardImageFetchWorker(QObject):
     def fetch(self, session: LiveSession, request: CardImageRequest) -> None:
         try:
             result = session.fetch_card_image(request=request)
+        except CardImageError as error:  # pragma: no cover - network boundary.
+            self.resultReady.emit(request, None, str(error))
         except Exception as error:  # pragma: no cover - network boundary.
+            _logger.exception("Card image worker failed")
             self.resultReady.emit(request, None, str(error))
         else:
             self.resultReady.emit(request, result, "")
@@ -1021,6 +1025,7 @@ class _ProfileRefreshWorker(QObject):
                 force=request.force,
             )
         except Exception as error:  # pragma: no cover - network boundary.
+            _logger.exception("Ratings refresh worker failed")
             self.resultReady.emit(request, None, str(error))
         else:
             self.resultReady.emit(request, result, "")
@@ -1046,6 +1051,7 @@ class _AugmentedModelWorker(QObject):
                 allow_network=True,
             )
         except Exception:  # pragma: no cover - network boundary.
+            _logger.exception("Augmented model worker failed for set %s", request.set_code)
             result = AugmentedModelLoad(
                 outcome=AugmentedModelOutcome.UNREACHABLE,
                 set_code=request.set_code,
@@ -1096,6 +1102,7 @@ class _LiveSessionWorker(QObject):
         self._augmentation_enabled = augmentation_enabled
         self._session: LiveSession | None = None
         self._timer: QTimer | None = None
+        self._logged_poll_error: str | None = None
         self._stop_requested = False
         self._stopped = False
         self._startup_loading = False
@@ -1355,6 +1362,7 @@ class _LiveSessionWorker(QObject):
             if self._moxgate_factory is not None and not self._stop_requested:
                 self._publish_moxgate_state()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
+            _logger.exception("Live session failed to start")
             if not self._stop_requested:
                 self.failed.emit(str(error))
             self.stop()
@@ -1382,6 +1390,7 @@ class _LiveSessionWorker(QObject):
             self._request_profile_refresh()
             self._request_augmented_model()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
+            _logger.exception("Live session command %s failed", type(command).__name__)
             self.failed.emit(str(error))
 
     @Slot()
@@ -1400,11 +1409,16 @@ class _LiveSessionWorker(QObject):
             self._request_profile_refresh()
             self._request_augmented_model()
         except Exception as error:  # pragma: no cover - defensive UI boundary.
+            # The timer retries every tick, so log a repeated failure only once.
+            if str(error) != self._logged_poll_error:
+                self._logged_poll_error = str(error)
+                _logger.exception("Live session poll failed")
             self.failed.emit(str(error))
             return False
         finally:
             if self._stop_requested:
                 self.stop()
+        self._logged_poll_error = None
         return True
 
     def _request_one_card_image(self) -> None:
@@ -1554,6 +1568,7 @@ class _LiveSessionWorker(QObject):
                         image_uri=result.image_uri,
                     )
         except Exception as error:  # pragma: no cover - defensive UI boundary.
+            _logger.exception("Applying a card image result failed")
             self.failed.emit(str(error))
         finally:
             self._imageScheduleRequested.emit()
@@ -1589,6 +1604,7 @@ class _LiveSessionWorker(QObject):
                     result=result,
                 )
         except Exception as error:  # pragma: no cover - defensive UI boundary.
+            _logger.exception("Applying a ratings refresh result failed")
             self.failed.emit(str(error))
         finally:
             self._request_profile_refresh()
@@ -1611,6 +1627,7 @@ class _LiveSessionWorker(QObject):
                 raise TypeError("Augmented model worker returned an invalid load.")
             session.complete_augmented_model(request=request, load=load)
         except Exception as error:  # pragma: no cover - defensive UI boundary.
+            _logger.exception("Applying an augmented model result failed")
             self.failed.emit(str(error))
         finally:
             self._request_augmented_model()
