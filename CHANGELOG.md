@@ -8,6 +8,9 @@
   Draft is now an option in the draft source selector next to Arena and
   Moxgate, and choosing it opens the Mocked Draft dialog. With Moxgate
   selected, the account shows as `moxgate` and cannot be changed. (#850)
+- The TUI Moxgate snapshot test waits for the receiving phase as well as the
+  rendered pack. The pack can render before the phase changes, which failed
+  at random on a busy CI runner.
 - `draftomen-tui watch --source moxgate` shows Moxgate drafts in the TUI.
   `--plain` is no longer required. Quitting the TUI stops the receiver and
   frees the port. (#833)

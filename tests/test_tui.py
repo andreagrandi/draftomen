@@ -4058,9 +4058,11 @@ async def _assert_moxgate_snapshot_shows_pack(*, tmp_path: Path) -> None:
         assert runtime.state.endpoint in str(app.query_one("#status-bar", Static).render())
 
         runtime._receiver.snapshots.put(_moxgate_snapshots(MOXGATE_PACKS)[0][0])
+        # The worker thread renders the pack before drain() moves the phase
+        # to receiving, so wait for both.
         for _ in range(100):
             await pilot.pause(delay=0.05)
-            if table.row_count == 3:
+            if table.row_count == 3 and runtime.state.phase == "receiving":
                 break
 
         title = str(app.query_one("#pack-title", Static).render())
