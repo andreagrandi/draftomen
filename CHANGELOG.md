@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Before the first draft arrives, `draftomen-tui watch --source moxgate` says
+  it is waiting for the Moxgate extension to send a draft instead of waiting
+  for Arena. (#851)
 - The desktop app no longer has a Mocked Draft button in the header. Mocked
   Draft is now an option in the draft source selector next to Arena and
   Moxgate, and choosing it opens the Mocked Draft dialog. With Moxgate
