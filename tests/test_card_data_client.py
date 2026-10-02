@@ -129,6 +129,33 @@ def test_cold_load_uses_safe_url_headers_timeout_and_atomically_caches(tmp_path:
     assert CARD_DATA_MAX_DECOMPRESSED_BYTES == 64 * 1024 * 1024
 
 
+def test_hosted_card_data_with_unknown_fields_loads_and_caches(tmp_path: Path) -> None:
+    code = "tst"
+    url = f"{CARD_DATA_BASE_URL}{code}.json.gz"
+    value = _artifact().to_json()
+    value["future_field"] = True
+    value["cards"] = [{**card, "future_card_field": 1} for card in value["cards"]]
+    payload = gzip.compress(json.dumps(value).encode())
+    client = CardDataClient(
+        app_dir=tmp_path,
+        sets_manifest_url=None,
+        opener=_opener(payload, [], url=url),
+    )
+
+    database = client.load("TST", allow_network=True)
+
+    assert database.lookup(grp_id=1).name == "Test Card"
+    assert client.cache_path("TST").read_bytes() == payload
+
+    def fail_opener(*_: Any, **__: Any) -> Any:
+        raise AssertionError("network must not be opened for a valid cache")
+
+    cached = CardDataClient(app_dir=tmp_path, opener=fail_opener).load(
+        "TST", allow_network=False
+    )
+    assert cached.lookup(grp_id=1).name == "Test Card"
+
+
 def test_valid_cache_hit_never_opens_network(tmp_path: Path) -> None:
     destination = card_data_cache_path(set_code="tst", app_dir=tmp_path)
     destination.parent.mkdir(parents=True)

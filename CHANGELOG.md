@@ -20,6 +20,11 @@
   TUI shows it in the status line. The status stays on waiting until a
   snapshot is accepted, and the next accepted snapshot clears the error.
   (#869)
+- The app loads hosted card data files that contain fields it does not
+  know, so future card data can add fields without breaking this version.
+  Required fields are still checked, and `export-set-data` still rewrites
+  any file that is not exactly in the current format. Versions 0.6.0 and
+  earlier still reject unknown fields. (#867)
 
 ## [0.6.0] - 2026-10-02
 

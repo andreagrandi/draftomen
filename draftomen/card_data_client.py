@@ -354,6 +354,7 @@ class CardDataClient:
                     payload,
                     max_decompressed_bytes=self.max_decompressed_bytes,
                     expected_set_code=normalized_set_code,
+                    strict=False,
                 )
             except (CardDataClientError, OSError, SetCardDataError, TypeError, ValueError) as error:
                 # A failed update keeps the previous valid cache in use.
@@ -381,6 +382,7 @@ class CardDataClient:
                 payload,
                 max_decompressed_bytes=self.max_decompressed_bytes,
                 expected_set_code=set_code,
+                strict=False,
             )
         except (OSError, SetCardDataError, TypeError, ValueError):
             return b"", None

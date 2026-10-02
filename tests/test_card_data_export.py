@@ -559,6 +559,21 @@ def test_plan_counts_and_order_strictly_skip_only_valid_existing_siblings(
     assert [item.identity.set_code for item in invalid_plan.pending] == ["aaa", "ccc"]
 
 
+def test_plan_rewrites_an_existing_artifact_with_an_unknown_key(tmp_path: Path) -> None:
+    cards = [_card(10, "aaa", "Alpha Set"), _card(20, "bbb", "Beta Set")]
+    seed = _prepare(tmp_path / "seed", ["AAA", "BBB"], cards, selector="aaa")
+    publish_set_data_export(candidate=seed.pending[0])
+    output_dir = tmp_path / "seed" / "card-data"
+    payload = json.loads(gzip.decompress(seed.pending[0].gzip_bytes))
+    payload["future_field"] = True
+    (output_dir / "aaa.json.gz").write_bytes(_canonical_gzip(payload))
+
+    plan = _prepare(tmp_path / "rerun", ["AAA", "BBB"], cards, output_dir=output_dir)
+
+    assert plan.already_valid == ()
+    assert [item.identity.set_code for item in plan.pending] == ["aaa", "bbb"]
+
+
 def test_single_set_selection_always_rebuilds_even_when_target_is_valid(tmp_path: Path) -> None:
     cards = [_card(1, "aaa", "Arena Set")]
     first = _prepare(tmp_path, ["AAA"], cards, selector="AAA")
