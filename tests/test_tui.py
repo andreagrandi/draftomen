@@ -4074,6 +4074,25 @@ async def _assert_moxgate_snapshot_shows_pack(*, tmp_path: Path) -> None:
         assert runtime.state.phase == "receiving"
 
 
+def test_tui_moxgate_waiting_panel_names_the_extension(tmp_path: Path) -> None:
+    asyncio.run(_assert_moxgate_waiting_panel_copy(tmp_path=tmp_path))
+
+
+async def _assert_moxgate_waiting_panel_copy(*, tmp_path: Path) -> None:
+    app = _moxgate_tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        readiness = app.query_one("#pre-draft-readiness", Static)
+
+        assert readiness.display is True
+        assert str(readiness.render()) == (
+            "Draft not detected yet.\n"
+            "Waiting for the Moxgate extension to send a draft."
+        )
+        assert "Arena" not in str(readiness.render())
+
+
 def test_tui_moxgate_quit_stops_receiver_and_frees_port(tmp_path: Path) -> None:
     asyncio.run(_assert_moxgate_quit_frees_port(tmp_path=tmp_path))
 

@@ -2201,10 +2201,16 @@ class DraftomenTuiApp(App[None]):
 
         set_code = self._set_code
         if set_code is None:
-            readiness.update(
-                "Draft not detected yet.\n"
-                "Waiting for Arena to report a draft entry."
-            )
+            if self._moxgate_runtime is not None:
+                readiness.update(
+                    "Draft not detected yet.\n"
+                    "Waiting for the Moxgate extension to send a draft."
+                )
+            else:
+                readiness.update(
+                    "Draft not detected yet.\n"
+                    "Waiting for Arena to report a draft entry."
+                )
             return
 
         set_label = format_set_label(set_code=set_code)
