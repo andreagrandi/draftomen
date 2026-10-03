@@ -72,7 +72,10 @@
     </header>
     <main>
       <p id="status" data-state="checking">Checking Draft Omen...</p>
-      <p id="command" hidden>Start it with <code>draftomen-tui watch --source moxgate</code></p>
+      <div id="command" hidden>
+        <p>Desktop app: open Draft Omen and choose Moxgate in the draft source selector.</p>
+        <p>TUI: run <code>draftomen-tui watch --source moxgate</code></p>
+      </div>
       <p id="last-post"></p>
     </main>
     <script src="popup.js"></script>

@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- When Draft Omen is not running, the Moxgate popup now shows how to start it
+  from the desktop app, by choosing Moxgate in the draft source selector, as
+  well as the `draftomen-tui watch --source moxgate` command. (#887)
 - The Moxgate extension has the Draft Omen icon in the Chrome toolbar and on
   the extensions page. The popup shows the icon and name in a header, a green
   or red dot for whether Draft Omen is running, and follows the system light or
