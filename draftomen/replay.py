@@ -13,7 +13,12 @@ from typing import TypeAlias
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
-from draftomen.draft_format import DraftFormat, detect_draft_format, rules_for_format
+from draftomen.draft_format import (
+    DraftFormat,
+    detect_draft_format,
+    ratings_formats,
+    rules_for_format,
+)
 from draftomen.events import (
     AccountEvent,
     DraftCompletedEvent,
@@ -35,7 +40,7 @@ from draftomen.seventeen import SEVENTEEN_LANDS_ATTRIBUTION, SeventeenLandsData
 
 PathInput: TypeAlias = str | PathLike[str]
 RatingsLoader: TypeAlias = Callable[[str], SeventeenLandsData]
-ProfileLoader: TypeAlias = Callable[[str], SetProfile | None]
+ProfileLoader: TypeAlias = Callable[[str, DraftFormat | None], SetProfile | None]
 CardDatabaseLoader: TypeAlias = Callable[[str], CardDatabase]
 
 
@@ -139,6 +144,9 @@ def render_replay_events(
         ratings_data=loaded_ratings,
         splash_enabled=splash_enabled,
         set_profile=loaded_profile,
+        requested_format=ratings_formats(
+            draft_format=header.draft_format or DraftFormat.QUICK
+        )[0],
     )
     lines = _format_header(header=header)
     lines.append("")
@@ -261,7 +269,7 @@ def _set_profile_for_replay(
     if header.set_code is None:
         return None
 
-    return profile_loader(header.set_code)
+    return profile_loader(header.set_code, header.draft_format)
 
 
 def _format_completed_build_sheet(

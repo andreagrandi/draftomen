@@ -53,9 +53,12 @@ coordinates (`pack_number`, `pick_number`, `global_pick_index`,
 context is authoritative: conflicting coordinates are rejected and the same
 context is returned unchanged. `PickEngine.score_pack` resolves stage and
 commitment once, then uses the same private validated construction path.
-Offline, recovered, accountless, replay, backtest, and benchmark entry points
+Offline, recovered, accountless, backtest, and benchmark entry points
 call `load_scoring_profile` for the active set/format before scoring. They
-score from the loaded profile and local ratings snapshot only. Normal live TUI,
+score from the loaded profile and local ratings snapshot only. `replay` reads
+the format from the log's event name and tries the profiles in that format's
+ratings order, such as Pick-Two then Premier. It refreshes each one from the
+hosted manifest unless `--offline-profiles` keeps it on the local cache. Normal live TUI,
 plain-watch, CLI `watch`, and Qt live factories use the same profile
 authority; they do not pass provider-loader callbacks, provider-cache checks,
 synchronous or progress loaders, or raw provider ratings into `LiveSession`.

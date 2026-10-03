@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import draftomen.cli as cli_module
+import draftomen.replay as replay_module
 from draftomen.carddb import (
     CardDatabase,
     CardInfo,
@@ -30,6 +35,8 @@ from draftomen.pickengine import (
     render_pick_rationale_detailed,
 )
 from draftomen.pool import DraftPoolError
+from draftomen.profile_client import ProfileRefreshResult
+from draftomen.profile_manifest import ProfileManifest, ProfileManifestArtifact
 from draftomen.replay import (
     format_pack_offered_event,
     format_pick_made_event,
@@ -673,25 +680,18 @@ def test_replay_cli_loads_local_profile_once(
     )
 
     calls: list[tuple[str, str, Path]] = []
-    real_load = cli_module.load_scoring_profile
+    real_refresh = cli_module.ProfileClient.refresh
 
-    def record_load(
+    def record_refresh(
+        client: cli_module.ProfileClient,
         set_code: str,
         event_format: str,
-        *,
-        app_dir: Path | None = None,
-        **kwargs: object,
-    ) -> SetProfile | None:
-        assert app_dir is not None
-        calls.append((set_code, event_format, app_dir))
-        return real_load(
-            set_code=set_code,
-            event_format=event_format,
-            app_dir=app_dir,
-            **kwargs,
-        )
+        **kwargs: Any,
+    ) -> ProfileRefreshResult:
+        calls.append((set_code, event_format, client.app_dir))
+        return real_refresh(client, set_code, event_format, **kwargs)
 
-    monkeypatch.setattr(cli_module, "load_scoring_profile", record_load)
+    monkeypatch.setattr(cli_module.ProfileClient, "refresh", record_refresh)
     exit_code = main(
         argv=[
             "replay",
@@ -711,6 +711,244 @@ def test_replay_cli_loads_local_profile_once(
     assert "Recommendation: " in captured.out
     assert "splash disabled" in captured.out
     assert captured.err == ""
+
+
+def _record_replay_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[tuple[str, str]], list[SetProfile | None]]:
+    """Record each profile refresh request and the profile replay finally uses.
+    The real loader and client still run.
+    """
+
+    requests: list[tuple[str, str]] = []
+    loaded: list[SetProfile | None] = []
+    real_refresh = cli_module.ProfileClient.refresh
+    real_load = cli_module._load_replay_profile
+
+    def record_refresh(
+        client: cli_module.ProfileClient,
+        set_code: str,
+        event_format: str,
+        **kwargs: Any,
+    ) -> ProfileRefreshResult:
+        requests.append((set_code, event_format))
+        return real_refresh(client, set_code, event_format, **kwargs)
+
+    def record_load(**kwargs: Any) -> SetProfile | None:
+        profile = real_load(**kwargs)
+        loaded.append(profile)
+        return profile
+
+    monkeypatch.setattr(cli_module.ProfileClient, "refresh", record_refresh)
+    monkeypatch.setattr(cli_module, "_load_replay_profile", record_load)
+    return requests, loaded
+
+
+def test_replay_of_a_pick_two_log_loads_the_pick_two_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app_dir = tmp_path / "app"
+    pick_two_profile = replace(_replay_profile(), event_format="picktwodraft")
+    dump_set_profile(
+        pick_two_profile,
+        set_profile_path(set_code="MSH", event_format="PickTwoDraft", app_dir=app_dir),
+    )
+    dump_set_profile(
+        _replay_profile(),
+        set_profile_path(set_code="MSH", event_format=QUICK_DRAFT_FORMAT, app_dir=app_dir),
+    )
+    requests, loaded = _record_replay_profiles(monkeypatch)
+
+    exit_code = main(
+        argv=[
+            "replay",
+            str(PICK_TWO_REPLAY_LOG_PATH),
+            "--bulk-file",
+            str(SCRYFALL_BULK_SAMPLE_PATH),
+            "--app-dir",
+            str(app_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().err == ""
+    assert requests == [("MSH", "PickTwoDraft")]
+    assert loaded == [pick_two_profile]
+
+
+def test_replay_of_a_pick_two_log_falls_back_to_the_premier_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    premier_profile = replace(_replay_profile(), event_format="premierdraft")
+    dump_set_profile(
+        premier_profile,
+        set_profile_path(set_code="MSH", event_format=PREMIER_DRAFT_FORMAT, app_dir=app_dir),
+    )
+    requests, loaded = _record_replay_profiles(monkeypatch)
+
+    exit_code = main(
+        argv=[
+            "replay",
+            str(PICK_TWO_REPLAY_LOG_PATH),
+            "--bulk-file",
+            str(SCRYFALL_BULK_SAMPLE_PATH),
+            "--app-dir",
+            str(app_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert requests == [("MSH", "PickTwoDraft"), ("MSH", PREMIER_DRAFT_FORMAT)]
+    assert loaded == [premier_profile]
+
+
+@pytest.mark.parametrize(
+    ("log_path", "expected_format"),
+    [
+        (PICK_TWO_REPLAY_LOG_PATH, "PickTwoDraft"),
+        (FIXTURE_LOG_PATH, QUICK_DRAFT_FORMAT),
+    ],
+)
+def test_replay_scores_picks_for_the_drafts_own_format(
+    log_path: Path,
+    expected_format: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_formats: list[str] = []
+    real_engine = replay_module.PickEngine
+
+    def record_engine(**kwargs: Any) -> PickEngine:
+        requested_formats.append(kwargs["requested_format"])
+        return real_engine(**kwargs)
+
+    monkeypatch.setattr(replay_module, "PickEngine", record_engine)
+
+    replay_log_file(
+        logfile=log_path,
+        card_database=build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH),
+    )
+
+    assert requested_formats == [expected_format]
+
+
+def _serve_hosted_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: SetProfile,
+) -> list[str]:
+    """Serve one profile behind a fake hosted manifest and record each request.
+    Replay is pointed at that manifest instead of the test default of none.
+    """
+
+    manifest_url = "https://profiles.example.test/manifest.json"
+    artifact_url = "https://profiles.example.test/msh-picktwodraft.json.gz"
+    profile_bytes = profile.to_bytes()
+    artifact_bytes = gzip.compress(profile_bytes, mtime=0)
+    artifact = ProfileManifestArtifact(
+        set_code=profile.set_code,
+        event_format=profile.event_format,
+        set_profile_schema_version=profile.schema_version,
+        profile_version=profile.profile_version,
+        generated_at=profile.generated_at,
+        url=artifact_url,
+        gzip_bytes=len(artifact_bytes),
+        profile_bytes=len(profile_bytes),
+        gzip_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+        profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
+        maturity=profile.maturity,
+    )
+    responses = {
+        manifest_url: ProfileManifest(
+            artifacts=(artifact,),
+            published_at="2026-09-01T00:00:00+00:00",
+        ).to_bytes(),
+        artifact_url: artifact_bytes,
+    }
+    requested_urls: list[str] = []
+
+    class Response:
+        def __init__(self, payload: bytes, url: str) -> None:
+            self._stream = BytesIO(payload)
+            self.url = url
+
+        def read(self, size: int = -1) -> bytes:
+            return self._stream.read(size)
+
+        def close(self) -> None:
+            self._stream.close()
+
+    def opener(_client: object, request: Any, *, timeout: float) -> Response:
+        del timeout
+        url = request.full_url
+        requested_urls.append(url)
+        if url not in responses:
+            raise AssertionError(f"unexpected profile request: {url}")
+        return Response(responses[url], url)
+
+    monkeypatch.setattr(cli_module.ProfileClient, "_default_opener", opener)
+    monkeypatch.setattr(cli_module, "REPLAY_PROFILE_MANIFEST_URL", manifest_url)
+    return requested_urls
+
+
+def test_replay_with_an_empty_cache_fetches_the_hosted_format_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    pick_two_profile = replace(_replay_profile(), event_format="picktwodraft")
+    requested_urls = _serve_hosted_profile(monkeypatch, pick_two_profile)
+    _, loaded = _record_replay_profiles(monkeypatch)
+
+    exit_code = main(
+        argv=[
+            "replay",
+            str(PICK_TWO_REPLAY_LOG_PATH),
+            "--bulk-file",
+            str(SCRYFALL_BULK_SAMPLE_PATH),
+            "--app-dir",
+            str(app_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert requested_urls == [
+        "https://profiles.example.test/manifest.json",
+        "https://profiles.example.test/msh-picktwodraft.json.gz",
+    ]
+    assert loaded == [pick_two_profile]
+    assert set_profile_path(
+        set_code="MSH", event_format="PickTwoDraft", app_dir=app_dir
+    ).is_file()
+
+
+def test_replay_offline_profiles_never_fetches_the_hosted_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_urls = _serve_hosted_profile(
+        monkeypatch,
+        replace(_replay_profile(), event_format="picktwodraft"),
+    )
+    _, loaded = _record_replay_profiles(monkeypatch)
+
+    exit_code = main(
+        argv=[
+            "replay",
+            str(PICK_TWO_REPLAY_LOG_PATH),
+            "--bulk-file",
+            str(SCRYFALL_BULK_SAMPLE_PATH),
+            "--app-dir",
+            str(tmp_path / "app"),
+            "--offline-profiles",
+        ]
+    )
+
+    assert exit_code == 0
+    assert requested_urls == []
+    assert loaded == [None]
 
 
 def test_replay_renders_local_profile_context_without_legacy_claims(
@@ -777,7 +1015,7 @@ def test_replay_profile_loader_is_skipped_for_explicit_profile() -> None:
     calls: list[str] = []
     profile = _replay_profile()
 
-    def fail_loader(set_code: str) -> SetProfile:
+    def fail_loader(set_code: str, draft_format: DraftFormat | None) -> SetProfile:
         calls.append(set_code)
         raise AssertionError("explicit profile must remain authoritative")
 

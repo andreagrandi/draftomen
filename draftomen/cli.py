@@ -38,6 +38,8 @@ from draftomen.card_data_export import (
     publish_set_data_export,
 )
 from draftomen.set_profile import (
+    ProfileMaturity,
+    SetProfile,
     SetProfileError,
     load_scoring_profile,
 )
@@ -71,7 +73,7 @@ from draftomen.deckbuilder import (
     load_persisted_pool,
     load_pool_file,
 )
-from draftomen.draft_format import DraftFormat
+from draftomen.draft_format import DraftFormat, ratings_formats
 from draftomen.draftmancer import MOCKED_DRAFT_FORMATS, DraftmancerAdapterError
 from draftomen.events import DraftLogParseError
 from draftomen.logfollow import LogFollowError
@@ -132,6 +134,8 @@ from draftomen.tui import run_tui_moxgate_watch, run_tui_watch
 from draftomen.watch import run_plain_moxgate_watch, run_plain_watch
 
 DEFAULT_PROFILE_MANIFEST_URL = "https://www.draftomen.com/profiles/manifest.json"
+# Tests set this to None so replay never reaches the hosted manifest.
+REPLAY_PROFILE_MANIFEST_URL: str | None = DEFAULT_PROFILE_MANIFEST_URL
 
 CommandHandler = Callable[[argparse.Namespace], int]
 
@@ -337,7 +341,10 @@ def build_parser() -> argparse.ArgumentParser:
     replay_parser = subparsers.add_parser(
         name="replay",
         help="Replay a captured Player.log fixture in plain-text mode.",
-        description="Deterministic offline replay over a captured log file.",
+        description=(
+            "Replay a captured log file. The set profile for the draft's format "
+            "is refreshed from the hosted manifest unless --offline-profiles is set."
+        ),
     )
     replay_parser.add_argument(
         "logfile",
@@ -364,6 +371,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="splash_enabled",
         action="store_false",
         help="Disable splash recommendations and splash deck building.",
+    )
+    replay_parser.add_argument(
+        "--offline-profiles",
+        action="store_true",
+        help="Use only cached set profiles; do not access the hosted manifest.",
     )
     replay_parser.set_defaults(splash_enabled=True)
     replay_parser.set_defaults(handler=handle_replay)
@@ -1643,10 +1655,10 @@ def handle_replay(args: argparse.Namespace) -> int:
                 set_code=set_code,
                 app_dir=args.app_dir,
             ),
-            profile_loader=lambda set_code: load_scoring_profile(
+            profile_loader=lambda set_code, draft_format: _load_replay_profile(
+                args=args,
                 set_code=set_code,
-                event_format=QUICK_DRAFT_FORMAT,
-                app_dir=args.app_dir,
+                draft_format=draft_format,
             ),
             splash_enabled=args.splash_enabled,
         )
@@ -1665,6 +1677,34 @@ def handle_replay(args: argparse.Namespace) -> int:
 
     print(output, end="")
     return 0
+
+
+def _load_replay_profile(
+    *,
+    args: argparse.Namespace,
+    set_code: str,
+    draft_format: DraftFormat | None,
+) -> SetProfile | None:
+    """Load the first usable profile in the draft format's ratings order.
+    The hosted profile is fetched unless --offline-profiles keeps replay on the cache.
+    """
+
+    client = ProfileClient(
+        app_dir=args.app_dir,
+        manifest_url=REPLAY_PROFILE_MANIFEST_URL,
+        network_policy=(
+            ProfileNetworkPolicy.OFFLINE
+            if args.offline_profiles
+            else ProfileNetworkPolicy.ALLOWED
+        ),
+    )
+    for event_format in ratings_formats(
+        draft_format=DraftFormat.QUICK if draft_format is None else draft_format
+    ):
+        profile = client.refresh(set_code, event_format).profile
+        if profile.maturity is not ProfileMaturity.GENERIC:
+            return profile
+    return None
 
 
 def _load_set_card_database(*, args: argparse.Namespace, set_code: str) -> CardDatabase:
