@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- The Moxgate extension has the Draft Omen icon in the Chrome toolbar and on
+  the extensions page. The popup shows the icon and name in a header, a green
+  or red dot for whether Draft Omen is running, and follows the system light or
+  dark appearance. (#885)
 - The Moxgate extension now sends the latest snapshot again every 2 seconds
   while Draft Omen does not answer, so Draft Omen shows the current pack when
   it starts after the draft page is already open. It stops once Draft Omen accepts or rejects
