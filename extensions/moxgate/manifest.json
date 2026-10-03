@@ -8,7 +8,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.moxgate.com/*"],
-      "js": ["dom_reader.js", "content.js"],
+      "js": ["dom_reader.js", "sender.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

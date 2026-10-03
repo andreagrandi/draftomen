@@ -32,7 +32,13 @@ Click the extension icon to see:
   running" with the start command when it does not answer within 2 seconds.
 - The last snapshot. "Accepted" shows the pick number and the time. "Rejected"
   shows the error Draft Omen returned. "Not answered" means the post found no
-  receiver.
+  receiver. "Pick N of M is waiting for Draft Omen" means the last post found
+  no receiver within the last few seconds and the extension is still retrying.
+
+While Draft Omen does not answer and the Moxgate page is open, the extension
+sends the latest snapshot again every 2 seconds. It stops when Draft Omen
+accepts or rejects the snapshot, when a newer snapshot replaces it, or when the
+page closes.
 
 The last result lives in session storage and is cleared when Chrome closes.
 
