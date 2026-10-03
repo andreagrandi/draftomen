@@ -672,8 +672,8 @@ def _partial_producer_bundle(
         _,
         second_public_calls,
     ) = _fixture_adapters(
-        fail_formats=frozenset({"TradDraft"}),
-        change_formats=frozenset({"PremierDraft"}),
+        fail_formats=frozenset({"PremierDraft"}),
+        change_formats=frozenset({"TradDraft"}),
     )
     report = workflow.generate_website(
         base_commit=published_base,
@@ -1255,11 +1255,11 @@ def test_mixed_profile_failures_merge_manifest_and_preserve_delta(
     )
     assert report["status"] == "failed"
     assert {pair["event_format"] for pair in report["profiles"]["successful"]} == {
-        "PremierDraft"
+        "TradDraft"
     }
     assert any(
         failure["category"] == "empirical-evidence-unavailable"
-        and failure["event_format"] == "TradDraft"
+        and failure["event_format"] == "PremierDraft"
         for failure in report["failures"]
     )
     manifest = load_profile_manifest(root / "website/public/profiles/manifest.json")
@@ -1354,7 +1354,7 @@ def test_active_historical_modes_reuse_fresh_aggregate_cache(
     assert public_calls == []
 
 
-def test_historical_run_skips_published_and_zero_game_pairs(
+def test_historical_run_skips_published_pairs_and_fills_zero_game_trad_from_premier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1417,12 +1417,12 @@ def test_historical_run_skips_published_and_zero_game_pairs(
     ] == [("new", "PremierDraft"), ("new", "TradDraft")]
     assert [
         (pair["set_code"], pair["event_format"]) for pair in report["profiles"]["successful"]
-    ] == [("new", "PremierDraft")]
+    ] == [("new", "PremierDraft"), ("new", "TradDraft")]
     assert report["failures"] == []
     assert report["status"] == "success"
     summary = (tmp_path / "bundle" / "summary.md").read_text(encoding="utf-8")
     assert "- new / PremierDraft / New Set: successful" in summary
-    assert "- new / TradDraft / New Set: skipped" in summary
+    assert "- new / TradDraft / New Set: successful" in summary
 
 
 def _git_base_commit(root: Path) -> str:

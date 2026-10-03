@@ -16,6 +16,7 @@ import json
 import re
 from typing import Any, Mapping
 
+from draftomen.draft_format import aggregate_fallback_formats
 from draftomen.profile_generation import (
     DEFAULT_PROFILE_GENERATION_CONFIG,
     ProfileGenerationConfig,
@@ -617,9 +618,10 @@ def _validate_input_source(
         if source_format:
             raise ProfileGenerationExecutionError("card database source format is invalid")
     elif fields["role"] == "seventeen_lands_ratings":
-        allowed_formats = {requested_format}
-        if requested_format == "quickdraft":
-            allowed_formats.update({"premierdraft", "traddraft"})
+        allowed_formats = {
+            requested_format,
+            *aggregate_fallback_formats(event_format=requested_format),
+        }
         if source_format not in allowed_formats:
             raise ProfileGenerationExecutionError("profile generation ratings source format is invalid")
     elif source_format != requested_format:

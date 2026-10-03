@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from draftomen.config import COLOR_PAIRS
+from draftomen.draft_format import aggregate_fallback_formats
 from draftomen.paths import app_data_dir
 from draftomen.semantic_roles import Role
 
@@ -1164,12 +1165,12 @@ def _validate_aggregate_authority(
                 )
             continue
         if (
-            requested_format != "quickdraft"
-            or evidence.source_format not in {"premierdraft", "traddraft"}
+            evidence.source_format
+            not in aggregate_fallback_formats(event_format=requested_format)
             or evidence.fallback_reason is None
         ):
             raise SetProfileSchemaError(
-                "Cross-format aggregate authority is only valid for QuickDraft fallbacks."
+                "Cross-format aggregate authority is only valid for allowed fallback formats."
             )
 
 

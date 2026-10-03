@@ -142,6 +142,23 @@ _EVENT_FORMAT_LABELS: dict[str, str] = {
 }
 
 
+# Cross-format aggregate fallback sources per requested format, in priority order.
+# Keys and values are casefolded 17Lands event formats.
+AGGREGATE_FALLBACK_FORMATS: dict[str, tuple[str, ...]] = {
+    "quickdraft": ("premierdraft", "traddraft"),
+    "traddraft": ("premierdraft",),
+    "picktwodraft": ("premierdraft",),
+}
+
+
+def aggregate_fallback_formats(*, event_format: str) -> tuple[str, ...]:
+    """Return the casefolded formats that may fill per-card gaps for a format.
+    Formats without an entry, such as PremierDraft, have no fallback.
+    """
+
+    return AGGREGATE_FALLBACK_FORMATS.get(event_format.strip().casefold(), ())
+
+
 def ratings_formats(*, draft_format: DraftFormat) -> tuple[str, ...]:
     """Return the 17Lands event formats that may supply ratings for a draft.
     The first entry is the exact format and later entries are fallbacks.

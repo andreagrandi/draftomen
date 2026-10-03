@@ -22,6 +22,7 @@ import tempfile
 from typing import Any, Mapping, TypeAlias
 
 from draftomen.carddb import CardDatabase, CardDatabaseError
+from draftomen.draft_format import aggregate_fallback_formats
 from draftomen.profile_input_acquisition import (
     CARD_METADATA_SOURCE_NAME,
     PUBLIC_DRAFT_ATTRIBUTION,
@@ -1403,7 +1404,9 @@ def _parse_fallback_candidates(
             role=_INPUT_RATINGS,
             environment=actual_environment,
         )
-        if report is None or report.source.event_format not in {"premierdraft", "traddraft"}:
+        if report is None or report.source.event_format not in aggregate_fallback_formats(
+            event_format=environment.event_format
+        ):
             raise ProfileRefreshExecutionError("fallback source format is invalid")
         input_value = row["input"]
         ratings: SeventeenLandsFormatData | None = None
@@ -1479,9 +1482,10 @@ def _validate_fallback_reports(
     environment: PlannedEnvironment,
     reports: tuple[ProfileInputSourceReport, ...],
 ) -> None:
-    if environment.event_format != "quickdraft" and reports:
+    allowed_formats = aggregate_fallback_formats(event_format=environment.event_format)
+    if not allowed_formats and reports:
         raise ProfileRefreshExecutionError(
-            "fallback source reports are supported only for QuickDraft environments"
+            "fallback source reports are not supported for this environment format"
         )
     if len(reports) > 2:
         raise ProfileRefreshExecutionError("too many fallback source reports")
@@ -1493,7 +1497,7 @@ def _validate_fallback_reports(
         if (
             source.name != RATINGS_SOURCE_NAME
             or source.set_code != environment.set_code
-            or source.event_format not in {"premierdraft", "traddraft"}
+            or source.event_format not in allowed_formats
         ):
             raise ProfileRefreshExecutionError("fallback source identity is invalid")
         formats.append(source.event_format)

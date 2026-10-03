@@ -630,6 +630,11 @@ def test_schema_two_requires_pair_authority_and_rejects_invalid_combinations() -
         ("premierdraft", AggregateEvidence("traddraft", "missing-exact-evidence", 0.5)),
         ("quickdraft", AggregateEvidence("alchemydraft", "missing-exact-evidence", 0.5)),
         ("quickdraft", AggregateEvidence("premierdraft", None, 0.5)),
+        ("premierdraft", AggregateEvidence("quickdraft", "missing-exact-evidence", 0.5)),
+        ("picktwodraft", AggregateEvidence("traddraft", "missing-exact-evidence", 0.5)),
+        ("picktwodraft", AggregateEvidence("quickdraft", "missing-exact-evidence", 0.5)),
+        ("picktwodraft", AggregateEvidence("premierdraft", None, 0.5)),
+        ("traddraft", AggregateEvidence("picktwodraft", "missing-exact-evidence", 0.5)),
     )
     for event_format, evidence in invalid:
         with pytest.raises(SetProfileSchemaError):
@@ -643,6 +648,35 @@ def test_schema_two_requires_pair_authority_and_rejects_invalid_combinations() -
                 ),
                 **base,
             )
+
+
+@pytest.mark.parametrize("event_format", ["picktwodraft", "traddraft", "quickdraft"])
+def test_premier_cross_format_authority_is_valid_for_pick_two_trad_and_quick(
+    event_format: str,
+) -> None:
+    profile = SetProfile(
+        set_code="TST",
+        event_format=event_format,
+        profile_version="generator-2",
+        generated_at="2026-08-30T00:00:00+00:00",
+        source=set_profile_module.SourceMetadata(provider="fixture"),
+        maturity=ProfileMaturity.EARLY,
+        samples=None,
+        confidence=0.4,
+        pairs=(),
+        card_ratings=(
+            CardRating(
+                card_key="a",
+                gih_win_rate=_rate(
+                    aggregate_evidence=AggregateEvidence(
+                        "premierdraft", "missing-exact-evidence", 0.5
+                    )
+                ),
+            ),
+        ),
+        schema_version=2,
+    )
+    assert profile.card_ratings[0].gih_win_rate.aggregate_evidence is not None
 
 
 def test_card_ratings_reject_duplicate_card_identities() -> None:

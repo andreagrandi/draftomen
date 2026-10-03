@@ -1388,6 +1388,55 @@ def test_profile_source_label_names_the_supplying_format_and_marks_fallbacks(
     assert by_id[2].rating.metadata.requested_format == requested_format
 
 
+@pytest.mark.parametrize(
+    ("requested_format", "profile_format"),
+    [("PickTwoDraft", "picktwodraft"), ("TradDraft", "traddraft")],
+)
+def test_per_card_premier_fallback_in_pick_two_and_trad_profiles_shows_premier_label(
+    requested_format: str,
+    profile_format: str,
+) -> None:
+    fallback_rate = replace(
+        _profile_rate(0.58, samples=40),
+        aggregate_evidence=AggregateEvidence(
+            source_format="premierdraft",
+            fallback_reason="missing-exact-evidence",
+            confidence=0.65,
+        ),
+    )
+    exact_rate = replace(
+        _profile_rate(0.55, samples=40),
+        aggregate_evidence=AggregateEvidence(
+            source_format=profile_format,
+            fallback_reason=None,
+            confidence=1.0,
+        ),
+    )
+    profile = _test_profile(
+        maturity=ProfileMaturity.EARLY,
+        schema_version=2,
+        card_ratings=(
+            CardRating(card_key="ARENA_ID:1", gih_win_rate=fallback_rate),
+            CardRating(card_key="ARENA_ID:3", gih_win_rate=exact_rate),
+        ),
+        event_format=profile_format,
+    )
+
+    scored = PickEngine(
+        set_profile=profile,
+        requested_format=requested_format,
+    ).score_pack(
+        offered_grp_ids=(1, 3),
+        card_database=_contextual_database(),
+    )
+
+    by_id = {card.card.grp_id: card for card in scored.cards}
+    assert by_id[1].source_label == "Premier*"
+    assert by_id[1].rating.metadata.fallback_reason == "missing-exact-evidence"
+    assert by_id[3].source_label == ("Pick-Two" if profile_format == "picktwodraft" else "Trad")
+    assert by_id[3].rating.metadata.fallback_reason is None
+
+
 def test_profile_rating_metadata_consumes_versioned_aggregate_authority() -> None:
     database = _contextual_database()
     fallback_rate = replace(

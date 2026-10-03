@@ -23,6 +23,7 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.draft_format import aggregate_fallback_formats
 from draftomen.config import COLOR_PAIRS, DECK_BUILDER, PICK_ENGINE, DeckBuilderConfig
 from draftomen.public_dump import (
     PUBLIC_DUMP_MANIFEST_SCHEMA_VERSION,
@@ -452,6 +453,7 @@ def _normalized_aggregate_datasets(
         for candidate in fallback_ratings
     ):
         raise ProfileGenerationError("fallback ratings must contain SeventeenLandsFormatData values.")
+    allowed_fallbacks = aggregate_fallback_formats(event_format=event_format)
     fallback_by_format: dict[str, SeventeenLandsFormatData] = {}
     for candidate in fallback_ratings:
         if (
@@ -460,10 +462,10 @@ def _normalized_aggregate_datasets(
         ):
             raise ProfileGenerationError("fallback ratings must match the requested set.")
         if not isinstance(candidate.event_format, str):
-            raise ProfileGenerationError("fallback ratings must be PremierDraft or TradDraft.")
+            raise ProfileGenerationError("fallback ratings format is not allowed for this format.")
         candidate_format = candidate.event_format.strip().casefold()
-        if candidate_format not in {"premierdraft", "traddraft"}:
-            raise ProfileGenerationError("fallback ratings must be PremierDraft or TradDraft.")
+        if candidate_format not in allowed_fallbacks:
+            raise ProfileGenerationError("fallback ratings format is not allowed for this format.")
         if candidate_format in fallback_by_format or (
             ratings is not None and candidate_format == event_format
         ):
@@ -475,7 +477,7 @@ def _normalized_aggregate_datasets(
         aggregate_list.append((event_format, ratings))
     aggregate_list.extend(
         (candidate_format, fallback_by_format[candidate_format])
-        for candidate_format in ("premierdraft", "traddraft")
+        for candidate_format in allowed_fallbacks
         if candidate_format in fallback_by_format
     )
     return tuple(aggregate_list)
@@ -520,7 +522,9 @@ def aggregate_evidence_needs_fallback(
     ratings: SeventeenLandsFormatData | None = None,
     fallback_ratings: Sequence[SeventeenLandsFormatData] = (),
 ) -> bool:
-    """Return whether QuickDraft aggregate targets have a supported evidence gap."""
+    """Return whether aggregate targets have a supported evidence gap.
+    Only formats with cross-format fallbacks can report a gap.
+    """
 
     if not isinstance(card_database, CardDatabase):
         raise ProfileGenerationError("card_database must be a CardDatabase.")
@@ -532,7 +536,7 @@ def aggregate_evidence_needs_fallback(
         set_code=normalized_set,
         event_format=normalized_format,
     )
-    if normalized_format != "quickdraft":
+    if not aggregate_fallback_formats(event_format=normalized_format):
         return False
 
     card_observations = tuple(
@@ -724,7 +728,7 @@ def generate_set_profile(
 
     if normalized_stage != ProfileGenerationStage.METADATA:
         cards, card_rating_counts = _card_ratings(
-            datasets=aggregate_datasets if normalized_format == "quickdraft" else (
+            datasets=aggregate_datasets if aggregate_fallback_formats(event_format=normalized_format) else (
                 ((normalized_format, ratings),) if ratings is not None else ()
             ),
             requested_format=normalized_format,
@@ -734,7 +738,7 @@ def generate_set_profile(
             skip_counts=skip_counts,
         )
         pair_profiles = _pair_profiles(
-            datasets=aggregate_datasets if normalized_format == "quickdraft" else (
+            datasets=aggregate_datasets if aggregate_fallback_formats(event_format=normalized_format) else (
                 ((normalized_format, ratings),) if ratings is not None else ()
             ),
             requested_format=normalized_format,
@@ -1101,7 +1105,10 @@ def _pair_profiles(
         chosen: _PairObservation | None = None
         chosen_format = requested_format
         for source_format, values, _ in prepared:
-            if source_format != requested_format and requested_format != "quickdraft":
+            if (
+                source_format != requested_format
+                and source_format not in aggregate_fallback_formats(event_format=requested_format)
+            ):
                 continue
             candidate = _select_supported_pair_observation(values=values, pair=pair)
             if candidate is not None:
@@ -1394,7 +1401,10 @@ def _card_ratings(
         chosen: _CardObservation | None = None
         chosen_format = requested_format
         for source_format, values, _ in prepared:
-            if source_format != requested_format and requested_format != "quickdraft":
+            if (
+                source_format != requested_format
+                and source_format not in aggregate_fallback_formats(event_format=requested_format)
+            ):
                 continue
             candidate = _select_supported_card_observation(
                 values=values,

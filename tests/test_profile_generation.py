@@ -224,7 +224,7 @@ def test_aggregate_evidence_coverage_accepts_one_supported_duplicate_arena_id() 
     )
 
 
-def test_aggregate_evidence_non_quick_validates_candidates_then_returns_false() -> None:
+def test_aggregate_evidence_premier_rejects_fallbacks_and_reports_no_gap() -> None:
     with pytest.raises(ProfileGenerationError, match="fallback ratings"):
         aggregate_evidence_needs_fallback(
             set_code="TST",
@@ -233,12 +233,19 @@ def test_aggregate_evidence_non_quick_validates_candidates_then_returns_false() 
             ratings=_format_ratings("PremierDraft"),
             fallback_ratings=(object(),),  # type: ignore[tuple-item]
         )
+    with pytest.raises(ProfileGenerationError, match="not allowed"):
+        aggregate_evidence_needs_fallback(
+            set_code="TST",
+            event_format="PremierDraft",
+            card_database=_database(),
+            ratings=_format_ratings("PremierDraft"),
+            fallback_ratings=(_format_ratings("TradDraft"),),
+        )
     assert not aggregate_evidence_needs_fallback(
         set_code="TST",
         event_format="PremierDraft",
         card_database=_database(),
         ratings=_format_ratings("PremierDraft"),
-        fallback_ratings=(_format_ratings("TradDraft"),),
     )
 
 
@@ -887,7 +894,6 @@ def test_aggregate_candidates_are_validated_before_selection() -> None:
         source_manifest=None,
         generated_at=GENERATED_AT,
         ratings=_format_ratings("PremierDraft", card1_games=10, card2_games=10),
-        fallback_ratings=(_format_ratings("TradDraft"),),
         config=_config(),
     )
     assert all(
@@ -1094,7 +1100,6 @@ def test_thin_fallback_never_displaces_valid_exact_evidence_or_non_quick_exact()
             pair_wins=6,
             pair_games=10,
         ),
-        fallback_ratings=(_format_ratings("TradDraft"),),
         event_format="PremierDraft",
     )
     non_quick_card = next(
@@ -1108,6 +1113,60 @@ def test_thin_fallback_never_displaces_valid_exact_evidence_or_non_quick_exact()
     assert non_quick_pair is not None and non_quick_pair.performance is not None
     assert non_quick_pair.performance.aggregate_evidence is not None
     assert non_quick_pair.performance.aggregate_evidence.source_format == "premierdraft"
+
+
+@pytest.mark.parametrize("event_format", ["PickTwoDraft", "TradDraft"])
+def test_premier_fills_cards_and_pairs_missing_from_pick_two_and_trad(
+    event_format: str,
+) -> None:
+    premier = _format_ratings(
+        "PremierDraft",
+        card1_rate=0.20,
+        card1_games=1000,
+        card2_games=1000,
+        pair_wins=600,
+        pair_games=1000,
+    )
+    assert aggregate_evidence_needs_fallback(
+        set_code="TST",
+        event_format=event_format,
+        card_database=_database(),
+        ratings=None,
+    )
+
+    result = _generate_tst(
+        ratings=None,
+        fallback_ratings=(premier,),
+        event_format=event_format,
+    )
+    card = next(
+        card for card in result.profile.card_ratings if card.card_key == "oracle_id:support-id"
+    ).gih_win_rate
+    assert card.raw_value == pytest.approx(0.20)
+    assert card.aggregate_evidence is not None
+    assert card.aggregate_evidence.source_format == "premierdraft"
+    assert card.aggregate_evidence.fallback_reason == "missing-exact-evidence"
+    pair = result.profile.pair("WU")
+    assert pair is not None and pair.performance is not None
+    assert pair.performance.samples == 1000
+    assert pair.performance.aggregate_evidence is not None
+    assert pair.performance.aggregate_evidence.source_format == "premierdraft"
+    assert pair.performance.aggregate_evidence.fallback_reason == "missing-exact-evidence"
+
+
+def test_pick_two_rejects_trad_fallback_and_trad_does_not_fall_back_to_pick_two() -> None:
+    with pytest.raises(ProfileGenerationError, match="not allowed"):
+        _generate_tst(
+            ratings=None,
+            fallback_ratings=(_format_ratings("TradDraft"),),
+            event_format="PickTwoDraft",
+        )
+    with pytest.raises(ProfileGenerationError, match="not allowed"):
+        _generate_tst(
+            ratings=None,
+            fallback_ratings=(_format_ratings("PickTwoDraft"),),
+            event_format="TradDraft",
+        )
 
 
 def test_aggregate_confidence_is_local_and_preserves_rate_math() -> None:

@@ -401,7 +401,7 @@ def test_prepare_rejects_manifest_dropping_failed_prior_identity(
     failed_artifact = next(
         item
         for item in manifest["artifacts"]
-        if item["set_code"] == "new" and item["format"] == "tradDraft".casefold()
+        if item["set_code"] == "new" and item["format"] == "premierdraft"
     )
     manifest["artifacts"].remove(failed_artifact)
     _write_bundle_manifest(bundle, result, manifest)
@@ -711,8 +711,8 @@ def test_publish_partial_keeps_master_unchanged_and_lists_every_failure(
             stdout=subprocess.PIPE,
         ).stdout
     )
-    base_failed = base_manifest.select(set_code="new", event_format="TradDraft")
-    branch_failed = branch_manifest.select(set_code="new", event_format="TradDraft")
+    base_failed = base_manifest.select(set_code="new", event_format="PremierDraft")
+    branch_failed = branch_manifest.select(set_code="new", event_format="PremierDraft")
     assert base_failed is not None
     assert branch_failed is not None
     assert branch_failed.to_json() == base_failed.to_json()
@@ -735,7 +735,7 @@ def test_publish_partial_keeps_master_unchanged_and_lists_every_failure(
         for line in summary_text.splitlines()
         if line.startswith("- ")
     }
-    assert "profile-execution: empirical-evidence-unavailable: new: TradDraft" in rendered_failures
+    assert "profile-execution: empirical-evidence-unavailable: new: PremierDraft" in rendered_failures
 
 
     maintained_path = candidate / "website/public/card-data/maintainer.json.gz"
