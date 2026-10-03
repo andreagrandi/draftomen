@@ -131,7 +131,7 @@ def test_tui_parser_uses_tui_command_name(
     ("command", "expected_help"),
     [
         ("watch", "Live"),
-        ("replay", "Deterministic"),
+        ("replay", "Replay a captured log file"),
         ("build", "Select"),
         ("test-draft", "headless"),
         ("backtest", "Dry-run"),

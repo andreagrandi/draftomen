@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import truststore
 
-from draftomen import applog
+from draftomen import applog, cli
 from draftomen.card_data_client import CardDataClient
 
 
@@ -22,6 +22,15 @@ def _no_hosted_sets_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     monkeypatch.setitem(CardDataClient.__init__.__kwdefaults__, "sets_manifest_url", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_hosted_replay_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep replay on cached profiles instead of the hosted profile manifest.
+    Tests that exercise the hosted fetch set REPLAY_PROFILE_MANIFEST_URL themselves.
+    """
+
+    monkeypatch.setattr(cli, "REPLAY_PROFILE_MANIFEST_URL", None)
 
 
 @pytest.fixture

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- `draftomen-tui replay` now scores a draft with the profile for its own
+  format, such as Pick-Two with a Premier fallback, instead of always the
+  cached Quick Draft profile. It fetches the hosted profile when needed. The
+  new `--offline-profiles` option keeps it on the local cache. (#900)
 - Card data export now adds the basic lands that 17Lands `cards.csv` lists
   and Scryfall has no Arena id for. The new `export-set-data --cards-file`
   option reads a local copy instead of downloading it. The hosted Reality
