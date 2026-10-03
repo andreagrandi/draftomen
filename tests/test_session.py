@@ -10084,3 +10084,108 @@ def test_live_session_replaying_a_full_draft_stays_within_the_log_budget(
     }
     records = _info_records(caplog)
     assert 1 <= len(records) <= 10, [r.getMessage() for r in records]
+
+
+PICK_TWO_LATE_ACCOUNT_LOG_PATH = (
+    PROJECT_ROOT / "tests" / "fixtures" / "pick-two-draft-late-account.log"
+)
+PICK_TWO_LATE_ACCOUNT_ID = "PICKTWOLATEACCOUNT"
+PICK_TWO_LATE_DRAFT_ID = "PickTwoDraft_MSH_20260930"
+
+
+def _saved_draft_states(*, app_dir: Path) -> tuple[Path, ...]:
+    state_root = app_dir / "state"
+    if not state_root.exists():
+        return ()
+
+    return tuple(state_root.rglob("*.json"))
+
+
+def test_live_session_saves_draft_logged_before_first_account_id(
+    tmp_path: Path,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+    )
+    lines = PICK_TWO_LATE_ACCOUNT_LOG_PATH.read_text(encoding="utf-8").splitlines()
+
+    session.process_lines(lines=lines[:-1])
+    assert session.snapshot.active_account is None
+    assert session.snapshot.pool.total_cards == 42
+    assert _saved_draft_states(app_dir=tmp_path / "app") == ()
+
+    session.process_lines(lines=lines[-1:])
+
+    state = load_draft_state(
+        account_id=PICK_TWO_LATE_ACCOUNT_ID,
+        draft_id=PICK_TWO_LATE_DRAFT_ID,
+        app_dir=tmp_path / "app",
+    )
+    assert len(state.pool_grp_ids) == 42
+    assert state.completed is True
+    snapshot = session.snapshot
+    assert snapshot.active_account is not None
+    assert snapshot.active_account.account_id == PICK_TWO_LATE_ACCOUNT_ID
+    assert snapshot.draft is not None
+    assert snapshot.draft.draft_id == PICK_TWO_LATE_DRAFT_ID
+    assert snapshot.pool.total_cards == 42
+    record_types = [
+        record["record_type"]
+        for record in load_draft_audit_records(
+            account_id=PICK_TWO_LATE_ACCOUNT_ID,
+            draft_id=PICK_TWO_LATE_DRAFT_ID,
+            app_dir=tmp_path / "app",
+        )
+    ]
+    assert record_types.count("choice_made") == 21
+    assert record_types.count("draft_completed") == 1
+
+
+def test_live_session_later_login_does_not_adopt_accountless_draft(
+    tmp_path: Path,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+    )
+    lines = PICK_TWO_LATE_ACCOUNT_LOG_PATH.read_text(encoding="utf-8").splitlines()
+
+    session.process_lines(
+        lines=(
+            *lines[:-1],
+            "[Accounts - Login] Logged in successfully. Display Name: Other#12345",
+            '{"authenticateResponse":{"clientId":"OTHERACCOUNT","screenName":"Other"}}',
+        )
+    )
+
+    assert _saved_draft_states(app_dir=tmp_path / "app") == ()
+    assert session.snapshot.active_account is not None
+    assert session.snapshot.active_account.account_id == "OTHERACCOUNT"
+    assert session.snapshot.draft is None
+
+
+def test_live_session_draft_after_known_account_saves_as_before(
+    tmp_path: Path,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+    )
+    lines = PICK_TWO_LATE_ACCOUNT_LOG_PATH.read_text(encoding="utf-8").splitlines()
+
+    session.process_lines(lines=(lines[-1], *lines[:-1]))
+
+    state = load_draft_state(
+        account_id=PICK_TWO_LATE_ACCOUNT_ID,
+        draft_id=PICK_TWO_LATE_DRAFT_ID,
+        app_dir=tmp_path / "app",
+    )
+    assert len(state.pool_grp_ids) == 42
+    assert state.completed is True
+    assert session._accountless_events == []
+    assert len(_saved_draft_states(app_dir=tmp_path / "app")) == 1
+    assert session.snapshot.active_account is not None
+    assert session.snapshot.active_account.account_id == PICK_TWO_LATE_ACCOUNT_ID
+    assert session.snapshot.draft is not None
+    assert session.snapshot.draft.draft_id == PICK_TWO_LATE_DRAFT_ID

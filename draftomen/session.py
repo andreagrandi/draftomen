@@ -999,6 +999,9 @@ class LiveSession:
         self._backtest_request_generation = 0
         self._login_generation = self.parser.login_generation
         self._log_account_id: str | None = None
+        # A saved-token login logs no account id until the first match, so
+        # drafts before it wait here for the login's first account id.
+        self._accountless_events: list[DraftEvent] = []
         self._states_by_key: dict[tuple[str, str], DraftState] = {}
         self._screen_names_by_account_id: dict[str, str] = {}
         self._card_image_service = card_image_service
@@ -1662,6 +1665,10 @@ class LiveSession:
                 if _event_is_missing_account(event=event):
                     event = replace(event, account_id=state.account_id)
                 event = _resumed_pack_with_saved_pool(event=event, state=state)
+            elif _event_is_missing_account(event=event) and not isinstance(
+                event, QuickDraftDetectedEvent
+            ):
+                self._accountless_events.append(event)
             self._consume_event(event=event, state=state)
             self._publish_event(event=event)
         return self.snapshot
@@ -4131,6 +4138,7 @@ class LiveSession:
 
         self._login_generation = self.parser.login_generation
         self._log_account_id = None
+        self._accountless_events.clear()
         self.store.clear_active_account()
         self._restore_pending_login_account_context()
 
@@ -4417,9 +4425,19 @@ class LiveSession:
             )
 
     def _consume_account_event(self, *, event: AccountEvent) -> None:
+        first_account_in_login = self._log_account_id is None
         self._log_account_id = event.client_id
         if event.screen_name is not None:
             self._screen_names_by_account_id[event.client_id] = event.screen_name
+        adopted_state = (
+            self._adopt_accountless_events(account_id=event.client_id)
+            if first_account_in_login
+            else None
+        )
+        self._accountless_events.clear()
+        if adopted_state is not None:
+            self._select_recovered_state(state=adopted_state)
+            return
 
         active_account = self.snapshot.active_account
         if (
@@ -4438,6 +4456,26 @@ class LiveSession:
             self._select_account_without_draft(account_id=event.client_id)
         else:
             self._select_recovered_state(state=state)
+
+    def _adopt_accountless_events(self, *, account_id: str) -> DraftState | None:
+        state: DraftState | None = None
+        for event in self._accountless_events:
+            event = replace(event, account_id=account_id)
+            state = self.store.consume(event=event)
+            if state is None:
+                continue
+            self._remember_state(state=state)
+            if isinstance(event, DraftStartedEvent):
+                self.audit_store.record_draft_started(state=state)
+            elif isinstance(event, PickMadeEvent):
+                self.audit_store.record_choice(
+                    state=state,
+                    event=event,
+                    ranking_mode=self._ranking_mode,
+                )
+            elif isinstance(event, DraftCompletedEvent):
+                self.audit_store.record_draft_completed(state=state, event=event)
+        return state
 
     def _consume_detected_event(self, *, event: QuickDraftDetectedEvent) -> None:
         normalized_set_code = event.set_code.upper()

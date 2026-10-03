@@ -29,6 +29,7 @@ from draftomen.pickengine import (
     ScoredPack,
     render_pick_rationale_detailed,
 )
+from draftomen.pool import DraftPoolError
 from draftomen.replay import (
     format_pack_offered_event,
     format_pick_made_event,
@@ -1043,3 +1044,53 @@ def _pair_win_rates() -> dict[str, ColorPairWinRate]:
         pair: ColorPairWinRate(pair=pair, wins=50, games=100, win_rate=0.5)
         for pair in pairs
     }
+
+
+PICK_TWO_LATE_ACCOUNT_LOG_PATH = (
+    Path(__file__).parent / "fixtures" / "pick-two-draft-late-account.log"
+)
+
+
+def test_replay_cli_prints_draft_logged_before_first_account_id(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        argv=[
+            "replay",
+            str(PICK_TWO_LATE_ACCOUNT_LOG_PATH),
+            "--bulk-file",
+            str(SCRYFALL_BULK_SAMPLE_PATH),
+            "--app-dir",
+            str(tmp_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert "Account: PICKTWOLATEACCOUNT" in captured.out
+    assert "Format: Pick-Two" in captured.out
+
+
+def test_replay_does_not_give_accountless_draft_to_a_later_login(
+    tmp_path: Path,
+) -> None:
+    lines = PICK_TWO_LATE_ACCOUNT_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    logfile = tmp_path / "Player.log"
+    logfile.write_text(
+        "\n".join(
+            (
+                *lines[:-1],
+                "[Accounts - Login] Logged in successfully. Display Name: Other#12345",
+                '{"authenticateResponse":{"clientId":"OTHERACCOUNT","screenName":"Other"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    database = build_card_database_from_bulk_file(path=SCRYFALL_BULK_SAMPLE_PATH)
+
+    with pytest.raises(DraftPoolError, match="missing an MTGA account id"):
+        replay_log_file(logfile=logfile, card_database=database)
