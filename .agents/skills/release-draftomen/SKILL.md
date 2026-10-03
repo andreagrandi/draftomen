@@ -2,9 +2,10 @@
 name: release-draftomen
 description: >-
   Publish a Draft Omen version through the complete version bump, pull request,
-  merge, tag, GitHub Actions, and GitHub Release verification workflow. Use
-  whenever the user says "release X.Y.Z", "publish version X.Y.Z", "cut a Draft
-  Omen release", or otherwise asks to ship a new Draft Omen version.
+  merge, tag, GitHub Actions, GitHub Release verification, and website update
+  workflow. Use whenever the user says "release X.Y.Z", "publish version
+  X.Y.Z", "cut a Draft Omen release", or otherwise asks to ship a new Draft
+  Omen version.
 ---
 
 # Release Draft Omen
@@ -15,11 +16,21 @@ the signed macOS DMGs to a GitHub Release. Windows ships only through the
 Microsoft Store, and the maintainer submits each update by hand. Draft Omen is
 no longer published to PyPI or Homebrew.
 
+Every merge to `master` deploys the website, and its macOS download links
+follow the version in `website/package.json`. The release therefore happens in
+two pull requests, in this order:
+
+1. The release PR bumps the app version and promotes the changelog. It never
+   touches `website/`.
+2. The website PR bumps `website/package.json` and adds the news page. Open it
+   only after the GitHub Release is published with both macOS DMGs.
+
 An explicit request containing the target version authorizes all release-scoped
 mutations: version edit, commit, push, ready PR creation, CI monitoring, PR
-merge, annotated tag creation and push, release monitoring, and release
-verification. Do not ask for those permissions again or stop after creating the
-PR. This authorization does not cover unrelated changes.
+merge, annotated tag creation and push, release monitoring, release
+verification, and the website PR with its merge. Do not ask for those
+permissions again or stop after creating a PR. This authorization does not
+cover unrelated changes.
 
 If the request omits the exact `X.Y.Z` version, ask for it. Never infer a version.
 
@@ -31,7 +42,7 @@ If the request omits the exact `X.Y.Z` version, ask for it. Never infer a versio
 4. Check the requested version is newer than `uv version --short`.
 5. Confirm the remote tag `vX.Y.Z` and GitHub Release `vX.Y.Z` do not exist.
 
-## Prepare and merge the version PR
+## Prepare and merge the release PR
 
 Start from current `master`:
 
@@ -49,15 +60,7 @@ Before bumping the package version, promote the non-empty body under the exact
 ```
 
 Use the UTC release date, preserve the entries unchanged, and restore an empty
-`## [Unreleased]` heading immediately above the new dated section. Then write
-the website news page for the release from the promoted section:
-
-```bash
-python3 scripts/write_release_news.py --version X.Y.Z
-```
-
-The helper creates `website/src/content/news/X.Y.Z.md`. Do not edit it by hand;
-fix `CHANGELOG.md` and run the helper again. Then run:
+`## [Unreleased]` heading immediately above the new dated section. Then run:
 
 ```bash
 uv version X.Y.Z
@@ -70,22 +73,18 @@ in each of these files too:
   `--file-version`, `--product-version`, and `--macos-app-version` value.
 - `tests/test_desktop_bundle.py`: the expected version in
   `test_native_specs_preserve_project_metadata`.
-- `website/package.json` and the two root-package `version` fields in
-  `website/package-lock.json`. The release workflow rejects a tag that does not
-  match `website/package.json`.
 
-Inspect the diff and run:
+Do not change anything under `website/` in this PR. Inspect the diff and run:
 
 ```bash
 uv run nox -s ci
 ```
 
-Stage only the version files, `CHANGELOG.md`, and
-`website/src/content/news/X.Y.Z.md`, run `git diff --cached --check`,
-and commit with `Release X.Y.Z`. Push the branch and open a ready PR against
-`master` with the mandatory `AGENTS.md` PR template. Use `gh pr checks --watch`,
-then merge the green PR with the repository's merge method and delete its remote
-branch.
+Stage only the version files and `CHANGELOG.md`, run
+`git diff --cached --check`, and commit with `Release X.Y.Z`. Push the branch
+and open a ready PR against `master` with the mandatory `AGENTS.md` PR
+template. Use `gh pr checks --watch`, then merge the green PR with the
+repository's merge method and delete its remote branch.
 
 Do not tag the release branch or an unmerged commit.
 
@@ -103,10 +102,8 @@ git push origin vX.Y.Z
 
 Find the exact `Publish release` run for tag `vX.Y.Z` with `gh`, then watch it
 through completion. The run takes about 30 minutes, most of it the signed
-Intel macOS build. The `validate`
-job checks that the tag matches `pyproject.toml` and `website/package.json`,
-builds the website, checks that the news page for the version exists and is
-linked from the news index, extracts the non-empty body under the exact
+Intel macOS build. The `validate` job checks that the tag matches
+`pyproject.toml`, extracts the non-empty body under the exact
 `## [X.Y.Z] - YYYY-MM-DD` section from `CHANGELOG.md`, and runs the full CI
 gate. A missing, duplicate, or empty section fails the run; the workflow never
 falls back to generated notes. The native bundle jobs build and smoke-test both
@@ -127,6 +124,8 @@ does, merge the fix, then delete and recreate `vX.Y.Z` on the new `master`
 commit. If the GitHub Release for `vX.Y.Z` is already public, do not move the
 tag; publish a new patch release instead.
 
+Do not open the website PR while the GitHub Release is missing or incomplete.
+
 ## Verify the release
 
 Inspect `gh release view vX.Y.Z` and confirm:
@@ -140,13 +139,45 @@ Inspect `gh release view vX.Y.Z` and confirm:
 - the release run has the `draftomen-windows-msixupload` artifact;
 - a macOS DMG downloaded with `gh release download` matches the checksum file,
   passes `xcrun stapler validate`, and `spctl` accepts the DMG and the mounted
-  `Draft Omen.app` as `Notarized Developer ID`;
-- <https://www.draftomen.com/news/X.Y.Z/> is live after the merge deploys;
-- local `master` is clean and synchronized.
+  `Draft Omen.app` as `Notarized Developer ID`.
+
+## Update the website
+
+Only after the release is verified, start from current `master`:
+
+```bash
+git switch master
+git pull --ff-only
+git switch -c website-X.Y.Z
+python3 scripts/write_release_news.py --version X.Y.Z
+```
+
+The helper creates `website/src/content/news/X.Y.Z.md` from the dated
+changelog section. Do not edit it by hand; fix `CHANGELOG.md` and run the
+helper again. Set `X.Y.Z` in `website/package.json` and in the two
+root-package `version` fields of `website/package-lock.json`. Then build the
+site and check that its download links and news page match the release:
+
+```bash
+npm ci --prefix website
+npm run build --prefix website
+node website/scripts/check-release-output.mjs vX.Y.Z
+```
+
+Stage only those three files, run `git diff --cached --check`, and commit with
+`Update website for X.Y.Z`. Open a ready PR with the `AGENTS.md` template,
+watch its checks, merge it, and delete its remote branch. After the merge
+deploys, confirm <https://www.draftomen.com/news/X.Y.Z/> is live and that the
+macOS download buttons on <https://www.draftomen.com/> point at the `vX.Y.Z`
+DMGs. Finish with local `master` clean and synchronized.
+
+## Hand-off
 
 The browser download check on a Mac that has never run Draft Omen, described in
 `docs/releasing.md`, needs a person. Remind the user to do it, and to
 submit the `.msixupload` to the Microsoft Store as described in
-`docs/microsoft-store.md`. Do not submit it yourself.
+`docs/microsoft-store.md`. Download that artifact with
+`gh run download <run-id> -n draftomen-windows-msixupload` and give the user
+its local path. Do not submit it yourself.
 
-Report the version, tag, workflow URL, and GitHub Release URL.
+Report the version, tag, workflow URL, GitHub Release URL, and both PR links.

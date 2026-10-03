@@ -48,3 +48,7 @@ Real `Player.log` and `UTC_Log` files, including the anonymised third-party samp
 ## Changelog Requirement
 
 Before committing, pushing, or opening or updating a pull request, ensure the changeset includes an appropriate `CHANGELOG.md` entry under `## [Unreleased]`. For a release, move those entries to `## [X.Y.Z] - YYYY-MM-DD`, then restore `## [Unreleased]`.
+
+## Website Updates After Releases
+
+Every merge to `master` deploys the website, and the macOS download links follow the version in `website/package.json`. Never change the website version, its lock file or the release news page in the release pull request. Open a separate website pull request only after the GitHub Release for that version is published with its macOS DMGs, so the site never links to a release that does not exist yet. The Windows link always points to the Microsoft Store and needs no change.

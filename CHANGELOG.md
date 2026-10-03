@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- A release no longer updates the website. The release workflow stops checking
+  `website/package.json` and the news page. The website version and news page
+  move to a separate pull request merged after the GitHub Release is
+  published, so the site's macOS download links never point at a release that
+  does not exist yet.
+
 ## [0.6.1] - 2026-10-03
 
 - `draftomen-tui replay` now scores a draft with the profile for its own

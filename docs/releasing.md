@@ -75,11 +75,12 @@ Unreleased entries unchanged into `## [X.Y.Z] - YYYY-MM-DD`, then restore an
 empty `## [Unreleased]` heading immediately above the dated section. Include
 that changelog promotion with the version change before merging and tagging.
 
-The website shows each release's notes on a News page. After the promotion, run
+The website shows each release's notes on a News page. After the GitHub
+Release is published, run
 `python3 scripts/write_release_news.py --version X.Y.Z`. The helper reuses the
 changelog extraction, reads the date from the dated heading, and writes
-`website/src/content/news/X.Y.Z.md`. Commit that file with the version change.
-The release workflow fails if the built website has no news page for the tag.
+`website/src/content/news/X.Y.Z.md`. Commit that file in the website pull
+request, not with the version change.
 
 ## Development releases
 
@@ -157,9 +158,9 @@ Development releases do not replace a stable release.
    ```
 
    `uv version` updates only `pyproject.toml` and `uv.lock`. Set the same
-   version in `pysidedeploy.macos.spec`, `pysidedeploy.windows.spec`, the
-   expected version in `tests/test_desktop_bundle.py`, and
-   `website/package.json` with its lock file.
+   version in `pysidedeploy.macos.spec`, `pysidedeploy.windows.spec`, and the
+   expected version in `tests/test_desktop_bundle.py`. Do not change anything
+   under `website/` yet.
 
 2. Merge the version and changelog promotion through the normal pull request
    workflow.
@@ -173,15 +174,38 @@ Development releases do not replace a stable release.
 The stable workflow checks out the tagged repository and runs
 `python3 scripts/extract_changelog.py --section <version> --output PATH`.
 Missing, duplicate, or empty sections fail the workflow instead of publishing
-empty or generated notes. It rejects tags that do not match the versions in
-`pyproject.toml` and `website/package.json`, builds the website, and runs the
-full CI gate. It builds the native bundles in parallel, and creates or updates
+empty or generated notes. It rejects tags that do not match the version in
+`pyproject.toml` and runs the full CI gate. It builds the native bundles in parallel, and creates or updates
 the public GitHub Release with the dated changelog body and the macOS DMGs
 once both finish. The GitHub Release has no Windows asset. The Windows job
 still has to pass, and it uploads the `draftomen-windows-msixupload` Actions
 artifact for the Microsoft Store.
 
-4. Submit the release's `.msixupload` to the Microsoft Store by hand, as
+4. Once the GitHub Release is published with both macOS DMGs, update the
+   website in a separate pull request. Every merge to `master` deploys the
+   site, and its macOS download links follow `website/package.json`, so this
+   PR must not merge before the release exists. On a new branch from
+   `master`:
+
+   ```bash
+   python3 scripts/write_release_news.py --version <version>
+   ```
+
+   Set `<version>` in `website/package.json` and the two root-package
+   `version` fields of `website/package-lock.json`, then check the built
+   site:
+
+   ```bash
+   npm ci --prefix website
+   npm run build --prefix website
+   node website/scripts/check-release-output.mjs v<version>
+   ```
+
+   Merge the PR and confirm `https://www.draftomen.com/news/<version>/` is
+   live. The Windows link always points to the Microsoft Store and does not
+   change.
+
+5. Submit the release's `.msixupload` to the Microsoft Store by hand, as
    described in
    [Publish an update](microsoft-store.md#publish-an-update). Store updates
    are not automated.
