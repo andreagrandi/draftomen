@@ -1638,12 +1638,31 @@ class LiveSession:
         if self.follower is None:
             return self.snapshot
 
-        self.process_lines(
-            lines=self.follower.scan_startup_files(
-                include_previous=include_previous,
-            ),
-            include_pre_draft_detection=include_pre_draft_detection,
-        )
+        try:
+            self.process_lines(
+                lines=self.follower.scan_startup_files(
+                    include_previous=include_previous,
+                ),
+                include_pre_draft_detection=include_pre_draft_detection,
+            )
+        except Exception as error:
+            # Old log lines only recover earlier drafts, so a failure here must
+            # not stop live polling or Moxgate.
+            logger.exception("Startup log scan failed")
+            with self._state_lock:
+                self._publish(
+                    snapshot=replace(
+                        self.snapshot,
+                        errors=self._with_error(
+                            error=SessionError(
+                                error_id="startup-scan",
+                                code="startup_scan_failed",
+                                message=f"Could not recover earlier drafts from the Arena log: {error}",
+                                recoverable=False,
+                            )
+                        ),
+                    )
+                )
         return self._refresh_log_setup_status()
 
     def process_events(

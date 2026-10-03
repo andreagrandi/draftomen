@@ -398,6 +398,255 @@ def test_conflicting_first_pack_starts_new_synthetic_draft_state(
     ]
 
 
+_REPEAT_EVENT = "QuickDraft_ABC_20260703"
+
+
+def _saved_draft(
+    *,
+    tmp_path: Path,
+    draft_id: str,
+    offered_grp_ids: tuple[int, ...],
+    updated_at: str,
+    completed: bool = True,
+    account_id: str = "ACCOUNT-A",
+) -> DraftState:
+    state = DraftState(
+        account_id=account_id,
+        draft_id=draft_id,
+        event_name=_REPEAT_EVENT,
+        set_code="ABC",
+        course_id=draft_id,
+        started_at=updated_at,
+        updated_at=updated_at,
+        completed_at=updated_at if completed else None,
+        completed=completed,
+        picks=(
+            DraftPick(
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=offered_grp_ids,
+                pool_before_pick=(),
+                selected_grp_ids=offered_grp_ids[:1],
+            ),
+        ),
+        pool_grp_ids=offered_grp_ids[:1],
+        account_screen_name=None,
+    )
+    save_draft_state(state=state, app_dir=tmp_path)
+    return state
+
+
+def _repeat_pack_offered(*, offered_grp_ids: tuple[int, ...]) -> PackOfferedEvent:
+    return PackOfferedEvent(
+        event_name=_REPEAT_EVENT,
+        set_code="ABC",
+        pack_number=0,
+        pick_number=0,
+        offered_grp_ids=offered_grp_ids,
+        pool_grp_ids=(),
+        account_id=None,
+    )
+
+
+def _state_files(*, tmp_path: Path) -> dict[str, bytes]:
+    return {
+        path.name: path.read_bytes()
+        for path in (tmp_path / "state" / "ACCOUNT-A").iterdir()
+    }
+
+
+def test_replayed_first_pack_of_older_completed_draft_resumes_that_draft(
+    tmp_path: Path,
+) -> None:
+    older = _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="older",
+        offered_grp_ids=(101, 102),
+        updated_at="2026-07-01T12:00:00+00:00",
+    )
+    newer = _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="newer",
+        offered_grp_ids=(201, 202),
+        updated_at="2026-07-02T12:00:00+00:00",
+    )
+    before = _state_files(tmp_path=tmp_path)
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name=None))
+
+    state = store.consume(event=_repeat_pack_offered(offered_grp_ids=(101, 102)))
+
+    assert state is not None
+    assert state.draft_id == older.draft_id
+    assert _state_files(tmp_path=tmp_path) == before
+    assert load_draft_state(
+        account_id="ACCOUNT-A",
+        draft_id=newer.draft_id,
+        app_dir=tmp_path,
+    ) == newer
+
+
+def test_replaying_two_saved_drafts_of_one_event_creates_no_new_state(
+    tmp_path: Path,
+) -> None:
+    _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="older",
+        offered_grp_ids=(101, 102),
+        updated_at="2026-07-01T12:00:00+00:00",
+    )
+    _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="newer",
+        offered_grp_ids=(201, 202),
+        updated_at="2026-07-02T12:00:00+00:00",
+    )
+    before = _state_files(tmp_path=tmp_path)
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name=None))
+
+    first = store.consume(event=_repeat_pack_offered(offered_grp_ids=(101, 102)))
+    second = store.consume(event=_repeat_pack_offered(offered_grp_ids=(201, 202)))
+
+    assert first is not None
+    assert second is not None
+    assert [first.draft_id, second.draft_id] == ["older", "newer"]
+    assert _state_files(tmp_path=tmp_path) == before
+
+
+def test_new_first_pack_with_several_completed_drafts_starts_new_state(
+    tmp_path: Path,
+) -> None:
+    _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="older",
+        offered_grp_ids=(101, 102),
+        updated_at="2026-07-01T12:00:00+00:00",
+    )
+    _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="newer",
+        offered_grp_ids=(201, 202),
+        updated_at="2026-07-02T12:00:00+00:00",
+    )
+    before = _state_files(tmp_path=tmp_path)
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name=None))
+
+    state = store.consume(event=_repeat_pack_offered(offered_grp_ids=(301, 302)))
+
+    assert state is not None
+    assert state.draft_id.startswith(f"{_REPEAT_EVENT}-")
+    after = _state_files(tmp_path=tmp_path)
+    assert set(after) - set(before) == {f"{state.draft_id.replace(':', '_')}.json"}
+    assert {name: after[name] for name in before} == before
+
+
+def test_pick_made_with_several_completed_drafts_resumes_latest_updated(
+    tmp_path: Path,
+) -> None:
+    _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="a-latest",
+        offered_grp_ids=(101, 102),
+        updated_at="2026-07-03T12:00:00+00:00",
+    )
+    _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="z-oldest",
+        offered_grp_ids=(201, 202),
+        updated_at="2026-07-01T12:00:00+00:00",
+    )
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name=None))
+
+    state = store.consume(
+        event=PickMadeEvent(
+            event_name=_REPEAT_EVENT,
+            set_code="ABC",
+            pack_number=0,
+            pick_number=0,
+            selected_grp_ids=(101,),
+            account_id=None,
+        )
+    )
+
+    assert state is not None
+    assert state.draft_id == "a-latest"
+
+
+def test_several_active_drafts_resume_latest_updated_without_error(
+    tmp_path: Path,
+) -> None:
+    _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="active-old",
+        offered_grp_ids=(101, 102),
+        updated_at="2026-07-01T12:00:00+00:00",
+        completed=False,
+    )
+    _saved_draft(
+        tmp_path=tmp_path,
+        draft_id="active-new",
+        offered_grp_ids=(201, 202),
+        updated_at="2026-07-02T12:00:00+00:00",
+        completed=False,
+    )
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name=None))
+
+    state = store.consume(event=_repeat_pack_offered(offered_grp_ids=(301, 302)))
+
+    assert state is not None
+    assert state.draft_id.startswith(f"{_REPEAT_EVENT}-")
+
+    other_store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    other_store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name=None))
+    resumed = other_store.consume(event=_repeat_pack_offered(offered_grp_ids=(101, 102)))
+
+    assert resumed is not None
+    assert resumed.draft_id == "active-old"
+
+
+def test_account_inference_with_several_drafts_of_one_account_succeeds(
+    tmp_path: Path,
+) -> None:
+    for draft_id, updated_at in (
+        ("first", "2026-07-01T12:00:00+00:00"),
+        ("second", "2026-07-02T12:00:00+00:00"),
+    ):
+        _saved_draft(
+            tmp_path=tmp_path,
+            draft_id=draft_id,
+            offered_grp_ids=(101, 102),
+            updated_at=updated_at,
+        )
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    state = store.consume(event=_repeat_pack_offered(offered_grp_ids=(101, 102)))
+
+    assert state is not None
+    assert state.account_id == "ACCOUNT-A"
+    assert state.draft_id == "second"
+
+
+def test_account_inference_across_accounts_reports_missing_account(
+    tmp_path: Path,
+) -> None:
+    for account_id in ("ACCOUNT-A", "ACCOUNT-B"):
+        _saved_draft(
+            tmp_path=tmp_path,
+            draft_id=f"draft-{account_id}",
+            offered_grp_ids=(101, 102),
+            updated_at="2026-07-01T12:00:00+00:00",
+            account_id=account_id,
+        )
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    with pytest.raises(DraftPoolError, match="missing an MTGA account id"):
+        store.consume(event=_repeat_pack_offered(offered_grp_ids=(101, 102)))
+
+
 def test_two_card_pick_adds_both_cards_to_pool_at_one_coordinate(
     tmp_path: Path,
 ) -> None:

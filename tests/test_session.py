@@ -61,6 +61,7 @@ from draftomen.pickengine import (
 )
 from draftomen.pool import (
     DraftPick,
+    DraftPoolError,
     DraftPoolStore,
     DraftState,
     draft_state_path,
@@ -4532,6 +4533,35 @@ def test_live_session_startup_scan_processes_previous_then_current_once(
         app_dir=app_dir,
     )
     assert len(audit_records) == 44
+
+
+def test_live_session_startup_scan_failure_reports_an_error_and_keeps_polling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    _write_lines(
+        path=log_path,
+        lines=[_auth_line(account_id="account-1", screen_name="Player")],
+    )
+    session = LiveSession(log_path=log_path, app_dir=tmp_path / "app")
+
+    def fail_processing(**kwargs: object) -> None:
+        del kwargs
+        raise DraftPoolError("Multiple completed drafts match 'Event'.")
+
+    monkeypatch.setattr(session, "process_lines", fail_processing)
+
+    snapshot = session.scan_startup_files()
+    monkeypatch.undo()
+    polled = session.poll_once()
+
+    assert [error.code for error in snapshot.errors] == ["startup_scan_failed"]
+    assert snapshot.errors[0].recoverable is False
+    assert "Multiple completed drafts match" in snapshot.errors[0].message
+    assert "Startup log scan failed" in caplog.text
+    assert [error.code for error in polled.errors] == ["startup_scan_failed"]
 
 
 def test_live_session_startup_scan_refreshes_setup_for_account_only_previous_log(

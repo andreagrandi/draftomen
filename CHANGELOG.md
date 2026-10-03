@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Draft Omen no longer fails to start the live session when you have
+  completed the same event more than once. It now matches a replayed pack to
+  the saved draft that recorded it, or else to the most recently updated
+  one. If re-reading the Arena log at startup still fails, the app shows the
+  error and keeps following Arena and Moxgate drafts. (#909)
+
 ## [0.6.2] - 2026-10-03
 
 - The Intel macOS app no longer hangs at startup with the Dock icon bouncing
