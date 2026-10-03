@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-03
+
 - The Intel macOS app no longer hangs at startup with the Dock icon bouncing
   on macOS 26. On Intel Macs Draft Omen now verifies HTTPS with its bundled
   certificate file instead of the system trust store. (#905)
