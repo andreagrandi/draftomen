@@ -105,6 +105,7 @@ def _run_replay_regressions(*, session: nox.Session) -> None:
                 str(BULK_FILE_PATH),
                 "--app-dir",
                 app_dir,
+                "--offline-profiles",
                 external=True,
                 silent=True,
             )
