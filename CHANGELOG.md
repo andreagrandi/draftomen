@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- The Intel macOS app no longer hangs at startup with the Dock icon bouncing
+  on macOS 26. On Intel Macs Draft Omen now verifies HTTPS with its bundled
+  certificate file instead of the system trust store. (#905)
 - A release no longer updates the website. The release workflow stops checking
   `website/package.json` and the news page. The website version and news page
   move to a separate pull request merged after the GitHub Release is

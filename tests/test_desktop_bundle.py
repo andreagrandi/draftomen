@@ -229,12 +229,30 @@ def test_bundle_smoke_https_check_runs_with_unreachable_ca_paths(
     assert environment["SSL_CERT_DIR"] != ""
 
     https_stdout[0] = "HTTPS check passed: status 200, 5 bytes, ssl.SSLContext\n"
-    with pytest.raises(RuntimeError, match="without truststore"):
+    with pytest.raises(RuntimeError, match="not with truststore"):
         bundle_smoke.main([str(bundle_path), "--https-check", url])
 
     https_exit_code[0] = 1
     with pytest.raises(RuntimeError, match="certificate verify failed"):
         bundle_smoke.main([str(bundle_path), "--https-check", url])
+
+    https_exit_code[0] = 0
+    https_stdout[0] = "HTTPS check passed: status 200, 5 bytes, ssl.SSLContext\n"
+    certifi_arguments = [str(bundle_path), "--https-check", url, "--https-context", "certifi"]
+    assert bundle_smoke.main(certifi_arguments) == 0
+
+    https_stdout[0] = "HTTPS check passed: status 200, 5 bytes, truststore._api.SSLContext\n"
+    with pytest.raises(RuntimeError, match="not without truststore"):
+        bundle_smoke.main(certifi_arguments)
+
+    https_stdout[0] = "status 200\n"
+    with pytest.raises(RuntimeError, match="not without truststore"):
+        bundle_smoke.main(certifi_arguments)
+
+    https_exit_code[0] = 1
+    https_stdout[0] = "HTTPS check passed: status 200, 5 bytes, ssl.SSLContext\n"
+    with pytest.raises(RuntimeError, match="certificate verify failed"):
+        bundle_smoke.main(certifi_arguments)
 
 
 def test_bundle_smoke_main_runs_mock_then_default_live_launch(

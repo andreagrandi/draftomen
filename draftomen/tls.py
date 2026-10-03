@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
+import sys
 
 import certifi
 
@@ -19,6 +21,11 @@ def use_system_trust_store() -> None:
     Fall back to the bundled certifi CA file when the system store cannot be used.
     """
 
+    # truststore imports ctypes, whose libffi closure allocation hangs under the
+    # hardened runtime on Intel macOS 26 instead of raising, so skip it there.
+    if _is_intel_macos():
+        _use_certifi()
+        return
     try:
         import truststore
 
@@ -29,11 +36,23 @@ def use_system_trust_store() -> None:
             type(error).__name__,
             error,
         )
-        # OpenSSL reads SSL_CERT_FILE when a default context loads its verify paths.
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-        logger.info(
-            "HTTPS verification uses the bundled certifi file %s",
-            redact_home(certifi.where()),
-        )
+        _use_certifi()
         return
     logger.info("HTTPS verification uses the system trust store.")
+
+
+def _is_intel_macos() -> bool:
+    """Return True when this process runs as x86_64 on macOS."""
+
+    return sys.platform == "darwin" and platform.machine() == "x86_64"
+
+
+def _use_certifi() -> None:
+    """Point OpenSSL at the bundled certifi CA file and log the choice."""
+
+    # OpenSSL reads SSL_CERT_FILE when a default context loads its verify paths.
+    os.environ["SSL_CERT_FILE"] = certifi.where()
+    logger.info(
+        "HTTPS verification uses the bundled certifi file %s",
+        redact_home(certifi.where()),
+    )

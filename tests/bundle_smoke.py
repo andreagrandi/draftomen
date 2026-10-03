@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Also download this URL from the bundle with the Homebrew CA paths unreachable.",
     )
+    parser.add_argument(
+        "--https-context",
+        choices=("truststore", "certifi"),
+        default="truststore",
+        help="SSL context the --https-check run must report: the system trust store or certifi.",
+    )
     return parser
 
 
@@ -147,6 +153,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 executable=executable,
                 directory=directory,
                 url=args.https_check,
+                https_context=args.https_context,
                 timeout=timeout,
                 environment=environment,
             )
@@ -257,6 +264,7 @@ def _run_https_check(
     executable: Path,
     directory: Path,
     url: str,
+    https_context: str,
     timeout: int,
     environment: Mapping[str, str],
 ) -> None:
@@ -292,10 +300,21 @@ def _run_https_check(
         env=https_environment,
         timeout=timeout,
     )
-    # The certifi fallback would also pass, so require the truststore context class.
-    if result.returncode != 0 or "truststore" not in result.stdout:
+    # The certifi fallback would also pass, so check which context the bundle reports.
+    reports_truststore = "truststore" in result.stdout
+    if https_context == "truststore":
+        passed = result.returncode == 0 and reports_truststore
+        expectation = "with truststore"
+    else:
+        passed = (
+            result.returncode == 0
+            and "HTTPS check passed" in result.stdout
+            and not reports_truststore
+        )
+        expectation = "without truststore"
+    if not passed:
         raise RuntimeError(
-            f"HTTPS check exited with code {result.returncode} or without truststore; "
+            f"HTTPS check exited with code {result.returncode} or not {expectation}; "
             f"last stdout lines: {result.stdout.splitlines()[-10:]}; "
             f"last stderr lines: {result.stderr.splitlines()[-10:]}"
         )

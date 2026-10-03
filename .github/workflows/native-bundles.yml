@@ -53,6 +53,7 @@ jobs:
             artifact: Draftomen-unsigned-macos-arm64.dmg
             artifact_name: draftomen-macos-arm64-unsigned-development
             smoke_timeout: 60
+            https_context: truststore
           # Nuitka builds for the host architecture, so the Intel bundle needs
           # an Intel runner. Intel support lasts as long as GitHub offers one.
           - os: macos-15-intel
@@ -63,6 +64,7 @@ jobs:
             artifact: Draftomen-unsigned-macos-x86_64.dmg
             artifact_name: draftomen-macos-x86_64-unsigned-development
             smoke_timeout: 60
+            https_context: certifi
           - os: windows-latest
             platform: windows
             arch: x86_64
@@ -349,6 +351,7 @@ jobs:
           uv run python tests/bundle_smoke.py \
             --timeout "${{ matrix.smoke_timeout }}" \
             --https-check https://www.draftomen.com/sets/manifest.json \
+            --https-context "${{ matrix.https_context }}" \
             "$mountpoint/$BUNDLE"
           detach_image
           trap - EXIT
