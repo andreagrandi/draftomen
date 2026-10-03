@@ -14,6 +14,11 @@ contact any other server and does not read pages outside `www.moxgate.com`.
 
 ## Start Draft Omen
 
+In the desktop app, open Draft Omen and choose Moxgate in the draft source
+selector next to Settings.
+
+In the TUI, run:
+
 ```
 draftomen-tui watch --source moxgate
 ```
@@ -29,7 +34,8 @@ has this port fixed, so `--moxgate-port` only works if you also edit
 Click the extension icon to see:
 
 - "Draft Omen is running" with a green dot when the receiver answers, or
-  "Draft Omen is not running" with a red dot and the start command when it does not answer within 2 seconds.
+  "Draft Omen is not running" with a red dot when it does not answer within 2 seconds. The popup then shows how to
+  start Draft Omen from the desktop app and from the TUI.
 - The last snapshot. "Accepted" shows the pick number and the time. "Rejected"
   shows the error Draft Omen returned. "Not answered" means the post found no
   receiver. "Pick N of M is waiting for Draft Omen" means the last post found
