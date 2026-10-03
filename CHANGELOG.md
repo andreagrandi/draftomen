@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- The log format doc now says Arena logs a `Draft.Notify` line once or twice.
+  A real Pick-Two log had one line per pack, where the doc said two.
 - When Draft Omen is not running, the Moxgate popup now shows how to start it
   from the desktop app, by choosing Moxgate in the draft source selector, as
   well as the `draftomen-tui watch --source moxgate` command. (#887)
