@@ -47,8 +47,10 @@ async function main() {
 
   if (await checkReceiver()) {
     status.textContent = "Draft Omen is running.";
+    status.dataset.state = "running";
   } else {
     status.textContent = "Draft Omen is not running.";
+    status.dataset.state = "stopped";
     command.hidden = false;
   }
 }

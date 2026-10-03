@@ -2,19 +2,79 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
+    <meta name="color-scheme" content="light dark">
     <title>Draft Omen for Moxgate</title>
     <style>
-      body { font: 13px system-ui, sans-serif; margin: 12px; width: 300px; }
-      h1 { font-size: 14px; margin: 0 0 8px; }
-      p { margin: 4px 0; }
-      code { background: #eee; padding: 1px 4px; }
+      :root {
+        --bg: #ffffff;
+        --fg: #1d1d1f;
+        --muted: #6e6e73;
+        --border: #e2e2e7;
+        --code-bg: #f2f2f5;
+        --running: #2e9d4f;
+        --stopped: #d64541;
+        --checking: #a1a1a6;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1e1e20;
+          --fg: #f2f2f5;
+          --muted: #a1a1a6;
+          --border: #38383c;
+          --code-bg: #2c2c30;
+          --running: #4cc46f;
+          --stopped: #ff6b63;
+          --checking: #6e6e73;
+        }
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font: 13px system-ui, sans-serif;
+        margin: 0;
+        width: 300px;
+      }
+      header {
+        align-items: center;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 10px;
+        padding: 12px;
+      }
+      header img { border-radius: 6px; height: 32px; width: 32px; }
+      h1 { font-size: 14px; margin: 0; }
+      main { padding: 10px 12px 12px; }
+      p { margin: 6px 0; }
+      #status { align-items: center; display: flex; font-weight: 600; gap: 8px; }
+      #status::before {
+        background: var(--checking);
+        border-radius: 50%;
+        content: "";
+        flex: none;
+        height: 9px;
+        width: 9px;
+      }
+      #status[data-state="running"]::before { background: var(--running); }
+      #status[data-state="stopped"]::before { background: var(--stopped); }
+      #command, #last-post { color: var(--muted); }
+      code {
+        background: var(--code-bg);
+        border-radius: 4px;
+        color: var(--fg);
+        padding: 1px 4px;
+      }
     </style>
   </head>
   <body>
-    <h1>Draft Omen for Moxgate</h1>
-    <p id="status">Checking Draft Omen...</p>
-    <p id="command" hidden>Start it with <code>draftomen-tui watch --source moxgate</code></p>
-    <p id="last-post"></p>
+    <header>
+      <img src="icons/icon-32.png" alt="">
+      <h1>Draft Omen for Moxgate</h1>
+    </header>
+    <main>
+      <p id="status" data-state="checking">Checking Draft Omen...</p>
+      <p id="command" hidden>Start it with <code>draftomen-tui watch --source moxgate</code></p>
+      <p id="last-post"></p>
+    </main>
     <script src="popup.js"></script>
   </body>
 </html>

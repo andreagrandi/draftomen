@@ -28,8 +28,8 @@ has this port fixed, so `--moxgate-port` only works if you also edit
 
 Click the extension icon to see:
 
-- "Draft Omen is running" when the receiver answers, or "Draft Omen is not
-  running" with the start command when it does not answer within 2 seconds.
+- "Draft Omen is running" with a green dot when the receiver answers, or
+  "Draft Omen is not running" with a red dot and the start command when it does not answer within 2 seconds.
 - The last snapshot. "Accepted" shows the pick number and the time. "Rejected"
   shows the error Draft Omen returned. "Not answered" means the post found no
   receiver. "Pick N of M is waiting for Draft Omen" means the last post found
