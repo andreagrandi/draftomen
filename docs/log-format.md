@@ -128,7 +128,7 @@ A `[UnityCrossThreadLogger]Draft.Notify` line carries a JSON object with:
 - `SelfPack` and `SelfPick`: the pack and logical pick, both 1-based on the wire. Draft Omen stores them 0-based, so `SelfPack: 1, SelfPick: 1` is pack 0, pick 0.
 - `PackCards`: the offered card `grpId` values.
 
-The notify has no event name, so the pack belongs to the last draft event the parser detected. Arena logs each notify twice, and the repeat is dropped. A notify whose coordinates fall outside the format's pack rules is ignored.
+The notify has no event name, so the pack belongs to the last draft event the parser detected. Arena logs a notify once or twice, and a repeat is dropped. A notify whose coordinates fall outside the format's pack rules is ignored.
 
 ### Pick submitted
 
