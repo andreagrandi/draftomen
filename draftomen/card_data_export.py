@@ -27,9 +27,12 @@ from draftomen.carddb import (
 
 from draftomen.set_card_data import SetCardData, SetCardDataError
 from draftomen.seventeen import (
+    SeventeenLandsBasicLand,
     SeventeenLandsError,
     SeventeenLandsExpansionInventory,
+    fetch_17lands_cards_csv,
     fetch_17lands_expansion_inventory,
+    parse_17lands_basic_lands,
     parse_17lands_expansion_inventory,
 )
 
@@ -134,6 +137,7 @@ def prepare_set_data_export(
     output_dir: PathInput = _CARD_DATA_OUTPUT_DIR,
     inventory_file: PathInput | None = None,
     bulk_file: PathInput | None = None,
+    cards_file: PathInput | None = None,
     timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
 ) -> SetDataExportPlan:
     """Discover eligible sets and build all pending canonical candidates.
@@ -156,6 +160,10 @@ def prepare_set_data_export(
             )
         )
         _validate_source_cards(cards=source_cards)
+        basic_lands = _load_basic_lands(
+            cards_file=cards_file,
+            timeout_seconds=timeout_seconds,
+        )
         identities = _eligible_identities(
             inventory_codes=inventory_codes,
             source_cards=source_cards,
@@ -185,11 +193,16 @@ def prepare_set_data_export(
             set_code=identity.set_code,
         )
         try:
-            set_source_cards = tuple(
+            scryfall_set_cards = tuple(
                 card
                 for card in source_cards
                 if isinstance(card.get("set"), str)
                 and card["set"].casefold() == identity.set_code
+            )
+            set_source_cards = scryfall_set_cards + _missing_basic_land_cards(
+                identity=identity,
+                scryfall_set_cards=scryfall_set_cards,
+                basic_lands=basic_lands,
             )
             # Validate every selected-set row before resolving legitimate
             # duplicate Arena identities from rebalances and print treatments.
@@ -336,6 +349,7 @@ def resolve_set_card_data(
     output_dir: PathInput = _CARD_DATA_OUTPUT_DIR,
     inventory_file: PathInput | None = None,
     bulk_file: PathInput | None = None,
+    cards_file: PathInput | None = None,
     timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
 ) -> Path:
     """Return an existing canonical set artifact or generate and publish it."""
@@ -372,6 +386,7 @@ def resolve_set_card_data(
         output_dir=output_dir,
         inventory_file=inventory_file,
         bulk_file=bulk_file,
+        cards_file=cards_file,
         timeout_seconds=timeout_seconds,
     )
     return publish_set_data_export(candidate=plan.pending[0])
@@ -415,6 +430,69 @@ def _load_inventory_codes(
         code.casefold()
         for code in inventory.expansion_codes
         if isinstance(code, str) and _SET_CODE_RE.fullmatch(code.casefold())
+    )
+
+
+def _load_basic_lands(
+    *,
+    cards_file: PathInput | None,
+    timeout_seconds: int,
+) -> tuple[SeventeenLandsBasicLand, ...]:
+    try:
+        if cards_file is None:
+            text = fetch_17lands_cards_csv(timeout_seconds=timeout_seconds)
+        else:
+            text = Path(cards_file).read_text(encoding="utf-8")
+        return parse_17lands_basic_lands(text)
+    except (OSError, TypeError, ValueError, UnicodeError, SeventeenLandsError) as error:
+        raise SetDataExportError(
+            f"Could not load 17Lands cards.csv: {error}"
+        ) from error
+
+
+def _missing_basic_land_cards(
+    *,
+    identity: SetDataIdentity,
+    scryfall_set_cards: Iterable[Mapping[str, Any]],
+    basic_lands: Iterable[SeventeenLandsBasicLand],
+) -> tuple[dict[str, Any], ...]:
+    """Build Scryfall-shaped rows for basic lands Scryfall lists without Arena ids.
+    Rows are sorted by Arena id so the artifact stays deterministic.
+    """
+
+    known_ids = {
+        card["arena_id"]
+        for card in scryfall_set_cards
+        if isinstance(card.get("arena_id"), int)
+    }
+    missing = sorted(
+        {
+            land.arena_id: land
+            for land in basic_lands
+            if land.expansion.casefold() == identity.set_code
+            and land.arena_id not in known_ids
+        }.values(),
+        key=lambda land: land.arena_id,
+    )
+    return tuple(
+        {
+            "arena_id": land.arena_id,
+            "name": land.name,
+            "set": identity.set_code,
+            "set_name": identity.set_name,
+            "cmc": 0,
+            "rarity": "common",
+            "type_line": (
+                land.types.replace(" - ", " \u2014 ")
+                if land.types
+                else f"Basic Land \u2014 {land.name}"
+            ),
+            "colors": [],
+            "color_identity": list(land.color_identity),
+            "produced_mana": list(land.color_identity),
+            "layout": "normal",
+        }
+        for land in missing
     )
 
 

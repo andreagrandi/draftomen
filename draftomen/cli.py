@@ -291,6 +291,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local Scryfall default-cards JSONL(.gz) file instead of downloading.",
     )
     export_parser.add_argument(
+        "--cards-file",
+        type=Path,
+        metavar="PATH",
+        default=None,
+        help="Local 17Lands cards.csv file instead of downloading.",
+    )
+    export_parser.add_argument(
         "--output-dir",
         type=Path,
         metavar="PATH",
@@ -1322,6 +1329,7 @@ def handle_export_set_data(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
             inventory_file=args.inventory_file,
             bulk_file=args.bulk_file,
+            cards_file=args.cards_file,
             timeout_seconds=args.timeout,
         )
         if args.set is not None:

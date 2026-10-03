@@ -4,7 +4,9 @@ Keep network access isolated so CI can exercise recorded responses only.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import math
 import shutil
@@ -47,6 +49,7 @@ SEVENTEEN_LANDS_BASE_URL = "https://www.17lands.com"
 SEVENTEEN_LANDS_EXPANSIONS_ENDPOINT = f"{SEVENTEEN_LANDS_BASE_URL}/data/expansions"
 CARD_RATINGS_ENDPOINT = "https://api.17lands.com/api/card_data"
 COLOR_RATINGS_ENDPOINT = f"{SEVENTEEN_LANDS_BASE_URL}/color_ratings/data"
+CARDS_CSV_URL = "https://17lands-public.s3.amazonaws.com/analysis_data/cards/cards.csv"
 PUBLIC_DRAFT_DATA_URL_TEMPLATE = (
     "https://17lands-public.s3.amazonaws.com/analysis_data/draft_data/"
     "draft_data_public.{set_code}.{event_format}.csv.gz"
@@ -248,6 +251,75 @@ def fetch_17lands_expansion_inventory(
     json_fetcher = _default_fetch_json if fetch_json is None else fetch_json
     payload = json_fetcher(SEVENTEEN_LANDS_EXPANSIONS_ENDPOINT, timeout_seconds)
     return parse_17lands_expansion_inventory(payload)
+
+
+@dataclass(frozen=True, slots=True)
+class SeventeenLandsBasicLand:
+    """One basic land row from the public 17Lands cards.csv file."""
+
+    arena_id: int
+    expansion: str
+    name: str
+    color_identity: tuple[str, ...]
+    types: str = ""
+
+
+_CARDS_CSV_REQUIRED_COLUMNS = ("id", "expansion", "name", "rarity", "color_identity")
+
+
+def fetch_17lands_cards_csv(*, timeout_seconds: int = HTTP_TIMEOUT_SECONDS) -> str:
+    """Download the public 17Lands cards.csv file as text.
+    Network failures raise SeventeenLandsError.
+    """
+
+    request = urllib.request.Request(
+        CARDS_CSV_URL,
+        headers={"Accept": "text/csv,*/*;q=0.8", "User-Agent": SEVENTEEN_LANDS_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return response.read().decode("utf-8")
+    except (urllib.error.URLError, TimeoutError, UnicodeError) as error:
+        raise SeventeenLandsError(f"Failed to download 17Lands cards.csv: {error}") from error
+
+
+def parse_17lands_basic_lands(text: str) -> tuple[SeventeenLandsBasicLand, ...]:
+    """Parse cards.csv and return only its basic land rows.
+    Missing columns or invalid basic land ids raise SeventeenLandsError.
+    """
+
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    fieldnames = reader.fieldnames or []
+    missing = [name for name in _CARDS_CSV_REQUIRED_COLUMNS if name not in fieldnames]
+    if missing:
+        raise SeventeenLandsError(
+            f"17Lands cards.csv is missing columns: {', '.join(missing)}."
+        )
+    lands: list[SeventeenLandsBasicLand] = []
+    for row in reader:
+        if (row.get("rarity") or "").strip().casefold() != "basic":
+            continue
+        raw_id = (row.get("id") or "").strip()
+        try:
+            arena_id = int(raw_id)
+        except ValueError:
+            arena_id = 0
+        name = (row.get("name") or "").strip()
+        if arena_id <= 0 or not name:
+            raise SeventeenLandsError(
+                f"17Lands cards.csv has an invalid basic land row at line "
+                f"{reader.line_num}: id={raw_id!r} name={name!r}."
+            )
+        lands.append(
+            SeventeenLandsBasicLand(
+                arena_id=arena_id,
+                expansion=(row.get("expansion") or "").strip(),
+                name=name,
+                color_identity=tuple((row.get("color_identity") or "").strip().upper()),
+                types=(row.get("types") or "").strip(),
+            )
+        )
+    return tuple(lands)
 
 
 @dataclass(frozen=True, slots=True)

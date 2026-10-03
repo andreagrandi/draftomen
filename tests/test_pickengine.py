@@ -9,7 +9,12 @@ from datetime import UTC, datetime
 import pytest
 
 from draftomen.augmented_artifact import pool_feature_counts
-from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.card_data_export import SetDataIdentity, _missing_basic_land_cards
+from draftomen.carddb import (
+    CardDatabase,
+    CardInfo,
+    build_card_database_from_scryfall_cards,
+)
 from draftomen.config import COLOR_PAIRS, PickEngineConfig
 from draftomen.events import (
     PackOfferedEvent,
@@ -43,6 +48,7 @@ from draftomen.pool_ledger import (
 from draftomen.profile_generation import generate_set_profile
 from draftomen.ranking import RANKING_MODES, rank_scored_cards
 from draftomen.replay import format_pack_offered_event
+from draftomen.set_card_data import SetCardData
 from draftomen.set_profile import (
     AggregateEvidence,
     CardPairSynergy,
@@ -66,6 +72,7 @@ from draftomen.seventeen import (
     ColorPairWinRate,
     RatingSampleCounts,
     SeventeenCardStats,
+    SeventeenLandsBasicLand,
     SeventeenLandsData,
     SeventeenLandsFormatData,
 )
@@ -1604,6 +1611,42 @@ def test_freely_available_basic_land_scores_zero_and_ranks_last() -> None:
         "Arena Plains is freely available during deck building, so it receives "
         "0 DO points and ranks after draftable cards."
     )
+
+
+def test_exported_unrated_basic_land_is_basic_zero_and_never_recommended() -> None:
+    identity = SetDataIdentity(set_code="tst", set_name="Test Set")
+    rows = _missing_basic_land_cards(
+        identity=identity,
+        scryfall_set_cards=(),
+        basic_lands=(
+            SeventeenLandsBasicLand(
+                arena_id=500,
+                expansion="TST",
+                name="Forest",
+                color_identity=("G",),
+            ),
+        ),
+    )
+    basic_database = SetCardData.from_card_database(
+        build_card_database_from_scryfall_cards(cards=rows),
+        set_code=identity.set_code,
+        set_name=identity.set_name,
+    ).to_card_database()
+    forest = basic_database.cards[500]
+    assert forest.type_line == "Basic Land — Forest"
+    database = CardDatabase(cards={**_card_database().cards, 500: forest})
+
+    scored_pack = PickEngine(ratings_data=_ratings_data()).score_pack(
+        offered_grp_ids=(500, 3, 10),
+        card_database=database,
+    )
+
+    scored_forest = next(card for card in scored_pack.cards if card.card.grp_id == 500)
+    assert scored_forest.source_label == "Basic"
+    assert scored_forest.score == 0
+    assert scored_forest.freely_available_basic is True
+    assert scored_pack.cards[-1] is scored_forest
+    assert scored_pack.cards[0] is not scored_forest
 
 
 def test_special_and_nonbasic_lands_retain_normal_scoring() -> None:

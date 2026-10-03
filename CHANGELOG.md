@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Card data export now adds the basic lands that 17Lands `cards.csv` lists
+  and Scryfall has no Arena id for. The new `export-set-data --cards-file`
+  option reads a local copy instead of downloading it. The hosted Reality
+  Fracture card data now has its 25 basic lands, so they read `Basic` and
+  score 0 instead of showing as "Unknown card" with a neutral score. (#895)
 - Pick-Two and Traditional profiles now use PremierDraft ratings and pair
   rates for cards and color pairs that have no usable data in their own
   format, as Quick Draft profiles already did. Such cards no longer get the
