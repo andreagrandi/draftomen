@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-03
+
 - Draft Omen no longer fails to start the live session when you have
   completed the same event more than once. It now matches a replayed pack to
   the saved draft that recorded it, or else to the most recently updated
