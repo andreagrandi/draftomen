@@ -1425,6 +1425,30 @@ def test_fallback_candidates_round_trip_with_order_and_portable_objects(
     assert all(candidate.ratings is not None for candidate in loaded.fallback_candidates)
 
 
+@pytest.mark.parametrize("event_format", ["picktwodraft", "traddraft"])
+def test_pick_two_and_trad_accept_only_premier_fallback_reports(
+    event_format: str,
+) -> None:
+    environment = replace(_environment(), event_format=event_format)
+    premier = _candidate(environment, "PremierDraft").source
+    trad = _candidate(environment, "TradDraft").source
+
+    execution._validate_fallback_reports(environment, (premier,))
+    with pytest.raises(execution.ProfileRefreshExecutionError, match="identity"):
+        execution._validate_fallback_reports(environment, (trad,))
+    with pytest.raises(execution.ProfileRefreshExecutionError, match="identity"):
+        execution._validate_fallback_reports(environment, (premier, trad))
+
+
+def test_premier_environment_rejects_fallback_reports() -> None:
+    environment = replace(_environment(), event_format="premierdraft")
+    premier = _candidate(environment, "PremierDraft").source
+
+    execution._validate_fallback_reports(environment, ())
+    with pytest.raises(execution.ProfileRefreshExecutionError, match="not supported"):
+        execution._validate_fallback_reports(environment, (premier,))
+
+
 def test_unavailable_fallback_has_null_input_and_empty_array_is_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

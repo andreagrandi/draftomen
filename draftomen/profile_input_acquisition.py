@@ -16,6 +16,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
+from draftomen.draft_format import aggregate_fallback_formats
 from draftomen.carddb import (
     HTTP_TIMEOUT_SECONDS,
     CardDatabase,
@@ -901,14 +902,16 @@ def acquire_profile_build_bundle(
     if ratings_result.skip_reason is not None:
         skip_reasons.append(ratings_result.skip_reason)
 
-    if environment.event_format.casefold() == "quickdraft":
+    fallback_formats = aggregate_fallback_formats(event_format=environment.event_format)
+    if fallback_formats:
         needs_fallback = aggregate_evidence_needs_fallback(
             set_code=environment.set_code,
             event_format=environment.event_format,
             card_database=metadata_result.bundle.card_database,
             ratings=ratings_result.ratings,
         )
-        for actual_format in ("PremierDraft", "TradDraft"):
+        for fallback_format in fallback_formats:
+            actual_format = _RATINGS_EVENT_FORMAT_NAMES[fallback_format]
             if not needs_fallback:
                 break
             candidate_environment = replace(environment, event_format=actual_format)
@@ -1322,6 +1325,11 @@ def _load_cached_database(
     return database, result.diagnostics
 
 
+_RATINGS_EVENT_FORMAT_NAMES = {
+    "premierdraft": "PremierDraft",
+    "traddraft": "TradDraft",
+}
+
 _RATINGS_USABLE_OUTCOMES = frozenset(
     {
         ProfileInputAcquisitionOutcome.ACQUIRED,
@@ -1339,9 +1347,10 @@ def _validate_aggregate_candidates(
 ) -> None:
     if not isinstance(candidates, tuple):
         raise ProfileInputAcquisitionError("Aggregate candidates must be a tuple.")
-    if environment.event_format.casefold() != "quickdraft" and candidates:
+    allowed_formats = aggregate_fallback_formats(event_format=environment.event_format)
+    if not allowed_formats and candidates:
         raise ProfileInputAcquisitionError(
-            "Aggregate candidates are supported only for QuickDraft bundles."
+            "Aggregate candidates are not supported for this bundle format."
         )
     formats: list[str] = []
     for candidate in candidates:
@@ -1353,9 +1362,9 @@ def _validate_aggregate_candidates(
             raise ProfileInputAcquisitionError("Aggregate candidate source name is invalid.")
         if source.set_code != environment.set_code:
             raise ProfileInputAcquisitionError("Aggregate candidate source set does not match.")
-        if source.event_format not in {"premierdraft", "traddraft"}:
+        if source.event_format not in allowed_formats:
             raise ProfileInputAcquisitionError(
-                "Aggregate candidate source format must be PremierDraft or TradDraft."
+                "Aggregate candidate source format is not allowed for this bundle format."
             )
         formats.append(source.event_format)
         if candidate.ratings is None:

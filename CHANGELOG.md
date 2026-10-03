@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Pick-Two and Traditional profiles now use PremierDraft ratings and pair
+  rates for cards and color pairs that have no usable data in their own
+  format, as Quick Draft profiles already did. Such cards no longer get the
+  neutral prior and now read `Premier*`. Older Draft Omen versions reject
+  these profiles and keep their cached Pick-Two or Traditional profile until
+  updated. (#896)
 - A draft played before Arena logs an account id, as happens after a saved-token
   login, is now saved under the first account id that the same login reports.
   Recovery, the audit log, backtest and `draftomen-tui replay` now see that

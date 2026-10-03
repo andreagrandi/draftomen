@@ -1625,10 +1625,13 @@ Empirical sections are sparse and optional:
 
 `generate_set_profile(..., ratings=..., fallback_ratings=...)` keeps `ratings`
 as the exact requested-format dataset. `fallback_ratings` accepts only
-already-loaded same-set PremierDraft and TradDraft candidates. QuickDraft
-selects supported observations independently for each canonical card and color
-pair in exact, PremierDraft, then TradDraft order. Other requested formats
-remain exact-only. This API does not acquire or stage fallback data.
+already-loaded same-set candidates from the allowed fallback formats and
+rejects any other format. QuickDraft allows PremierDraft then TradDraft.
+TradDraft and PickTwoDraft allow PremierDraft only. PremierDraft is exact-only.
+Each of these formats selects supported observations independently for each
+canonical card and color pair in exact, then fallback order. Schema validation
+accepts cross-format aggregate authority only from an allowed fallback format
+with a `fallback_reason`. This API does not acquire or stage fallback data.
 
 `PairProfile.theme` remains serializable as an optional, trimmed descriptive
 label. It does not make a color pair eligible or affect scoring.

@@ -34,7 +34,7 @@ Each draft format asks for its own 17Lands ratings first. The live session loads
 | Traditional | `TradDraft`, then `PremierDraft` | `Trad` | `Premier*` |
 | Pick-Two | `PickTwoDraft`, then `PremierDraft` | `Pick-Two` | `Premier*` |
 
-Within the loaded data, a card whose own-format GIH sample is missing or below `thin_sample_minimum = 500` uses its `PremierDraft` rating. A card with neither uses the neutral prior and reads `Prior*`. Any rating from a format other than the draft's own is a fallback: its label gains `*`, and the contextual evidence status reports it. A profile card with no samples keeps the plain `Profile` label, and freely available basic lands read `Basic`.
+Within the loaded data, a card whose own-format GIH sample is missing or below `thin_sample_minimum = 500` uses its `PremierDraft` rating. Hosted Traditional and Pick-Two profiles apply the same per-card and per-color-pair `PremierDraft` fallback, so a card with no usable own-format data carries its Premier rating and reads `Premier*`. A card with neither uses the neutral prior and reads `Prior*`. Any rating from a format other than the draft's own is a fallback: its label gains `*`, and the contextual evidence status reports it. A profile card with no samples keeps the plain `Profile` label, and freely available basic lands read `Basic`.
 
 An augmented model is used only when it was trained on the draft's own format or on `PremierDraft`. Otherwise Augmented Intelligence reports it as unavailable for that format.
 

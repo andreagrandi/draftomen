@@ -11,6 +11,7 @@ import pytest
 from draftomen.config import COLOR_PAIRS
 
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen import profile_input_acquisition as acquisition
 from draftomen.profile_generation import generate_set_profile
 from draftomen.profile_input_acquisition import (
     CARD_METADATA_ADAPTER_VERSION,
@@ -1521,6 +1522,99 @@ def test_failed_premier_candidate_is_recorded_before_trad_attempt(
     assert trad.ratings is not None
     assert trad.source.source.event_format == "traddraft"
     assert "17lands-ratings-unavailable" in result.skip_reasons
+
+
+@pytest.mark.parametrize(
+    ("event_format", "exact_key"),
+    [("PickTwoDraft", "picktwodraft"), ("TradDraft", "traddraft")],
+)
+def test_pick_two_and_trad_gap_fetches_only_premier_fallback(
+    tmp_path: Path,
+    event_format: str,
+    exact_key: str,
+) -> None:
+    clock = FrozenClock()
+    fetcher = FormatRatingsFetcher(
+        ratings_by_format={
+            exact_key: _ratings_for_format(
+                event_format=event_format, missing_pairs=frozenset({"WU"})
+            ),
+            "premierdraft": _ratings_for_format(event_format="PremierDraft"),
+        }
+    )
+    result = _acquire_profile(
+        cache=_cache(tmp_path, clock=clock),
+        card_adapter=_adapter(StubCardDatabaseFetcher(_database())),
+        ratings_adapter=_ratings_adapter(fetcher),
+        clock=clock,
+        event_format=event_format,
+        include_public_drafts=False,
+    )
+
+    assert result.bundle is not None
+    called_formats = [call[1] for call in fetcher.calls]
+    assert called_formats == [exact_key, "premierdraft"]
+    assert tuple(
+        candidate.source.source.event_format for candidate in result.bundle.fallback_candidates
+    ) == ("premierdraft",)
+
+
+def test_pick_two_complete_exact_evidence_does_not_fetch_fallbacks(
+    tmp_path: Path,
+) -> None:
+    clock = FrozenClock()
+    fetcher = FormatRatingsFetcher(
+        ratings_by_format={
+            "picktwodraft": _ratings_for_format(event_format="PickTwoDraft"),
+        }
+    )
+    result = _acquire_profile(
+        cache=_cache(tmp_path, clock=clock),
+        card_adapter=_adapter(StubCardDatabaseFetcher(_database())),
+        ratings_adapter=_ratings_adapter(fetcher),
+        clock=clock,
+        event_format="PickTwoDraft",
+        include_public_drafts=False,
+    )
+
+    assert result.bundle is not None
+    assert result.bundle.fallback_candidates == ()
+    assert [call[1] for call in fetcher.calls] == ["picktwodraft"]
+
+
+def test_aggregate_candidate_formats_are_validated_per_environment(
+    tmp_path: Path,
+) -> None:
+    acquired = _acquire_profile(
+        cache=_cache(tmp_path, clock=FrozenClock()),
+        card_adapter=_adapter(StubCardDatabaseFetcher(_database())),
+        ratings_adapter=_ratings_adapter(StubRatingsFetcher(_complete_ratings())),
+        clock=FrozenClock(),
+        include_public_drafts=False,
+    )
+    assert acquired.bundle is not None
+    environment = acquired.bundle.environment
+    premier = ProfileAggregateCandidate(
+        ratings=replace(_ratings(), event_format="PremierDraft"),
+        source=_candidate_report("PremierDraft"),
+    )
+    trad = ProfileAggregateCandidate(
+        ratings=replace(_ratings(), event_format="TradDraft"),
+        source=_candidate_report("TradDraft"),
+    )
+    pick_two = replace(environment, event_format="picktwodraft")
+    acquisition._validate_aggregate_candidates(
+        environment=pick_two, candidates=(premier,)
+    )
+    with pytest.raises(ProfileInputAcquisitionError, match="not allowed"):
+        acquisition._validate_aggregate_candidates(
+            environment=pick_two, candidates=(trad,)
+        )
+    with pytest.raises(ProfileInputAcquisitionError, match="not supported"):
+        acquisition._validate_aggregate_candidates(
+            environment=replace(environment, event_format="premierdraft"),
+            candidates=(premier,),
+        )
 
 
 def test_non_quickdraft_acquisition_is_exact_only(tmp_path: Path) -> None:
