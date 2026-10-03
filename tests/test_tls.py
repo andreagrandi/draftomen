@@ -16,6 +16,16 @@ import truststore
 
 from draftomen import cli, qt_gui, tls
 
+# The autouse fixture replaces the helper, so keep the real one for its own test.
+real_is_intel_macos = tls._is_intel_macos
+
+
+@pytest.fixture(autouse=True)
+def not_intel_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Take the truststore path whatever the host, so the tests do not depend on it."""
+
+    monkeypatch.setattr(tls, "_is_intel_macos", lambda: False)
+
 
 @pytest.fixture
 def no_ssl_cert_file(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,6 +84,48 @@ def test_use_system_trust_store_falls_back_to_certifi_when_truststore_is_missing
     tls.use_system_trust_store()
 
     _assert_certifi_fallback(caplog=caplog, cause="ModuleNotFoundError")
+
+
+def test_use_system_trust_store_skips_truststore_on_intel_macos(
+    monkeypatch: pytest.MonkeyPatch,
+    no_ssl_cert_file: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class TouchedTruststore:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"truststore.{name} was used on Intel macOS")
+
+    monkeypatch.setattr(tls, "_is_intel_macos", lambda: True)
+    monkeypatch.setitem(sys.modules, "truststore", TouchedTruststore())
+    caplog.set_level(logging.INFO, logger="draftomen.tls")
+
+    tls.use_system_trust_store()
+
+    assert os.environ["SSL_CERT_FILE"] == certifi.where()
+    assert ssl.get_default_verify_paths().cafile == certifi.where()
+    assert "HTTPS verification uses the bundled certifi file" in caplog.text
+    assert "Could not use the system trust store" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "machine", "expected"),
+    [
+        ("darwin", "x86_64", True),
+        ("darwin", "arm64", False),
+        ("linux", "x86_64", False),
+        ("win32", "AMD64", False),
+    ],
+)
+def test_is_intel_macos_matches_only_x86_64_macos(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_name: str,
+    machine: str,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(tls.sys, "platform", platform_name)
+    monkeypatch.setattr(tls.platform, "machine", lambda: machine)
+
+    assert real_is_intel_macos() is expected
 
 
 def test_cli_main_uses_the_system_trust_store(no_ssl_cert_file: None) -> None:

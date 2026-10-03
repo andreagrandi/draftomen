@@ -213,7 +213,11 @@ hidden `--https-check URL` flag. That run downloads the URL with the default SSL
 context while `SSL_CERT_FILE` points at a missing file and `SSL_CERT_DIR` at an
 empty folder, which is what a Mac without Homebrew OpenSSL sees. The macOS CI
 job passes the hosted sets manifest URL. The bundle ships `truststore` and
-`certifi` so this download verifies its certificate.
+`certifi` so this download verifies its certificate. `--https-context` picks
+the context the run must report. The arm64 job expects `truststore`. The
+x86_64 job expects `certifi`, because the Intel app never imports `truststore`:
+that import loads `ctypes`, whose libffi closure allocation hangs under the
+hardened runtime on Intel macOS 26.
 
 Mock mode avoids network, Arena logs, card downloads, and machine-specific
 runtime caches, so the bundle can be visually inspected without live services.
