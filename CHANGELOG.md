@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-03
+
 - `draftomen-tui replay` now scores a draft with the profile for its own
   format, such as Pick-Two with a Premier fallback, instead of always the
   cached Quick Draft profile. It fetches the hosted profile when needed. The
