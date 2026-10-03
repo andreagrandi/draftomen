@@ -36,11 +36,19 @@ async function postSnapshot(snapshot) {
     result.error = String(error && error.message ? error.message : error);
   }
   await chrome.storage.session.set({ lastPost: result });
+  return result;
 }
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message && message.type === "moxgate-snapshot") {
-    // Chaining keeps snapshots in the order the content script sent them.
-    queue = queue.then(() => postSnapshot(message.snapshot)).catch(() => {});
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== "moxgate-snapshot") {
+    return false;
   }
+  // Chaining keeps snapshots in the order the content script sent them.
+  queue = queue
+    .then(() => postSnapshot(message.snapshot))
+    .then(
+      (result) => sendResponse(result),
+      () => sendResponse(undefined),
+    );
+  return true;
 });

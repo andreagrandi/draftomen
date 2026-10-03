@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- The Moxgate extension now sends the latest snapshot again every 2 seconds
+  while Draft Omen does not answer, so Draft Omen shows the current pack when
+  it starts after the draft page is already open. It stops once Draft Omen accepts or rejects
+  the snapshot, a newer snapshot replaces it, or the Moxgate page closes. The
+  popup shows that the pick is waiting for Draft Omen. (#886)
 - The app log now records the Arena log file being followed and, for each new
   draft, the set, event and format. It also records where card data came from,
   the cache or a download with the artifact checksum, and which ratings
