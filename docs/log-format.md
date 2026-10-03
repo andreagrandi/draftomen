@@ -61,6 +61,15 @@ login only with recovered drafts whose Quick Draft course id is present in the
 same session's course snapshot; if neither method is unambiguous, it leaves the
 account unresolved rather than guessing.
 
+When Arena logs in with a saved token, it writes no login line and no
+`authenticateResponse` until the first match. A draft played before that match
+has no account id. The live session shows recommendations and builds the deck
+for it, and keeps its draft events in memory. When the first
+`authenticateResponse` of the same login arrives, the session saves the draft
+and its audit records under that `clientId`. A later login line ends the login,
+so a different account that logs in afterwards never receives the draft.
+`draftomen-tui replay` applies the same rule to a captured log.
+
 ## Quick Draft start
 
 A paid Quick Draft entry appears as an `EventJoin` request followed by a course payload whose `InternalEventName` is the event id and whose `CurrentModule` is `BotDraft`:

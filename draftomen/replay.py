@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from os import PathLike
 from pathlib import Path
 from typing import TypeAlias
@@ -18,10 +18,10 @@ from draftomen.events import (
     AccountEvent,
     DraftCompletedEvent,
     DraftEvent,
+    DraftLogParser,
     DraftStartedEvent,
     PackOfferedEvent,
     PickMadeEvent,
-    parse_events,
 )
 from draftomen.pickengine import (
     PickEngine,
@@ -80,7 +80,7 @@ def replay_log_file(
     except OSError as error:
         raise ReplayError(f"Could not read replay log {path}: {error}.") from error
 
-    events = tuple(parse_events(lines=lines))
+    events = _parse_events_with_login_accounts(lines=lines)
     return render_replay_events(
         events=events,
         card_database=card_database,
@@ -175,6 +175,57 @@ def render_replay_events(
             )
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _parse_events_with_login_accounts(
+    *,
+    lines: Iterable[str],
+) -> tuple[DraftEvent, ...]:
+    """Parse log lines and give a login's first account id to its earlier drafts.
+    A saved-token login logs no account id until the first match.
+    """
+
+    parser = DraftLogParser()
+    login_generation = parser.login_generation
+    events: list[DraftEvent] = []
+    accountless_indexes: list[int] = []
+    account_known = False
+    for line in (*lines, None):
+        line_events = (
+            parser.flush()
+            if line is None
+            else tuple(parser.parse_lines(lines=(line,)))
+        )
+        for event in line_events:
+            if isinstance(event, AccountEvent):
+                if not account_known:
+                    for index in accountless_indexes:
+                        events[index] = replace(
+                            events[index], account_id=event.client_id
+                        )
+                accountless_indexes.clear()
+                account_known = True
+            elif (
+                isinstance(
+                    event,
+                    (
+                        DraftStartedEvent,
+                        PackOfferedEvent,
+                        PickMadeEvent,
+                        DraftCompletedEvent,
+                    ),
+                )
+                and event.account_id is None
+                and not account_known
+            ):
+                accountless_indexes.append(len(events))
+            events.append(event)
+        # A login line flushes picks from the previous login before it resets.
+        if parser.login_generation != login_generation:
+            login_generation = parser.login_generation
+            accountless_indexes.clear()
+            account_known = False
+    return tuple(events)
 
 
 def _validate_events_with_pool(*, events: tuple[DraftEvent, ...]) -> None:

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- A draft played before Arena logs an account id, as happens after a saved-token
+  login, is now saved under the first account id that the same login reports.
+  Recovery, the audit log, backtest and `draftomen-tui replay` now see that
+  draft. A later login with another account does not take it over. (#894)
 - When Draft Omen is not running, the Moxgate popup now shows how to start it
   from the desktop app, by choosing Moxgate in the draft source selector, as
   well as the `draftomen-tui watch --source moxgate` command. (#887)
