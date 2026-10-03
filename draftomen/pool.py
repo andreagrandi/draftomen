@@ -557,18 +557,39 @@ class DraftPoolStore:
             account_id=event.account_id,
             event_name=event.event_name,
             set_code=event.set_code,
+            pack_number=event.pack_number,
+            pick_number=event.pick_number,
+            offered_grp_ids=event.offered_grp_ids,
         )
         existing_pick = state.pick_for(
             pack_number=event.pack_number,
             pick_number=event.pick_number,
         )
         if _is_new_draft_pack_conflict(existing_pick=existing_pick, event=event):
-            state = self._start_new_state_after_pack_conflict(
+            # A startup scan can replay several drafts of one event, so reuse
+            # the saved draft that recorded this first pack before starting one.
+            recorded = self._saved_state_with_offer(
                 account_id=state.account_id,
-                event_name=event.event_name,
-                set_code=event.set_code,
+                event=event,
             )
-            existing_pick = None
+            if recorded is None:
+                state = self._start_new_state_after_pack_conflict(
+                    account_id=state.account_id,
+                    event_name=event.event_name,
+                    set_code=event.set_code,
+                )
+                existing_pick = None
+            else:
+                self._remember_draft(
+                    account_id=recorded.account_id,
+                    event_name=event.event_name,
+                    draft_id=recorded.draft_id,
+                )
+                state = recorded
+                existing_pick = state.pick_for(
+                    pack_number=event.pack_number,
+                    pick_number=event.pick_number,
+                )
 
         pool_grew = False
         if existing_pick is None or not existing_pick.is_picked:
@@ -708,6 +729,9 @@ class DraftPoolStore:
         account_id: str | None,
         event_name: str,
         set_code: str,
+        pack_number: int | None = None,
+        pick_number: int | None = None,
+        offered_grp_ids: tuple[int, ...] | None = None,
     ) -> DraftState:
         resolved_account_id = self._account_id_for_draft_event(
             account_id=account_id,
@@ -740,6 +764,9 @@ class DraftPoolStore:
             account_id=resolved_account_id,
             event_name=event_name,
             set_code=set_code,
+            pack_number=pack_number,
+            pick_number=pick_number,
+            offered_grp_ids=offered_grp_ids,
         )
         if resumed is not None:
             self._remember_draft(
@@ -826,6 +853,9 @@ class DraftPoolStore:
         account_id: str,
         event_name: str,
         set_code: str,
+        pack_number: int | None = None,
+        pick_number: int | None = None,
+        offered_grp_ids: tuple[int, ...] | None = None,
     ) -> DraftState | None:
         account_dir = self.root / _path_segment(value=account_id, field_name="account_id")
         if not account_dir.exists():
@@ -836,24 +866,54 @@ class DraftPoolStore:
             for state in _load_matching_states(account_dir=account_dir)
             if state.event_name == event_name and state.set_code == set_code
         ]
-        active_matches = [state for state in matches if not state.completed]
-        if len(active_matches) == 1:
-            return self._with_current_account_metadata(state=active_matches[0])
+        candidates = [state for state in matches if not state.completed] or matches
+        if not candidates:
+            return None
 
-        if len(active_matches) > 1:
-            raise DraftPoolError(
-                f"Multiple active drafts match {event_name!r} for account {account_id!r}."
+        # A replayed first offer that matches an older saved draft belongs to it.
+        if pack_number is not None and pick_number is not None and offered_grp_ids is not None:
+            preferred = [
+                state
+                for state in candidates
+                if _offered_pack_matches(
+                    state=state,
+                    pack_number=pack_number,
+                    pick_number=pick_number,
+                    offered_grp_ids=offered_grp_ids,
+                )
+            ]
+            candidates = preferred or candidates
+
+        latest = max(candidates, key=lambda state: (state.updated_at, state.draft_id))
+        return self._with_current_account_metadata(state=latest)
+
+    def _saved_state_with_offer(
+        self,
+        *,
+        account_id: str,
+        event: PackOfferedEvent,
+    ) -> DraftState | None:
+        account_dir = self.root / _path_segment(value=account_id, field_name="account_id")
+        if not account_dir.exists():
+            return None
+
+        matches = [
+            state
+            for state in _load_matching_states(account_dir=account_dir)
+            if state.event_name == event.event_name
+            and state.set_code == event.set_code
+            and _offered_pack_matches(
+                state=state,
+                pack_number=event.pack_number,
+                pick_number=event.pick_number,
+                offered_grp_ids=event.offered_grp_ids,
             )
+        ]
+        if not matches:
+            return None
 
-        if len(matches) == 1:
-            return self._with_current_account_metadata(state=matches[0])
-
-        if len(matches) > 1:
-            raise DraftPoolError(
-                f"Multiple completed drafts match {event_name!r} for account {account_id!r}."
-            )
-
-        return None
+        latest = max(matches, key=lambda state: (state.updated_at, state.draft_id))
+        return self._with_current_account_metadata(state=latest)
 
     def _load_existing_state(self, *, account_id: str, draft_id: str) -> DraftState | None:
         path = draft_state_path(
@@ -962,18 +1022,10 @@ class DraftPoolStore:
             for state in _load_matching_states(account_dir=account_dir)
             if state.event_name == event_name and state.set_code == set_code
         ]
-        active_matches = [state for state in matches if not state.completed]
-        if len(active_matches) == 1:
-            return active_matches[0].account_id
-
-        if len(active_matches) > 1:
-            raise DraftPoolError(f"Multiple active account states match {event_name!r}.")
-
-        if len(matches) == 1:
-            return matches[0].account_id
-
-        if len(matches) > 1:
-            raise DraftPoolError(f"Multiple account states match {event_name!r}.")
+        candidates = [state for state in matches if not state.completed] or matches
+        account_ids = {state.account_id for state in candidates}
+        if len(account_ids) == 1:
+            return account_ids.pop()
 
         return None
 
@@ -1169,6 +1221,17 @@ def _pool_with_card_pool(
         state.draft_id,
     )
     return pool_grp_ids
+
+
+def _offered_pack_matches(
+    *,
+    state: DraftState,
+    pack_number: int,
+    pick_number: int,
+    offered_grp_ids: tuple[int, ...],
+) -> bool:
+    pick = state.pick_for(pack_number=pack_number, pick_number=pick_number)
+    return pick is not None and pick.offered_grp_ids == offered_grp_ids
 
 
 def _is_new_draft_pack_conflict(
