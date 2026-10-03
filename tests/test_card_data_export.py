@@ -53,6 +53,19 @@ def _card(
     return card
 
 
+_CARDS_CSV_HEADER = "id,expansion,name,rarity,color_identity,mana_value,types,is_booster\n"
+
+
+def _write_cards_csv(directory: Path, rows: list[str] | None = None) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "cards.csv"
+    path.write_text(
+        _CARDS_CSV_HEADER + "".join(row + "\n" for row in rows or []),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_sources(
     directory: Path,
     inventory: list[str],
@@ -93,6 +106,11 @@ def _forbid_source_acquisition(monkeypatch: pytest.MonkeyPatch) -> None:
         "iter_scryfall_default_cards",
         fail_if_called,
     )
+    monkeypatch.setattr(
+        card_data_export,
+        "fetch_17lands_cards_csv",
+        fail_if_called,
+    )
 
 
 def _canonical_gzip(value: dict[str, Any]) -> bytes:
@@ -118,6 +136,7 @@ def _prepare(
     *,
     selector: str | None = None,
     output_dir: Path | None = None,
+    cards_rows: list[str] | None = None,
 ) -> Any:
     inventory_path, bulk_path = _write_sources(tmp_path, inventory, cards)
     return prepare_set_data_export(
@@ -125,6 +144,7 @@ def _prepare(
         output_dir=output_dir or (tmp_path / "card-data"),
         inventory_file=inventory_path,
         bulk_file=bulk_path,
+        cards_file=_write_cards_csv(tmp_path, cards_rows),
     )
 
 
@@ -237,11 +257,16 @@ def test_local_inventory_and_bulk_sources_make_zero_network_requests(
         unexpected_network,
     )
     monkeypatch.setattr("draftomen.carddb.urllib.request.urlopen", unexpected_network)
+    monkeypatch.setattr(
+        "draftomen.card_data_export.fetch_17lands_cards_csv",
+        unexpected_network,
+    )
     plan = prepare_set_data_export(
         selector=None,
         output_dir=tmp_path / "out",
         inventory_file=inventory_path,
         bulk_file=bulk_path,
+        cards_file=_write_cards_csv(tmp_path),
     )
     assert plan.total == 1
 
@@ -266,6 +291,7 @@ def test_missing_inventory_fetches_17lands_expansions_exactly_once(
         selector=None,
         output_dir=tmp_path / "out",
         bulk_file=bulk_path,
+        cards_file=_write_cards_csv(tmp_path),
         timeout_seconds=19,
     )
 
@@ -313,6 +339,7 @@ def test_remote_scryfall_source_uses_one_metadata_and_one_bulk_request(
         selector=None,
         output_dir=tmp_path / "out",
         inventory_file=inventory_path,
+        cards_file=_write_cards_csv(tmp_path),
         timeout_seconds=23,
     )
 
@@ -351,6 +378,7 @@ def test_scryfall_source_is_consumed_once_by_exporter(
         selector=None,
         output_dir=tmp_path / "out",
         inventory_file=inventory_path,
+        cards_file=_write_cards_csv(tmp_path),
     )
 
     assert plan.total == 1
@@ -617,6 +645,7 @@ def test_resolver_publishes_only_the_requested_missing_set(tmp_path: Path) -> No
         output_dir=output_dir,
         inventory_file=inventory_file,
         bulk_file=bulk_file,
+        cards_file=_write_cards_csv(tmp_path),
     )
 
     assert result == output_dir / "hob.json.gz"
@@ -679,6 +708,7 @@ def test_resolver_rejects_unsupported_missing_set_without_replacing_siblings(
             output_dir=output_dir,
             inventory_file=inventory_file,
             bulk_file=bulk_file,
+            cards_file=_write_cards_csv(tmp_path),
         )
 
     assert target.read_bytes() == original
@@ -905,3 +935,152 @@ def test_publication_rejects_candidate_with_noncanonical_target_path(tmp_path: P
     with pytest.raises(SetDataExportError, match="canonical"):
         publish_set_data_export(candidate=candidate)
     assert not (tmp_path / "wrong.json.gz").exists()
+
+
+def _card_names_and_types(plan: Any) -> dict[int, tuple[str, str | None]]:
+    candidate = plan.pending[0]
+    data = SetCardData.from_gzip_bytes(
+        candidate.gzip_bytes,
+        expected_set_code=candidate.identity.set_code,
+        expected_set_name=candidate.identity.set_name,
+    )
+    return {
+        grp_id: (card.name, card.type_line)
+        for grp_id, card in data.to_card_database().cards.items()
+    }
+
+
+def test_basic_lands_missing_from_scryfall_are_added_from_cards_csv(
+    tmp_path: Path,
+) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA"],
+        [_card(1, "aaa", "Alpha Set"), _card(None, "aaa", "Alpha Set", name="Forest")],
+        cards_rows=[
+            "202,AAA,Island,basic,U,0,Basic Land - Island,True",
+            "201,AAA,Forest,basic,G,0,Basic Land - Forest,True",
+        ],
+    )
+
+    cards = _card_names_and_types(plan)
+    assert cards[201] == ("Forest", "Basic Land \u2014 Forest")
+    assert cards[202] == ("Island", "Basic Land \u2014 Island")
+    database = SetCardData.from_gzip_bytes(
+        plan.pending[0].gzip_bytes,
+        expected_set_code="aaa",
+        expected_set_name="Alpha Set",
+    ).to_card_database()
+    assert database.cards[201].produced_mana == ("G",)
+    assert database.cards[201].mana_value == 0
+    assert database.cards[201].colors == ()
+    assert database.cards[201].rarity == "common"
+
+
+def test_basic_land_output_is_deterministic_regardless_of_csv_order(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        "202,AAA,Island,basic,U,0,Basic Land - Island,True",
+        "201,AAA,Forest,basic,G,0,Basic Land - Forest,True",
+    ]
+    cards = [_card(1, "aaa", "Alpha Set")]
+    first = _prepare(tmp_path / "one", ["AAA"], cards, cards_rows=rows)
+    second = _prepare(tmp_path / "two", ["AAA"], cards, cards_rows=rows[::-1])
+
+    assert first.pending[0].gzip_bytes == second.pending[0].gzip_bytes
+
+
+def test_basic_land_already_in_scryfall_is_not_duplicated_or_overridden(
+    tmp_path: Path,
+) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA"],
+        [
+            _card(1, "aaa", "Alpha Set"),
+            _card(201, "aaa", "Alpha Set", name="Scryfall Forest", type_line="Basic Land \u2014 Forest"),
+        ],
+        cards_rows=["201,AAA,Forest,basic,G,0,Basic Land - Forest,True"],
+    )
+
+    assert _card_names_and_types(plan)[201] == ("Scryfall Forest", "Basic Land \u2014 Forest")
+
+
+def test_basic_lands_for_other_expansions_are_not_added(tmp_path: Path) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA", "BBB"],
+        [_card(1, "aaa", "Alpha Set"), _card(2, "bbb", "Beta Set")],
+        cards_rows=["301,BBB,Forest,basic,G,0,Basic Land - Forest,True"],
+        selector="aaa",
+    )
+
+    assert set(_card_names_and_types(plan)) == {1}
+
+
+def test_non_basic_cards_csv_rows_are_never_added(tmp_path: Path) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA"],
+        [_card(1, "aaa", "Alpha Set")],
+        cards_rows=["401,AAA,Ammit Eternal,rare,B,3,Creature - Zombie,True"],
+    )
+
+    assert set(_card_names_and_types(plan)) == {1}
+
+
+@pytest.mark.parametrize(
+    ("csv_text", "message"),
+    [
+        ("id,expansion,name,rarity\n", "missing columns: color_identity"),
+        (_CARDS_CSV_HEADER + "abc,AAA,Forest,basic,G,0,Basic Land - Forest,True\n", "invalid basic land row"),
+        (_CARDS_CSV_HEADER + "0,AAA,Forest,basic,G,0,Basic Land - Forest,True\n", "invalid basic land row"),
+        (_CARDS_CSV_HEADER + "-5,AAA,Forest,basic,G,0,Basic Land - Forest,True\n", "invalid basic land row"),
+    ],
+)
+def test_invalid_cards_csv_fails_the_export(
+    tmp_path: Path,
+    csv_text: str,
+    message: str,
+) -> None:
+    inventory_path, bulk_path = _write_sources(
+        tmp_path, ["AAA"], [_card(1, "aaa", "Alpha Set")]
+    )
+    cards_path = tmp_path / "cards.csv"
+    cards_path.write_text(csv_text, encoding="utf-8")
+
+    with pytest.raises(SetDataExportError, match=message):
+        prepare_set_data_export(
+            selector=None,
+            output_dir=tmp_path / "out",
+            inventory_file=inventory_path,
+            bulk_file=bulk_path,
+            cards_file=cards_path,
+        )
+
+
+def test_missing_cards_file_downloads_cards_csv_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inventory_path, bulk_path = _write_sources(
+        tmp_path, ["AAA", "BBB"], [_card(1, "aaa", "Alpha Set"), _card(2, "bbb", "Beta Set")]
+    )
+    calls: list[int] = []
+
+    def fake_fetch(*, timeout_seconds: int) -> str:
+        calls.append(timeout_seconds)
+        return _CARDS_CSV_HEADER + "201,AAA,Forest,basic,G,0,Basic Land - Forest,True\n"
+
+    monkeypatch.setattr(card_data_export, "fetch_17lands_cards_csv", fake_fetch)
+    plan = prepare_set_data_export(
+        selector=None,
+        output_dir=tmp_path / "out",
+        inventory_file=inventory_path,
+        bulk_file=bulk_path,
+        timeout_seconds=29,
+    )
+
+    assert plan.total == 2
+    assert calls == [29]

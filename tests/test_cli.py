@@ -540,6 +540,7 @@ def test_export_set_data_parser_defaults_and_options() -> None:
     assert defaults.set is None
     assert defaults.inventory_file is None
     assert defaults.bulk_file is None
+    assert defaults.cards_file is None
     assert defaults.output_dir == Path("website/public/card-data")
     assert defaults.timeout == cli.HTTP_TIMEOUT_SECONDS
 
@@ -551,6 +552,8 @@ def test_export_set_data_parser_defaults_and_options() -> None:
             "inventory.json",
             "--bulk-file",
             "bulk.jsonl.gz",
+            "--cards-file",
+            "cards.csv",
             "--output-dir",
             "out",
             "--timeout",
@@ -560,6 +563,7 @@ def test_export_set_data_parser_defaults_and_options() -> None:
     assert args.set == "tst"
     assert args.inventory_file == Path("inventory.json")
     assert args.bulk_file == Path("bulk.jsonl.gz")
+    assert args.cards_file == Path("cards.csv")
     assert args.output_dir == Path("out")
     assert args.timeout == 17
 
@@ -792,6 +796,8 @@ def test_export_set_data_single_mode_resolves_selector_and_publishes(
             argv=[
                 "export-set-data",
                 selector,
+                "--cards-file",
+                str(tmp_path / "cards.csv"),
                 "--output-dir",
                 str(tmp_path),
             ]
@@ -805,6 +811,7 @@ def test_export_set_data_single_mode_resolves_selector_and_publishes(
             "output_dir": tmp_path,
             "inventory_file": None,
             "bulk_file": None,
+            "cards_file": tmp_path / "cards.csv",
             "timeout_seconds": cli.HTTP_TIMEOUT_SECONDS,
         }
     ]
