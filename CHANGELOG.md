@@ -7,6 +7,11 @@
 - Stable GitHub Releases and the rolling development prerelease publish the
   unsigned Windows `.exe` again next to the Microsoft Store listing. The
   checksum files list it.
+- On Windows, replaying a Player.log that holds several drafts of the same
+  event no longer stops with "Could not append draft audit record". Draft ids
+  that Draft Omen makes up for these drafts no longer contain colons, and a
+  new draft whose id has a character Windows forbids in file names now fails
+  with a clear error. Drafts saved earlier keep loading. (#915)
 
 ## [0.6.3] - 2026-10-03
 

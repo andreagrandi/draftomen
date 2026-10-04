@@ -34,6 +34,8 @@ STATE_SCHEMA_VERSION = 2
 LEGACY_CHOSEN_CARD_KEY = "chosen_grp_id"
 ACCOUNT_PROFILE_DIRECTORY_NAME = "accounts"
 ACCOUNT_PROFILE_SCHEMA_VERSION = 1
+# Windows rejects these characters in file names.
+NON_PORTABLE_PATH_CHARACTERS = frozenset('<>:"|?*')
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +536,7 @@ class DraftPoolStore:
             )
             return state
 
+        _ensure_portable_ids(account_id=account_id, draft_id=draft_id)
         now = self._now_iso()
         state = DraftState(
             account_id=account_id,
@@ -812,7 +815,8 @@ class DraftPoolStore:
         )
 
     def _unused_synthetic_draft_id(self, *, account_id: str, event_name: str) -> str:
-        base = f"{event_name}-{self._now_iso()}"
+        timestamp = self._clock().astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+        base = f"{event_name}-{timestamp}"
         draft_id = base
         index = 2
         while self.path_for(account_id=account_id, draft_id=draft_id).exists():
@@ -829,6 +833,7 @@ class DraftPoolStore:
         set_code: str,
         draft_id: str,
     ) -> DraftState:
+        _ensure_portable_ids(account_id=account_id, draft_id=draft_id)
         now = self._now_iso()
         state = DraftState(
             account_id=account_id,
@@ -1386,6 +1391,19 @@ def _path_segment(*, value: str, field_name: str) -> str:
         raise DraftPoolError(f"Invalid {field_name}; cannot be used as a path segment.")
 
     return value.replace("/", "_").replace("\\", "_").replace(":", "_")
+
+
+def _ensure_portable_ids(*, account_id: str, draft_id: str) -> None:
+    """Reject ids for a new draft that Windows cannot use as file names.
+    Drafts saved before this check may still hold such ids and keep loading.
+    """
+
+    for field_name, value in (("account_id", account_id), ("draft_id", draft_id)):
+        if NON_PORTABLE_PATH_CHARACTERS.intersection(value):
+            raise DraftPoolError(
+                f"Invalid {field_name} {value!r}; it contains a character "
+                'that is not allowed in file names (<>:"|?*).'
+            )
 
 
 def _optional_int_list(value: tuple[int, ...] | None) -> list[int] | None:
