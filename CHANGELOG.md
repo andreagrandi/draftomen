@@ -12,6 +12,10 @@
   that Draft Omen makes up for these drafts no longer contain colons, and a
   new draft whose id has a character Windows forbids in file names now fails
   with a clear error. Drafts saved earlier keep loading. (#915)
+- The website publishes the latest released version at
+  `https://www.draftomen.com/version.json`, so the desktop app can check for
+  updates. The release output check fails when the file is missing or out of
+  date. (#919)
 
 ## [0.6.3] - 2026-10-03
 
