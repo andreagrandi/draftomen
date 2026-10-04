@@ -67,6 +67,8 @@ The [log format](docs/log-format.md) describes how each format is read.
 
 On Windows, install Draft Omen from the [Microsoft Store](https://apps.microsoft.com/detail/9NPCD3VLZQMX). The Store installs updates on its own. To uninstall, open **Settings > Apps > Installed apps**, find Draft Omen and choose **Uninstall**. Draft Omen keeps its caches, settings and draft history in `%USERPROFILE%\.draftomen`, which uninstalling leaves in place. Delete that folder too to remove all its data.
 
+If you prefer not to use the Store, download the unsigned `.exe` from [GitHub Releases](https://github.com/andreagrandi/draftomen/releases/latest). Windows SmartScreen warns the first time you run it, so choose **More info** and then **Run anyway**. The `.exe` does not update itself, so download each new version by hand. It uses the same `%USERPROFILE%\.draftomen` folder as the Store app. To remove it, delete the `.exe` and that folder.
+
 On macOS, download the latest DMG from [GitHub Releases](https://github.com/andreagrandi/draftomen/releases/latest):
 
 - Apple Silicon Mac: `draftomen-vX.Y.Z-macos-arm64.dmg`

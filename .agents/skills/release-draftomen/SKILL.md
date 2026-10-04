@@ -12,9 +12,10 @@ description: >-
 
 Normal pushes and merges to `master` do not publish a release. Only pushing a
 tag matching `v*` starts `.github/workflows/release.yml`. A release publishes
-the signed macOS DMGs to a GitHub Release. Windows ships only through the
-Microsoft Store, and the maintainer submits each update by hand. Draft Omen is
-no longer published to PyPI or Homebrew.
+the signed macOS DMGs, the unsigned Windows executable and a checksum file to
+a GitHub Release. The Microsoft Store stays the primary Windows channel, and
+the maintainer submits each update by hand. Draft Omen is no longer published
+to PyPI or Homebrew.
 
 Every merge to `master` deploys the website, and its macOS download links
 follow the version in `website/package.json`. The release therefore happens in
@@ -110,8 +111,9 @@ falls back to generated notes. The native bundle jobs build and smoke-test both
 macOS DMGs and the Windows executable, and the macOS jobs sign, notarize and
 staple each DMG in the `macos-release` environment. After both finish, the
 `github-release` job creates or updates the public GitHub Release with the
-changelog body, the two macOS DMGs, and the checksum file. The Windows job
-uploads the `draftomen-windows-msixupload` Actions artifact for the Store.
+changelog body, the two macOS DMGs, the unsigned Windows executable, and
+the checksum file. The Windows job also uploads the
+`draftomen-windows-msixupload` Actions artifact for the Store.
 
 ## Failure handling
 
@@ -134,8 +136,9 @@ Inspect `gh release view vX.Y.Z` and confirm:
 - the release is published, not a draft or prerelease;
 - its body contains the promoted dated changelog entries;
 - it has `draftomen-vX.Y.Z-macos-arm64.dmg`,
-  `draftomen-vX.Y.Z-macos-x86_64.dmg`, and
-  `draftomen-vX.Y.Z-sha256sums.txt`, and no Windows asset;
+  `draftomen-vX.Y.Z-macos-x86_64.dmg`,
+  `draftomen-vX.Y.Z-unsigned-windows.exe`, and
+  `draftomen-vX.Y.Z-sha256sums.txt`;
 - the release run has the `draftomen-windows-msixupload` artifact;
 - a macOS DMG downloaded with `gh release download` matches the checksum file,
   passes `xcrun stapler validate`, and `spctl` accepts the DMG and the mounted
