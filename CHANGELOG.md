@@ -16,6 +16,10 @@
   `https://www.draftomen.com/version.json`, so the desktop app can check for
   updates. The release output check fails when the file is missing or out of
   date. (#919)
+- Draft Omen can check `version.json` on the website for a newer release on a
+  background thread. Network errors, HTTP errors, a bad response and an
+  unknown installed version log a warning and report no update. The app does
+  not run the check yet. (#920)
 
 ## [0.6.3] - 2026-10-03
 
