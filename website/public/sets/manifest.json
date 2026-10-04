@@ -172,7 +172,20 @@
         "url": "https://www.draftomen.com/card-data/ecl.json.gz"
       },
       "name": "Lorwyn Eclipsed",
-      "profiles": {}
+      "profiles": {
+        "picktwodraft": {
+          "maturity": "early"
+        },
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "eld": {
       "augmented": null,
@@ -182,7 +195,14 @@
         "url": "https://www.draftomen.com/card-data/eld.json.gz"
       },
       "name": "Throne of Eldraine",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        }
+      }
     },
     "eoe": {
       "augmented": null,
