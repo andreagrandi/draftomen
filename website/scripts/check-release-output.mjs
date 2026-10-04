@@ -129,6 +129,23 @@ async function main() {
     missingChecks.push(`the release news page (${newsMissing.join('; ')}). ${newsHint}`);
   }
 
+  // The desktop app's update check reads version.json, so it must match the
+  // version the download buttons are built from.
+  const packageVersion = JSON.parse(
+    await readFile(join(distPath, '..', 'package.json'), 'utf8'),
+  ).version;
+  let versionProblem;
+  try {
+    const publishedVersion = JSON.parse(
+      await readFile(join(distPath, 'version.json'), 'utf8'),
+    )?.version;
+    if (publishedVersion !== packageVersion) {
+      versionProblem = `contains version ${JSON.stringify(publishedVersion)}`;
+    }
+  } catch {
+    versionProblem = 'is missing or not valid JSON';
+  }
+
   if (missingChecks.length > 0) {
     fail(
       `website/dist/index.html is missing ${missingChecks.join('; ')}. `
@@ -140,6 +157,12 @@ async function main() {
     fail(
       `website/dist contains ${forbiddenContent.join('; ')}. `
         + 'Windows installs come only from the Microsoft Store.',
+    );
+  }
+  if (versionProblem !== undefined) {
+    fail(
+      `website/dist/version.json ${versionProblem}, but website/package.json has `
+        + `${JSON.stringify(packageVersion)}. Rebuild the website.`,
     );
   }
 
