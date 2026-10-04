@@ -5,6 +5,7 @@ import QtQuick.Layouts 1.15
 ApplicationWindow {
     id: window
     required property var provider
+    property var updateChecker: null
 
     width: initialWindowWidth
     height: initialWindowHeight
@@ -135,6 +136,20 @@ ApplicationWindow {
     AboutDialog {
         id: aboutDialog
         applicationVersion: window.desktopApplicationVersion
+    }
+
+    UpdateDialog {
+        id: updateDialog
+    }
+
+    Connections {
+        target: window.updateChecker
+
+        function onUpdateAvailable(available, installed) {
+            updateDialog.availableVersion = available
+            updateDialog.installedVersion = installed
+            updateDialog.open()
+        }
     }
 
     PrivacyDialog {

@@ -133,6 +133,7 @@ files = [
     "draftomen/watch.py",
     "draftomen/baseline_profiles/hob-quickdraft.json",
     "draftomen/qml/AboutDialog.qml",
+    "draftomen/qml/UpdateDialog.qml",
     "draftomen/qml/PrivacyDialog.qml",
     "draftomen/qml/DetailedLogsDialog.qml",
     "draftomen/qml/TestDraftDialog.qml",

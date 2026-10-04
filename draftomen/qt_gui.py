@@ -59,6 +59,7 @@ from draftomen.qt_adapter import (
     SessionAdapter,
     SessionFactory,
     TestDraftFactory,
+    UpdateCheckAdapter,
 )
 from draftomen.qt_mock import MockSessionAdapter
 from draftomen.session import LiveSession, SnapshotPublisher
@@ -73,6 +74,7 @@ from draftomen.test_draft import (
     supported_test_draft_sets,
 )
 from draftomen.tls import use_system_trust_store
+from draftomen.update_check import DEFAULT_VERSION_URL
 from draftomen.profile_client import (
     BUNDLED_PROFILE_BYTES,
     BUNDLED_PROFILE_EVENT_FORMAT,
@@ -278,7 +280,24 @@ def _parser(*, forced_provider: ProviderName | None = None) -> argparse.Argument
         type=Path,
         help="Save the rendered window before exiting.",
     )
+    parser.add_argument("--update-check-url", default=None, help=argparse.SUPPRESS)
     return parser
+
+
+def _update_check_url(*, args: argparse.Namespace) -> str | None:
+    """Return the version.json URL to check, or None when the check is skipped.
+    Automation modes skip the network unless a test passes an explicit URL.
+    """
+
+    if args.update_check_url is not None:
+        return str(args.update_check_url)
+    automated = (
+        args.smoke_test
+        or args.smoke_test_until_complete
+        or args.test_draft_smoke
+        or args.screenshot is not None
+    )
+    return None if automated else DEFAULT_VERSION_URL
 
 
 def _preflight_bundled_profile(*, app_dir: Path | None) -> bool:
@@ -1361,11 +1380,20 @@ def run_gui(
     context.setContextProperty("initialSurface", args.surface)
     context.setContextProperty("initialWindowWidth", args.width)
     context.setContextProperty("initialWindowHeight", args.height)
-    engine.setInitialProperties({"provider": provider})
+    initial_properties: dict[str, object] = {"provider": provider}
+    update_check_url = _update_check_url(args=args)
+    update_checker = None
+    if update_check_url is not None:
+        update_checker = UpdateCheckAdapter(url=update_check_url, parent=application)
+        initial_properties["updateChecker"] = update_checker
+    engine.setInitialProperties(initial_properties)
 
     engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
     if not engine.rootObjects():
         return 1
+
+    if update_checker is not None:
+        update_checker.start()
 
     if isinstance(provider, LiveSessionAdapter):
         application.aboutToQuit.connect(provider.shutdown)

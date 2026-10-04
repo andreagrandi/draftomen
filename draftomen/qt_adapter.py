@@ -30,7 +30,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDesktopServices, QFontInfo, QGuiApplication
 
-from draftomen import applog
+from draftomen import __version__, applog
 from draftomen.augmented_model_client import (
     AugmentedModelClient,
     AugmentedModelLoad,
@@ -49,6 +49,7 @@ from draftomen.preferences import (
 from draftomen.profile_client import ProfileClient
 from draftomen.ranking import RankingMode
 from draftomen.replay import format_draft_format
+from draftomen.update_check import DEFAULT_VERSION_URL, start_update_check
 from draftomen.session import (
     AugmentedModelRequest,
     CardImageFetchResult,
@@ -489,6 +490,46 @@ class _GuiPreferencesSaveThread(QThread):
             except Exception as error:  # pragma: no cover - defensive boundary.
                 persistence_message = f"Could not save GUI preferences: {error}"
             self.saveFinished.emit(generation, persistence_message or "Saved")
+
+
+class UpdateCheckAdapter(QObject):
+    """Run the website update check and announce a newer version once per launch.
+    The worker thread hands its result to the GUI thread through a queued signal.
+    """
+
+    updateAvailable = Signal(str, str)
+    _resultReady = Signal(object)
+
+    def __init__(
+        self,
+        *,
+        url: str = DEFAULT_VERSION_URL,
+        installed: str = __version__,
+        start_check: Callable[..., object] = start_update_check,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._url = url
+        self._installed = installed
+        self._start_check = start_check
+        self._announced = False
+        self._resultReady.connect(self._handle_result)
+
+    def start(self) -> None:
+        """Begin the background check."""
+
+        self._start_check(
+            on_result=self._resultReady.emit,
+            url=self._url,
+            installed=self._installed,
+        )
+
+    @Slot(object)
+    def _handle_result(self, available: object) -> None:
+        if self._announced or not isinstance(available, str):
+            return
+        self._announced = True
+        self.updateAvailable.emit(available, self._installed)
 
 
 class GuiPreferencesAdapter(QObject):
