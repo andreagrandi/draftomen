@@ -1129,6 +1129,50 @@ def test_live_session_publishes_consumed_events_with_resulting_state(
     assert published[-1].snapshot.recommendations.cards
 
 
+def test_live_session_scores_quick_draft_packs_seen_without_event_join_or_course(
+    tmp_path: Path,
+) -> None:
+    published: list[LiveSessionEvent] = []
+    loader_calls: list[tuple[str, bool]] = []
+
+    def card_data_loader(set_code: str, *, allow_network: bool) -> CardDatabase:
+        loader_calls.append((set_code, allow_network))
+        return _fixture_set_card_database(set_code=set_code)
+
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        set_card_data_loader=card_data_loader,
+        event_publisher=published.append,
+    )
+
+    session.process_lines(lines=_two_quick_drafts_without_join_or_course_lines())
+
+    first_packs = [
+        item
+        for item in published
+        if isinstance(item.event, PackOfferedEvent)
+        and item.event.pack_number == 0
+        and item.event.pick_number == 0
+    ]
+    assert len(first_packs) == 2
+    assert all(item.scored_pack is not None for item in first_packs)
+    assert loader_calls == [("MSH", True)]
+    first_draft = first_packs[0].snapshot.draft
+    second_draft = first_packs[1].snapshot.draft
+    assert first_draft is not None
+    assert second_draft is not None
+    assert second_draft.draft_id != first_draft.draft_id
+    second_records = load_draft_audit_records(
+        account_id=FIXTURE_ACCOUNT_ID,
+        draft_id=second_draft.draft_id,
+        app_dir=tmp_path / "app",
+    )
+    assert [record["record_type"] for record in second_records] == [
+        "decision_evaluated"
+    ]
+
+
 def test_live_session_profiled_scoring_publishes_context_and_matching_evidence(
     tmp_path: Path,
 ) -> None:
@@ -9467,6 +9511,24 @@ def _pack_line(
 
 def _payload_line(*, module: str, payload: dict[str, object]) -> str:
     return json.dumps({"CurrentModule": module, "Payload": json.dumps(payload)})
+
+
+def _two_quick_drafts_without_join_or_course_lines() -> list[str]:
+    """Return two drafts of one Quick Draft event with no EventJoin or Course line.
+    The second draft offers a first pack that differs from the first by one card.
+    """
+    fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    second_first_pack = fixture_lines[6].replace(
+        '\\"DraftPack\\":[\\"104894\\"',
+        '\\"DraftPack\\":[\\"104979\\"',
+    )
+    assert second_first_pack != fixture_lines[6]
+    return [
+        *fixture_lines[:2],
+        *fixture_lines[4:10],
+        *fixture_lines[4:6],
+        second_first_pack,
+    ]
 
 
 def _write_lines(*, path: Path, lines: list[str]) -> None:
