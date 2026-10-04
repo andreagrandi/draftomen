@@ -594,6 +594,12 @@ jobs:
           name: draftomen-macos-x86_64-unsigned-development
           path: release-assets/macos-x86_64
 
+      - name: Download Windows unsigned development bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: draftomen-windows-unsigned-development
+          path: release-assets/windows
+
       - name: Derive development build metadata
         id: metadata
         shell: bash
@@ -650,15 +656,18 @@ jobs:
 
           macos_arm64_name="draftomen-${BUILD_IDENTIFIER}-unsigned-macos-arm64.dmg"
           macos_x86_64_name="draftomen-${BUILD_IDENTIFIER}-unsigned-macos-x86_64.dmg"
+          windows_name="draftomen-${BUILD_IDENTIFIER}-unsigned-windows.exe"
           checksums_name="draftomen-${BUILD_IDENTIFIER}-unsigned-sha256sums.txt"
           mkdir -p release-assets/published
           mv release-assets/macos-arm64/Draftomen-unsigned-macos-arm64.dmg \
             "release-assets/published/${macos_arm64_name}"
           mv release-assets/macos-x86_64/Draftomen-unsigned-macos-x86_64.dmg \
             "release-assets/published/${macos_x86_64_name}"
+          mv release-assets/windows/Draftomen-unsigned-windows.exe \
+            "release-assets/published/${windows_name}"
           (
             cd release-assets/published
-            sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" \
+            sha256sum "${macos_arm64_name}" "${macos_x86_64_name}" "${windows_name}" \
               > "${checksums_name}"
           )
 
@@ -707,4 +716,5 @@ jobs:
           gh release upload "${RELEASE_TAG}" \
             "release-assets/published/${macos_arm64_name}" \
             "release-assets/published/${macos_x86_64_name}" \
+            "release-assets/published/${windows_name}" \
             "release-assets/published/${checksums_name}"

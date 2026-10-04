@@ -14,10 +14,10 @@ Development builds are unsigned. Their DMG contains
 not notarized. Tag releases sign the macOS app with Developer ID, and they sign,
 notarize and staple the DMG, which contains `Draft Omen.app`. The
 [signed macOS release path](#signed-macos-release-path) section describes it.
-The Windows executable is unsigned in both contexts and is never published as
-a release asset. It stays a GitHub Actions artifact for testing and diagnosis.
-Windows users install the MSIX package from the Microsoft Store, which signs
-it. See [Microsoft Store MSIX package](#microsoft-store-msix-package).
+The Windows executable is unsigned in both contexts. Both the stable release
+and the rolling prerelease publish it as `-unsigned-windows.exe`. The Microsoft
+Store stays the primary Windows channel, and it signs the MSIX package. See
+[Microsoft Store MSIX package](#microsoft-store-msix-package).
 
 ## Tool choice
 
@@ -337,7 +337,8 @@ smoke-tests the same payload shape that it uploads:
   `tests/bundle_smoke.py` against the mounted app, and detaches the image even
   when the smoke test fails before uploading the DMG.
 - Windows: the workflow runs `tests/bundle_smoke.py` directly against
-  `Draftomen-unsigned-windows.exe` and uploads that `.exe` directly. It then
+  `Draftomen-unsigned-windows.exe` and uploads that `.exe` directly for the
+  release jobs to publish. It then
   builds, installs and smoke-tests the MSIX package, as described in
   [Microsoft Store MSIX package](#microsoft-store-msix-package).
 
@@ -376,8 +377,8 @@ Download these from the **Actions** page: open the manual workflow run and
 download its artifacts from the run summary. They are GitHub Actions run
 artifacts, not GitHub Release assets; they are retained only for the
 repository's configured Actions artifact-retention period and may expire.
-Only repository collaborators can download them. The Windows executable is
-not copied to the rolling development prerelease.
+Only repository collaborators can download them. The rolling development
+prerelease also carries the Windows executable.
 
 Each macOS artifact download is a GitHub Actions artifact archive containing
 exactly one file, `Draftomen-unsigned-macos-<arch>.dmg`; it is not the `.app`
@@ -488,12 +489,12 @@ It checks out the tagged repository, extracts the non-empty body under the exact
 `## [1.2.3] - YYYY-MM-DD` section in `CHANGELOG.md`, and uses that body as the
 GitHub Release notes. A missing, duplicate, or empty section fails the job
 before release publication. The job downloads the two macOS Actions artifacts
-from that release run, renames their DMGs, generates SHA-256 checksums, and
-creates or updates the GitHub Release with those notes. It does not download
-or publish any Windows artifact.
+and the Windows executable artifact from that release run, renames them,
+generates SHA-256 checksums, and creates or updates the GitHub Release with
+those notes.
 
 Release publication is recoverable: rerunning the job reuses an existing draft
-or release, replaces the three assets and changelog notes, and publishes any
+or release, replaces the four assets and changelog notes, and publishes any
 draft left by an earlier interrupted attempt. Native Actions artifacts are
 likewise overwritten when their build jobs are rerun.
 
@@ -503,13 +504,12 @@ The persistent public assets attached to the `v1.2.3` GitHub Release are:
   `draftomen-v1.2.3-macos-x86_64.dmg`, signed, notarized and stapled
   compressed read-only images each containing the signed `Draft Omen.app`
   bundle for that architecture and an `Applications` symlink;
-- `draftomen-v1.2.3-sha256sums.txt`, containing SHA-256 entries for those
-  two images.
+- `draftomen-v1.2.3-unsigned-windows.exe`, the unsigned Windows executable;
+- `draftomen-v1.2.3-sha256sums.txt`, containing SHA-256 entries for the two
+  images and the executable.
 
 The release filenames include the tag, and the macOS names include the
-architecture. Releases up to 0.4.2 also published
-`draftomen-v<version>-unsigned-windows.exe`. Later releases ship Windows only
-through the Microsoft Store.
+architecture. Releases 0.5.0 to 0.6.3 did not publish the Windows executable.
 Releases up to 0.4.0 published unsigned macOS DMGs named
 `draftomen-v<version>-unsigned-macos-<arch>.dmg` and a checksum file named
 `draftomen-v<version>-unsigned-sha256sums.txt`. Releases before 0.4.0
@@ -517,7 +517,7 @@ published a single `unsigned-macos.dmg` that ran only on Apple Silicon. Mounting
 Finder or with `hdiutil attach -readonly -nobrowse` shows the app and
 Applications shortcut.
 
-The macOS assets and the Microsoft Store listing are the only published
+The GitHub Release assets and the Microsoft Store listing are the only published
 distribution. Releases after 0.4.0 do not publish to PyPI or update the
 Homebrew tap.
 

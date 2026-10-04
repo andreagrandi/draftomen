@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Stable GitHub Releases and the rolling development prerelease publish the
+  unsigned Windows `.exe` again next to the Microsoft Store listing. The
+  checksum files list it.
+
 ## [0.6.3] - 2026-10-03
 
 - Draft Omen no longer fails to start the live session when you have
