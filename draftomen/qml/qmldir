@@ -1,5 +1,6 @@
 module Draftomen
 AboutDialog 1.0 AboutDialog.qml
+UpdateDialog 1.0 UpdateDialog.qml
 PrivacyDialog 1.0 PrivacyDialog.qml
 DetailedLogsDialog 1.0 DetailedLogsDialog.qml
 TestDraftDialog 1.0 TestDraftDialog.qml

@@ -53,8 +53,10 @@ from draftomen.qt_gui import (
     _parser,
     _preflight_bundled_profile,
     _sync_mocked_draft_capability,
+    _update_check_url,
     run_gui,
 )
+from draftomen.update_check import DEFAULT_VERSION_URL
 from draftomen.qt_adapter import GuiPreferencesAdapter, LiveSessionAdapter
 from draftomen.qt_mock import MockSessionAdapter
 from draftomen.set_profile import load_set_profile
@@ -11914,3 +11916,263 @@ def test_qml_player_facing_text_says_ratings_instead_of_profile() -> None:
     for old_text in ("set profile", "set-profile", "hosted profile", "Hosted profile"):
         assert old_text not in settings
         assert old_text not in banner
+
+
+def test_update_check_adapter_emits_once_for_a_newer_version_offscreen() -> None:
+    probe = """
+from PySide6.QtCore import QCoreApplication
+
+from draftomen.qt_adapter import UpdateCheckAdapter
+
+application = QCoreApplication([])
+calls = []
+results = ["9.9.9", "10.0.0"]
+
+
+def fake_start_check(**kwargs) -> None:
+    calls.append(kwargs)
+    for result in results:
+        kwargs["on_result"](result)
+
+
+adapter = UpdateCheckAdapter(
+    url="https://example.invalid/version.json",
+    installed="1.2.3",
+    start_check=fake_start_check,
+)
+emitted = []
+adapter.updateAvailable.connect(lambda available, installed: emitted.append((available, installed)))
+adapter.start()
+application.processEvents()
+assert emitted == [("9.9.9", "1.2.3")], emitted
+assert len(calls) == 1
+assert calls[0]["url"] == "https://example.invalid/version.json"
+assert calls[0]["installed"] == "1.2.3"
+
+results[:] = [None]
+silent = UpdateCheckAdapter(installed="1.2.3", start_check=fake_start_check)
+silent_emitted = []
+silent.updateAvailable.connect(lambda *values: silent_emitted.append(values))
+silent.start()
+application.processEvents()
+assert silent_emitted == []
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_update_check_adapter_ignores_later_results_after_the_first_offscreen() -> None:
+    probe = """
+from PySide6.QtCore import QCoreApplication
+
+from draftomen.qt_adapter import UpdateCheckAdapter
+
+application = QCoreApplication([])
+
+
+def fake_start_check(**kwargs) -> None:
+    kwargs["on_result"](None)
+    kwargs["on_result"]("2.0.0")
+    kwargs["on_result"]("3.0.0")
+
+
+adapter = UpdateCheckAdapter(installed="1.0.0", start_check=fake_start_check)
+emitted = []
+adapter.updateAvailable.connect(lambda available, installed: emitted.append(available))
+adapter.start()
+application.processEvents()
+adapter.start()
+application.processEvents()
+assert emitted == ["2.0.0"], emitted
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_update_check_adapter_receives_a_background_thread_result_on_the_gui_thread_offscreen() -> None:
+    probe = """
+import threading
+
+from PySide6.QtCore import QCoreApplication, QEventLoop, QThread, QTimer
+
+from draftomen.qt_adapter import UpdateCheckAdapter
+
+application = QCoreApplication([])
+worker_threads = []
+
+
+def fake_start_check(**kwargs) -> None:
+    def work() -> None:
+        worker_threads.append(threading.get_ident())
+        kwargs["on_result"]("4.0.0")
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+adapter = UpdateCheckAdapter(installed="1.0.0", start_check=fake_start_check)
+received = []
+loop = QEventLoop()
+
+
+def on_update(available: str, installed: str) -> None:
+    received.append((available, installed, threading.get_ident()))
+    loop.quit()
+
+
+adapter.updateAvailable.connect(on_update)
+QTimer.singleShot(5000, loop.quit)
+adapter.start()
+loop.exec()
+assert len(received) == 1, received
+assert received[0][:2] == ("4.0.0", "1.0.0")
+assert received[0][2] == threading.main_thread().ident
+assert received[0][2] != worker_threads[0]
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_qml_update_dialog_opens_once_and_links_to_downloads_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl, Qt, Slot
+from PySide6.QtGui import QAccessible, QDesktopServices, QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter, UpdateCheckAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+class UrlHandler(QObject):
+    def __init__(self) -> None:
+        super().__init__()
+        self.urls: list[str] = []
+
+    @Slot(QUrl)
+    def openUrl(self, url: QUrl) -> None:
+        self.urls.append(url.toString())
+
+
+callbacks = []
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = MockSessionAdapter(session=MockLiveSession(scenario="warning"))
+preferences_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+checker = UpdateCheckAdapter(
+    installed="1.0.0",
+    start_check=lambda **kwargs: callbacks.append(kwargs["on_result"]),
+)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 680)
+context.setContextProperty("initialWindowHeight", 640)
+engine.setInitialProperties({"provider": provider, "updateChecker": checker})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+assert engine.rootObjects()
+root = engine.rootObjects()[0]
+root.resize(680, 640)
+application.processEvents()
+
+dialog = root.findChild(QObject, "updateDialog")
+assert dialog is not None and dialog.property("visible") is False
+before_state = provider.state.copy()
+
+checker.start()
+callbacks[0]("2.5.0")
+application.processEvents()
+assert dialog.property("visible") is True
+
+expected_message = (
+    "Version 2.5.0 is available. You are using 1.0.0. On macOS, download it from the "
+    "website. On Windows, it should reach the Microsoft Store soon, or you can get the "
+    "unsigned build from the GitHub release page."
+)
+assert dialog.property("title") == "Update available"
+message = root.findChild(QObject, "updateDialogMessage")
+assert message is not None and message.property("text") == expected_message
+accessible_message = QAccessible.queryAccessibleInterface(message)
+assert accessible_message is not None
+assert accessible_message.text(QAccessible.Text.Name) == expected_message
+
+expected = {
+    "updateDialogWebsite": ("https://www.draftomen.com", "websiteUrl"),
+    "updateDialogStore": ("https://apps.microsoft.com/detail/9NPCD3VLZQMX", "storeUrl"),
+    "updateDialogReleases": ("https://github.com/andreagrandi/draftomen/releases", "releasesUrl"),
+}
+url_handler = UrlHandler()
+QDesktopServices.setUrlHandler("https", url_handler, "openUrl")
+try:
+    opened = []
+    for name, (url, property_name) in expected.items():
+        button = root.findChild(QObject, name)
+        assert button is not None and button.isVisible()
+        assert dialog.property(property_name) == url
+        accessible = QAccessible.queryAccessibleInterface(button)
+        assert accessible is not None
+        assert accessible.text(QAccessible.Text.Name)
+        assert accessible.text(QAccessible.Text.Description) == url
+        button.forceActiveFocus()
+        QTest.keyClick(root, Qt.Key_Space)
+        application.processEvents()
+        opened.append(url)
+        assert url_handler.urls == opened, url_handler.urls
+        assert provider.state == before_state
+
+    close = root.findChild(QObject, "updateDialogCloseButton")
+    assert close is not None and close.property("text") == "Close"
+    close.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    application.processEvents()
+    assert dialog.property("visible") is False
+    assert provider.state == before_state
+
+    callbacks[0]("3.0.0")
+    application.processEvents()
+    assert dialog.property("visible") is False
+    assert message.property("text") == expected_message
+finally:
+    QDesktopServices.unsetUrlHandler("https")
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--smoke-test"],
+        ["--smoke-test-until-complete"],
+        ["--test-draft-smoke"],
+        ["--screenshot", "/tmp/shot.png"],
+    ],
+)
+def test_update_check_is_skipped_in_automation_modes(flags: list[str]) -> None:
+    args = _parser().parse_args(flags)
+
+    assert _update_check_url(args=args) is None
+    explicit = _parser().parse_args([*flags, "--update-check-url", "http://127.0.0.1:1/v.json"])
+    assert _update_check_url(args=explicit) == "http://127.0.0.1:1/v.json"
+
+
+def test_update_check_uses_the_website_by_default() -> None:
+    assert _update_check_url(args=_parser().parse_args([])) == DEFAULT_VERSION_URL

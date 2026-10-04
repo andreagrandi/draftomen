@@ -18,8 +18,12 @@
   date. (#919)
 - Draft Omen can check `version.json` on the website for a newer release on a
   background thread. Network errors, HTTP errors, a bad response and an
-  unknown installed version log a warning and report no update. The app does
-  not run the check yet. (#920)
+  unknown installed version log a warning and report no update. (#920)
+- The desktop app checks the website for a newer release when it starts. If
+  one exists, an "Update available" dialog names both versions and links to
+  the website, the Microsoft Store listing and the GitHub releases page. The
+  dialog appears at most once per launch, and the smoke and screenshot modes
+  skip the check. (#921)
 
 ## [0.6.3] - 2026-10-03
 
