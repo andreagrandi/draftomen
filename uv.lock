@@ -230,6 +230,7 @@ version = "0.6.3"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
+    { name = "packaging" },
     { name = "pyside6" },
     { name = "python-socketio", extra = ["client"] },
     { name = "textual" },
@@ -251,6 +252,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "certifi", specifier = ">=2026.7.22" },
+    { name = "packaging", specifier = ">=26.2" },
     { name = "pyside6", specifier = ">=6.9,<7" },
     { name = "python-socketio", extras = ["client"], specifier = ">=5.16.4,<6" },
     { name = "textual", specifier = ">=8.2.8" },
