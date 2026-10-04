@@ -24,6 +24,10 @@
   the website, the Microsoft Store listing and the GitHub releases page. The
   dialog appears at most once per launch, and the smoke and screenshot modes
   skip the check. (#921)
+- Draft Omen now loads card data for a Quick Draft pack when the log has no
+  event join or course line for that draft. Before, those packs got no
+  recommendations, and `draftomen-tui watch --plain` stopped with "Shared live
+  session did not score the offered pack". (#918)
 
 ## [0.6.3] - 2026-10-03
 

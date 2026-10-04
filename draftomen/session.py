@@ -2392,7 +2392,11 @@ class LiveSession:
         """
 
         draft_format = detect_draft_format(event_name=event.event_name)
-        if draft_format is None or draft_format is DraftFormat.QUICK:
+        if draft_format is None:
+            return True
+        # Quick Drafts load card data when the log shows the event join or
+        # the course. A pack seen without either still needs to load it here.
+        if draft_format is DraftFormat.QUICK and self._card_database is not None:
             return True
         identity = (
             event.account_id,

@@ -578,6 +578,45 @@ def test_plain_watch_surfaces_selected_card_data_failure(tmp_path: Path) -> None
         watcher.close()
 
 
+def test_plain_watch_renders_second_quick_draft_first_pack_without_event_join_or_course(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "Player.log"
+    fixture_lines = FIXTURE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    second_first_pack = fixture_lines[6].replace(
+        '\\"DraftPack\\":[\\"104894\\"',
+        '\\"DraftPack\\":[\\"104979\\"',
+    )
+    assert second_first_pack != fixture_lines[6]
+    _append_lines(
+        path=log_path,
+        lines=[
+            *fixture_lines[:2],
+            *fixture_lines[4:10],
+            *fixture_lines[4:6],
+            second_first_pack,
+        ],
+    )
+    database = _fixture_card_database()
+
+    def loader(set_code: str, *, allow_network: bool) -> CardDatabase:
+        return database
+
+    watcher = PlainLogWatcher(
+        log_path=log_path,
+        app_dir=tmp_path / "app",
+        set_card_data_loader=loader,
+        poll_interval=0.01,
+    )
+    try:
+        output = watcher.scan_startup_files()
+    finally:
+        watcher.close()
+
+    assert output.count("Pack 1 of 3, Pick 1 of 14") == 2
+    assert output.count("Pack 1 of 3, Pick 2 of 14") == 1
+
+
 def test_plain_watch_renders_accountless_draft_event_without_crashing(
     tmp_path: Path,
 ) -> None:
