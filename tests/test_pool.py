@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from draftomen.audit import DraftAuditStore, load_draft_audit_records
 from draftomen.events import (
     AccountEvent,
     DraftCompletedEvent,
@@ -393,9 +394,176 @@ def test_conflicting_first_pack_starts_new_synthetic_draft_state(
         selected_grp_ids=(),
     )
     assert sorted(path.name for path in (tmp_path / "state" / "ACCOUNT-A").iterdir()) == [
-        "QuickDraft_ABC_20260703-2026-07-03T12_00_00+00_00.json",
+        "QuickDraft_ABC_20260703-20260703T120000Z.json",
         "QuickDraft_ABC_20260703.json",
     ]
+
+
+def test_pack_conflict_draft_id_has_no_characters_windows_rejects(
+    tmp_path: Path,
+) -> None:
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name="First"))
+    _pick_first_card(store=store, offered_grp_ids=(101, 102))
+
+    state = _offer_first_pack(store=store, offered_grp_ids=(201, 202))
+
+    assert state.draft_id == "QuickDraft_ABC_20260703-20260703T120000Z"
+    assert not set('<>:"|?*').intersection(state.draft_id)
+
+
+def test_pack_conflicts_within_one_second_get_distinct_draft_ids(
+    tmp_path: Path,
+) -> None:
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name="First"))
+    _pick_first_card(store=store, offered_grp_ids=(101, 102))
+    second = _pick_first_card(store=store, offered_grp_ids=(201, 202))
+
+    third = _offer_first_pack(store=store, offered_grp_ids=(301, 302))
+
+    assert second.draft_id == "QuickDraft_ABC_20260703-20260703T120000Z"
+    assert third.draft_id == "QuickDraft_ABC_20260703-20260703T120000Z-2"
+    assert sorted(path.name for path in (tmp_path / "state" / "ACCOUNT-A").iterdir()) == [
+        "QuickDraft_ABC_20260703-20260703T120000Z-2.json",
+        "QuickDraft_ABC_20260703-20260703T120000Z.json",
+        "QuickDraft_ABC_20260703.json",
+    ]
+
+
+@pytest.mark.parametrize("character", list('<>:"|?*'))
+def test_new_draft_with_non_portable_draft_id_raises_and_writes_nothing(
+    tmp_path: Path,
+    character: str,
+) -> None:
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    with pytest.raises(DraftPoolError, match="draft_id"):
+        store.consume(
+            event=DraftStartedEvent(
+                event_name="QuickDraft_ABC_20260703",
+                set_code="ABC",
+                course_id=f"course{character}id",
+                account_id="ACCOUNT-A",
+            )
+        )
+
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("character", list('<>:"|?*'))
+def test_new_draft_with_non_portable_account_id_raises_and_writes_nothing(
+    tmp_path: Path,
+    character: str,
+) -> None:
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    with pytest.raises(DraftPoolError, match="account_id"):
+        store.consume(
+            event=PackOfferedEvent(
+                event_name="QuickDraft_ABC_20260703",
+                set_code="ABC",
+                pack_number=0,
+                pick_number=0,
+                offered_grp_ids=(101, 102),
+                pool_grp_ids=(),
+                account_id=f"ACCOUNT{character}A",
+            )
+        )
+
+    assert not (tmp_path / "state").exists()
+
+
+def test_legacy_draft_id_with_colons_keeps_loading_and_recording(
+    tmp_path: Path,
+) -> None:
+    legacy_id = "QuickDraft_ABC_20260703-2026-07-03T12:00:00+00:00"
+    legacy_state = DraftState(
+        account_id="ACCOUNT-A",
+        draft_id=legacy_id,
+        event_name="QuickDraft_ABC_20260703",
+        set_code="ABC",
+        course_id=None,
+        started_at=FIXTURE_NOW.isoformat(),
+        updated_at=FIXTURE_NOW.isoformat(),
+        completed_at=None,
+        completed=False,
+        picks=(),
+        pool_grp_ids=(),
+        account_screen_name=None,
+    )
+    save_draft_state(state=legacy_state, app_dir=tmp_path)
+    audit = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+    audit.record_draft_started(state=legacy_state)
+
+    store = DraftPoolStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.consume(event=AccountEvent(client_id="ACCOUNT-A", screen_name="First"))
+    picked = _pick_first_card(store=store, offered_grp_ids=(101, 102))
+    audit.record_choice(
+        state=picked,
+        event=PickMadeEvent(
+            event_name="QuickDraft_ABC_20260703",
+            set_code="ABC",
+            pack_number=0,
+            pick_number=0,
+            selected_grp_ids=(101,),
+            account_id=None,
+        ),
+        ranking_mode="score",
+    )
+
+    loaded = load_draft_state(account_id="ACCOUNT-A", draft_id=legacy_id, app_dir=tmp_path)
+    records = load_draft_audit_records(
+        account_id="ACCOUNT-A",
+        draft_id=legacy_id,
+        app_dir=tmp_path,
+    )
+    assert picked.draft_id == legacy_id
+    assert loaded.pool_grp_ids == (101,)
+    assert [record["record_type"] for record in records] == [
+        "draft_started",
+        "choice_made",
+    ]
+
+
+def _offer_first_pack(
+    *,
+    store: DraftPoolStore,
+    offered_grp_ids: tuple[int, ...],
+) -> DraftState:
+    state = store.consume(
+        event=PackOfferedEvent(
+            event_name="QuickDraft_ABC_20260703",
+            set_code="ABC",
+            pack_number=0,
+            pick_number=0,
+            offered_grp_ids=offered_grp_ids,
+            pool_grp_ids=(),
+            account_id=None,
+        )
+    )
+    assert state is not None
+    return state
+
+
+def _pick_first_card(
+    *,
+    store: DraftPoolStore,
+    offered_grp_ids: tuple[int, ...],
+) -> DraftState:
+    _offer_first_pack(store=store, offered_grp_ids=offered_grp_ids)
+    state = store.consume(
+        event=PickMadeEvent(
+            event_name="QuickDraft_ABC_20260703",
+            set_code="ABC",
+            pack_number=0,
+            pick_number=0,
+            selected_grp_ids=(offered_grp_ids[0],),
+            account_id=None,
+        )
+    )
+    assert state is not None
+    return state
 
 
 _REPEAT_EVENT = "QuickDraft_ABC_20260703"
