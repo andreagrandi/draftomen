@@ -65,17 +65,29 @@ def draft_audit_path(
     app_dir: PathInput,
 ) -> Path:
     """Return the append-only JSONL path for one account and draft.
-    Path segments are validated before being used on disk.
+    Colons become underscores unless an older log already uses the raw id.
     """
 
     safe_draft_id = _path_segment(value=draft_id, field_name="draft_id")
-    return (
+    account_directory = (
         Path(app_dir)
         / AUDIT_DIRECTORY_NAME
         / DRAFT_AUDIT_DIRECTORY_NAME
         / _path_segment(value=account_id, field_name="account_id")
-        / f"{safe_draft_id}.jsonl"
     )
+    portable_path = account_directory / f"{safe_draft_id.replace(':', '_')}.jsonl"
+    if ":" not in safe_draft_id:
+        return portable_path
+
+    # Logs written before ids were made portable kept the colons. Windows
+    # rejects such names, but on macOS and Linux they hold earlier records.
+    legacy_path = account_directory / f"{safe_draft_id}.jsonl"
+    try:
+        legacy_exists = legacy_path.is_file()
+    except OSError:
+        legacy_exists = False
+
+    return legacy_path if legacy_exists else portable_path
 
 
 def load_draft_audit_records(
@@ -88,11 +100,16 @@ def load_draft_audit_records(
     Malformed lines fail with their one-based line number.
     """
 
-    path = draft_audit_path(
-        account_id=account_id,
-        draft_id=draft_id,
-        app_dir=app_dir,
+    return _read_audit_records(
+        path=draft_audit_path(
+            account_id=account_id,
+            draft_id=draft_id,
+            app_dir=app_dir,
+        )
     )
+
+
+def _read_audit_records(*, path: Path) -> tuple[AuditRecord, ...]:
     if not path.exists():
         return ()
 
@@ -403,13 +420,7 @@ class DraftAuditStore:
 
         self._known_record_ids[path] = set()
         self._closed_decision_ids[path] = set()
-        account_id = path.parent.name
-        draft_id = path.stem
-        for record in load_draft_audit_records(
-            account_id=account_id,
-            draft_id=draft_id,
-            app_dir=self.app_dir,
-        ):
+        for record in _read_audit_records(path=path):
             self._remember_record(path=path, record=record)
 
         self._indexed_paths.add(path)
