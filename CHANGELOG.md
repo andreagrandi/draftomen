@@ -12,6 +12,10 @@
   that Draft Omen makes up for these drafts no longer contain colons, and a
   new draft whose id has a character Windows forbids in file names now fails
   with a clear error. Drafts saved earlier keep loading. (#915)
+- On Windows, a draft that an earlier version saved with colons in its id
+  now records audit entries and shows pick recommendations again. Its audit
+  log file name uses underscores instead of colons. On macOS, an existing
+  audit log with colons in its name keeps receiving new records.
 - The website publishes the latest released version at
   `https://www.draftomen.com/version.json`, so the desktop app can check for
   updates. The release output check fails when the file is missing or out of

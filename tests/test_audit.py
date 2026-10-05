@@ -41,6 +41,7 @@ from draftomen.set_profile import (
 
 ACCOUNT_ID = "account-a"
 DRAFT_ID = "draft-a"
+COLON_DRAFT_ID = "PremierDraft_ABC_20260727-2026-07-27T10:00:00+00:00"
 EVENT_NAME = "QuickDraft_ABC_20260727"
 SET_CODE = "ABC"
 
@@ -1000,6 +1001,84 @@ def test_audit_path_rejects_unsafe_account_and_draft_ids(tmp_path: Path) -> None
             draft_id="draft/name",
             app_dir=tmp_path,
         )
+
+
+def test_audit_colon_draft_id_writes_a_file_name_windows_accepts(
+    tmp_path: Path,
+) -> None:
+    state = replace(_draft_state(), draft_id=COLON_DRAFT_ID)
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+
+    path = store.record_draft_started(state=state)
+
+    assert path.name == "PremierDraft_ABC_20260727-2026-07-27T10_00_00+00_00.jsonl"
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=COLON_DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert [record["draft_id"] for record in records] == [COLON_DRAFT_ID]
+
+
+def test_audit_colon_draft_id_keeps_appending_to_an_existing_legacy_log(
+    tmp_path: Path,
+) -> None:
+    state = replace(_draft_state(), draft_id=COLON_DRAFT_ID)
+    legacy_path = tmp_path / "audit" / "drafts" / ACCOUNT_ID / f"{COLON_DRAFT_ID}.jsonl"
+    DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock).record_draft_started(
+        state=state
+    )
+    portable_path = draft_audit_path(
+        account_id=ACCOUNT_ID,
+        draft_id=COLON_DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    portable_path.rename(legacy_path)
+
+    store = DraftAuditStore(app_dir=tmp_path, clock=_fixed_clock)
+    store.record_draft_started(state=state)
+    path = store.record_choice(
+        state=state,
+        event=PickMadeEvent(
+            event_name=EVENT_NAME,
+            set_code=SET_CODE,
+            pack_number=1,
+            pick_number=1,
+            selected_grp_ids=(101,),
+            account_id=ACCOUNT_ID,
+        ),
+        ranking_mode="score",
+    )
+
+    assert path == legacy_path
+    assert not portable_path.exists()
+    records = load_draft_audit_records(
+        account_id=ACCOUNT_ID,
+        draft_id=COLON_DRAFT_ID,
+        app_dir=tmp_path,
+    )
+    assert [record["record_type"] for record in records] == [
+        "draft_started",
+        "choice_made",
+    ]
+
+
+def test_audit_colon_draft_id_uses_the_portable_path_when_the_legacy_check_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_colon_names(self: Path) -> bool:
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(audit_module.Path, "is_file", reject_colon_names)
+
+    path = draft_audit_path(
+        account_id=ACCOUNT_ID,
+        draft_id=COLON_DRAFT_ID,
+        app_dir=tmp_path,
+    )
+
+    assert ":" not in path.name
 
 
 def test_audit_file_is_compact_jsonl_with_one_object_per_record(tmp_path: Path) -> None:
