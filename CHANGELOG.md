@@ -16,6 +16,9 @@
   now records audit entries and shows pick recommendations again. Its audit
   log file name uses underscores instead of colons. On macOS, an existing
   audit log with colons in its name keeps receiving new records.
+- Dismissing an error that is already gone, such as with a second click on
+  the dismiss button, no longer logs "Unknown session error" or shows a
+  background work failure.
 - The website publishes the latest released version at
   `https://www.draftomen.com/version.json`, so the desktop app can check for
   updates. The release output check fails when the file is missing or out of

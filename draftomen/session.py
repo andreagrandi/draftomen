@@ -3254,14 +3254,19 @@ class LiveSession:
 
     def _dismiss_error(self, *, error_id: str) -> None:
         with self._state_lock:
-            if not any(error.error_id == error_id for error in self.snapshot.errors):
-                raise ValueError(f"Unknown session error {error_id!r}.")
-
             error = next(
-                error
-                for error in self.snapshot.errors
-                if error.error_id == error_id
+                (
+                    candidate
+                    for candidate in self.snapshot.errors
+                    if candidate.error_id == error_id
+                ),
+                None,
             )
+            # Frontends can send a dismiss for an error that is already gone,
+            # such as a second click before the next snapshot arrives.
+            if error is None:
+                return
+
             if error.operation is OperationKind.RATINGS:
                 prefix = "ratings:"
                 if error_id.startswith(prefix):

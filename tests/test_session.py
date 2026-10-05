@@ -4608,6 +4608,27 @@ def test_live_session_startup_scan_failure_reports_an_error_and_keeps_polling(
     assert [error.code for error in polled.errors] == ["startup_scan_failed"]
 
 
+def test_live_session_dismissing_an_error_twice_keeps_the_second_dismiss_silent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = LiveSession(log_path=tmp_path / "Player.log", app_dir=tmp_path / "app")
+
+    def fail_processing(**kwargs: object) -> None:
+        del kwargs
+        raise DraftPoolError("Multiple completed drafts match 'Event'.")
+
+    monkeypatch.setattr(session, "process_lines", fail_processing)
+    session.scan_startup_files()
+    monkeypatch.undo()
+
+    dismissed = session.dispatch(command=DismissError(error_id="startup-scan"))
+    dismissed_again = session.dispatch(command=DismissError(error_id="startup-scan"))
+
+    assert dismissed.errors == ()
+    assert dismissed_again is dismissed
+
+
 def test_live_session_startup_scan_refreshes_setup_for_account_only_previous_log(
     tmp_path: Path,
 ) -> None:
