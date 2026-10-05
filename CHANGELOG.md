@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-10-05
+
 - Stable GitHub Releases and the rolling development prerelease publish the
   unsigned Windows `.exe` again next to the Microsoft Store listing. The
   checksum files list it.
