@@ -226,7 +226,7 @@ wheels = [
 
 [[package]]
 name = "draftomen"
-version = "0.6.3"
+version = "0.6.4"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
