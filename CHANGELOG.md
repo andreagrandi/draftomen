@@ -8,6 +8,9 @@
   so Store users no longer see an update before the Store has it. The update
   dialog shows only the download link for how Draft Omen was installed:
   the Store listing, the GitHub releases page or the website. (#932)
+- Dependabot groups its updates into one pull request per ecosystem and waits
+  7 days after a release before proposing a new version. It now also covers
+  the npm dependencies in `website/` and `extensions/`.
 
 ## [0.6.4] - 2026-10-05
 
