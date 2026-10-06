@@ -30,7 +30,7 @@ dependencies = [
     "pyside6>=6.9,<7",
     "python-socketio[client]>=5.16.4,<6",
     "textual>=8.2.8",
-    "textual-image>=0.13.2",
+    "textual-image>=0.14.1",
     "truststore>=0.10.0",
     "winrt-runtime>=3.2.1; sys_platform == 'win32'",
     "winrt-Windows.ApplicationModel>=3.2.1; sys_platform == 'win32'",
