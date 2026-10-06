@@ -26,9 +26,9 @@ classifiers = [
 ]
 dependencies = [
     "certifi>=2026.7.22",
-    "packaging>=26.2",
+    "packaging>=26.3",
     "pyside6>=6.9,<7",
-    "python-socketio[client]>=5.16.4,<6",
+    "python-socketio[client]>=5.17.0,<6",
     "textual>=8.2.8",
     "textual-image>=0.14.1",
     "truststore>=0.10.0",
