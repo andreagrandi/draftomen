@@ -12102,9 +12102,7 @@ application.processEvents()
 assert dialog.property("visible") is True
 
 expected_message = (
-    "Version 2.5.0 is available. You are using 1.0.0. On macOS, download it from the "
-    "website. On Windows, it should reach the Microsoft Store soon, or you can get the "
-    "unsigned build from the GitHub release page."
+    "Version 2.5.0 is available. You are using 1.0.0. Download it from the website."
 )
 assert dialog.property("title") == "Update available"
 message = root.findChild(QObject, "updateDialogMessage")
@@ -12115,9 +12113,10 @@ assert accessible_message.text(QAccessible.Text.Name) == expected_message
 
 expected = {
     "updateDialogWebsite": ("https://www.draftomen.com", "websiteUrl"),
-    "updateDialogStore": ("https://apps.microsoft.com/detail/9NPCD3VLZQMX", "storeUrl"),
-    "updateDialogReleases": ("https://github.com/andreagrandi/draftomen/releases", "releasesUrl"),
 }
+for hidden in ("updateDialogStore", "updateDialogReleases"):
+    hidden_button = root.findChild(QObject, hidden)
+    assert hidden_button is not None and not hidden_button.isVisible()
 url_handler = UrlHandler()
 QDesktopServices.setUrlHandler("https", url_handler, "openUrl")
 try:
@@ -12152,6 +12151,122 @@ try:
 finally:
     QDesktopServices.unsetUrlHandler("https")
 """
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_update_check_adapter_passes_the_install_channel_to_the_check_offscreen() -> None:
+    probe = """
+from PySide6.QtCore import QCoreApplication
+
+from draftomen.qt_adapter import UpdateCheckAdapter
+
+application = QCoreApplication([])
+calls = []
+
+
+def fake_start_check(**kwargs) -> None:
+    calls.append(kwargs)
+
+
+for channel, store in (("store", True), ("github", False), ("website", False)):
+    adapter = UpdateCheckAdapter(channel=channel, start_check=fake_start_check)
+    assert adapter.property("channel") == channel
+    adapter.start()
+    assert calls[-1]["store"] is store, (channel, calls[-1])
+
+default = UpdateCheckAdapter(start_check=fake_start_check)
+assert default.property("channel") == "website"
+default.start()
+assert calls[-1]["store"] is False
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("channel", "instruction", "visible_button"),
+    [
+        ("store", "Get it from the Microsoft Store.", "updateDialogStore"),
+        (
+            "github",
+            "Download the unsigned build from the GitHub releases page.",
+            "updateDialogReleases",
+        ),
+        ("website", "Download it from the website.", "updateDialogWebsite"),
+    ],
+)
+def test_qml_update_dialog_shows_the_message_and_button_for_the_channel_offscreen(
+    channel: str, instruction: str, visible_button: str
+) -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter, UpdateCheckAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+callbacks = []
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = MockSessionAdapter(session=MockLiveSession(scenario="warning"))
+preferences_dir = TemporaryDirectory()
+preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+checker = UpdateCheckAdapter(
+    installed="1.0.0",
+    channel="__CHANNEL__",
+    start_check=lambda **kwargs: callbacks.append(kwargs["on_result"]),
+)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 680)
+context.setContextProperty("initialWindowHeight", 640)
+engine.setInitialProperties({"provider": provider, "updateChecker": checker})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+assert engine.rootObjects()
+root = engine.rootObjects()[0]
+root.resize(680, 640)
+application.processEvents()
+
+dialog = root.findChild(QObject, "updateDialog")
+checker.start()
+callbacks[0]("2.5.0")
+application.processEvents()
+assert dialog.property("visible") is True
+assert dialog.property("channel") == "__CHANNEL__"
+
+message = root.findChild(QObject, "updateDialogMessage")
+expected_message = "Version 2.5.0 is available. You are using 1.0.0. __INSTRUCTION__"
+assert message.property("text") == expected_message, message.property("text")
+
+for name in ("updateDialogWebsite", "updateDialogStore", "updateDialogReleases"):
+    button = root.findChild(QObject, name)
+    assert button is not None
+    assert button.isVisible() is (name == "__VISIBLE__"), name
+"""
+    probe = (
+        probe.replace("__CHANNEL__", channel)
+        .replace("__INSTRUCTION__", instruction)
+        .replace("__VISIBLE__", visible_button)
+    )
     completed = _run_qml_probe(probe)
 
     assert completed.returncode == 0, completed.stderr

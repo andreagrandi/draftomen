@@ -74,7 +74,7 @@ from draftomen.test_draft import (
     supported_test_draft_sets,
 )
 from draftomen.tls import use_system_trust_store
-from draftomen.update_check import DEFAULT_VERSION_URL
+from draftomen.update_check import DEFAULT_VERSION_URL, install_channel
 from draftomen.profile_client import (
     BUNDLED_PROFILE_BYTES,
     BUNDLED_PROFILE_EVENT_FORMAT,
@@ -1384,7 +1384,11 @@ def run_gui(
     update_check_url = _update_check_url(args=args)
     update_checker = None
     if update_check_url is not None:
-        update_checker = UpdateCheckAdapter(url=update_check_url, parent=application)
+        update_checker = UpdateCheckAdapter(
+            url=update_check_url,
+            channel=install_channel(),
+            parent=application,
+        )
         initial_properties["updateChecker"] = update_checker
     engine.setInitialProperties(initial_properties)
 

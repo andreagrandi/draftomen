@@ -7,16 +7,22 @@ Dialog {
 
     property string availableVersion: ""
     property string installedVersion: ""
+    property string channel: "website"
     property var returnFocusItem: null
     readonly property string websiteUrl: "https://www.draftomen.com"
     readonly property string storeUrl: "https://apps.microsoft.com/detail/9NPCD3VLZQMX"
     readonly property string releasesUrl: "https://github.com/andreagrandi/draftomen/releases"
     readonly property string message: (
         "Version " + root.availableVersion + " is available. You are using "
-        + root.installedVersion + ". On macOS, download it from the website. "
-        + "On Windows, it should reach the Microsoft Store soon, or you can get "
-        + "the unsigned build from the GitHub release page."
+        + root.installedVersion + ". " + root.channelInstruction
     )
+    readonly property string channelInstruction: {
+        if (root.channel === "store")
+            return "Get it from the Microsoft Store."
+        if (root.channel === "github")
+            return "Download the unsigned build from the GitHub releases page."
+        return "Download it from the website."
+    }
 
     objectName: "updateDialog"
     parent: Overlay.overlay
@@ -79,6 +85,7 @@ Dialog {
 
         DimensionalButton {
             objectName: "updateDialogWebsite"
+            visible: root.channel !== "store" && root.channel !== "github"
             Layout.alignment: Qt.AlignHCenter
             text: "Website download page"
             implicitWidth: 200
@@ -89,6 +96,7 @@ Dialog {
 
         DimensionalButton {
             objectName: "updateDialogStore"
+            visible: root.channel === "store"
             Layout.alignment: Qt.AlignHCenter
             text: "Microsoft Store listing"
             implicitWidth: 200
@@ -99,6 +107,7 @@ Dialog {
 
         DimensionalButton {
             objectName: "updateDialogReleases"
+            visible: root.channel === "github"
             Layout.alignment: Qt.AlignHCenter
             text: "GitHub releases"
             implicitWidth: 200
