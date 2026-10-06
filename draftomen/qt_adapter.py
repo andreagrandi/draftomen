@@ -49,7 +49,12 @@ from draftomen.preferences import (
 from draftomen.profile_client import ProfileClient
 from draftomen.ranking import RankingMode
 from draftomen.replay import format_draft_format
-from draftomen.update_check import DEFAULT_VERSION_URL, start_update_check
+from draftomen.update_check import (
+    DEFAULT_VERSION_URL,
+    STORE_CHANNEL,
+    WEBSITE_CHANNEL,
+    start_update_check,
+)
 from draftomen.session import (
     AugmentedModelRequest,
     CardImageFetchResult,
@@ -493,8 +498,8 @@ class _GuiPreferencesSaveThread(QThread):
 
 
 class UpdateCheckAdapter(QObject):
-    """Run the website update check and announce a newer version once per launch.
-    The worker thread hands its result to the GUI thread through a queued signal.
+    """Run the update check for the install channel and announce a newer version once per launch.
+    The Store channel asks the Microsoft Store, and the worker thread hands its result to the GUI thread through a queued signal.
     """
 
     updateAvailable = Signal(str, str)
@@ -505,11 +510,13 @@ class UpdateCheckAdapter(QObject):
         *,
         url: str = DEFAULT_VERSION_URL,
         installed: str = __version__,
+        channel: str = WEBSITE_CHANNEL,
         start_check: Callable[..., object] = start_update_check,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._url = url
+        self._channel = channel
         self._installed = installed
         self._start_check = start_check
         self._announced = False
@@ -522,7 +529,12 @@ class UpdateCheckAdapter(QObject):
             on_result=self._resultReady.emit,
             url=self._url,
             installed=self._installed,
+            store=self._channel == STORE_CHANNEL,
         )
+
+    @Property(str, constant=True)
+    def channel(self) -> str:
+        return self._channel
 
     @Slot(object)
     def _handle_result(self, available: object) -> None:

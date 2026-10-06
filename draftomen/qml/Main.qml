@@ -148,6 +148,7 @@ ApplicationWindow {
         function onUpdateAvailable(available, installed) {
             updateDialog.availableVersion = available
             updateDialog.installedVersion = installed
+            updateDialog.channel = window.updateChecker.channel
             updateDialog.open()
         }
     }

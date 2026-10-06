@@ -1059,6 +1059,43 @@ def test_native_builds_sync_the_locked_draftmancer_transport_and_socketio() -> N
         assert {"--quiet", "--noinclude-qt-translations"} <= set(nuitka_args)
 
 
+WINRT_PACKAGES = {
+    "winrt-runtime",
+    "winrt-windows-applicationmodel",
+    "winrt-windows-foundation",
+    "winrt-windows-foundation-collections",
+    "winrt-windows-services-store",
+}
+
+
+def test_windows_store_update_check_dependencies_are_declared_and_bundled() -> None:
+    """The Store update check needs the winrt packages on Windows only, in the lock and the exe."""
+
+    dependencies = _read_project_metadata()["dependencies"]
+    assert isinstance(dependencies, list)
+    winrt_requirements = [
+        item for item in dependencies if _requirement_name(item) in WINRT_PACKAGES
+    ]
+    assert {_requirement_name(item) for item in winrt_requirements} == WINRT_PACKAGES
+    for requirement in winrt_requirements:
+        assert "sys_platform == 'win32'" in requirement.replace('"', "'"), requirement
+
+    with (PROJECT_ROOT / "uv.lock").open(mode="rb") as lock_file:
+        locked_packages = tomllib.load(lock_file)["package"]
+    project_package = next(
+        package for package in locked_packages if package["name"] == "draftomen"
+    )
+    locked_dependencies = {entry["name"] for entry in project_package["dependencies"]}
+    assert WINRT_PACKAGES <= locked_dependencies
+
+    windows_args = shlex.split(
+        _read_spec(path=SPEC_PATHS["windows"])["nuitka"]["extra_args"]
+    )
+    macos_args = shlex.split(_read_spec(path=SPEC_PATHS["macos"])["nuitka"]["extra_args"])
+    assert "--include-package=winrt" in windows_args
+    assert "--include-package=winrt" not in macos_args
+
+
 def _read_native_bundle_matrix() -> list[dict[str, str]]:
     workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
         encoding="utf-8"

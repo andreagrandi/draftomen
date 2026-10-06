@@ -32,6 +32,11 @@ dependencies = [
     "textual>=8.2.8",
     "textual-image>=0.13.2",
     "truststore>=0.10.0",
+    "winrt-runtime>=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.ApplicationModel>=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Foundation>=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections>=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Services.Store>=3.2.1; sys_platform == 'win32'",
 ]
 
 [project.scripts]

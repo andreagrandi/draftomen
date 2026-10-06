@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- The Microsoft Store build asks the Store for updates instead of the website,
+  so Store users no longer see an update before the Store has it. The update
+  dialog shows only the download link for how Draft Omen was installed:
+  the Store listing, the GitHub releases page or the website. (#932)
+
 ## [0.6.4] - 2026-10-05
 
 - Stable GitHub Releases and the rolling development prerelease publish the
