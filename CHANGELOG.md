@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Bonus-sheet cards such as Enchanting Tales in Wilds of Eldraine packs are no
+  longer shown as unknown cards. `export-set-data SET` now adds them from the
+  17Lands card ratings. (#942)
 - The Microsoft Store build asks the Store for updates instead of the website,
   so Store users no longer see an update before the Store has it. The update
   dialog shows only the download link for how Draft Omen was installed:

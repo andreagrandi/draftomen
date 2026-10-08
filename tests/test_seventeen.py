@@ -26,6 +26,9 @@ from draftomen.seventeen import (
     SeventeenLandsDownloadProgress,
     SeventeenLandsError,
     fetch_17lands_expansion_inventory,
+    fetch_17lands_rated_cards,
+    parse_17lands_rated_cards,
+    SeventeenLandsRatedCard,
     parse_17lands_expansion_inventory,
     build_17lands_structure_targets_from_draft_rows,
     augment_card_database_from_ratings,
@@ -795,3 +798,96 @@ def _pair_card_rating_row() -> dict[str, object]:
         "ever_drawn_win_rate": 0.66,
         "drawn_improvement_win_rate": 0.04,
     }
+
+
+def test_parse_17lands_rated_cards_reads_name_and_arena_id() -> None:
+    rows = [{"name": "Alpha", "mtga_id": 11, "extra": 1}, {"name": "Beta", "mtga_id": 12}]
+    expected = (
+        SeventeenLandsRatedCard(name="Alpha", arena_id=11),
+        SeventeenLandsRatedCard(name="Beta", arena_id=12),
+    )
+
+    assert parse_17lands_rated_cards(rows) == expected
+    assert parse_17lands_rated_cards({"copyright": "x", "data": rows}) == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "Alpha", "mtga_id": 11},
+        {"data": {"name": "Alpha", "mtga_id": 11}},
+        ["Alpha"],
+        [{"mtga_id": 11}],
+        [{"name": "", "mtga_id": 11}],
+        [{"name": "Alpha"}],
+        [{"name": "Alpha", "mtga_id": 0}],
+        [{"name": "Alpha", "mtga_id": True}],
+        [{"name": "Alpha", "mtga_id": "11"}],
+    ],
+)
+def test_parse_17lands_rated_cards_rejects_malformed_payloads(payload: object) -> None:
+    with pytest.raises(SeventeenLandsError):
+        parse_17lands_rated_cards(payload)
+
+
+class _FakeResponse:
+    def __init__(self, payload: object) -> None:
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _stub_ratings_urlopen(
+    monkeypatch: pytest.MonkeyPatch,
+    payloads: dict[str, object],
+) -> list[str]:
+    urls: list[str] = []
+
+    def fake_urlopen(request: Any, timeout: int) -> _FakeResponse:
+        urls.append(request.full_url)
+        for event_type, payload in payloads.items():
+            if f"event_type={event_type}" in request.full_url:
+                return _FakeResponse(payload)
+        raise AssertionError(f"unexpected URL {request.full_url}")
+
+    monkeypatch.setattr("draftomen.seventeen.urllib.request.urlopen", fake_urlopen)
+    return urls
+
+
+def test_fetch_17lands_rated_cards_falls_back_to_quick_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    urls = _stub_ratings_urlopen(
+        monkeypatch,
+        {
+            "PremierDraft": {"data": []},
+            "QuickDraft": {"data": [{"name": "Alpha", "mtga_id": 11}]},
+        },
+    )
+
+    cards = fetch_17lands_rated_cards(set_code="woe", timeout_seconds=5)
+
+    assert cards == (SeventeenLandsRatedCard(name="Alpha", arena_id=11),)
+    assert len(urls) == 2
+    assert "expansion=WOE" in urls[0]
+
+
+def test_fetch_17lands_rated_cards_raises_when_every_format_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    urls = _stub_ratings_urlopen(
+        monkeypatch,
+        {"PremierDraft": {"data": []}, "QuickDraft": {"data": []}, "TradDraft": {"data": []}},
+    )
+
+    with pytest.raises(SeventeenLandsError, match="WOE"):
+        fetch_17lands_rated_cards(set_code="woe", timeout_seconds=5)
+
+    assert len(urls) == 3

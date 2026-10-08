@@ -70,6 +70,16 @@ copies instead. Before publication, all pending candidates are validated; the
 all-set command publishes in set-code order and reruns skip only strict valid
 siblings, so an interrupted run resumes at the first pending set.
 
+A single-set export also adds bonus-sheet cards, such as Enchanting Tales in
+Wilds of Eldraine, that Scryfall prints in another set. It requests the set's
+card ratings from 17Lands (PremierDraft, then QuickDraft, then TradDraft, using
+the first format with ratings) and adds every rated Arena id the set does not
+already contain. Each added card uses the Scryfall printing with that Arena id,
+or the latest printing with the same name, and the 17Lands Arena id. A rated
+card without a Scryfall match fails the export. `--ratings-file PATH` uses a
+local card-ratings JSON file instead of the request and requires `SET`. The
+all-sets run does not add bonus-sheet cards.
+
 ### Sets without Scryfall Arena ids
 
 Card data keys on Arena ids. When Scryfall has none for a new set,
@@ -82,7 +92,9 @@ Card data keys on Arena ids. When Scryfall has none for a new set,
    The script adds `arena_id` to the lowest collector number print of each
    rated card and leaves existing Scryfall ids alone. Add `--bulk-file PATH` to
    use a local default-cards copy instead of downloading one.
-2. Run `draftomen-tui export-set-data SET --bulk-file patched.jsonl.gz`.
+2. Run
+   `draftomen-tui export-set-data SET --bulk-file patched.jsonl.gz --ratings-file RATINGS.json`.
+   This adds the set's bonus-sheet cards from the same ratings file.
 3. Run `draftomen-tui refresh-profile-data SET`.
 4. `refresh-profile-data` does not update the sets manifest, so regenerate it
    with

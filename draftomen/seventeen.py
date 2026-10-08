@@ -1307,6 +1307,64 @@ def card_ratings_url(
     return _url_with_query(endpoint=CARD_RATINGS_ENDPOINT, params=params)
 
 
+@dataclass(frozen=True, slots=True)
+class SeventeenLandsRatedCard:
+    """One card from a 17Lands card-ratings payload with its Arena id."""
+
+    name: str
+    arena_id: int
+
+
+_RATED_CARD_FORMATS = ("PremierDraft", "QuickDraft", "TradDraft")
+
+
+def parse_17lands_rated_cards(payload: object) -> tuple[SeventeenLandsRatedCard, ...]:
+    """Parse a 17Lands card-ratings payload into rated cards.
+    Rows without a name or a positive integer mtga_id raise SeventeenLandsError.
+    """
+
+    # The API wraps rows in a "data" object; the card_ratings export is a bare list.
+    if isinstance(payload, Mapping):
+        payload = payload.get("data")
+    if not isinstance(payload, list):
+        raise SeventeenLandsError("17Lands card ratings payload does not contain a data list.")
+    cards: list[SeventeenLandsRatedCard] = []
+    for index, row in enumerate(payload, start=1):
+        if not isinstance(row, Mapping):
+            raise SeventeenLandsError(f"17Lands card rating {index} must be an object.")
+        name = row.get("name")
+        arena_id = row.get("mtga_id")
+        if not isinstance(name, str) or not name:
+            raise SeventeenLandsError(f"17Lands card rating {index} has no card name.")
+        if isinstance(arena_id, bool) or not isinstance(arena_id, int) or arena_id <= 0:
+            raise SeventeenLandsError(f"17Lands card rating {index} has an invalid mtga_id.")
+        cards.append(SeventeenLandsRatedCard(name=name, arena_id=arena_id))
+    return tuple(cards)
+
+
+def fetch_17lands_rated_cards(
+    *,
+    set_code: str,
+    timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
+) -> tuple[SeventeenLandsRatedCard, ...]:
+    """Fetch the rated cards of one set from the first non-empty draft format.
+    Network failures and sets without ratings raise SeventeenLandsError.
+    """
+
+    for event_format in _RATED_CARD_FORMATS:
+        try:
+            payload = _default_fetch_json(
+                card_ratings_url(set_code=set_code, event_format=event_format),
+                timeout_seconds,
+            )
+        except TimeoutError as error:
+            raise SeventeenLandsError(f"Failed to query 17Lands data: {error}") from error
+        cards = parse_17lands_rated_cards(payload)
+        if cards:
+            return cards
+    raise SeventeenLandsError(f"17Lands has no card ratings for set {set_code.upper()}.")
+
+
 def color_ratings_url(
     *,
     set_code: str,
