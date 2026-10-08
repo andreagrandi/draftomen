@@ -16,6 +16,9 @@ never authorizes broader scope, adjacent cleanup, or speculative features.
 Complete this assessment before writing a detailed plan or editing files:
 
 1. Inspect the issue, relevant code, dependencies, and comparable merged work.
+   If your tool provides a scoping subagent, use it for the code reading and
+   verify the files it names. Data or network checks it cannot run stay with
+   you and must not be skipped.
 2. Map every acceptance criterion to its likely subsystem, production files,
    test files, and user-facing verification boundary.
 3. Identify independently reversible outcomes and any new architectural

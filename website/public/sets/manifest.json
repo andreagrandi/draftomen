@@ -237,8 +237,8 @@
     "fra": {
       "augmented": null,
       "card_data": {
-        "bytes": 53601,
-        "sha256": "031d2836b1f359ad354505b242d71a17504f45ed4338f2d09864835fe2e33bef",
+        "bytes": 55381,
+        "sha256": "888da8767411f953972676fa8819d4bed3b1a73a74a4b7404cab48e05db22d5e",
         "url": "https://www.draftomen.com/card-data/fra.json.gz"
       },
       "name": "Reality Fracture",
@@ -700,8 +700,8 @@
         }
       },
       "card_data": {
-        "bytes": 54297,
-        "sha256": "347aef186b31bf2528c5030c0d092ecb13caddc3cd21c7a1f282fffb8cb94308",
+        "bytes": 64021,
+        "sha256": "723fa52c208c07d690dfd4449c0b9074524c4e0df6cc4d5029954bb07cd06a1c",
         "url": "https://www.draftomen.com/card-data/woe.json.gz"
       },
       "name": "Wilds of Eldraine",

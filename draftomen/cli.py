@@ -5,9 +5,10 @@ Define parser wiring and command handlers.
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import UTC, datetime
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 
 from draftomen import DISCLAIMER, __version__
@@ -109,8 +110,11 @@ from draftomen.seventeen import (
     SeventeenLandsData,
     augment_card_database_from_ratings,
     SeventeenLandsError,
+    SeventeenLandsRatedCard,
+    fetch_17lands_rated_cards,
     load_cached_17lands_data,
     load_or_refresh_17lands_data,
+    parse_17lands_rated_cards,
     refresh_17lands_structure_targets,
     seventeen_lands_structure_targets_cache_path,
 )
@@ -300,6 +304,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         default=None,
         help="Local 17Lands cards.csv file instead of downloading.",
+    )
+    export_parser.add_argument(
+        "--ratings-file",
+        type=Path,
+        metavar="PATH",
+        default=None,
+        help=(
+            "Local 17Lands card-ratings JSON file instead of one request; "
+            "requires SET."
+        ),
     )
     export_parser.add_argument(
         "--output-dir",
@@ -1332,9 +1346,46 @@ def _write_sets_manifest_next_to(*, card_data_dir: Path) -> None:
     print(f"wrote sets manifest -> {path}", flush=True)
 
 
+class _SelectedSetRatedCards(Mapping[str, Sequence[SeventeenLandsRatedCard]]):
+    """Load rated cards when the exporter asks for the one selected set.
+    The selector can be a set name, so the set code is only known after selection.
+    """
+
+    def __init__(self, *, ratings_file: Path | None, timeout_seconds: int) -> None:
+        self._ratings_file = ratings_file
+        self._timeout_seconds = timeout_seconds
+        self._loaded: dict[str, tuple[SeventeenLandsRatedCard, ...]] = {}
+
+    def __getitem__(self, set_code: str) -> tuple[SeventeenLandsRatedCard, ...]:
+        if set_code not in self._loaded:
+            if self._ratings_file is None:
+                self._loaded[set_code] = fetch_17lands_rated_cards(
+                    set_code=set_code,
+                    timeout_seconds=self._timeout_seconds,
+                )
+            else:
+                try:
+                    payload = json.loads(self._ratings_file.read_text(encoding="utf-8"))
+                except json.JSONDecodeError as error:
+                    raise SeventeenLandsError(
+                        f"Malformed 17Lands ratings file: {error}"
+                    ) from error
+                self._loaded[set_code] = parse_17lands_rated_cards(payload)
+        return self._loaded[set_code]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._loaded)
+
+    def __len__(self) -> int:
+        return len(self._loaded)
+
+
 def handle_export_set_data(args: argparse.Namespace) -> int:
     """Prepare and publish one or all static per-set card-data artifacts."""
 
+    if args.ratings_file is not None and args.set is None:
+        print("export-set-data failed: --ratings-file requires SET.", file=sys.stderr)
+        return 1
     try:
         plan = prepare_set_data_export(
             selector=args.set,
@@ -1342,6 +1393,14 @@ def handle_export_set_data(args: argparse.Namespace) -> int:
             inventory_file=args.inventory_file,
             bulk_file=args.bulk_file,
             cards_file=args.cards_file,
+            rated_cards=(
+                None
+                if args.set is None
+                else _SelectedSetRatedCards(
+                    ratings_file=args.ratings_file,
+                    timeout_seconds=args.timeout,
+                )
+            ),
             timeout_seconds=args.timeout,
         )
         if args.set is not None:

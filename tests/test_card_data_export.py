@@ -18,7 +18,10 @@ from draftomen.card_data_export import (
     resolve_set_card_data,
 )
 from draftomen.set_card_data import SetCardData
-from draftomen.seventeen import parse_17lands_expansion_inventory
+from draftomen.seventeen import (
+    SeventeenLandsRatedCard,
+    parse_17lands_expansion_inventory,
+)
 
 _PRODUCTION_MIN_ARENA_IDS_FOR_FULL_DRAFT = (
     card_data_export._MIN_ARENA_IDS_FOR_FULL_DRAFT
@@ -137,6 +140,7 @@ def _prepare(
     selector: str | None = None,
     output_dir: Path | None = None,
     cards_rows: list[str] | None = None,
+    rated_cards: dict[str, list[SeventeenLandsRatedCard]] | None = None,
 ) -> Any:
     inventory_path, bulk_path = _write_sources(tmp_path, inventory, cards)
     return prepare_set_data_export(
@@ -145,6 +149,7 @@ def _prepare(
         inventory_file=inventory_path,
         bulk_file=bulk_path,
         cards_file=_write_cards_csv(tmp_path, cards_rows),
+        rated_cards=rated_cards,
     )
 
 
@@ -1084,3 +1089,180 @@ def test_missing_cards_file_downloads_cards_csv_once(
 
     assert plan.total == 2
     assert calls == [29]
+
+
+def _rated(name: str, arena_id: int) -> SeventeenLandsRatedCard:
+    return SeventeenLandsRatedCard(name=name, arena_id=arena_id)
+
+
+def _bonus_database(plan: Any) -> Any:
+    return SetCardData.from_gzip_bytes(
+        plan.pending[0].gzip_bytes,
+        expected_set_code="aaa",
+        expected_set_name="Alpha Set",
+    ).to_card_database()
+
+
+def test_bonus_sheet_card_with_its_own_arena_id_joins_the_parent_set(
+    tmp_path: Path,
+) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA"],
+        [
+            _card(1, "aaa", "Alpha Set"),
+            _card(87075, "bon", "Bonus Set", name="Vampiric Rites"),
+        ],
+        selector="aaa",
+        rated_cards={
+            "aaa": [_rated("Alpha Set Card 1", 1), _rated("Vampiric Rites", 87075)]
+        },
+    )
+
+    cards = _card_names_and_types(plan)
+    assert cards[87075][0] == "Vampiric Rites"
+    assert set(cards) == {1, 87075}
+
+
+def test_bonus_card_without_scryfall_arena_id_gets_the_17lands_id(
+    tmp_path: Path,
+) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA"],
+        [
+            _card(1, "aaa", "Alpha Set"),
+            _card(None, "bon", "Bonus Set", name="Paper Bonus", released_at="2023-01-01"),
+            _card(None, "old", "Old Set", name="Paper Bonus", released_at="2020-01-01"),
+        ],
+        selector="aaa",
+        rated_cards={"aaa": [_rated("Paper Bonus", 555)]},
+    )
+
+    database = _bonus_database(plan)
+    assert database.cards[555].name == "Paper Bonus"
+
+
+def test_bonus_card_matches_adventure_by_front_face_name(tmp_path: Path) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA"],
+        [
+            _card(1, "aaa", "Alpha Set"),
+            _card(
+                None,
+                "bon",
+                "Bonus Set",
+                name="Front Knight // Back Spell",
+                layout="adventure",
+                card_faces=[{"name": "Front Knight"}, {"name": "Back Spell"}],
+            ),
+        ],
+        selector="aaa",
+        rated_cards={"aaa": [_rated("Front Knight", 556)]},
+    )
+
+    assert _card_names_and_types(plan)[556][0] == "Front Knight // Back Spell"
+
+
+def test_unmatched_rated_card_fails_the_export(tmp_path: Path) -> None:
+    with pytest.raises(SetDataExportError, match="Missing Card"):
+        _prepare(
+            tmp_path,
+            ["AAA"],
+            [_card(1, "aaa", "Alpha Set")],
+            selector="aaa",
+            rated_cards={"aaa": [_rated("Missing Card", 999)]},
+        )
+
+
+def test_rated_ids_already_in_the_set_add_nothing(tmp_path: Path) -> None:
+    cards = [_card(1, "aaa", "Alpha Set"), _card(2, "aaa", "Alpha Set")]
+    plain = _prepare(tmp_path, ["AAA"], cards, selector="aaa")
+    rated = _prepare(
+        tmp_path,
+        ["AAA"],
+        cards,
+        selector="aaa",
+        rated_cards={
+            "aaa": [_rated("AAA Card 1", 1), _rated("AAA Card 2", 2)]
+        },
+    )
+
+    assert rated.pending[0].gzip_bytes == plain.pending[0].gzip_bytes
+
+
+def test_output_without_rated_cards_ignores_other_sets_bonus_rows(
+    tmp_path: Path,
+) -> None:
+    cards = [
+        _card(1, "aaa", "Alpha Set"),
+        _card(87075, "bon", "Bonus Set", name="Vampiric Rites"),
+    ]
+    plain = _prepare(tmp_path, ["AAA"], cards, selector="aaa")
+    other_set = _prepare(
+        tmp_path,
+        ["AAA"],
+        cards,
+        selector="aaa",
+        rated_cards={"zzz": [_rated("Vampiric Rites", 87075)]},
+    )
+
+    assert set(_card_names_and_types(plain)) == {1}
+    assert other_set.pending[0].gzip_bytes == plain.pending[0].gzip_bytes
+
+
+def test_set_printing_keeps_its_image_uri_on_a_shared_name(tmp_path: Path) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA"],
+        [
+            _card(
+                1,
+                "aaa",
+                "Alpha Set",
+                name="Shared Name",
+                image_uris={"normal": "https://img.example/set.jpg"},
+            ),
+            _card(
+                2,
+                "bon",
+                "Bonus Set",
+                name="Shared Name",
+                image_uris={"normal": "https://img.example/bonus.jpg"},
+            ),
+        ],
+        selector="aaa",
+        rated_cards={
+            "aaa": [_rated("Shared Name", 1), _rated("Shared Name", 2)]
+        },
+    )
+
+    database = _bonus_database(plan)
+    assert set(database.cards) == {1, 2}
+    assert database.image_uris_by_name["shared name"] == "https://img.example/set.jpg"
+
+
+def test_existing_artifact_is_rewritten_when_bonus_cards_change_the_bytes(
+    tmp_path: Path,
+) -> None:
+    cards = [
+        _card(1, "aaa", "Alpha Set"),
+        _card(87075, "bon", "Bonus Set", name="Vampiric Rites"),
+    ]
+    output_dir = tmp_path / "card-data"
+    first = _prepare(tmp_path, ["AAA"], cards, output_dir=output_dir)
+    publish_set_data_export(candidate=first.pending[0])
+
+    unchanged = _prepare(tmp_path, ["AAA"], cards, output_dir=output_dir)
+    with_bonus = _prepare(
+        tmp_path,
+        ["AAA"],
+        cards,
+        output_dir=output_dir,
+        rated_cards={"aaa": [_rated("Vampiric Rites", 87075)]},
+    )
+
+    assert len(unchanged.already_valid) == 1
+    assert with_bonus.already_valid == ()
+    assert len(with_bonus.pending) == 1

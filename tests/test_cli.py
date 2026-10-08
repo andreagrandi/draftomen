@@ -4,6 +4,7 @@ import asyncio
 import gzip
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -805,6 +806,8 @@ def test_export_set_data_single_mode_resolves_selector_and_publishes(
         == 0
     )
 
+    assert len(calls) == 1
+    assert isinstance(calls[0].pop("rated_cards"), Mapping)
     assert calls == [
         {
             "selector": selector,
@@ -4043,3 +4046,99 @@ def test_watch_moxgate_reports_a_hosted_card_data_failure(
 
     assert exit_code == 1
     assert "watch failed: Hosted card data could not be loaded." in capsys.readouterr().err
+
+
+def test_export_set_data_ratings_file_adds_bonus_sheet_cards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from draftomen import card_data_export
+    from draftomen.set_card_data import SetCardData
+
+    monkeypatch.setattr(card_data_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
+
+    def card(arena_id: int, set_code: str, set_name: str, name: str) -> dict[str, object]:
+        return {
+            "arena_id": arena_id,
+            "name": name,
+            "colors": ["G"],
+            "cmc": 3,
+            "rarity": "common",
+            "type_line": "Creature \u2014 Human",
+            "set": set_code,
+            "set_name": set_name,
+            "collector_number": str(arena_id),
+        }
+
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps(["AAA"]), encoding="utf-8")
+    bulk = tmp_path / "bulk.jsonl"
+    bulk.write_text(
+        json.dumps(card(1, "aaa", "Alpha Set", "Alpha One"))
+        + "\n"
+        + json.dumps(card(87075, "bon", "Bonus Set", "Vampiric Rites"))
+        + "\n",
+        encoding="utf-8",
+    )
+    cards_csv = tmp_path / "cards.csv"
+    cards_csv.write_text(
+        "id,expansion,name,rarity,color_identity,mana_value,types,is_booster\n",
+        encoding="utf-8",
+    )
+    ratings = tmp_path / "ratings.json"
+    ratings.write_text(
+        json.dumps(
+            [
+                {"name": "Alpha One", "mtga_id": 1},
+                {"name": "Vampiric Rites", "mtga_id": 87075},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_fetch(**kwargs: object) -> None:
+        raise AssertionError("ratings file must replace the request")
+
+    monkeypatch.setattr(cli, "fetch_17lands_rated_cards", fail_fetch)
+    monkeypatch.setattr(
+        cli,
+        "write_sets_manifest",
+        lambda *, public_dir: public_dir / "sets" / "manifest.json",
+    )
+    output_dir = tmp_path / "card-data"
+
+    assert (
+        main(
+            argv=[
+                "export-set-data",
+                "Alpha Set",
+                "--inventory-file",
+                str(inventory),
+                "--bulk-file",
+                str(bulk),
+                "--cards-file",
+                str(cards_csv),
+                "--ratings-file",
+                str(ratings),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+        == 0
+    )
+
+    data = SetCardData.from_gzip_bytes(
+        (output_dir / "aaa.json.gz").read_bytes(),
+        expected_set_code="aaa",
+        expected_set_name="Alpha Set",
+    )
+    assert sorted(item.grp_id for item in data.cards) == [1, 87075]
+
+
+def test_export_set_data_ratings_file_without_set_fails(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(argv=["export-set-data", "--ratings-file", str(tmp_path / "r.json")]) == 1
+
+    assert capsys.readouterr().err == "export-set-data failed: --ratings-file requires SET.\n"

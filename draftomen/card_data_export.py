@@ -12,7 +12,7 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,7 @@ from draftomen.seventeen import (
     SeventeenLandsBasicLand,
     SeventeenLandsError,
     SeventeenLandsExpansionInventory,
+    SeventeenLandsRatedCard,
     fetch_17lands_cards_csv,
     fetch_17lands_expansion_inventory,
     parse_17lands_basic_lands,
@@ -138,13 +139,16 @@ def prepare_set_data_export(
     inventory_file: PathInput | None = None,
     bulk_file: PathInput | None = None,
     cards_file: PathInput | None = None,
+    rated_cards: Mapping[str, Sequence[SeventeenLandsRatedCard]] | None = None,
     timeout_seconds: int = HTTP_TIMEOUT_SECONDS,
 ) -> SetDataExportPlan:
     """Discover eligible sets and build all pending canonical candidates.
 
     The source inventory and Scryfall stream are consumed once.  Existing files
     are classified only after the complete source has been validated, ensuring
-    malformed source data can never result in a partial publication.
+    malformed source data can never result in a partial publication.  Sets
+    present in rated_cards (keyed by lower-case set code) also receive the
+    bonus-sheet cards that 17Lands rates but Scryfall prints in another set.
     """
 
     _validate_timeout(timeout_seconds=timeout_seconds)
@@ -204,6 +208,18 @@ def prepare_set_data_export(
                 scryfall_set_cards=scryfall_set_cards,
                 basic_lands=basic_lands,
             )
+            set_rated_cards = None if rated_cards is None else rated_cards.get(
+                identity.set_code
+            )
+            if set_rated_cards is not None:
+                # Bonus rows go last so the set's own printing keeps any
+                # image URI for a name shared with a bonus card.
+                set_source_cards += _bonus_sheet_cards(
+                    identity=identity,
+                    rated_cards=set_rated_cards,
+                    set_cards=set_source_cards,
+                    source_cards=source_cards,
+                )
             # Validate every selected-set row before resolving legitimate
             # duplicate Arena identities from rebalances and print treatments.
             build_card_database_from_scryfall_cards(cards=set_source_cards)
@@ -233,6 +249,7 @@ def prepare_set_data_export(
             RecursionError,
             RuntimeError,
             SetCardDataError,
+            SeventeenLandsError,
             TypeError,
             ValueError,
             UnicodeError,
@@ -244,6 +261,7 @@ def prepare_set_data_export(
         if selector is None and _is_valid_existing_artifact(
             target=target,
             identity=identity,
+            expected_bytes=gzip_bytes if set_rated_cards is not None else None,
         ):
             already_valid.append(identity)
             continue
@@ -496,6 +514,83 @@ def _missing_basic_land_cards(
     )
 
 
+def _front_face_name(card: Mapping[str, Any]) -> str | None:
+    faces = card.get("card_faces")
+    if isinstance(faces, list) and faces and isinstance(faces[0], Mapping):
+        face_name = faces[0].get("name")
+        if isinstance(face_name, str) and face_name:
+            return face_name
+    name = card.get("name")
+    if isinstance(name, str) and " // " in name:
+        return name.split(" // ", 1)[0]
+    return None
+
+
+def _bonus_sheet_cards(
+    *,
+    identity: SetDataIdentity,
+    rated_cards: Sequence[SeventeenLandsRatedCard],
+    set_cards: Iterable[Mapping[str, Any]],
+    source_cards: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Build rows for rated cards that the set's own rows do not contain.
+    17Lands ids win over Scryfall ids; an unmatched rated name fails the export.
+    """
+
+    known_ids = {
+        card["arena_id"]
+        for card in set_cards
+        if isinstance(card.get("arena_id"), int)
+    }
+    by_arena_id: dict[int, list[Mapping[str, Any]]] = {}
+    by_name: dict[str, list[Mapping[str, Any]]] = {}
+    for card in source_cards:
+        arena_id = card.get("arena_id")
+        if isinstance(arena_id, int):
+            by_arena_id.setdefault(arena_id, []).append(card)
+        names = {card.get("name"), _front_face_name(card)}
+        for name in names:
+            if isinstance(name, str) and name:
+                by_name.setdefault(name, []).append(card)
+
+    rows: dict[int, dict[str, Any]] = {}
+    unmatched: list[str] = []
+    for rated in rated_cards:
+        if rated.arena_id in known_ids or rated.arena_id in rows:
+            continue
+        by_id = by_arena_id.get(rated.arena_id)
+        if by_id:
+            source = min(by_id, key=_source_card_rank)
+        else:
+            candidates = by_name.get(rated.name)
+            if not candidates:
+                unmatched.append(rated.name)
+                continue
+            latest = max(
+                str(card.get("released_at") or "") for card in candidates
+            )
+            source = min(
+                (
+                    card
+                    for card in candidates
+                    if str(card.get("released_at") or "") == latest
+                ),
+                key=_source_card_rank,
+            )
+        rows[rated.arena_id] = {
+            **source,
+            "arena_id": rated.arena_id,
+            "set": identity.set_code,
+            "set_name": identity.set_name,
+        }
+    if unmatched:
+        raise SetDataExportError(
+            f"No Scryfall card matches 17Lands rated cards for {identity.set_code}: "
+            + ", ".join(sorted(set(unmatched)))
+        )
+    return tuple(rows[arena_id] for arena_id in sorted(rows))
+
+
 def _source_card_identity(
     *,
     card: object,
@@ -679,6 +774,7 @@ def _is_valid_existing_artifact(
     *,
     target: Path,
     identity: SetDataIdentity,
+    expected_bytes: bytes | None = None,
 ) -> bool:
     try:
         payload = target.read_bytes()
@@ -689,7 +785,7 @@ def _is_valid_existing_artifact(
         )
     except (OSError, SetCardDataError, TypeError, ValueError, UnicodeError):
         return False
-    return True
+    return expected_bytes is None or payload == expected_bytes
 
 
 def _fsync_directory(*, path: Path) -> None:
