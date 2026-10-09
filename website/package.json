@@ -12,10 +12,10 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "astro": "^7.3.5",
-    "daisyui": "^5.7.46",
+    "daisyui": "^5.7.47",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
-    "wrangler": "4.143.1"
+    "wrangler": "4.146.0"
   }
 }
