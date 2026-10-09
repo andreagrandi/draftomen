@@ -249,6 +249,9 @@
         "premierdraft": {
           "maturity": "early"
         },
+        "quickdraft": {
+          "maturity": "early"
+        },
         "traddraft": {
           "maturity": "early"
         }
