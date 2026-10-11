@@ -212,7 +212,17 @@
         "url": "https://www.draftomen.com/card-data/eoe.json.gz"
       },
       "name": "Edge of Eternities",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "fdn": {
       "augmented": null,
@@ -222,7 +232,17 @@
         "url": "https://www.draftomen.com/card-data/fdn.json.gz"
       },
       "name": "Foundations",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "fin": {
       "augmented": null,
