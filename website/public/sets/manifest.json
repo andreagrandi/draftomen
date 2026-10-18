@@ -252,7 +252,17 @@
         "url": "https://www.draftomen.com/card-data/fin.json.gz"
       },
       "name": "Final Fantasy",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "fra": {
       "augmented": null,
@@ -285,7 +295,14 @@
         "url": "https://www.draftomen.com/card-data/grn.json.gz"
       },
       "name": "Guilds of Ravnica",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        }
+      }
     },
     "hbg": {
       "augmented": null,
