@@ -312,7 +312,17 @@
         "url": "https://www.draftomen.com/card-data/hbg.json.gz"
       },
       "name": "Alchemy Horizons: Baldur's Gate",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "hob": {
       "augmented": {
@@ -357,7 +367,17 @@
         "url": "https://www.draftomen.com/card-data/iko.json.gz"
       },
       "name": "Ikoria: Lair of Behemoths",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "khm": {
       "augmented": null,
