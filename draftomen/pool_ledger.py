@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping, TypeAlias
 
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.config import COLOR_PAIRS, DECK_BUILDER, SPLASH
+from draftomen.config import COLOR_PAIRS, COLOR_TRIADS, DECK_BUILDER, SPLASH
 from draftomen.draft_format import DraftRules, QUICK_RULES
 from draftomen.semantic_roles import Role, RoleAssignment, resolve_card_roles
 from draftomen.seventeen import SeventeenLandsData
@@ -883,7 +883,7 @@ def _resolve_pair(
 ) -> str | None:
     if likely_pair is not None:
         normalized = likely_pair.strip().upper()
-        if normalized not in COLOR_PAIRS:
+        if normalized not in COLOR_PAIRS and normalized not in COLOR_TRIADS:
             raise ValueError(f"Unsupported ledger color pair {likely_pair!r}.")
         return normalized
     weights = {color: 0 for color in "WUBRG"}
@@ -907,6 +907,8 @@ def _pair_profile(
     if set_profile is None:
         return "generic", None, GENERIC_TARGET_CONFIDENCE
     if pair is None:
+        return f"profile:{set_profile.maturity.value}", None, set_profile.confidence
+    if pair not in COLOR_PAIRS:
         return f"profile:{set_profile.maturity.value}", None, set_profile.confidence
     return (
         f"profile:{set_profile.maturity.value}",

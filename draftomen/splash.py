@@ -74,7 +74,7 @@ def infer_splash_state(
         card_database=card_database,
         base_pair=base_pair,
     )
-    if not enabled or base_pair is None:
+    if not enabled or base_pair is None or len(base_pair) > 2:
         return SplashState(
             enabled=enabled,
             base_pair=base_pair,
@@ -205,6 +205,15 @@ def assess_splash_card(
         card=card,
         base_pair=base_pair,
     )
+    if len(base_pair) > 2:
+        return _assessment(
+            classification="off-color",
+            state=state,
+            off_color_pips=off_color_pips,
+            grade=grade,
+            reasons=("card is outside the three-color deck",),
+        )
+
     if not state.enabled:
         return _assessment(
             classification="off-color",

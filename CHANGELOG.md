@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Pick recommendations now treat a balanced three-colour pool as a
+  three-colour deck, such as UBG, in sets where those decks are common. The
+  engine does this only after pick 5, when the deck's win rate beats the
+  heaviest two-colour pair and each colour holds at least a fifth of the pool
+  weight. Small 17Lands samples are pulled toward the set's average
+  three-colour win rate. A three-colour deck gets no splash. (#979)
 - Hosted set profiles now carry a win rate for each three-colour deck without
   a splash and the share of games those decks played, in the new top-level
   `triad_profiles` and `three_color_share` keys. Small samples are pulled
