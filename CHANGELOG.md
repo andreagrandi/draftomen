@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- The 17Lands cache now keeps win rates for the ten three-colour decks without
+  a splash, and the share of games those decks played. Caches written by
+  earlier versions still load, with no three-colour data. (#977)
 - Bonus-sheet cards such as Enchanting Tales in Wilds of Eldraine packs are no
   longer shown as unknown cards. `export-set-data SET` now adds them from the
   17Lands card ratings. (#942)

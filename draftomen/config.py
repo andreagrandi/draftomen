@@ -149,3 +149,16 @@ COLOR_PAIRS = (
     "BG",
     "RG",
 )
+
+COLOR_TRIADS = (
+    "WUB",
+    "WUR",
+    "WUG",
+    "WBR",
+    "WBG",
+    "WRG",
+    "UBR",
+    "UBG",
+    "URG",
+    "BRG",
+)

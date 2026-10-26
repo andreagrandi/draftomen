@@ -15,7 +15,7 @@ from draftomen.carddb import (
     CardMetadataSeed,
     load_card_database,
 )
-from draftomen.config import COLOR_PAIRS, PICK_ENGINE
+from draftomen.config import COLOR_PAIRS, COLOR_TRIADS, PICK_ENGINE
 from draftomen.seventeen import (
     card_ratings_url,
     NEUTRAL_PRIOR_SOURCE,
@@ -25,6 +25,8 @@ from draftomen.seventeen import (
     SEVENTEEN_LANDS_EXPANSIONS_ENDPOINT,
     SeventeenLandsDownloadProgress,
     SeventeenLandsError,
+    SeventeenLandsFormatData,
+    build_17lands_format_data,
     fetch_17lands_expansion_inventory,
     fetch_17lands_rated_cards,
     parse_17lands_rated_cards,
@@ -39,6 +41,7 @@ from draftomen.seventeen import (
     load_or_refresh_17lands_data,
     load_or_refresh_17lands_format_data,
     metadata_augmenting_ratings_progress_loader,
+    save_17lands_format_data,
     save_17lands_structure_targets,
     seventeen_lands_cache_path,
     seventeen_lands_pair_card_cache_path,
@@ -602,6 +605,146 @@ def test_pair_win_rates_are_available_for_all_ten_pairs(tmp_path: Path) -> None:
     assert dataset.pair_win_rates["WU"].games == 100
     assert dataset.pair_win_rates["WU"].win_rate == 0.6
     assert dataset.attribution == SEVENTEEN_LANDS_ATTRIBUTION
+
+
+def _color_rating_row(
+    *,
+    short_name: str,
+    wins: int,
+    games: int,
+    is_summary: bool = False,
+) -> dict[str, Any]:
+    return {
+        "is_summary": is_summary,
+        "short_name": short_name,
+        "color_name": short_name,
+        "wins": wins,
+        "games": games,
+    }
+
+
+def _triad_color_ratings_payload() -> list[dict[str, Any]]:
+    """Return synthetic color ratings with pairs, triads, splashes and summaries.
+    Non-summary games total 1000, and unsplashed triads hold 200 of them.
+    """
+
+    return [
+        _color_rating_row(short_name="All", wins=600, games=1000, is_summary=True),
+        _color_rating_row(
+            short_name="Three-color",
+            wins=110,
+            games=200,
+            is_summary=True,
+        ),
+        *(
+            _color_rating_row(short_name=pair, wins=40, games=70)
+            for pair in COLOR_PAIRS
+        ),
+        *(
+            _color_rating_row(short_name=triad, wins=10 + index, games=20)
+            for index, triad in enumerate(COLOR_TRIADS)
+        ),
+        _color_rating_row(short_name="UBG+", wins=30, games=50),
+        _color_rating_row(short_name="WU+", wins=20, games=30),
+        _color_rating_row(short_name="WUBR", wins=5, games=10),
+        _color_rating_row(short_name="WUBRG", wins=5, games=10),
+    ]
+
+
+def _triad_format_data() -> SeventeenLandsFormatData:
+    return build_17lands_format_data(
+        set_code="TST",
+        event_format=QUICK_DRAFT_FORMAT,
+        fetched_at=datetime(2026, 7, 3, 12, 0, tzinfo=UTC),
+        card_ratings_payload=[],
+        color_ratings_payload=_triad_color_ratings_payload(),
+    )
+
+
+def test_triad_win_rates_are_parsed_for_all_ten_three_color_combinations() -> None:
+    dataset = _triad_format_data()
+
+    assert set(dataset.triad_win_rates) == set(COLOR_TRIADS)
+    assert dataset.triad_win_rates["UBG"].triad == "UBG"
+    assert dataset.triad_win_rates["UBG"].wins == 17
+    assert dataset.triad_win_rates["UBG"].games == 20
+    assert dataset.triad_win_rates["UBG"].win_rate == 0.85
+
+
+def test_triad_win_rates_skip_splash_summary_and_four_or_five_color_rows() -> None:
+    dataset = _triad_format_data()
+
+    assert "UBG+" not in dataset.triad_win_rates
+    assert "Three-color" not in dataset.triad_win_rates
+    assert "WUBR" not in dataset.triad_win_rates
+    assert "WUBRG" not in dataset.triad_win_rates
+    assert len(dataset.triad_win_rates) == 10
+
+
+def test_three_color_share_counts_unsplashed_triads_over_non_summary_games() -> None:
+    dataset = _triad_format_data()
+
+    assert dataset.three_color_share == pytest.approx(200 / 1000)
+
+
+def test_three_color_share_is_none_without_non_summary_games() -> None:
+    dataset = build_17lands_format_data(
+        set_code="TST",
+        event_format=QUICK_DRAFT_FORMAT,
+        fetched_at=datetime(2026, 7, 3, 12, 0, tzinfo=UTC),
+        card_ratings_payload=[],
+        color_ratings_payload=[
+            _color_rating_row(short_name="All", wins=0, games=0, is_summary=True)
+        ],
+    )
+
+    assert dataset.triad_win_rates == {}
+    assert dataset.three_color_share is None
+
+
+def test_triad_rows_do_not_change_pair_win_rates() -> None:
+    dataset = _triad_format_data()
+
+    assert set(dataset.pair_win_rates) == set(COLOR_PAIRS)
+    assert dataset.pair_win_rates["WU"].wins == 40
+    assert dataset.pair_win_rates["WU"].games == 70
+
+
+def test_format_cache_round_trips_triad_win_rates_and_three_color_share(
+    tmp_path: Path,
+) -> None:
+    dataset = _triad_format_data()
+    save_17lands_format_data(dataset, app_dir=tmp_path)
+
+    loaded = load_17lands_format_data(
+        set_code="TST",
+        event_format=QUICK_DRAFT_FORMAT,
+        app_dir=tmp_path,
+    )
+
+    assert loaded.triad_win_rates == dataset.triad_win_rates
+    assert loaded.three_color_share == dataset.three_color_share
+
+
+def test_format_cache_without_triad_fields_loads_with_empty_three_color_data(
+    tmp_path: Path,
+) -> None:
+    dataset = _triad_format_data()
+    path = save_17lands_format_data(dataset, app_dir=tmp_path)
+    cached = json.loads(path.read_text(encoding="utf-8"))
+    del cached["triad_win_rates"]
+    del cached["three_color_share"]
+    path.write_text(json.dumps(cached), encoding="utf-8")
+
+    loaded = load_17lands_format_data(
+        set_code="TST",
+        event_format=QUICK_DRAFT_FORMAT,
+        app_dir=tmp_path,
+    )
+
+    assert loaded.triad_win_rates == {}
+    assert loaded.three_color_share is None
+    assert loaded.pair_win_rates == dataset.pair_win_rates
 
 
 def test_pair_filtered_card_ratings_are_loaded_lazily_and_cached(
