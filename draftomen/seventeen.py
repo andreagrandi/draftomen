@@ -32,6 +32,7 @@ from draftomen.carddb import (
 )
 from draftomen.config import (
     COLOR_PAIRS,
+    COLOR_TRIADS,
     DECK_BUILDER,
     PICK_ENGINE,
     RATINGS_CACHE_TTL_HOURS,
@@ -494,6 +495,44 @@ class ColorPairWinRate:
 
 
 @dataclass(frozen=True, slots=True)
+class ColorTriadWinRate:
+    """Aggregate game record for one three-color deck without a splash.
+    The win_rate field is None when 17Lands reports zero games.
+    """
+
+    triad: str
+    wins: int
+    games: int
+    win_rate: float | None
+
+    def to_json(self) -> dict[str, object]:
+        """Convert this triad record to Draftomen's cache shape.
+        Triad records are keyed by triad at the container level.
+        """
+
+        return {
+            "triad": self.triad,
+            "wins": self.wins,
+            "games": self.games,
+            "win_rate": self.win_rate,
+        }
+
+    @classmethod
+    def from_json(cls, data: Mapping[str, Any]) -> ColorTriadWinRate:
+        """Load one triad record from Draftomen's cache shape.
+        Triad codes are validated against the configured color-triad list.
+        """
+
+        triad = _required_triad(data.get("triad"), field_name="triad.triad")
+        wins = _required_int(data.get("wins"), field_name="triad.wins")
+        games = _required_int(data.get("games"), field_name="triad.games")
+        win_rate = _optional_float(data.get("win_rate"), field_name="triad.win_rate")
+        _ensure_non_negative(value=wins, field_name="triad.wins")
+        _ensure_non_negative(value=games, field_name="triad.games")
+        return cls(triad=triad, wins=wins, games=games, win_rate=win_rate)
+
+
+@dataclass(frozen=True, slots=True)
 class StructuralTargets:
     """Empirical deck-structure targets for one set and color pair.
     They are derived from 17Lands public draft dumps, not scraped pages.
@@ -702,7 +741,7 @@ class _DeckStructureMetrics:
 @dataclass(frozen=True, slots=True)
 class SeventeenLandsFormatData:
     """Cached 17Lands data for one set and event format.
-    It contains both card ratings and two-color pair win rates.
+    It contains card ratings and two- and three-color deck win rates.
     """
 
     set_code: str
@@ -710,6 +749,8 @@ class SeventeenLandsFormatData:
     fetched_at: datetime
     card_ratings: dict[int, SeventeenCardStats]
     pair_win_rates: dict[str, ColorPairWinRate]
+    triad_win_rates: dict[str, ColorTriadWinRate] = field(default_factory=dict)
+    three_color_share: float | None = None
 
     @property
     def attribution(self) -> str:
@@ -752,6 +793,11 @@ class SeventeenLandsFormatData:
                 pair: win_rate.to_json()
                 for pair, win_rate in sorted(self.pair_win_rates.items())
             },
+            "triad_win_rates": {
+                triad: win_rate.to_json()
+                for triad, win_rate in sorted(self.triad_win_rates.items())
+            },
+            "three_color_share": self.three_color_share,
         }
 
     @classmethod
@@ -818,6 +864,28 @@ class SeventeenLandsFormatData:
 
             pair_win_rates[pair] = win_rate
 
+        # Caches written before three-color data existed load without it.
+        triad_win_rates_value = data.get("triad_win_rates", {})
+        if not isinstance(triad_win_rates_value, dict):
+            raise SeventeenLandsError("17Lands cache triad_win_rates is not an object.")
+
+        triad_win_rates: dict[str, ColorTriadWinRate] = {}
+        for key, value in triad_win_rates_value.items():
+            triad = _required_triad(key, field_name="triad_win_rates key")
+            if not isinstance(value, dict):
+                raise SeventeenLandsError(
+                    f"17Lands triad win rate {key!r} is not an object."
+                )
+
+            triad_win_rate = ColorTriadWinRate.from_json(data=value)
+            if triad_win_rate.triad != triad:
+                raise SeventeenLandsError(
+                    f"17Lands triad key {triad} does not match entry triad "
+                    f"{triad_win_rate.triad}."
+                )
+
+            triad_win_rates[triad] = triad_win_rate
+
         return cls(
             set_code=_required_str(data.get("set_code"), field_name="set_code"),
             event_format=_required_str(
@@ -827,6 +895,11 @@ class SeventeenLandsFormatData:
             fetched_at=_required_datetime(data.get("fetched_at"), field_name="fetched_at"),
             card_ratings=card_ratings,
             pair_win_rates=pair_win_rates,
+            triad_win_rates=triad_win_rates,
+            three_color_share=_optional_float(
+                data.get("three_color_share"),
+                field_name="three_color_share",
+            ),
         )
 
 
@@ -2096,6 +2169,8 @@ def build_17lands_format_data(
         fetched_at=fetched_at.astimezone(UTC),
         card_ratings=_parse_card_ratings(payload=card_ratings_payload),
         pair_win_rates=_parse_pair_win_rates(payload=color_ratings_payload),
+        triad_win_rates=_parse_triad_win_rates(payload=color_ratings_payload),
+        three_color_share=_parse_three_color_share(payload=color_ratings_payload),
     )
 
 
@@ -2573,24 +2648,13 @@ def _card_color(value: Any) -> str:
 
 
 def _parse_pair_win_rates(*, payload: Any) -> dict[str, ColorPairWinRate]:
-    if not isinstance(payload, list):
-        raise SeventeenLandsError("17Lands color ratings payload is not a list.")
-
     pairs: dict[str, ColorPairWinRate] = {}
-    for index, item in enumerate(payload):
-        if not isinstance(item, dict):
-            raise SeventeenLandsError(
-                f"17Lands color ratings item {index} is not an object."
-            )
-
+    for index, item in _color_rating_rows(payload=payload):
         pair = item.get("short_name")
         if pair not in COLOR_PAIRS:
             continue
 
-        wins = _required_int(item.get("wins"), field_name=f"color_ratings[{index}].wins")
-        games = _required_int(item.get("games"), field_name=f"color_ratings[{index}].games")
-        _ensure_non_negative(value=wins, field_name=f"color_ratings[{index}].wins")
-        _ensure_non_negative(value=games, field_name=f"color_ratings[{index}].games")
+        wins, games = _color_rating_wins_and_games(item=item, index=index)
         pairs[pair] = ColorPairWinRate(
             pair=pair,
             wins=wins,
@@ -2599,6 +2663,71 @@ def _parse_pair_win_rates(*, payload: Any) -> dict[str, ColorPairWinRate]:
         )
 
     return pairs
+
+
+def _parse_triad_win_rates(*, payload: Any) -> dict[str, ColorTriadWinRate]:
+    triads: dict[str, ColorTriadWinRate] = {}
+    for index, item in _color_rating_rows(payload=payload):
+        triad = item.get("short_name")
+        if triad not in COLOR_TRIADS:
+            continue
+
+        wins, games = _color_rating_wins_and_games(item=item, index=index)
+        triads[triad] = ColorTriadWinRate(
+            triad=triad,
+            wins=wins,
+            games=games,
+            win_rate=(wins / games) if games else None,
+        )
+
+    return triads
+
+
+def _parse_three_color_share(*, payload: Any) -> float | None:
+    """Return the share of non-summary games played by unsplashed three-color decks.
+    Splash rows have a + suffix, so they never match a COLOR_TRIADS name.
+    """
+
+    three_color_games = 0
+    total_games = 0
+    for index, item in _color_rating_rows(payload=payload):
+        if item.get("is_summary") is True:
+            continue
+
+        _, games = _color_rating_wins_and_games(item=item, index=index)
+        total_games += games
+        if item.get("short_name") in COLOR_TRIADS:
+            three_color_games += games
+
+    if total_games == 0:
+        return None
+
+    return three_color_games / total_games
+
+
+def _color_rating_rows(*, payload: Any) -> Iterable[tuple[int, Mapping[str, Any]]]:
+    if not isinstance(payload, list):
+        raise SeventeenLandsError("17Lands color ratings payload is not a list.")
+
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            raise SeventeenLandsError(
+                f"17Lands color ratings item {index} is not an object."
+            )
+
+        yield index, item
+
+
+def _color_rating_wins_and_games(
+    *,
+    item: Mapping[str, Any],
+    index: int,
+) -> tuple[int, int]:
+    wins = _required_int(item.get("wins"), field_name=f"color_ratings[{index}].wins")
+    games = _required_int(item.get("games"), field_name=f"color_ratings[{index}].games")
+    _ensure_non_negative(value=wins, field_name=f"color_ratings[{index}].wins")
+    _ensure_non_negative(value=games, field_name=f"color_ratings[{index}].games")
+    return wins, games
 
 
 def _resolved_from_stats(
@@ -2939,6 +3068,16 @@ def _required_pair(value: Any, *, field_name: str) -> str:
         )
 
     return pair
+
+
+def _required_triad(value: Any, *, field_name: str) -> str:
+    triad = _required_str(value, field_name=field_name)
+    if triad not in COLOR_TRIADS:
+        raise SeventeenLandsError(
+            f"Missing or invalid {field_name}; expected a three-color combination."
+        )
+
+    return triad
 
 
 def _path_segment(value: str) -> str:
