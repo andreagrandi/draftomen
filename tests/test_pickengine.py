@@ -34,6 +34,7 @@ from draftomen.pickengine import (
     PickScoringContext,
     ScoredPack,
     _recommendation_comparison_summary,
+    _triad_performance_rate,
     build_pick_scoring_context,
     recommendation_confidence_summary,
     render_pick_rationale_concise,
@@ -60,6 +61,7 @@ from draftomen.set_profile import (
     SampleSummary,
     SetProfile,
     SourceMetadata,
+    TriadProfile,
 )
 from draftomen.semantic_roles import (
     Role,
@@ -70,13 +72,19 @@ from draftomen.seventeen import (
     PREMIER_DRAFT_FORMAT,
     QUICK_DRAFT_FORMAT,
     ColorPairWinRate,
+    ColorTriadWinRate,
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsBasicLand,
     SeventeenLandsData,
     SeventeenLandsFormatData,
 )
-from draftomen.splash import card_is_castable_in_pair, splash_requirement
+from draftomen.splash import (
+    assess_splash_card,
+    card_is_castable_in_pair,
+    infer_splash_state,
+    splash_requirement,
+)
 from tests.augmented_artifacts import (
     augmented_artifact,
     card_pairs_training,
@@ -4916,3 +4924,227 @@ def _context_ledger(
         set_profile=profile,
         likely_pair="WU",
     )
+
+
+_TRIAD_POOL = (201, 202, 211, 212, 221, 222)
+_TRIAD_OFFER = (204, 214, 224, 231, 241)
+
+
+def _triad_card_database() -> CardDatabase:
+    colors = {"U": 200, "B": 210, "G": 220, "W": 230, "R": 240}
+    cards = {}
+    for color, base in colors.items():
+        for offset in range(1, 5):
+            grp_id = base + offset
+            cards[grp_id] = _card(grp_id=grp_id, name=f"{color} Card {offset}", colors=(color,))
+    return CardDatabase(cards=cards)
+
+
+def _triad_record(*, triad: str, wins: int, games: int) -> ColorTriadWinRate:
+    return ColorTriadWinRate(
+        triad=triad,
+        wins=wins,
+        games=games,
+        win_rate=None if games == 0 else wins / games,
+    )
+
+
+def _triad_ratings_data(
+    *,
+    share: float | None = 0.17,
+    ubg_wins: int = 1200,
+    ubg_games: int = 2000,
+    ub_rate: float = 0.55,
+) -> SeventeenLandsData:
+    base = _ratings_data()
+    card_ratings = {
+        grp_id: _stats(
+            grp_id=grp_id,
+            name=card.name,
+            color=card.colors[0],
+            gih=0.55,
+            games_in_hand=900,
+        )
+        for grp_id, card in _triad_card_database().cards.items()
+    }
+    primary = replace(
+        base.primary,
+        card_ratings=card_ratings,
+        pair_win_rates={
+            "UB": ColorPairWinRate(
+                pair="UB",
+                wins=round(ub_rate * 2000),
+                games=2000,
+                win_rate=ub_rate,
+            ),
+        },
+        triad_win_rates={
+            "UBG": _triad_record(triad="UBG", wins=ubg_wins, games=ubg_games),
+            "WUB": _triad_record(triad="WUB", wins=2000, games=4000),
+        },
+        three_color_share=share,
+    )
+    return replace(base, primary=primary, fallback=None)
+
+
+def _score_triad_pool(
+    *,
+    ratings_data: SeventeenLandsData,
+    pool_grp_ids: tuple[int, ...] = _TRIAD_POOL,
+    pick_index: int = 16,
+    profile: SetProfile | None = None,
+) -> ScoredPack:
+    return PickEngine(ratings_data=ratings_data, set_profile=profile).score_pack(
+        offered_grp_ids=_TRIAD_OFFER,
+        card_database=_triad_card_database(),
+        pool_grp_ids=pool_grp_ids,
+        pick_index=pick_index,
+    )
+
+
+def _triad_profile(*, share: float | None, ubg_rate: float, ub_rate: float) -> SetProfile:
+    profile = _test_profile(
+        by_pair=(("UB", 1),),
+        pairs=(PairProfile(pair="UB", performance=_profile_rate(ub_rate)),),
+    )
+    return replace(
+        profile,
+        triads=(TriadProfile(triad="UBG", performance=_profile_rate(ubg_rate)),),
+        three_color_share=share,
+    )
+
+
+def test_balanced_pool_in_three_color_set_infers_winning_triad() -> None:
+    scored_pack = _score_triad_pool(ratings_data=_triad_ratings_data())
+
+    assert scored_pack.commitment.inferred_pair == "UBG"
+    by_id = {card.card.grp_id: card for card in scored_pack.cards}
+    for grp_id in (204, 214, 224):
+        assert by_id[grp_id].color_fit == "on-color"
+    for grp_id in (231, 241):
+        assert by_id[grp_id].color_fit == "off-color"
+        assert by_id[grp_id].score < by_id[204].score
+    assert scored_pack.splash_state.active_color is None
+
+
+def test_mostly_two_color_pool_keeps_pair_despite_high_triad_rate() -> None:
+    scored_pack = _score_triad_pool(
+        ratings_data=_triad_ratings_data(ubg_wins=1400),
+        pool_grp_ids=(201, 202, 203, 211, 212, 213, 221),
+    )
+
+    assert scored_pack.commitment.inferred_pair == "UB"
+
+
+def test_triad_below_heaviest_pair_rate_keeps_pair() -> None:
+    scored_pack = _score_triad_pool(
+        ratings_data=_triad_ratings_data(ubg_wins=900),
+    )
+
+    assert scored_pack.commitment.inferred_pair == "UB"
+
+
+def test_small_sample_triad_rate_is_pulled_toward_triad_average() -> None:
+    ratings_data = _triad_ratings_data(ubg_wins=12, ubg_games=20, ub_rate=0.52)
+
+    rate = _triad_performance_rate(
+        triad="UBG",
+        ratings_data=ratings_data,
+        profile=None,
+    )
+
+    pooled_rate = (12 + 2000) / (20 + 4000)
+    assert rate is not None
+    assert pooled_rate < rate < 0.60
+    assert rate == pytest.approx(pooled_rate, abs=0.01)
+    scored_pack = _score_triad_pool(ratings_data=ratings_data)
+    assert scored_pack.commitment.inferred_pair == "UB"
+
+
+def test_triad_without_games_has_no_rate() -> None:
+    ratings_data = _triad_ratings_data(ubg_wins=0, ubg_games=0)
+
+    assert _triad_performance_rate(
+        triad="UBG",
+        ratings_data=ratings_data,
+        profile=None,
+    ) is None
+
+
+@pytest.mark.parametrize("share", [0.05, None])
+def test_set_without_enough_three_color_share_keeps_pair(share: float | None) -> None:
+    scored_pack = _score_triad_pool(ratings_data=_triad_ratings_data(share=share))
+
+    assert scored_pack.commitment.inferred_pair == "UB"
+
+
+def test_open_pick_shows_no_triad_bias() -> None:
+    scored_pack = _score_triad_pool(
+        ratings_data=_triad_ratings_data(),
+        pick_index=5,
+    )
+
+    assert scored_pack.commitment.inferred_pair == "UB"
+
+
+def test_empirical_profile_triad_rate_and_share_are_used() -> None:
+    ratings_data = _triad_ratings_data(share=0.01, ubg_wins=900)
+    profile = _triad_profile(share=0.17, ubg_rate=0.60, ub_rate=0.55)
+
+    scored_pack = _score_triad_pool(ratings_data=ratings_data, profile=profile)
+
+    assert scored_pack.commitment.inferred_pair == "UBG"
+    by_id = {card.card.grp_id: card for card in scored_pack.cards}
+    assert by_id[204].color_fit == "on-color"
+    assert by_id[231].color_fit == "off-color"
+
+
+def test_empirical_profile_below_share_threshold_keeps_pair() -> None:
+    profile = _triad_profile(share=0.05, ubg_rate=0.60, ub_rate=0.55)
+
+    scored_pack = _score_triad_pool(
+        ratings_data=_triad_ratings_data(share=0.30),
+        profile=profile,
+    )
+
+    assert scored_pack.commitment.inferred_pair == "UB"
+
+
+def test_build_pick_scoring_context_uses_triad_for_ledger() -> None:
+    profile = _triad_profile(share=0.17, ubg_rate=0.60, ub_rate=0.55)
+
+    context = build_pick_scoring_context(
+        pool_grp_ids=_TRIAD_POOL,
+        card_database=_triad_card_database(),
+        ratings_data=_triad_ratings_data(),
+        set_profile=profile,
+        pick_index=16,
+    )
+
+    assert context is not None
+    assert context.role_ledger.likely_pair == "UBG"
+
+
+def test_triad_base_has_no_splash_and_marks_outside_cards_off_color() -> None:
+    database = _triad_card_database()
+    state = infer_splash_state(
+        pool_grp_ids=_TRIAD_POOL,
+        card_database=database,
+        ratings_data=_triad_ratings_data(),
+        base_pair="UBG",
+        enabled=True,
+    )
+    assessment = assess_splash_card(
+        card=database.lookup(grp_id=231),
+        grade="A",
+        base_score=90.0,
+        best_on_color_score=40.0,
+        locked=True,
+        state=state,
+    )
+
+    assert state.active_color is None
+    assert assessment.classification == "off-color"
+    assert not assessment.is_splash_candidate
+    assert assessment.reasons == ("card is outside the three-color deck",)
+

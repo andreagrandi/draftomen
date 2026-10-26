@@ -602,3 +602,36 @@ def test_ledger_stage_rejects_a_pick_beyond_its_pack_size() -> None:
             estimated_remaining_picks=27,
         )
 
+
+
+def test_ledger_accepts_three_color_likely_pair_with_generic_targets() -> None:
+    profile = _profile(
+        pair=PairProfile(pair="WU", role_targets=(RoleTarget(Role.DRAW, 1),)),
+    )
+    database = _database(
+        _card(1, colors=("W",)),
+        _card(2, colors=("U",)),
+        _card(3, colors=("B",)),
+    )
+
+    ledger = evaluate_completed_pool_role_ledger(
+        final_pool=(1, 2, 3),
+        card_database=database,
+        set_profile=profile,
+        likely_pair="WUB",
+    )
+
+    assert ledger.likely_pair == "WUB"
+    assert all(item.confidence < 1.0 for item in ledger.target_coverage)
+
+
+def test_ledger_rejects_unknown_likely_pair() -> None:
+    database = _database(_card(1, colors=("W",)))
+
+    with pytest.raises(ValueError):
+        evaluate_completed_pool_role_ledger(
+            final_pool=(1,),
+            card_database=database,
+            set_profile=None,
+            likely_pair="WUBR",
+        )

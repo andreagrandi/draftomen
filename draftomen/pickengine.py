@@ -17,7 +17,13 @@ from draftomen.augmented_artifact import (
     pool_feature_counts,
 )
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.config import COLOR_PAIRS, PICK_ENGINE, SPLASH, PickEngineConfig
+from draftomen.config import (
+    COLOR_PAIRS,
+    COLOR_TRIADS,
+    PICK_ENGINE,
+    SPLASH,
+    PickEngineConfig,
+)
 from draftomen.draft_format import DraftRules, QUICK_RULES, event_format_label
 from draftomen.pool_ledger import (
     FIXING_ROLES,
@@ -28,6 +34,7 @@ from draftomen.pool_ledger import (
     TargetCoverage,
     project_pool_role_ledger,
 )
+from draftomen.profile_statistics import RATE_PRIOR_STRENGTH, shrink_mean
 from draftomen.semantic_roles import Role, RoleAssignment, resolve_card_roles
 from draftomen.set_profile import (
     CardRating,
@@ -728,6 +735,7 @@ class ScoreNormalization:
 class ColorCommitment:
     """Color inference for the current pick.
     The level is a 0.0-1.0 ramp from open to locked.
+    The inferred_pair field holds a three-letter code for a balanced three-color deck.
     """
 
     pick_index: int
@@ -947,6 +955,7 @@ class PickEngine:
             ratings_data=self.ratings_data,
             config=self.config,
             profile_lookup=profile_lookup,
+            profile=active_profile,
         )
         splash_state = infer_splash_state(
             pool_grp_ids=pool_grp_ids,
@@ -1686,6 +1695,8 @@ def _fixing_term(
 def _contextual_theme(*, scoring_context: PickScoringContext | None) -> str | None:
     if scoring_context is None or scoring_context.role_ledger.likely_pair is None:
         return None
+    if scoring_context.role_ledger.likely_pair not in COLOR_PAIRS:
+        return None
     pair_profile = scoring_context.set_profile.pair(
         scoring_context.role_ledger.likely_pair
     )
@@ -1798,7 +1809,7 @@ def build_pick_scoring_context(
         profile=set_profile,
         card_database=card_database,
     )
-    inferred_pair = _inferred_pair(
+    inferred_pair = _inferred_colors(
         weights=_pool_color_weights(
             pool_grp_ids=pool_grp_ids,
             card_database=card_database,
@@ -1806,6 +1817,9 @@ def build_pick_scoring_context(
             config=config,
             profile_lookup=profile_lookup,
         ),
+        pick_index=resolved_stage.global_pick_index,
+        ratings_data=ratings_data,
+        profile=set_profile,
         config=config,
     )
     return _build_pick_scoring_context(
@@ -1937,6 +1951,7 @@ def _color_commitment(
     ratings_data: SeventeenLandsData | None,
     config: PickEngineConfig,
     profile_lookup: _ProfileRatingLookup | None = None,
+    profile: SetProfile | None = None,
 ) -> ColorCommitment:
     weights = _pool_color_weights(
         pool_grp_ids=pool_grp_ids,
@@ -1945,7 +1960,13 @@ def _color_commitment(
         config=config,
         profile_lookup=profile_lookup,
     )
-    inferred_pair = _inferred_pair(weights=weights, config=config)
+    inferred_pair = _inferred_colors(
+        weights=weights,
+        pick_index=pick_index,
+        ratings_data=ratings_data,
+        profile=profile,
+        config=config,
+    )
     level = _commitment_level(pick_index=pick_index, config=config)
     if inferred_pair is None:
         level = 0.0
@@ -2017,6 +2038,107 @@ def _inferred_pair(
         return None
 
     return max(COLOR_PAIRS, key=lambda pair: _pair_weight(pair=pair, weights=weights))
+
+
+def _inferred_colors(
+    *,
+    weights: dict[str, float],
+    pick_index: int,
+    ratings_data: SeventeenLandsData | None,
+    profile: SetProfile | None,
+    config: PickEngineConfig,
+) -> str | None:
+    """Return the heaviest pair, or a balanced triad that wins more often.
+    Both commitment paths call this so they always agree.
+    """
+
+    pair = _inferred_pair(weights=weights, config=config)
+    if pair is None:
+        return None
+    if _commitment_level(pick_index=pick_index, config=config) <= 0.0:
+        return pair
+    if not _set_supports_triads(ratings_data=ratings_data, profile=profile, config=config):
+        return pair
+
+    pair_rate = _pair_performance_rate(
+        pair=pair,
+        ratings_data=ratings_data,
+        profile=profile,
+        config=config,
+    )
+    if pair_rate is None:
+        return pair
+
+    total_weight = sum(weights.values())
+    if total_weight <= config.pool_weight_epsilon:
+        return pair
+    best_triad: str | None = None
+    best_rate = pair_rate
+    for triad in COLOR_TRIADS:
+        if any(
+            weights.get(color, 0.0) / total_weight < config.triad_min_color_share
+            for color in triad
+        ):
+            continue
+        triad_rate = _triad_performance_rate(
+            triad=triad,
+            ratings_data=ratings_data,
+            profile=profile,
+        )
+        if triad_rate is not None and triad_rate > best_rate:
+            best_triad = triad
+            best_rate = triad_rate
+
+    return pair if best_triad is None else best_triad
+
+
+def _set_supports_triads(
+    *,
+    ratings_data: SeventeenLandsData | None,
+    profile: SetProfile | None,
+    config: PickEngineConfig,
+) -> bool:
+    share = (
+        profile.three_color_share
+        if _is_empirical_profile(profile=profile) and profile is not None
+        else None
+    )
+    if share is None and ratings_data is not None:
+        share = ratings_data.primary.three_color_share
+    return share is not None and share >= config.three_color_share_threshold
+
+
+def _triad_performance_rate(
+    *,
+    triad: str,
+    ratings_data: SeventeenLandsData | None,
+    profile: SetProfile | None,
+) -> float | None:
+    """Resolve triad performance with profile precedence and 17Lands shrinkage.
+    The fallback shrinks toward the pooled triad rate like profile generation.
+    """
+
+    if _is_empirical_profile(profile=profile) and profile is not None:
+        triad_profile = profile.triad(triad)
+        if triad_profile is not None:
+            return triad_profile.performance.value
+
+    if ratings_data is None:
+        return None
+    records = ratings_data.primary.triad_win_rates
+    record = records.get(triad)
+    if record is None or record.games <= 0 or record.win_rate is None:
+        return None
+    observed = [item for item in records.values() if item.games > 0]
+    pooled_rate = sum(item.wins for item in observed) / sum(
+        item.games for item in observed
+    )
+    return shrink_mean(
+        raw_value=record.wins / record.games,
+        samples=record.games,
+        prior_value=pooled_rate,
+        prior_strength=RATE_PRIOR_STRENGTH,
+    )
 
 
 def _pair_weight(*, pair: str, weights: dict[str, float]) -> float:
@@ -2732,7 +2854,11 @@ def _rating_for(
             requested_format=requested_format,
         )
 
-    if commitment is not None and commitment.locked and commitment.inferred_pair is not None:
+    if (
+        commitment is not None
+        and commitment.locked
+        and commitment.inferred_pair in COLOR_PAIRS
+    ):
         pair = commitment.inferred_pair
         if ratings_data.pair_card_ratings.get(pair) is not None:
             profile_influence = _profile_pair_influence(profile=profile, pair=pair)
@@ -2761,7 +2887,7 @@ def _effective_base_rating_for(
         ratings_data is None
         or commitment is None
         or not commitment.locked
-        or commitment.inferred_pair is None
+        or commitment.inferred_pair not in COLOR_PAIRS
         or rating.gih_win_rate is None
     ):
         return _base_rating(rating=rating, config=config)
