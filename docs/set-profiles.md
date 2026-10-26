@@ -1634,6 +1634,23 @@ Empirical sections are sparse and optional:
   pair-performance estimates require `aggregate_evidence` with
   `source_format`, `fallback_reason`, and `confidence`. Schema-1 profiles
   reject that field; zero-sample priors do not claim aggregate evidence.
+- `triad_profiles`, when present, contains each available three-color context
+  at most once in canonical `config.COLOR_TRIADS` order. Each entry has a
+  `triad` from the ten three-color names and a `performance` rate estimate. A
+  positive-sample estimate requires exact-format `aggregate_evidence`. The
+  estimate shrinks toward the average three-color win rate of the set.
+- `three_color_share`, when present, is a number from 0 to 1. It is the share
+  of the format's non-summary 17Lands games played by three-color decks
+  without a splash.
+
+Both three-color keys are top-level on purpose. `PairProfile` rejects names
+outside the ten pairs, and released clients accept only schema versions 1 to
+4. Putting triads in `pair_profiles` or raising the schema version would make
+older clients reject the whole profile. `SetProfile.from_json` ignores unknown
+top-level keys, so older clients skip these two. The generator omits both keys
+when no three-color data exists, so those profiles keep their bytes. Triad
+rates do not count as empirical evidence for maturity checks. Generic and
+metadata-only profiles cannot contain either key.
 
 `generate_set_profile(..., ratings=..., fallback_ratings=...)` keeps `ratings`
 as the exact requested-format dataset. `fallback_ratings` accepts only

@@ -25,6 +25,7 @@ from draftomen.set_profile import (
     SetProfile,
     SetProfileError,
     SetProfileSchemaError,
+    TriadProfile,
     dump_set_profile,
     load_set_profile,
     load_scoring_profile,
@@ -825,3 +826,104 @@ def test_empirical_synergy_remains_a_pair_profile_input() -> None:
         {"first_card": "oracle_id:a", "second_card": "oracle_id:b", "value": 0.4}
     ]
     assert SetProfile.from_json(serialized).pairs[0].synergy == (empirical,)
+
+
+def _triad_profile_json(**overrides: object) -> dict[str, object]:
+    exact = AggregateEvidence("quickdraft", None, 1.0)
+    profile = SetProfile(
+        set_code="TST",
+        event_format="quickdraft",
+        profile_version="generator-4",
+        generated_at="2026-08-30T00:00:00+00:00",
+        source=set_profile_module.SourceMetadata(provider="fixture"),
+        maturity=ProfileMaturity.EARLY,
+        samples=None,
+        confidence=0.4,
+        pairs=(PairProfile("WU", performance=_rate(aggregate_evidence=exact)),),
+        schema_version=4,
+        triads=(
+            TriadProfile("UBR", _rate(aggregate_evidence=exact)),
+            TriadProfile("WUB", _rate(aggregate_evidence=exact)),
+        ),
+        three_color_share=0.12,
+    )
+    return {**profile.to_json(), **overrides}
+
+
+def test_triad_profiles_round_trip_to_identical_bytes_in_canonical_order() -> None:
+    payload = _triad_profile_json()
+    profile = SetProfile.from_json(payload)
+    encoded = profile.to_bytes()
+
+    assert tuple(item.triad for item in profile.triad_profiles) == ("WUB", "UBR")
+    assert profile.three_color_share == 0.12
+    triad = profile.triad("wub")
+    assert triad is not None
+    assert triad.performance.samples == 12
+    assert profile.triad("WBR") is None
+    assert SetProfile.from_json(json.loads(encoded)).to_bytes() == encoded
+
+
+@pytest.mark.parametrize("triad", ["WUBR", "WUX", "WU", "", 3])
+def test_triad_profiles_reject_unknown_triads_and_pair_codes(triad: object) -> None:
+    payload = _triad_profile_json()
+    entries = payload["triad_profiles"]
+    assert isinstance(entries, list)
+    payload["triad_profiles"] = [{**entries[0], "triad": triad}]
+
+    with pytest.raises(SetProfileSchemaError):
+        SetProfile.from_json(payload)
+
+
+def test_triad_profiles_reject_duplicate_triads() -> None:
+    payload = _triad_profile_json()
+    entries = payload["triad_profiles"]
+    assert isinstance(entries, list)
+    payload["triad_profiles"] = [entries[0], entries[0]]
+
+    with pytest.raises(SetProfileSchemaError, match="duplicate color triads"):
+        SetProfile.from_json(payload)
+
+
+@pytest.mark.parametrize("share", [-0.01, 1.01, "0.1", True])
+def test_three_color_share_rejects_invalid_values(share: object) -> None:
+    with pytest.raises(SetProfileSchemaError, match="three_color_share"):
+        SetProfile.from_json(_triad_profile_json(three_color_share=share))
+
+
+def test_triad_profiles_must_be_an_array() -> None:
+    with pytest.raises(SetProfileSchemaError, match="triad_profiles must be an array"):
+        SetProfile.from_json(_triad_profile_json(triad_profiles={}))
+
+
+def test_metadata_only_and_generic_profiles_reject_triad_data() -> None:
+    payload = _triad_profile_json(maturity="metadata-only")
+    payload.pop("pair_profiles")
+    with pytest.raises(SetProfileSchemaError, match="triad data"):
+        SetProfile.from_json(payload)
+    with pytest.raises(SetProfileSchemaError, match="triad data"):
+        SetProfile.from_json({**payload, "maturity": "generic", "triad_profiles": []})
+
+
+def test_profile_without_triad_data_omits_both_keys() -> None:
+    payload = _triad_profile_json()
+    payload.pop("triad_profiles")
+    payload.pop("three_color_share")
+    profile = SetProfile.from_json(payload)
+
+    assert profile.triad_profiles == ()
+    assert profile.three_color_share is None
+    assert "triad_profiles" not in profile.to_json()
+    assert "three_color_share" not in profile.to_json()
+
+
+def test_triad_rate_with_samples_requires_aggregate_authority() -> None:
+    payload = _triad_profile_json()
+    entries = payload["triad_profiles"]
+    assert isinstance(entries, list)
+    bare = _rate().to_json()
+    bare.pop("aggregate_evidence", None)
+    payload["triad_profiles"] = [{"triad": "WUB", "performance": bare}]
+
+    with pytest.raises(SetProfileSchemaError, match="require aggregate authority"):
+        SetProfile.from_json(payload)

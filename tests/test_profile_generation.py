@@ -26,6 +26,7 @@ from draftomen.public_dump import PublicDumpManifest, PublicDumpSource
 from draftomen.profile_statistics import BetaPrior
 from draftomen.seventeen import (
     ColorPairWinRate,
+    ColorTriadWinRate,
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsFormatData,
@@ -401,6 +402,99 @@ def test_ratings_require_requested_set_metadata_and_bounded_rates() -> None:
     assert result.profile.card_ratings == ()
     assert result.report.skip_reasons["card_rating_out_of_range"] == 1
     assert result.report.skip_reasons["card_rating_out_of_set"] == 1
+
+
+def _triad_generation(
+    ratings: SeventeenLandsFormatData,
+    stage: str,
+) -> Any:
+    return generate_set_profile(
+        set_code="TST",
+        event_format="QuickDraft",
+        stage=stage,
+        card_database=_database(),
+        source_manifest=PublicDumpManifest(sources=(_source("mature-data.csv" if stage == "mature" else "no-data.csv"),)),
+        generated_at=GENERATED_AT,
+        ratings=ratings,
+        config=_config(),
+    )
+
+
+def _triad_ratings() -> SeventeenLandsFormatData:
+    return replace(
+        _ratings(),
+        triad_win_rates={
+            "WUB": ColorTriadWinRate(triad="WUB", wins=60, games=100, win_rate=0.60),
+            "UBG": ColorTriadWinRate(triad="UBG", wins=20, games=100, win_rate=0.20),
+            "BRG": ColorTriadWinRate(triad="BRG", wins=0, games=0, win_rate=None),
+        },
+        three_color_share=0.12,
+    )
+
+
+@pytest.mark.parametrize("stage", ["early", "mature"])
+def test_triad_win_rates_are_written_with_pooled_shrinkage(stage: str) -> None:
+    result = _triad_generation(_triad_ratings(), stage)
+
+    profile_json = json.loads(result.profile.to_bytes())
+    assert profile_json["schema_version"] == 4
+    assert profile_json["three_color_share"] == 0.12
+    assert [item["triad"] for item in profile_json["triad_profiles"]] == ["WUB", "UBG"]
+    pooled = 80 / 200
+    for triad, raw in (("WUB", 0.60), ("UBG", 0.20)):
+        performance = result.profile.triad(triad).performance
+        assert performance.samples == 100
+        assert performance.raw_value == pytest.approx(raw)
+        assert performance.prior_value == pytest.approx(pooled)
+        assert min(raw, pooled) < performance.value < max(raw, pooled)
+        assert performance.aggregate_evidence.source_format == "quickdraft"
+        assert performance.aggregate_evidence.fallback_reason is None
+    assert SetProfile.from_json(profile_json).to_bytes() == result.profile.to_bytes()
+
+
+def test_triads_without_games_write_no_triad_keys() -> None:
+    plain = _triad_generation(_ratings(), "early")
+    no_rows = _triad_generation(replace(_ratings(), three_color_share=0.12), "early")
+    zero_rows = _triad_generation(
+        replace(
+            _ratings(),
+            triad_win_rates={
+                "WUB": ColorTriadWinRate(triad="WUB", wins=0, games=0, win_rate=None),
+            },
+            three_color_share=0.12,
+        ),
+        "early",
+    )
+
+    for result in (plain, no_rows, zero_rows):
+        profile_json = json.loads(result.profile.to_bytes())
+        assert "triad_profiles" not in profile_json
+        assert "three_color_share" not in profile_json
+        assert result.profile.to_bytes() == plain.profile.to_bytes()
+
+
+def test_invalid_triad_rows_are_skipped_and_counted() -> None:
+    ratings = replace(
+        _ratings(),
+        triad_win_rates={
+            "WUB": ColorTriadWinRate(triad="WUB", wins=11, games=10, win_rate=1.0),
+            "UBG": ColorTriadWinRate(triad="UBG", wins=5, games=10, win_rate=0.5),
+        },
+        three_color_share=0.12,
+    )
+
+    result = _triad_generation(ratings, "early")
+
+    assert [item.triad for item in result.profile.triads] == ["UBG"]
+    assert result.report.skip_reasons["invalid_triad_win_rate"] == 1
+
+
+def test_metadata_stage_ignores_triad_data() -> None:
+    result = _triad_generation(_triad_ratings(), "metadata")
+
+    profile_json = json.loads(result.profile.to_bytes())
+    assert "triad_profiles" not in profile_json
+    assert "three_color_share" not in profile_json
 
 
 def test_mature_stage_emits_empirical_pair_targets() -> None:
