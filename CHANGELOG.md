@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Hosted set profiles now carry a win rate for each three-colour deck without
+  a splash and the share of games those decks played, in the new top-level
+  `triad_profiles` and `three_color_share` keys. Small samples are pulled
+  toward the set's average three-colour win rate. The schema stays at
+  version 4, and released clients load these profiles without downloading
+  them again. (#978)
 - The 17Lands cache now keeps win rates for the ten three-colour decks without
   a splash, and the share of games those decks played. Caches written by
   earlier versions still load, with no three-colour data. (#977)

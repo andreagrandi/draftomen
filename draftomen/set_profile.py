@@ -18,7 +18,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-from draftomen.config import COLOR_PAIRS
+from draftomen.config import COLOR_PAIRS, COLOR_TRIADS
 from draftomen.draft_format import aggregate_fallback_formats
 from draftomen.paths import app_data_dir
 from draftomen.semantic_roles import Role
@@ -760,6 +760,30 @@ class PairProfile:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class TriadProfile:
+    """Shrunk win rate for one canonical three-color context."""
+
+    triad: str
+    performance: RateEstimate
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "triad", _triad(self.triad))
+        if not isinstance(self.performance, RateEstimate):
+            raise SetProfileSchemaError("triad_profile.performance must be a RateEstimate.")
+
+    def to_json(self) -> dict[str, object]:
+        return {"performance": self.performance.to_json(), "triad": self.triad}
+
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> TriadProfile:
+        _object(value, "triad profile")
+        performance = _required_mapping(value, "performance", "triad_profile.performance")
+        return cls(
+            triad=_required_string(value, "triad", "triad_profile.triad"),
+            performance=RateEstimate.from_json(performance),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SetProfileLoadResult:
@@ -792,6 +816,8 @@ class SetProfile:
     pairs: tuple[PairProfile, ...]
     card_ratings: tuple[CardRating, ...] = ()
     schema_version: int = 1
+    triads: tuple[TriadProfile, ...] = ()
+    three_color_share: float | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -847,12 +873,29 @@ class SetProfile:
             field_name="card_ratings",
         )
         object.__setattr__(self, "card_ratings", normalized_card_ratings)
+        if not isinstance(self.triads, tuple) or any(not isinstance(item, TriadProfile) for item in self.triads):
+            raise SetProfileSchemaError("triads must contain TriadProfile objects.")
+        normalized_triads = tuple(sorted(self.triads, key=lambda item: COLOR_TRIADS.index(item.triad)))
+        if len({item.triad for item in normalized_triads}) != len(normalized_triads):
+            raise SetProfileSchemaError("triads contains duplicate color triads.")
+        object.__setattr__(self, "triads", normalized_triads)
+        if self.three_color_share is not None:
+            object.__setattr__(
+                self,
+                "three_color_share",
+                _bounded_number(self.three_color_share, "three_color_share"),
+            )
         _validate_aggregate_authority(
             schema_version=self.schema_version,
             requested_format=event_format,
             pairs=normalized_pairs,
             card_ratings=normalized_card_ratings,
+            triads=normalized_triads,
         )
+        if maturity in {ProfileMaturity.GENERIC, ProfileMaturity.METADATA_ONLY} and (
+            normalized_triads or self.three_color_share is not None
+        ):
+            raise SetProfileSchemaError(f"{maturity.value} profiles cannot contain triad data.")
         has_empirical_evidence = _has_empirical_evidence(
             self.samples,
             normalized_pairs,
@@ -873,6 +916,13 @@ class SetProfile:
         normalized = _pair(pair)
         return next((item for item in self.pairs if item.pair == normalized), None)
 
+    @property
+    def triad_profiles(self) -> tuple[TriadProfile, ...]:
+        return self.triads
+
+    def triad(self, triad: str) -> TriadProfile | None:
+        normalized = _triad(triad)
+        return next((item for item in self.triads if item.triad == normalized), None)
 
     def to_json(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -889,6 +939,10 @@ class SetProfile:
             result["card_ratings"] = [item.to_json() for item in self.card_ratings]
         if self.pairs:
             result["pair_profiles"] = [item.to_json() for item in self.pairs]
+        if self.three_color_share is not None:
+            result["three_color_share"] = self.three_color_share
+        if self.triads:
+            result["triad_profiles"] = [item.to_json() for item in self.triads]
         if self.samples is not None:
             result["samples"] = self.samples.to_json()
         return result
@@ -933,6 +987,17 @@ class SetProfile:
         )
         if len({item.card_key for item in card_ratings}) != len(card_ratings):
             raise SetProfileSchemaError("card_ratings contains duplicate card identities.")
+        triad_values = value.get("triad_profiles", [])
+        if not isinstance(triad_values, list):
+            raise SetProfileSchemaError("triad_profiles must be an array.")
+        triads = tuple(
+            TriadProfile.from_json(item) for item in _mapping_items(triad_values, "triad_profiles")
+        )
+        if len({item.triad for item in triads}) != len(triads):
+            raise SetProfileSchemaError("triads contains duplicate color triads.")
+        three_color_share = value.get("three_color_share")
+        if three_color_share is not None:
+            three_color_share = _bounded_number(three_color_share, "three_color_share")
         samples_value = value.get("samples")
         samples = None if samples_value is None else SampleSummary.from_json(samples_value)
         return cls(
@@ -947,6 +1012,8 @@ class SetProfile:
             pairs=pair_profiles,
             schema_version=schema_version,
             card_ratings=card_ratings,
+            triads=triads,
+            three_color_share=three_color_share,
         )
 
     @classmethod
@@ -1137,6 +1204,7 @@ def _validate_aggregate_authority(
     requested_format: str,
     pairs: tuple[PairProfile, ...],
     card_ratings: tuple[CardRating, ...],
+    triads: tuple[TriadProfile, ...] = (),
 ) -> None:
     rates = [item.gih_win_rate for item in card_ratings]
     rates.extend(
@@ -1144,6 +1212,7 @@ def _validate_aggregate_authority(
         for pair in pairs
         if pair.performance is not None
     )
+    rates.extend(item.performance for item in triads)
     for rate in rates:
         evidence = rate.aggregate_evidence
         if schema_version == 1:
@@ -1278,6 +1347,15 @@ def _pair(value: str) -> str:
     normalized = value.strip().upper()
     if normalized not in COLOR_PAIRS:
         raise SetProfileSchemaError(f"Unsupported color pair {value!r}.")
+    return normalized
+
+
+def _triad(value: str) -> str:
+    if not isinstance(value, str):
+        raise SetProfileSchemaError("Color triad must be a string.")
+    normalized = value.strip().upper()
+    if normalized not in COLOR_TRIADS:
+        raise SetProfileSchemaError(f"Unsupported color triad {value!r}.")
     return normalized
 
 

@@ -24,7 +24,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.draft_format import aggregate_fallback_formats
-from draftomen.config import COLOR_PAIRS, DECK_BUILDER, PICK_ENGINE, DeckBuilderConfig
+from draftomen.config import COLOR_PAIRS, COLOR_TRIADS, DECK_BUILDER, PICK_ENGINE, DeckBuilderConfig
 from draftomen.public_dump import (
     PUBLIC_DUMP_MANIFEST_SCHEMA_VERSION,
     PublicDumpChecksumError,
@@ -47,6 +47,7 @@ from draftomen.seventeen import (
     CURVE_BUCKETS,
     RELIABILITY_PREMIER_FACTOR,
     ColorPairWinRate,
+    ColorTriadWinRate,
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsError,
@@ -67,6 +68,7 @@ from draftomen.set_profile import (
     SetProfile,
     SET_PROFILE_SCHEMA_VERSION,
     SourceMetadata,
+    TriadProfile,
     profile_card_key,
 )
 
@@ -79,6 +81,7 @@ AGGREGATE_FALLBACK_CONFIDENCE_FACTOR = RELIABILITY_PREMIER_FACTOR
 
 _CARD_RATE_SOURCE = "17lands:card-ratings"
 _PAIR_RATE_SOURCE = "17lands:color-ratings"
+_TRIAD_RATE_SOURCE = "17lands:color-ratings"
 _STRUCTURE_SOURCE = "17lands:public-draft-structure"
 _ROLE_SOURCE = "17lands:public-draft-roles"
 _REMOVAL_SOURCE = "17lands:public-draft-removals"
@@ -696,6 +699,8 @@ def generate_set_profile(
     cards = ()
     card_rating_counts: CardRatingCounts | None = None
     pair_profiles: tuple[PairProfile, ...] = ()
+    triad_profiles: tuple[TriadProfile, ...] = ()
+    three_color_share: float | None = None
     normalized_structure_targets: Mapping[str, Any] = {}
     if normalized_stage != ProfileGenerationStage.METADATA and valid_rows:
         try:
@@ -747,6 +752,12 @@ def generate_set_profile(
             skip_counts=skip_counts,
             structure_targets=normalized_structure_targets,
         )
+        triad_profiles, three_color_share = _triad_profiles(
+            ratings=ratings,
+            requested_format=normalized_format,
+            config=config,
+            skip_counts=skip_counts,
+        )
         if normalized_stage == ProfileGenerationStage.MATURE:
             pair_profiles = _mature_pair_profiles(
                 pair_profiles=pair_profiles,
@@ -783,6 +794,8 @@ def generate_set_profile(
         confidence=confidence,
         pairs=pair_profiles,
         card_ratings=cards,
+        triads=triad_profiles,
+        three_color_share=three_color_share,
         schema_version=profile_schema_version,
     )
     profile_bytes = profile.to_bytes()
@@ -1165,6 +1178,66 @@ def _pair_profiles(
             )
         result.append(PairProfile(pair=pair, performance=estimate, structural_targets=structural))
     return tuple(result)
+
+
+def _triad_profiles(
+    *,
+    ratings: SeventeenLandsFormatData | None,
+    requested_format: str,
+    config: ProfileGenerationConfig,
+    skip_counts: Counter[str],
+) -> tuple[tuple[TriadProfile, ...], float | None]:
+    """Build triad win-rate estimates from the exact requested-format ratings.
+    Triads shrink toward the pooled three-color rate and never use fallback formats.
+    """
+    if ratings is None:
+        return (), None
+    observed: list[tuple[str, int, int]] = []
+    for triad in COLOR_TRIADS:
+        record = ratings.triad_win_rates.get(triad)
+        if record is None:
+            continue
+        games = getattr(record, "games", None)
+        wins = getattr(record, "wins", None)
+        if (
+            not isinstance(record, ColorTriadWinRate)
+            or isinstance(games, bool)
+            or not isinstance(games, int)
+            or isinstance(wins, bool)
+            or not isinstance(wins, int)
+            or games < 0
+            or wins < 0
+            or wins > games
+        ):
+            skip_counts["invalid_triad_win_rate"] += 1
+            continue
+        if games > 0:
+            observed.append((triad, wins, games))
+    if not observed:
+        return (), None
+    prior = BetaPrior(
+        mean=sum(wins for _, wins, _ in observed) / sum(games for _, _, games in observed),
+        strength=config.pair_prior.strength,
+    )
+    triads = tuple(
+        TriadProfile(
+            triad=triad,
+            performance=_rate_estimate(
+                raw_value=wins / games,
+                successes=wins,
+                samples=games,
+                prior=prior,
+                source=_TRIAD_RATE_SOURCE,
+                aggregate_evidence=AggregateEvidence(
+                    source_format=requested_format,
+                    fallback_reason=None,
+                    confidence=min(1.0, games / config.confidence_sample_scale),
+                ),
+            ),
+        )
+        for triad, wins, games in observed
+    )
+    return triads, ratings.three_color_share
 
 
 def _mature_pair_profiles(
