@@ -2506,12 +2506,19 @@ async def _assert_failed_backtest_refresh_replaces_stale_report(
 
     async with app.run_test(size=(160, 40)) as pilot:
         app.process_lines(lines=_full_fixture_lines())
-        await pilot.pause()
         state_path = draft_state_path(
             account_id=FIXTURE_ACCOUNT_ID,
             draft_id=FIXTURE_DRAFT_ID,
             app_dir=tmp_path / "app",
         )
+        # A busy runner can still be applying picks after one frame.
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if (
+                app.session.snapshot.status.phase == ApplicationPhase.DRAFT_COMPLETE
+                and state_path.exists()
+            ):
+                break
 
         await pilot.press("t")
         await pilot.pause()
@@ -3098,6 +3105,11 @@ async def _assert_card_metadata_load_starts_on_detected_set(
                 await asyncio.sleep(0.05)
             assert started.is_set()
             assert app.card_database_loading
+            # The session thread flips the phase before Textual redraws the status bar.
+            for _ in range(40):
+                if "Loading card metadata" in _status_text(app=app):
+                    break
+                await pilot.pause(0.05)
             assert "Loading card metadata" in _status_text(app=app)
             assert app.query_one("#pack-table", DataTable).loading
 
