@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Native bundle builds now pin Python 3.14 on macOS and 3.12 on Windows, so
+  a runner image that ships a newer Python cannot break the Nuitka build.
+
 ## [0.6.5] - 2026-10-27
 
 - Pool Summary in the TUI and GUI now lists the colour combinations the
