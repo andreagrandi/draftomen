@@ -32,6 +32,7 @@ Draft Omen keeps the data behind every recommendation visible instead of present
 - **Close early picks:** when two cards have similar scores, set- and format-specific 17Lands color-pair win rates can break the tie without forcing an early commitment.
 - **Conservative splashing:** an `A`-range, single-pip card can be marked as a visible third-color splash when it is materially better than the on-color choices and the pool can support its mana. Draft Omen limits this to one extra color and two cards.
 - **Transparent alternatives:** press `s` to compare rankings by DO Score, raw 17Lands win rate, ALSA, or mana value. The interface also identifies neutral-prior and fallback rows.
+- **Three-color decks:** in sets where three-color decks without a splash make up at least 10% of 17Lands games, a pool spread evenly over three colors can be recommended and built as a three-color deck. The interface shows it with its letters and name, such as `UBG Sultai`. Other sets keep two-color pairs.
 - **Deck suggestion:** the builder evaluates two-color pairs using card quality and 17Lands pair performance, then chooses spells and lands while considering creatures, curve, colored mana requirements, and cached 17Lands deck-structure targets when available.
 
 DO Score is the default because it performed better than raw 17Lands win rate in Draft Omen's offline pick benchmarks. It is still guidance rather than a perfect pick order: public statistics reflect the decks, players, and contexts in which cards were played.

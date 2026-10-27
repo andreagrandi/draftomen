@@ -45,7 +45,7 @@ Two distinct notions of "account," both handled:
 1. Live pick recommendations during **Quick, Premier, Traditional and Pick-Two drafts**, from P1P1 through the final pick. The format comes from the event name, and each format's pack rules set the pick count and the cards taken per pick (§3.1).
 2. Per-pick display: every offered card with a **single, comparable score**, sorted highest → lowest, showing card name and color(s).
 3. Scores driven by 17lands card data for the draft's own format, with automatic fallback to PremierDraft data when that format's samples are unavailable or too thin (early in a set's run, or for rarer formats such as Traditional and Pick-Two).
-4. Color-aware scoring that starts open and converges on the best **two-color pair** as the pool grows.
+4. Color-aware scoring that starts open and converges on the best **two-color pair** as the pool grows. In sets where three-color decks without a splash make up at least 10% of 17lands games, a balanced pool can converge on a three-color deck instead, shown with its letters and name, such as `UBG Sultai`.
 5. **Deck builder auto-triggered when no picks remain** (also runnable on demand): pair selection, 23-spell list with creature/spell balance and curve constraints, land count including drafted duals, basics split by pip count. Output is a build sheet the player replicates in the Arena client. Deck structure targets anchored to winning-deck patterns from 17lands (see FR-5.6).
 6. **Multi-account correctness**: per-OS-user log resolution and per-MTGA-account state separation.
 7. A **pleasant TUI**: live-updating pack panel, pool/color sidebar, status bar; plain-text mode for replay and scripting.
@@ -59,7 +59,7 @@ Two distinct notions of "account," both handled:
 - Match tracking, collection tracking, win-rate dashboards.
 - Automatic deck import into Arena (the client does not support Limited decklist import; the build sheet is applied manually).
 - Any form of gameplay automation (also a Terms-of-Service requirement, not just a scope choice).
-- Unrestricted three-color decks or more than one splash color.
+- Four- and five-color decks, or more than one splash color.
 - Official Linux support (Arena doesn't run natively on Linux; Wine/Proton log paths are undocumented — "works if you point `--log-path` at it," nothing more).
 
 ---
@@ -307,7 +307,6 @@ M0–M5 are each sized as a weekend-or-less chunk; the TUI (M6) is deliberately 
 ## 11. Future work (explicitly deferred)
 
 - M7 hardening: per-set/per-pair empirically fitted structure targets from 17lands public data dumps (CC BY 4.0), refreshed per set.
-- Broader three-color archetype support beyond the conservative one-color splash policy.
 - Native UI (menu-bar / floating panel) on top of the stabilized core.
 - Localized card names in output.
 - Manual tier-list import for day-one new sets.

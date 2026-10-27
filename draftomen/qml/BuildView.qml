@@ -79,11 +79,12 @@ Item {
         }
         return null
     }
+    readonly property string selectedPairLabel: root.build.selected_pair_label || root.build.selected_pair
     readonly property string pairDescription: {
         if (!root.build.pair_override)
-            return root.build.selected_pair + " was selected automatically from the drafted pool."
-        const automaticPairName = root.automaticPair ? root.automaticPair.pair : "another pair"
-        return root.build.selected_pair + " was explicitly requested. Automatic evaluation preferred " + automaticPairName + "."
+            return root.selectedPairLabel + " was selected automatically from the drafted pool."
+        const automaticPairName = root.automaticPair ? (root.automaticPair.label || root.automaticPair.pair) : "another pair"
+        return root.selectedPairLabel + " was explicitly requested. Automatic evaluation preferred " + automaticPairName + "."
     }
     readonly property string buildIdentity: {
         if (!root.hasBuild)
@@ -446,9 +447,9 @@ Item {
                 id: pairSelector
                 objectName: "buildPairSelector"
                 visible: root.hasBuild
-                Layout.preferredWidth: root.compactPresentation ? 104 : 174
+                Layout.preferredWidth: root.compactPresentation ? 128 : 200
                 model: root.build.pair_options
-                textRole: "pair"
+                textRole: "label"
                 valueRole: "pair"
                 currentIndex: {
                     for (let index = 0; index < root.build.pair_options.length; index++) {
@@ -768,7 +769,7 @@ Item {
                                         required property var modelData
                                         objectName: "widePairOption" + modelData.pair
                                         Layout.fillWidth: true
-                                        text: modelData.pair + " · score " + modelData.score.toFixed(1)
+                                        text: (modelData.label || modelData.pair) + " · score " + modelData.score.toFixed(1)
                                             + " · " + (modelData.playable_count !== null
                                                 ? modelData.playable_count + " playables"
                                                 : "playables unavailable")
@@ -905,7 +906,7 @@ Item {
                                 font.pixelSize: Theme.textPixelSize(11)
                             }
                             Label {
-                                text: root.build.selected_pair + " · " + (root.build.pair_override ? "override" : "automatic")
+                                text: root.selectedPairLabel + " · " + (root.build.pair_override ? "override" : "automatic")
                                 color: root.build.pair_override ? Theme.warning : Theme.primary
                                 font.bold: true
                                 Accessible.name: "Selected pair " + text
@@ -1131,7 +1132,7 @@ Item {
                                         required property var modelData
                                         objectName: "narrowPairOption" + modelData.pair
                                         Layout.fillWidth: true
-                                        text: modelData.pair + " · score " + modelData.score.toFixed(1)
+                                        text: (modelData.label || modelData.pair) + " · score " + modelData.score.toFixed(1)
                                             + " · " + (modelData.playable_count !== null
                                                 ? modelData.playable_count + " playables"
                                                 : "playables unavailable")

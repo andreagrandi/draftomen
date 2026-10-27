@@ -24,7 +24,9 @@ ComboBox {
         if (!control.textRole)
             return control.textAt(index)
 
-        const roleValue = model[control.textRole]
+        let roleValue = model[control.textRole]
+        if (control.textRole === "label" && !roleValue)
+            roleValue = model.pair
         if (control.textRole === "screen_name" && !roleValue)
             return model.account_id ? String(model.account_id) : ""
 
@@ -32,7 +34,7 @@ ComboBox {
             return ""
 
         const label = String(roleValue)
-        if (control.textRole === "pair" && model.automatic)
+        if ((control.textRole === "pair" || control.textRole === "label") && model.automatic)
             return label + " · automatic"
         return label
     }

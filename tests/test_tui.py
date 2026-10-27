@@ -97,6 +97,7 @@ from draftomen.tui import (
     _card_view_is_unknown,
     _format_card_colors,
     _format_card_types,
+    _format_pair_label,
     _format_pick_card_name,
     _format_splash_details,
     _format_tui_card_view,
@@ -2405,6 +2406,43 @@ async def _assert_completion_build_view_and_pair_override(tmp_path: Path) -> Non
         assert str(title.render()).startswith("Build view — pair WB (forced WB)")
         assert "Color pair: WB (forced" in app.build_view_text
         assert "Override: WB" in _status_text(app=app)
+
+
+def test_format_pair_label_names_three_color_decks_and_keeps_pairs() -> None:
+    sultai_icons = "".join(MANA_ICON_GLYPHS[color] for color in "UBG")
+    pair_icons = "".join(MANA_ICON_GLYPHS[color] for color in "WU")
+
+    assert _format_pair_label(pair="UBG") == "UBG Sultai"
+    assert _format_pair_label(pair="WRG") == "WRG Naya"
+    assert _format_pair_label(pair="WU") == "WU"
+    assert _format_pair_label(pair="open") == "open"
+    assert (
+        _format_pair_label(pair="UBG", mana_icons_enabled=True)
+        == f"{sultai_icons} Sultai"
+    )
+    assert _format_pair_label(pair="WU", mana_icons_enabled=True) == pair_icons
+
+
+def test_tui_status_and_pool_summary_show_inferred_three_color_deck(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_inferred_three_color_deck_display(tmp_path=tmp_path))
+
+
+async def _assert_inferred_three_color_deck_display(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+        snapshot = app.session.snapshot
+        app._apply_session_snapshot(
+            replace(snapshot, pool=replace(snapshot.pool, inferred_pair="UBG"))
+        )
+        await pilot.pause()
+
+        assert "Pair: UBG Sultai" in _status_text(app=app)
+        assert "Inferred pair: UBG Sultai" in _pool_summary_text(app=app)
 
 
 def test_tui_backtest_keybinding_opens_recommendation_report(

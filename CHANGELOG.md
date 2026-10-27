@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- The TUI and GUI now show a three-colour deck with its letters and name,
+  such as `UBG Sultai`, wherever they show the inferred or built colour pair.
+  Two-colour pairs look as before. The PRD and README describe three-colour
+  decks and the 10% share threshold. (#981)
 - The deck builder now considers the ten three-colour decks next to the ten
   pairs in sets where those decks are common. A three-colour deck qualifies
   only when each colour holds a fifth of the top spells and the pool has at
