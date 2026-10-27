@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- The profile refresh now rebuilds card data with bonus-sheet cards for the
+  sets each run selects, so already published card data gains the cards that
+  Scryfall prints under another set. A failed 17Lands ratings fetch leaves
+  that set's card data unchanged and is reported for the set. (#943)
 - Hosted set profiles now rate bonus-sheet cards, such as Wilds of Eldraine's
   Enchanting Tales, using the committed card data. Scryfall prints these cards
   under another set, so the refresh used to drop their 17Lands ratings. (#944)

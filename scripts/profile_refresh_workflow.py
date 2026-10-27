@@ -7,7 +7,7 @@ branch management, and deployment belong to a later workflow.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 import hashlib
@@ -26,7 +26,7 @@ from draftomen.card_data_export import (
     prepare_set_data_export,
     publish_set_data_export,
 )
-from draftomen.carddb import CardDatabase
+from draftomen.carddb import CardDatabase, download_scryfall_default_cards_bulk_file
 from draftomen.profile_batch_generation import (
     ProfileBatchGenerationError,
     generate_staged_profile_batch,
@@ -73,13 +73,16 @@ from draftomen.seventeen import (
     SEVENTEEN_LANDS_ATTRIBUTION,
     SEVENTEEN_LANDS_EXPANSIONS_ENDPOINT,
     SeventeenLandsExpansionInventory,
+    SeventeenLandsRatedCard,
     _default_fetch_json,
     fetch_17lands_format_data,
+    fetch_17lands_rated_cards,
     parse_17lands_expansion_inventory,
 )
 
 FetchJson: TypeAlias = Callable[[str, int], Any]
 Clock: TypeAlias = Callable[[], datetime]
+FetchRatedCards: TypeAlias = Callable[..., Sequence[SeventeenLandsRatedCard]]
 
 SELECTION_MODES = ("one", "all", "active", "historical")
 # Refreshing every historical set in one run got the runner throttled by 17Lands.
@@ -148,9 +151,10 @@ def _sort_failures(failures: list[dict[str, str]]) -> None:
     stage_order = {
         "static-discovery": 0,
         "static-write": 1,
-        "profile-planning": 2,
-        "profile-execution": 3,
-        "bundle": 4,
+        "card-data-rebuild": 2,
+        "profile-planning": 3,
+        "profile-execution": 4,
+        "bundle": 5,
     }
     failures.sort(
         key=lambda item: (
@@ -243,6 +247,7 @@ def render_summary(report: Mapping[str, Any]) -> str:
     profiles = report.get("profiles") if isinstance(report.get("profiles"), Mapping) else {}
     selected_static = static.get("selected") if isinstance(static.get("selected"), list) else []
     static_successful = set(static.get("successful", [])) if isinstance(static.get("successful"), list) else set()
+    rebuilt_sets = static.get("rebuilt") if isinstance(static.get("rebuilt"), list) else []
     selected_pairs = profiles.get("selected") if isinstance(profiles.get("selected"), list) else []
     successful_pairs = profiles.get("successful") if isinstance(profiles.get("successful"), list) else []
     successful_pair_keys = {
@@ -289,6 +294,12 @@ def render_summary(report: Mapping[str, Any]) -> str:
                 lines.append(
                     f"- {_pair_label(identity)}: {_safe_summary_text(outcome)}"
                 )
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "### Rebuilt card data", ""])
+    if rebuilt_sets:
+        lines.extend(f"- {_safe_summary_text(code)}" for code in rebuilt_sets)
     else:
         lines.append("- None")
 
@@ -694,7 +705,96 @@ def _empty_static() -> dict[str, Any]:
         "already_valid_count": None,
         "selected": [],
         "successful": [],
+        "rebuilt": [],
     }
+
+
+class _SelectedRatedCards(Mapping[str, Sequence[SeventeenLandsRatedCard]]):
+    """Fetch rated cards lazily for the selected sets only.
+    A failed fetch is recorded for its set and hides that set from the exporter.
+    """
+
+    def __init__(
+        self,
+        *,
+        selected: set[str],
+        fetch: FetchRatedCards,
+        failures: list[dict[str, str]],
+    ) -> None:
+        self._selected = selected
+        self._fetch = fetch
+        self._failures = failures
+        self._loaded: dict[str, tuple[SeventeenLandsRatedCard, ...]] = {}
+        self.failed: set[str] = set()
+
+    def __getitem__(self, set_code: str) -> tuple[SeventeenLandsRatedCard, ...]:
+        key = set_code.casefold()
+        if key not in self._selected or key in self.failed:
+            raise KeyError(set_code)
+        if key not in self._loaded:
+            try:
+                self._loaded[key] = tuple(self._fetch(set_code=key))
+            except Exception:
+                self.failed.add(key)
+                self._failures.append(
+                    _failure(
+                        stage="card-data-rebuild",
+                        category="ratings-fetch-failed",
+                        set_code=key,
+                    )
+                )
+                raise KeyError(set_code) from None
+        return self._loaded[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(sorted(self._selected - self.failed))
+
+    def __len__(self) -> int:
+        return len(self._selected - self.failed)
+
+
+def _rebuild_card_data(
+    *,
+    static_dir: Path,
+    inventory_path: Path,
+    bulk_path: Path | None,
+    selected: set[str],
+    fetch: FetchRatedCards,
+    failures: list[dict[str, str]],
+) -> list[str]:
+    """Rebuild card data with bonus-sheet cards for the selected sets only.
+    Return the set codes whose rebuilt bytes were published.
+    """
+
+    rated_cards = _SelectedRatedCards(selected=selected, fetch=fetch, failures=failures)
+    try:
+        plan = prepare_set_data_export(
+            selector=None,
+            output_dir=static_dir,
+            inventory_file=inventory_path,
+            bulk_file=bulk_path,
+            rated_cards=rated_cards,
+        )
+    except Exception:
+        for code in sorted(selected - rated_cards.failed):
+            failures.append(
+                _failure(stage="card-data-rebuild", category="rebuild-failed", set_code=code)
+            )
+        return []
+    rebuilt: list[str] = []
+    for candidate in plan.pending:
+        code = candidate.identity.set_code
+        if code.casefold() not in selected:
+            continue
+        try:
+            publish_set_data_export(candidate=candidate)
+        except Exception:
+            failures.append(
+                _failure(stage="card-data-rebuild", category="publish-failed", set_code=code)
+            )
+        else:
+            rebuilt.append(code)
+    return sorted(rebuilt)
 
 
 def _card_metadata_adapter_with_static_fallback(
@@ -766,6 +866,7 @@ def generate_website(
     card_metadata_adapter: CardMetadataAdapter | None = None,
     ratings_adapter: SeventeenLandsRatingsAdapter | None = None,
     public_draft_adapter: SeventeenLandsPublicDraftAdapter | None = None,
+    fetch_rated_cards: FetchRatedCards | None = None,
 ) -> dict[str, object]:
     """Generate selected website data and persist a report plus delta bundle."""
 
@@ -805,10 +906,13 @@ def generate_website(
     static_plan: SetDataExportPlan | None = None
     static_successes: list[str] = []
     static_already_valid: list[str] = []
+    rebuilt_sets: list[str] = []
     profile_plan: ProfilePlan | None = None
     inventory: SeventeenLandsExpansionInventory | None = None
     inventory_path: Path | None = None
     inventory_temporary: Any = None
+    bulk_temporary: Any = None
+    bulk_path: Path | None = bulk_file
 
     try:
         try:
@@ -825,11 +929,19 @@ def generate_website(
 
         if inventory is not None and inventory_path is not None:
             try:
+                if bulk_path is None:
+                    # Both exporter passes read this one download instead of fetching Scryfall twice.
+                    bulk_temporary = tempfile.TemporaryDirectory(
+                        prefix=".profile-refresh-bulk-", dir=root
+                    )
+                    bulk_path = download_scryfall_default_cards_bulk_file(
+                        destination=Path(bulk_temporary.name) / "default-cards.jsonl.gz"
+                    )
                 static_plan = prepare_set_data_export(
                     selector=None,
                     output_dir=static_dir,
                     inventory_file=inventory_path,
-                    bulk_file=bulk_file,
+                    bulk_file=bulk_path,
                 )
                 report["static"] = {
                     "discovery_complete": True,
@@ -839,6 +951,7 @@ def generate_website(
                         _identity_json(candidate.identity) for candidate in static_plan.pending
                     ],
                     "successful": [],
+                    "rebuilt": [],
                 }
                 static_already_valid = [
                     identity.set_code for identity in static_plan.already_valid
@@ -916,9 +1029,32 @@ def generate_website(
                 ]
             except Exception:
                 failures.append(_failure(stage="profile-planning", category="planning-failed"))
+
+            if (
+                mode != "all"
+                and static_plan is not None
+                and inventory_path is not None
+                and profile_plan is not None
+                and profile_plan.pairs
+            ):
+                rebuilt_sets = _rebuild_card_data(
+                    static_dir=static_dir,
+                    inventory_path=inventory_path,
+                    bulk_path=bulk_path,
+                    selected={pair.set_code.casefold() for pair in profile_plan.pairs},
+                    fetch=(
+                        fetch_17lands_rated_cards
+                        if fetch_rated_cards is None
+                        else fetch_rated_cards
+                    ),
+                    failures=failures,
+                )
+                report["static"]["rebuilt"] = list(rebuilt_sets)
     finally:
         if inventory_temporary is not None:
             inventory_temporary.cleanup()
+        if bulk_temporary is not None:
+            bulk_temporary.cleanup()
 
     successful_pairs: list[Pair] = []
     if profile_plan is not None:
@@ -1099,7 +1235,7 @@ def generate_website(
             repo_root=root,
             bundle_dir=bundle,
             base_commit=base_commit,
-            static_successes=static_successes,
+            static_successes=[*static_successes, *rebuilt_sets],
             successful_pairs=successful_pairs,
         )
     except Exception:

@@ -33,6 +33,25 @@ def _no_hosted_replay_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "REPLAY_PROFILE_MANIFEST_URL", None)
 
 
+@pytest.fixture(autouse=True)
+def rated_card_fetch_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Stop the profile refresh workflow from fetching 17Lands rated cards.
+    The stub returns no cards and records each requested set code.
+    """
+
+    import scripts.profile_refresh_workflow as workflow
+
+    calls: list[str] = []
+
+    def fetch(*, set_code: str, **kwargs: object) -> tuple[()]:
+        del kwargs
+        calls.append(set_code)
+        return ()
+
+    monkeypatch.setattr(workflow, "fetch_17lands_rated_cards", fetch)
+    return calls
+
+
 @pytest.fixture
 def app_logs_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Return the folder that stands in for ~/.draftomen/logs during one test."""
