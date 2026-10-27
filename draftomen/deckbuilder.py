@@ -16,8 +16,15 @@ from types import MappingProxyType
 from typing import Any, TypeAlias
 
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.config import COLOR_PAIRS, DECK_BUILDER, SPLASH, DeckBuilderConfig
-from draftomen.pickengine import PickEngine, ScoredCard
+from draftomen.config import (
+    COLOR_PAIRS,
+    COLOR_TRIADS,
+    DECK_BUILDER,
+    PICK_ENGINE,
+    SPLASH,
+    DeckBuilderConfig,
+)
+from draftomen.pickengine import PickEngine, ScoredCard, set_supports_triads
 from draftomen.pool import DraftState, list_draft_states
 from draftomen.pool_ledger import (
     PACKAGE_ROLES,
@@ -86,7 +93,7 @@ class BuildPool:
 
 @dataclass(frozen=True, slots=True)
 class PairScore:
-    """Computed score for one two-color pair.
+    """Computed score for one two-color pair or three-color triad.
     Card quality and aggregate 17Lands pair win rate stay visible separately.
     """
 
@@ -101,7 +108,7 @@ class PairScore:
 
 @dataclass(frozen=True, slots=True)
 class PairSelection:
-    """Chosen pair plus sorted pair-score context.
+    """Chosen pair or triad plus sorted score context.
     Forced selections keep the automatic best pair available for display.
     """
 
@@ -453,7 +460,7 @@ def select_color_pair(
     config: DeckBuilderConfig = DECK_BUILDER,
     set_profile: SetProfile | None = None,
 ) -> PairSelection:
-    """Score all two-color pairs and choose the best or forced pair.
+    """Score all pairs, plus balanced triads in three-color sets, and choose the best.
     The pool is already drafted; early draft picks remain rating-first elsewhere.
     """
 
@@ -481,7 +488,7 @@ def select_color_pair(
             card_database=card_database,
         ),
     )
-    scores = tuple(
+    pair_scores = tuple(
         _score_pair(
             pair=pair,
             scored_cards=scored_cards,
@@ -490,8 +497,17 @@ def select_color_pair(
         )
         for pair in COLOR_PAIRS
     )
+    triad_scores = _qualifying_triad_scores(
+        scored_cards=scored_cards,
+        pool_grp_ids=pool_grp_ids,
+        card_database=card_database,
+        ratings_data=ratings_data,
+        set_profile=set_profile,
+        config=config,
+    )
+    scores = pair_scores + triad_scores
     _validate_playable_pair_scores(
-        scores=scores,
+        scores=pair_scores,
         pool_grp_ids=pool_grp_ids,
         card_database=card_database,
         config=config,
@@ -541,7 +557,7 @@ def select_deck_spells(
         card_database=card_database,
         config=config,
     )
-    resolved_pair = _optional_pair(value=pair)
+    resolved_pair = _optional_build_colors(value=pair)
     if resolved_pair is None:
         raise DeckBuilderError("A color pair is required before selecting spells.")
 
@@ -678,7 +694,7 @@ def select_build_sheet(
     """
 
     _validate_deck_builder_config(config=config)
-    resolved_pair = _optional_pair(value=pair)
+    resolved_pair = _optional_build_colors(value=pair)
     if resolved_pair is None:
         raise DeckBuilderError("A color pair is required before selecting a build sheet.")
 
@@ -804,7 +820,7 @@ def select_mana_base(
     """
 
     _validate_deck_builder_config(config=config)
-    resolved_pair = _optional_pair(value=pair)
+    resolved_pair = _optional_build_colors(value=pair)
     if resolved_pair is None:
         raise DeckBuilderError("A color pair is required before selecting lands.")
 
@@ -1303,6 +1319,99 @@ def _score_pair(
         pair_win_rate_score=pair_win_rate_score,
         blended_score=blended_score,
     )
+
+
+
+def _qualifying_triad_scores(
+    *,
+    scored_cards: tuple[ScoredCard, ...],
+    pool_grp_ids: tuple[int, ...],
+    card_database: CardDatabase,
+    ratings_data: SeventeenLandsData | None,
+    set_profile: SetProfile | None,
+    config: DeckBuilderConfig,
+) -> tuple[PairScore, ...]:
+    if not set_supports_triads(
+        ratings_data=ratings_data,
+        profile=set_profile,
+        config=PICK_ENGINE,
+    ):
+        return ()
+
+    scores: list[PairScore] = []
+    for triad in COLOR_TRIADS:
+        if not _triad_is_balanced(triad=triad, scored_cards=scored_cards, config=config):
+            continue
+
+        fixing_count = _triad_fixing_source_count(
+            triad=triad,
+            pool_grp_ids=pool_grp_ids,
+            card_database=card_database,
+        )
+        if fixing_count < config.triad_min_fixing_sources:
+            continue
+
+        scores.append(
+            _score_pair(
+                pair=triad,
+                scored_cards=scored_cards,
+                ratings_data=ratings_data,
+                config=config,
+            )
+        )
+
+    return tuple(scores)
+
+
+
+def _triad_is_balanced(
+    *,
+    triad: str,
+    scored_cards: tuple[ScoredCard, ...],
+    config: DeckBuilderConfig,
+) -> bool:
+    top_cards = tuple(
+        card for card in scored_cards if _is_base_eligible_spell_for_pair(card=card, pair=triad)
+    )[: config.target_spell_count]
+    color_counts = {
+        color: sum(1 for card in top_cards if color in card.card.colors)
+        for color in triad
+    }
+    total = sum(color_counts.values())
+    if total <= 0:
+        return False
+
+    return all(
+        count / total >= PICK_ENGINE.triad_min_color_share
+        for count in color_counts.values()
+    )
+
+
+
+def _triad_fixing_source_count(
+    *,
+    triad: str,
+    pool_grp_ids: tuple[int, ...],
+    card_database: CardDatabase,
+) -> int:
+    count = 0
+    for grp_id in pool_grp_ids:
+        card = card_database.lookup(grp_id=grp_id)
+        if card.unknown or _is_basic_land_card(card=card):
+            continue
+
+        # Count only lands the mana base will play, so off-color lands do not count.
+        if _is_land_card(card=card) and not _is_selected_nonbasic_land(
+            card=card,
+            pair=triad,
+            splash_colors=(),
+        ):
+            continue
+
+        if sum(1 for color in triad if color in card.produced_mana) >= 2:
+            count += 1
+
+    return count
 
 
 
@@ -2187,8 +2296,13 @@ def _build_optimizer_context(
     influence = _clamp(value=set_profile.confidence * maturity_weight, lower=0.0, upper=1.0)
     if influence <= 0.0:
         return _OptimizerContext(pair=pair)
-    pair_profile = set_profile.pair(pair)
-    pair_sample_count = None if set_profile.samples is None else set_profile.samples.count_for(pair)
+    # Profiles carry synergy and scarcity evidence for pairs only, not triads.
+    pair_profile = set_profile.pair(pair) if pair in COLOR_PAIRS else None
+    pair_sample_count = (
+        None
+        if set_profile.samples is None or pair not in COLOR_PAIRS
+        else set_profile.samples.count_for(pair)
+    )
     synergy_values: dict[tuple[str, str], float] = {}
     scarcity_values: dict[str, float] = {}
     if pair_profile is not None:
@@ -3210,7 +3324,7 @@ def _basic_land_counts(
         key=lambda color: (pip_counts[color], -colors.index(color)),
     )
     best_counts = min(
-        _two_color_basic_splits(colors=colors, slots=slots),
+        _basic_splits(colors=colors, slots=slots),
         key=lambda counts: _basic_split_sort_key(
             counts=counts,
             colors=colors,
@@ -3248,15 +3362,27 @@ def _desired_basic_counts(
     }
 
 
-def _two_color_basic_splits(
+def _basic_splits(
     *,
     colors: tuple[str, ...],
     slots: int,
 ) -> tuple[dict[str, int], ...]:
-    first, second = colors
+    if len(colors) == 2:
+        first, second = colors
+        return tuple(
+            {first: first_count, second: slots - first_count}
+            for first_count in range(slots + 1)
+        )
+
+    first, second, third = colors
     return tuple(
-        {first: first_count, second: slots - first_count}
+        {
+            first: first_count,
+            second: second_count,
+            third: slots - first_count - second_count,
+        }
         for first_count in range(slots + 1)
+        for second_count in range(slots - first_count + 1)
     )
 
 
@@ -3269,7 +3395,7 @@ def _basic_split_sort_key(
     source_floor: int,
     double_heavy_color: str,
     pip_heavy_color: str,
-) -> tuple[float, float, int, int, int]:
+) -> tuple[float, ...]:
     shortage = sum(
         max(0, source_floor - (source_counts[color] + counts[color]))
         for color in colors
@@ -3283,7 +3409,7 @@ def _basic_split_sort_key(
         proportion_error,
         -counts[double_heavy_color],
         -counts[pip_heavy_color],
-        counts[colors[0]],
+        *(counts[color] for color in colors[:-1]),
     )
 
 
@@ -3540,6 +3666,9 @@ def _format_splash_note(*, selection: SpellSelection) -> str:
     if not selection.allow_splash_requested:
         return "Splash: disabled (--no-splash; off-pair cards excluded)"
 
+    if selection.pair in COLOR_TRIADS:
+        return "Splash: none; three-color decks do not splash"
+
     if selection.splash_color is None:
         return (
             "Splash: enabled; no eligible A- or better single-pip "
@@ -3667,6 +3796,10 @@ def _pair_win_rate(*, pair: str, ratings_data: SeventeenLandsData | None) -> flo
     if ratings_data is None:
         return None
 
+    if pair in COLOR_TRIADS:
+        triad_record = ratings_data.primary.triad_win_rates.get(pair)
+        return None if triad_record is None else triad_record.win_rate
+
     pair_record = ratings_data.pair_win_rates.get(pair)
     if pair_record is None:
         return None
@@ -3742,6 +3875,9 @@ def _validate_deck_builder_config(*, config: DeckBuilderConfig) -> None:
     if config.splash_elite_score_minimum < 0:
         raise DeckBuilderError("Deck-builder splash score threshold must be non-negative.")
 
+    if config.triad_min_fixing_sources < 0:
+        raise DeckBuilderError("Deck-builder triad fixing minimum must be non-negative.")
+
     if config.structure_maindeck_rate_threshold < 0:
         raise DeckBuilderError("Deck-builder structure threshold must be non-negative.")
 
@@ -3810,6 +3946,20 @@ def _validate_blending_weights(*, config: DeckBuilderConfig) -> None:
 
 
 
+def _optional_build_colors(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    if value not in COLOR_PAIRS and value not in COLOR_TRIADS:
+        raise DeckBuilderError(
+            f"Invalid color pair or triad {value!r}; expected one of "
+            f"{', '.join(COLOR_PAIRS + COLOR_TRIADS)}."
+        )
+
+    return value
+
+
+
 def _optional_pair(value: str | None) -> str | None:
     if value is None:
         return None
@@ -3840,7 +3990,7 @@ def _pair_score_sort_key(score: PairScore) -> tuple[float, float, float, int]:
         -score.blended_score,
         -score.playable_score_sum,
         -score.pair_win_rate_score,
-        COLOR_PAIRS.index(score.pair),
+        (COLOR_PAIRS + COLOR_TRIADS).index(score.pair),
     )
 
 

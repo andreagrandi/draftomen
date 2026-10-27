@@ -17,6 +17,7 @@ from draftomen.deckbuilder import (
     ManaBase,
     SpellConstraints,
     SpellCounts,
+    _basic_splits,
     _build_optimizer_context,
     _card_quantity_key,
     _greedy_feasible_package,
@@ -39,6 +40,7 @@ from draftomen.pool import DraftState, save_draft_state
 from draftomen.seventeen import (
     QUICK_DRAFT_FORMAT,
     ColorPairWinRate,
+    ColorTriadWinRate,
     RatingSampleCounts,
     SeventeenCardStats,
     SeventeenLandsData,
@@ -1707,6 +1709,79 @@ def _splash_ratings_data() -> SeventeenLandsData:
 
 
 
+def _triad_pool_database(
+    *,
+    blue_count: int = 9,
+    black_count: int = 9,
+    green_count: int = 8,
+    fixing_count: int = 3,
+) -> CardDatabase:
+    cards: dict[int, CardInfo] = {}
+    specs = (
+        ("U", 100, blue_count, "{U}{U}"),
+        ("B", 200, black_count, "{B}"),
+        ("G", 300, green_count, "{G}"),
+    )
+    for color, base, count, mana_cost in specs:
+        for offset in range(count):
+            grp_id = base + offset
+            cards[grp_id] = _card(
+                grp_id=grp_id,
+                name=f"{color} Card {offset}",
+                colors=(color,),
+                mana_value=3.0,
+                types=("Creature",) if offset < 5 else ("Instant",),
+                mana_cost=mana_cost,
+            )
+
+    land_colors = (("U", "B"), ("B", "G"), ("U", "G"), ("U", "B", "G"))
+    for offset in range(fixing_count):
+        grp_id = 400 + offset
+        cards[grp_id] = _card(
+            grp_id=grp_id,
+            name=f"Fixing Land {offset}",
+            colors=(),
+            mana_value=0.0,
+            types=("Land",),
+            produced_mana=land_colors[offset % len(land_colors)],
+        )
+
+    return CardDatabase(cards=cards)
+
+
+
+def _triad_ratings_data(*, share: float | None) -> SeventeenLandsData:
+    database = _triad_pool_database(fixing_count=0)
+    base = _ratings_data()
+    primary = replace(
+        base.primary,
+        card_ratings={
+            grp_id: _stats(
+                grp_id=grp_id,
+                name=card.name,
+                color=card.colors[0],
+                gih=0.55,
+            )
+            for grp_id, card in database.cards.items()
+        },
+        pair_win_rates={},
+        triad_win_rates={
+            "UBG": ColorTriadWinRate(triad="UBG", wins=1200, games=2000, win_rate=0.6),
+        },
+        three_color_share=share,
+    )
+    return replace(base, primary=primary)
+
+
+
+def _triad_pool(database: CardDatabase) -> BuildPool:
+    return BuildPool(
+        set_code="TST",
+        pool_grp_ids=tuple(sorted(database.cards)),
+        source_label="triad fixture",
+    )
+
+
 def _ratings_data() -> SeventeenLandsData:
     return _ratings_data_from_entries(
         entries=(
@@ -2116,3 +2191,166 @@ def _draft_state(*, account_id: str, draft_id: str, updated_at: str) -> DraftSta
         picks=(),
         pool_grp_ids=(1, 2, 3, 4),
     )
+
+
+def test_balanced_three_color_pool_builds_triad_in_qualifying_set() -> None:
+    database = _triad_pool_database()
+
+    selection, build_sheet = build_deck_from_pool(
+        pool=_triad_pool(database),
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+
+    assert selection.chosen.pair == "UBG"
+    assert selection.automatic.pair == "UBG"
+    assert len(selection.ranked_scores) == 11
+    assert build_sheet.spell_selection.splash_color is None
+
+
+def test_triad_mana_base_spreads_basics_by_pips_without_splash() -> None:
+    database = _triad_pool_database()
+
+    _, build_sheet = build_deck_from_pool(
+        pool=_triad_pool(database),
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+        config=replace(DECK_BUILDER, main_color_source_floor=0),
+    )
+
+    mana_base = build_sheet.mana_base
+    assert {basic.color for basic in mana_base.basic_lands} == {"U", "B", "G"}
+    blue = _basic_count(mana_base=mana_base, name="Island")
+    black = _basic_count(mana_base=mana_base, name="Swamp")
+    green = _basic_count(mana_base=mana_base, name="Forest")
+    assert (blue, black, green) == (8, 4, 2)
+    assert blue > black > green
+    assert build_sheet.spell_selection.splash_color is None
+
+
+def test_triad_mana_base_meets_source_floors_before_pip_weighting() -> None:
+    database = _triad_pool_database()
+
+    _, build_sheet = build_deck_from_pool(
+        pool=_triad_pool(database),
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+
+    mana_base = build_sheet.mana_base
+    assert dict(mana_base.source_counts) == {"U": 7, "B": 7, "G": 6}
+    assert {basic.color for basic in mana_base.basic_lands} == {"U", "B", "G"}
+    assert _basic_count(mana_base=mana_base, name="Forest") == min(
+        basic.count for basic in mana_base.basic_lands
+    )
+    assert build_sheet.spell_selection.splash_color is None
+
+
+def test_triad_with_too_little_fixing_falls_back_to_best_pair() -> None:
+    database = _triad_pool_database(fixing_count=2)
+
+    selection, build_sheet = build_deck_from_pool(
+        pool=_triad_pool(database),
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+
+    assert len(selection.chosen.pair) == 2
+    assert "UBG" not in {score.pair for score in selection.ranked_scores}
+    assert len(build_sheet.mana_base.basic_lands) <= 2
+
+
+def test_mostly_two_color_pool_with_few_off_color_cards_builds_pair() -> None:
+    database = _triad_pool_database(blue_count=12, black_count=12, green_count=2)
+
+    selection, _ = build_deck_from_pool(
+        pool=_triad_pool(database),
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+
+    assert selection.chosen.pair == "UB"
+    assert "UBG" not in {score.pair for score in selection.ranked_scores}
+
+
+def test_set_below_three_color_threshold_ranks_only_pairs() -> None:
+    database = _triad_pool_database()
+
+    selection = select_color_pair(
+        pool_grp_ids=_triad_pool(database).pool_grp_ids,
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.05),
+    )
+
+    assert len(selection.ranked_scores) == 10
+    assert all(len(score.pair) == 2 for score in selection.ranked_scores)
+
+
+def test_basic_splits_keep_two_color_results_and_enumerate_three_colors() -> None:
+    assert _basic_splits(colors=("W", "U"), slots=2) == (
+        {"W": 0, "U": 2},
+        {"W": 1, "U": 1},
+        {"W": 2, "U": 0},
+    )
+
+    splits = _basic_splits(colors=("U", "B", "G"), slots=3)
+
+    assert len(splits) == 10
+    assert all(sum(split.values()) == 3 for split in splits)
+    assert {"U": 1, "B": 1, "G": 1} in splits
+
+
+def test_config_rejects_negative_triad_fixing_minimum() -> None:
+    config = replace(DECK_BUILDER, triad_min_fixing_sources=-1)
+
+    with pytest.raises(DeckBuilderError, match="triad fixing minimum"):
+        select_color_pair(
+            pool_grp_ids=(1,),
+            card_database=_card_database(),
+            ratings_data=_ratings_data(),
+            config=config,
+        )
+
+
+def test_triad_build_with_empirical_profile_skips_pair_only_evidence() -> None:
+    database = _triad_pool_database()
+    pool = _triad_pool(database)
+
+    selection, build_sheet = build_deck_from_pool(
+        pool=pool,
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+        set_profile=replace(_empirical_pair_profile(), three_color_share=0.17),
+    )
+
+    assert selection.chosen.pair == "UBG"
+    assert build_sheet.spell_selection.pair == "UBG"
+    output = format_build_result(
+        pool=pool,
+        selection=selection,
+        spell_selection=build_sheet.spell_selection,
+        mana_base=build_sheet.mana_base,
+    )
+    assert "Splash: none; three-color decks do not splash" in output
+
+
+def test_triad_fixing_ignores_lands_outside_the_triad() -> None:
+    database = _triad_pool_database(fixing_count=2)
+    cards = dict(database.cards)
+    cards[499] = _card(
+        grp_id=499,
+        name="Five Color Land",
+        colors=(),
+        mana_value=0.0,
+        types=("Land",),
+        produced_mana=("W", "U", "B", "R", "G"),
+    )
+    database = CardDatabase(cards=cards)
+
+    selection = select_color_pair(
+        pool_grp_ids=_triad_pool(database).pool_grp_ids,
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+
+    assert "UBG" not in {score.pair for score in selection.ranked_scores}

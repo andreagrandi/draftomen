@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- The deck builder now considers the ten three-colour decks next to the ten
+  pairs in sets where those decks are common. A three-colour deck qualifies
+  only when each colour holds a fifth of the top spells and the pool has at
+  least three dual lands, tri-lands or multicolour mana sources. It gets a
+  three-colour mana base and no splash. (#980)
 - Pick recommendations now treat a balanced three-colour pool as a
   three-colour deck, such as UBG, in sets where those decks are common. The
   engine does this only after pick 5, when the deck's win rate beats the
