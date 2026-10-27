@@ -51,6 +51,7 @@ from draftomen.moxgate_source import (
     MoxgateSourceState,
     create_moxgate_runtime,
 )
+from draftomen.pickengine import ColorCandidate
 from draftomen.pool_ledger import evaluate_completed_pool_role_ledger
 from draftomen.preferences import (
     GuiDisplayPreferences,
@@ -6988,6 +6989,53 @@ def test_live_adapter_reports_a_real_port_in_use_error_naming_the_port(
             assert factory.runtimes == []
         finally:
             _stop_adapter(adapter)
+
+
+def test_session_adapter_publishes_color_candidates_with_labels(
+    qcore_application: QCoreApplication,
+) -> None:
+    del qcore_application
+    snapshot = MockLiveSession(scenario="ready").snapshot
+    candidates = (
+        ColorCandidate(colors="UBG", win_rate=0.566, inferred=True, blocked_reason=None),
+        ColorCandidate(
+            colors="WU",
+            win_rate=None,
+            inferred=False,
+            blocked_reason="white below 20% of the pool",
+        ),
+    )
+    candidate_snapshot = replace(
+        snapshot,
+        pool=replace(snapshot.pool, color_candidates=candidates),
+    )
+
+    published = SessionAdapter(snapshot=candidate_snapshot).state["pool"][
+        "color_candidates"
+    ]
+
+    assert published == [
+        {
+            "colors": "UBG",
+            "label": "UBG Sultai",
+            "win_rate": 0.566,
+            "inferred": True,
+            "blocked_reason": None,
+        },
+        {
+            "colors": "WU",
+            "label": "WU",
+            "win_rate": None,
+            "inferred": False,
+            "blocked_reason": "white below 20% of the pool",
+        },
+    ]
+
+    empty_snapshot = replace(
+        snapshot,
+        pool=replace(snapshot.pool, color_candidates=()),
+    )
+    assert SessionAdapter(snapshot=empty_snapshot).state["pool"]["color_candidates"] == []
 
 
 def test_session_adapter_publishes_deck_labels_for_triads_and_keeps_pairs(

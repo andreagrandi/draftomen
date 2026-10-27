@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Pool Summary in the TUI and GUI now lists the colour combinations the
+  engine weighed: the pairs among the pool's three heaviest colours and, in
+  sets with common three-colour decks, their triad. Each row shows its win
+  rate, the inferred row is marked, and a triad that was not eligible names
+  the reason, such as `black below 20% of the pool`. (#990)
 - The profile refresh now rebuilds card data with bonus-sheet cards for the
   sets each run selects, so already published card data gains the cards that
   Scryfall prints under another set. A failed 17Lands ratings fetch leaves

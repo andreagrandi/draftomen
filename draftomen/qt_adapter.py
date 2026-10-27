@@ -1051,6 +1051,9 @@ def _add_deck_labels(*, state: dict[str, Any]) -> None:
     pool = state.get("pool")
     if isinstance(pool, dict) and pool.get("inferred_pair"):
         pool["inferred_pair_label"] = deck_label(colors=pool["inferred_pair"])
+    if isinstance(pool, dict):
+        for candidate in pool.get("color_candidates") or []:
+            candidate["label"] = deck_label(colors=candidate["colors"])
     build = state.get("build")
     if isinstance(build, dict):
         build["selected_pair_label"] = deck_label(colors=build["selected_pair"])

@@ -64,6 +64,7 @@ from draftomen.events import (
 )
 from draftomen.moxgate_source import MoxgateRuntime, create_moxgate_runtime
 from draftomen.pickengine import (
+    ColorCandidate,
     ScoredCard,
     ScoredPack,
     recommendation_confidence_summary,
@@ -765,6 +766,7 @@ class DraftomenTuiApp(App[None]):
         self._last_pick: PickMadeEvent | None = None
         self._pool_grp_ids: tuple[int, ...] = ()
         self._pair_label = "open"
+        self._color_candidates: tuple[ColorCandidate, ...] = ()
         self._commitment_label = "0% open"
         self._data_source = "unknown"
         self._last_error: str | None = None
@@ -1595,6 +1597,7 @@ class DraftomenTuiApp(App[None]):
         self._pool_grp_ids = self._snapshot_pool_grp_ids(snapshot=snapshot)
         self._pool_size = snapshot.pool.total_cards
         self._pair_label = snapshot.pool.inferred_pair or "open"
+        self._color_candidates = snapshot.pool.color_candidates
         self._commitment_label = _commitment_label(
             commitment=snapshot.pool.commitment,
         )
@@ -2103,6 +2106,12 @@ class DraftomenTuiApp(App[None]):
             and self._sidebar_has_enabled_content()
         )
 
+    def _color_candidate_lines(self) -> list[str]:
+        return _format_color_candidate_lines(
+            candidates=self._color_candidates,
+            mana_icons_enabled=self.mana_icons_enabled,
+        )
+
     def _sidebar_has_enabled_content(self) -> bool:
         if self._view_mode not in {"build", "backtest"} and any(
             (
@@ -2442,6 +2451,7 @@ class DraftomenTuiApp(App[None]):
                         self._pool_size_text(),
                         *self._last_pick_lines(),
                         f"Inferred pair: {inferred_pair}",
+                        *self._color_candidate_lines(),
                         f"Build pair: {build_pair}",
                         f"Override: {override}",
                         f"Build action: {self._build_action_label()}",
@@ -4017,6 +4027,33 @@ def _format_color_label(
         _format_mana_symbol(symbol=color, mana_icons_enabled=mana_icons_enabled)
         for color in colors
     )
+
+
+def _format_color_candidate_lines(
+    *,
+    candidates: tuple[ColorCandidate, ...],
+    mana_icons_enabled: bool,
+) -> list[str]:
+    if not candidates:
+        return []
+    lines = ["Candidates:"]
+    for candidate in candidates:
+        label = _format_pair_label(
+            pair=candidate.colors,
+            mana_icons_enabled=mana_icons_enabled,
+        )
+        rate = (
+            "no data"
+            if candidate.win_rate is None
+            else f"{candidate.win_rate * 100:.1f}%"
+        )
+        parts = [f"  {label}", rate]
+        if candidate.inferred:
+            parts.append("inferred")
+        if candidate.blocked_reason:
+            parts.append(candidate.blocked_reason)
+        lines.append("  ".join(parts))
+    return lines
 
 
 def _format_pair_label(*, pair: str, mana_icons_enabled: bool = False) -> str:

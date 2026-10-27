@@ -60,6 +60,7 @@ from draftomen.events import (
 )
 from draftomen.logfollow import LogFollower, detailed_logs_disabled, is_log_readable
 from draftomen.pickengine import (
+    ColorCandidate,
     ContextualScoreBreakdown,
     PickEngine,
     PickRationale,
@@ -504,6 +505,7 @@ class PoolState:
     target_cards: int = QUICK_RULES.total_cards
     current_colors: tuple[str, ...] = ()
     role_ledger: PoolRoleLedger | None = None
+    color_candidates: tuple[ColorCandidate, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -4061,6 +4063,7 @@ class LiveSession:
         inferred_pair = (
             None if commitment is None else commitment.inferred_pair
         )
+        color_candidates = () if commitment is None else commitment.candidates
         current_colors = (
             retained_current_colors
             if retained_current_colors is not None
@@ -4079,6 +4082,7 @@ class LiveSession:
                 target_cards=target_cards,
                 current_colors=current_colors,
                 role_ledger=role_ledger,
+                color_candidates=color_candidates,
             )
 
         counts = Counter(pool_grp_ids)
@@ -4126,6 +4130,7 @@ class LiveSession:
             mana_curve=mana_curve,
             average_mana_value=average_mana_value,
             role_ledger=role_ledger,
+            color_candidates=color_candidates,
         )
 
     def _select_recovered_state(self, *, state: DraftState) -> None:

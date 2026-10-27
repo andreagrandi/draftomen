@@ -731,6 +731,27 @@ class ScoreNormalization:
     neutral_rating: float
 
 
+COLOR_LOWERCASE_NAMES = {
+    "W": "white",
+    "U": "blue",
+    "B": "black",
+    "R": "red",
+    "G": "green",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ColorCandidate:
+    """One color combination considered for the inferred pair or triad.
+    The win rate is a 0-1 fraction, or None when no data covers the combination.
+    """
+
+    colors: str
+    win_rate: float | None
+    inferred: bool
+    blocked_reason: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class ColorCommitment:
     """Color inference for the current pick.
@@ -743,6 +764,7 @@ class ColorCommitment:
     color_weights: tuple[tuple[str, float], ...]
     inferred_pair: str | None
     level: float
+    candidates: tuple[ColorCandidate, ...] = ()
 
     @property
     def locked(self) -> bool:
@@ -1977,6 +1999,115 @@ def _color_commitment(
         color_weights=tuple((color, weights[color]) for color in weights),
         inferred_pair=inferred_pair,
         level=level,
+        candidates=_color_candidates(
+            weights=weights,
+            inferred=inferred_pair,
+            pick_index=pick_index,
+            ratings_data=ratings_data,
+            profile=profile,
+            config=config,
+        ),
+    )
+
+
+def _triad_blocking_color(
+    *,
+    triad: str,
+    weights: dict[str, float],
+    config: PickEngineConfig,
+) -> tuple[str, float] | None:
+    """Return the lowest-share triad color under the minimum share, if any.
+    The share check mirrors the one in _inferred_colors.
+    """
+
+    total_weight = sum(weights.values())
+    if total_weight <= config.pool_weight_epsilon:
+        return None
+    shares = {color: weights.get(color, 0.0) / total_weight for color in triad}
+    lowest = min(triad, key=lambda color: shares[color])
+    if shares[lowest] < config.triad_min_color_share:
+        return lowest, shares[lowest]
+
+    return None
+
+
+def _color_candidates(
+    *,
+    weights: dict[str, float],
+    inferred: str | None,
+    pick_index: int,
+    ratings_data: SeventeenLandsData | None,
+    profile: SetProfile | None,
+    config: PickEngineConfig,
+) -> tuple[ColorCandidate, ...]:
+    """List the pairs and triad behind the inferred colors with their win rates.
+    Rows sort by win rate, highest first, and name why a triad was not eligible.
+    """
+
+    if inferred is None:
+        return ()
+
+    if len(inferred) == 3:
+        base = tuple(inferred)
+    else:
+        extra = [
+            color
+            for color, weight in weights.items()
+            if color not in inferred and weight > config.pool_weight_epsilon
+        ]
+        third = max(extra, key=lambda color: weights[color]) if extra else None
+        base = tuple(inferred) + ((third,) if third is not None else ())
+
+    rows: list[ColorCandidate] = []
+    for pair in COLOR_PAIRS:
+        if set(pair).issubset(base):
+            rows.append(
+                ColorCandidate(
+                    colors=pair,
+                    win_rate=_pair_performance_rate(
+                        pair=pair,
+                        ratings_data=ratings_data,
+                        profile=profile,
+                        config=config,
+                    ),
+                    inferred=pair == inferred,
+                )
+            )
+
+    if len(base) == 3 and set_supports_triads(
+        ratings_data=ratings_data,
+        profile=profile,
+        config=config,
+    ):
+        triad = next(item for item in COLOR_TRIADS if set(item) == set(base))
+        blocked_reason: str | None = None
+        blocking = _triad_blocking_color(triad=triad, weights=weights, config=config)
+        if blocking is not None:
+            blocked_reason = (
+                f"{COLOR_LOWERCASE_NAMES[blocking[0]]} below "
+                f"{config.triad_min_color_share:.0%} of the pool"
+            )
+        elif _commitment_level(pick_index=pick_index, config=config) <= 0.0:
+            blocked_reason = "open picks consider pairs only"
+        rows.append(
+            ColorCandidate(
+                colors=triad,
+                win_rate=_triad_performance_rate(
+                    triad=triad,
+                    ratings_data=ratings_data,
+                    profile=profile,
+                ),
+                inferred=triad == inferred,
+                blocked_reason=blocked_reason,
+            )
+        )
+
+    # sorted() is stable, so equal rates keep pair-then-triad order.
+    return tuple(
+        sorted(
+            rows,
+            key=lambda row: (row.win_rate is None, -(row.win_rate or 0.0)),
+        )
     )
 
 
