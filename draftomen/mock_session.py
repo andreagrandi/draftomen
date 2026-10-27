@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Literal, TypeAlias
 
 from draftomen.draft_format import QUICK_RULES
+from draftomen.pickengine import ColorCandidate
 from draftomen.session import (
     AccountIdentity,
     ApplicationPhase,
@@ -235,6 +236,17 @@ def _pool() -> PoolState:
         inferred_pair="White · Green",
         current_colors=("W", "G"),
         commitment=0.64,
+        color_candidates=(
+            ColorCandidate(colors="WG", win_rate=0.566, inferred=True, blocked_reason=None),
+            ColorCandidate(colors="UG", win_rate=0.555, inferred=False, blocked_reason=None),
+            ColorCandidate(colors="WU", win_rate=0.539, inferred=False, blocked_reason=None),
+            ColorCandidate(
+                colors="WUG",
+                win_rate=0.537,
+                inferred=False,
+                blocked_reason="blue below 20% of the pool",
+            ),
+        ),
         color_distribution=(("W", 0), ("U", 3), ("B", 3), ("R", 0), ("G", 15), ("C", 3)),
         mana_curve=(0, 3, 6, 12, 0, 0, 0),
         average_mana_value=17 / 7,

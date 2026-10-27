@@ -13,6 +13,8 @@ Rectangle {
     readonly property bool hasPool: root.pool && root.pool.total_cards > 0
     readonly property var colorDistribution: root.pool
         && root.pool.color_distribution ? root.pool.color_distribution : []
+    readonly property var candidates: root.pool
+        && root.pool.color_candidates ? root.pool.color_candidates : []
     readonly property var manaCurve: root.pool
         && root.pool.mana_curve ? root.pool.mana_curve : []
     readonly property var recentPicks: root.pool && root.pool.recent_picks
@@ -30,6 +32,8 @@ Rectangle {
         ? Theme.panelPadding * 2 + poolHeader.implicitHeight
             + poolColumn.spacing + poolContent.implicitHeight
             - recentPicksGallery.implicitHeight - poolContent.spacing
+            - (poolCandidates.visible
+                ? poolCandidates.implicitHeight + poolContent.spacing : 0)
         : 0
 
     color: Theme.surfaceLow
@@ -315,6 +319,77 @@ Rectangle {
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.textPixelSize(10)
                                 horizontalAlignment: Text.AlignHCenter
+                            }
+                        }
+                    }
+                }
+
+                ColumnLayout {
+                    id: poolCandidates
+                    objectName: "poolCandidates"
+                    visible: root.candidates.length > 0
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Label {
+                        text: "COLOR CANDIDATES"
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.textPixelSize(11)
+                        font.bold: true
+                        font.letterSpacing: 1
+                    }
+
+                    Repeater {
+                        model: root.candidates
+
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            objectName: "poolCandidateRow"
+                            Layout.fillWidth: true
+                            spacing: 1
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Label {
+                                    objectName: "poolCandidateLabel"
+                                    Layout.fillWidth: true
+                                    text: modelData.label || modelData.colors
+                                    color: Theme.text
+                                    font.bold: modelData.inferred === true
+                                    elide: Text.ElideRight
+                                }
+
+                                Label {
+                                    objectName: "poolCandidateInferredTag"
+                                    visible: modelData.inferred === true
+                                    text: "Inferred"
+                                    color: Theme.primary
+                                    font.pixelSize: Theme.textPixelSize(11)
+                                    font.bold: true
+                                }
+
+                                Label {
+                                    objectName: "poolCandidateWinRate"
+                                    text: modelData.win_rate === null
+                                        || modelData.win_rate === undefined
+                                        ? "no data"
+                                        : (Number(modelData.win_rate) * 100).toFixed(1) + "%"
+                                    color: Theme.text
+                                    font.family: fixedFontFamily
+                                    font.bold: modelData.inferred === true
+                                }
+                            }
+
+                            Label {
+                                objectName: "poolCandidateReason"
+                                visible: !!modelData.blocked_reason
+                                Layout.fillWidth: true
+                                text: modelData.blocked_reason || ""
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.textPixelSize(11)
+                                wrapMode: Text.WordWrap
                             }
                         }
                     }

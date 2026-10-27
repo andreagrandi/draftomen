@@ -20,6 +20,7 @@ from draftomen.events import (
     PackOfferedEvent,
 )
 from draftomen.pickengine import (
+    ColorCandidate,
     ContextualScoreBreakdown,
     MAX_CONTEXTUAL_ADJUSTMENT,
     MAX_FIXING_TERM,
@@ -33,6 +34,7 @@ from draftomen.pickengine import (
     PickRationale,
     PickScoringContext,
     ScoredPack,
+    _pair_performance_rate,
     _recommendation_comparison_summary,
     _triad_performance_rate,
     build_pick_scoring_context,
@@ -5148,3 +5150,115 @@ def test_triad_base_has_no_splash_and_marks_outside_cards_off_color() -> None:
     assert not assessment.is_splash_candidate
     assert assessment.reasons == ("card is outside the three-color deck",)
 
+
+def _candidate_rows(*, scored_pack: ScoredPack) -> dict[str, ColorCandidate]:
+    return {row.colors: row for row in scored_pack.commitment.candidates}
+
+
+def test_color_candidates_expose_rates_and_mark_inferred_triad() -> None:
+    ratings_data = _triad_ratings_data()
+
+    commitment = _score_triad_pool(ratings_data=ratings_data).commitment
+
+    rows = {row.colors: row for row in commitment.candidates}
+    assert set(rows) == {"UB", "UG", "BG", "UBG"}
+    assert [row.colors for row in commitment.candidates if row.inferred] == ["UBG"]
+    assert commitment.inferred_pair == "UBG"
+    assert rows["UBG"].win_rate == _triad_performance_rate(
+        triad="UBG",
+        ratings_data=ratings_data,
+        profile=None,
+    )
+    assert rows["UB"].win_rate == _pair_performance_rate(
+        pair="UB",
+        ratings_data=ratings_data,
+        profile=None,
+        config=PickEngineConfig(),
+    )
+    assert rows["UG"].win_rate is None
+    assert rows["UBG"].blocked_reason is None
+
+
+def test_color_candidates_mark_inferred_pair_when_triad_loses() -> None:
+    commitment = _score_triad_pool(
+        ratings_data=_triad_ratings_data(ubg_wins=900),
+    ).commitment
+
+    rows = {row.colors: row for row in commitment.candidates}
+    assert [row.colors for row in commitment.candidates if row.inferred] == ["UB"]
+    assert commitment.inferred_pair == "UB"
+    assert rows["UBG"].blocked_reason is None
+    assert rows["UBG"].win_rate is not None
+    assert rows["UB"].win_rate is not None
+    assert rows["UBG"].win_rate < rows["UB"].win_rate
+
+
+def test_color_candidates_order_by_win_rate_with_unknown_rates_last() -> None:
+    commitment = _score_triad_pool(ratings_data=_triad_ratings_data()).commitment
+
+    assert [row.colors for row in commitment.candidates] == ["UBG", "UB", "UG", "BG"]
+    rates = [row.win_rate for row in commitment.candidates]
+    assert rates[0] is not None and rates[1] is not None
+    assert rates[0] > rates[1]
+    assert rates[2:] == [None, None]
+
+
+def test_color_candidates_in_pair_only_set_have_no_triad_row() -> None:
+    scored_pack = _score_triad_pool(ratings_data=_triad_ratings_data(share=0.05))
+
+    assert set(_candidate_rows(scored_pack=scored_pack)) == {"UB", "UG", "BG"}
+
+
+def test_color_candidates_name_color_below_triad_share() -> None:
+    pool = (201, 201, 201, 201, 202, 202, 202, 202, 211, 212, 221)
+
+    scored_pack = _score_triad_pool(
+        ratings_data=_triad_ratings_data(),
+        pool_grp_ids=pool,
+    )
+
+    rows = _candidate_rows(scored_pack=scored_pack)
+    assert scored_pack.commitment.inferred_pair == "UB"
+    assert rows["UBG"].blocked_reason == "green below 20% of the pool"
+
+
+def test_color_candidates_explain_open_picks_consider_pairs_only() -> None:
+    scored_pack = _score_triad_pool(ratings_data=_triad_ratings_data(), pick_index=5)
+
+    rows = _candidate_rows(scored_pack=scored_pack)
+    assert scored_pack.commitment.inferred_pair == "UB"
+    assert rows["UBG"].blocked_reason == "open picks consider pairs only"
+
+
+def test_color_candidates_use_pair_and_heaviest_extra_color() -> None:
+    pool = (201, 202, 211, 212, 221)
+
+    scored_pack = _score_triad_pool(
+        ratings_data=_triad_ratings_data(share=0.05),
+        pool_grp_ids=pool,
+    )
+
+    assert [row.colors for row in scored_pack.commitment.candidates if row.inferred] == [
+        "UB"
+    ]
+    assert set(_candidate_rows(scored_pack=scored_pack)) == {"UB", "UG", "BG"}
+
+
+def test_color_candidates_with_only_one_color_are_empty() -> None:
+    scored_pack = _score_triad_pool(
+        ratings_data=_triad_ratings_data(),
+        pool_grp_ids=(201, 202, 203),
+    )
+
+    assert scored_pack.commitment.inferred_pair is None
+    assert scored_pack.commitment.candidates == ()
+
+
+def test_color_candidates_with_two_colors_have_a_single_pair_row() -> None:
+    scored_pack = _score_triad_pool(
+        ratings_data=_triad_ratings_data(),
+        pool_grp_ids=(201, 202, 211, 212),
+    )
+
+    assert [row.colors for row in scored_pack.commitment.candidates] == ["UB"]
+    assert scored_pack.commitment.candidates[0].inferred is True

@@ -49,6 +49,7 @@ from draftomen.events import (
     QuickDraftDetectedEvent,
 )
 from draftomen.pickengine import (
+    ColorCandidate,
     ColorCommitment,
     ContextualScoreBreakdown,
     PickScoringContext,
@@ -418,6 +419,10 @@ def test_pool_state_publishes_canonical_commitment_colors(
         ),
         inferred_pair="WU",
         level=0.5,
+        candidates=(
+            ColorCandidate(colors="WU", win_rate=0.57, inferred=True),
+            ColorCandidate(colors="WB", win_rate=None, inferred=False),
+        ),
     )
     scored_pack = ScoredPack(
         cards=(),
@@ -445,6 +450,7 @@ def test_pool_state_publishes_canonical_commitment_colors(
     pool = session._pool_state(pool_grp_ids=(), scored_pack=scored_pack)
 
     assert pool.current_colors == ("W", "U")
+    assert pool.color_candidates == commitment.candidates
 
 
 def _recent_pick_session(

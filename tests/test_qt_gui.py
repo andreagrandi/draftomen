@@ -7525,6 +7525,86 @@ del engine
     assert "ReferenceError" not in completed.stderr
 
 
+def test_qml_pool_summary_lists_color_candidates_and_hides_empty_list() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+def find_all(item: QQuickItem, object_name: str) -> list[QQuickItem]:
+    found = [item] if item.objectName() == object_name else []
+    for child in item.childItems():
+        found.extend(find_all(child, object_name))
+    return found
+
+
+preferences_dir = TemporaryDirectory()
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = MockSessionAdapter(session=MockLiveSession(scenario="ready"))
+preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1600)
+context.setContextProperty("initialWindowHeight", 1000)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+sections = find_all(root.contentItem(), "poolCandidates")
+assert len(sections) == 2
+section = sections[0]
+rows = find_all(section, "poolCandidateRow")
+assert len(rows) == 4
+rates = [find_all(row, "poolCandidateWinRate")[0].property("text") for row in rows]
+assert rates == ["56.6%", "55.5%", "53.9%", "53.7%"]
+labels = [find_all(row, "poolCandidateLabel")[0].property("text") for row in rows]
+assert labels == ["WG", "UG", "WU", "WUG Bant"]
+tags = [find_all(row, "poolCandidateInferredTag")[0].property("visible") for row in rows]
+assert tags == [True, False, False, False]
+assert find_all(rows[0], "poolCandidateLabel")[0].property("font").bold()
+reasons = [find_all(row, "poolCandidateReason")[0] for row in rows]
+assert [reason.property("visible") for reason in reasons] == [False, False, False, True]
+assert reasons[3].property("text") == "blue below 20% of the pool"
+assert section.property("visible")
+
+state = dict(provider.state)
+state["pool"] = dict(state["pool"], color_candidates=[])
+provider._replace_state(state=state)
+application.processEvents()
+assert all(not item.property("visible") for item in sections)
+
+preferences.shutdown()
+del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "TypeError" not in completed.stderr
+    assert "ReferenceError" not in completed.stderr
+
+
 def test_qml_dimensional_controls_have_distinct_states_and_fit_narrow_window() -> None:
     probe = """
 from pathlib import Path

@@ -30,7 +30,7 @@ from draftomen.draft_format import DraftFormat
 from draftomen.events import DraftStartedEvent, PackOfferedEvent, PickMadeEvent
 from draftomen.moxgate_server import MoxgateReceiver, MoxgateReceiverError
 from draftomen.moxgate_source import MoxgateRuntime, create_moxgate_runtime
-from draftomen.pickengine import ScoredCard
+from draftomen.pickengine import ColorCandidate, ScoredCard
 from draftomen.pool import (
     DraftPick,
     DraftPoolStore,
@@ -4201,3 +4201,75 @@ async def _assert_moxgate_quit_frees_port(*, tmp_path: Path) -> None:
     assert runtime.state.phase == "stopped"
     with MoxgateReceiver(port=port) as again:
         assert again.port == port
+
+
+def test_tui_pool_summary_shows_color_candidates(tmp_path: Path) -> None:
+    asyncio.run(_assert_pool_summary_color_candidates(tmp_path=tmp_path))
+
+
+async def _assert_pool_summary_color_candidates(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+        snapshot = app.session.snapshot
+        candidates = (
+            ColorCandidate(
+                colors="WU", win_rate=0.566, inferred=True, blocked_reason=None
+            ),
+            ColorCandidate(
+                colors="UB", win_rate=0.555, inferred=False, blocked_reason=None
+            ),
+            ColorCandidate(
+                colors="WUB",
+                win_rate=0.537,
+                inferred=False,
+                blocked_reason="black below 20% of the pool",
+            ),
+            ColorCandidate(
+                colors="WB", win_rate=None, inferred=False, blocked_reason=None
+            ),
+        )
+        app._apply_session_snapshot(
+            replace(
+                snapshot,
+                pool=replace(
+                    snapshot.pool,
+                    inferred_pair="WU",
+                    color_candidates=candidates,
+                ),
+            )
+        )
+        await pilot.pause()
+
+        text = _pool_summary_text(app=app)
+        assert "Candidates:" in text
+        assert "56.6%  inferred" in text
+        assert "55.5%" in text
+        assert "53.7%  black below 20% of the pool" in text
+        assert "no data" in text
+
+
+def test_tui_pool_summary_omits_candidates_when_empty(tmp_path: Path) -> None:
+    asyncio.run(_assert_pool_summary_no_candidates(tmp_path=tmp_path))
+
+
+async def _assert_pool_summary_no_candidates(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+        snapshot = app.session.snapshot
+        app._apply_session_snapshot(
+            replace(
+                snapshot,
+                pool=replace(
+                    snapshot.pool, inferred_pair="WU", color_candidates=()
+                ),
+            )
+        )
+        await pilot.pause()
+
+        assert "Candidates" not in _pool_summary_text(app=app)
