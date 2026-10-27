@@ -53,6 +53,7 @@ jobs:
             artifact: Draftomen-unsigned-macos-arm64.dmg
             artifact_name: draftomen-macos-arm64-unsigned-development
             smoke_timeout: 60
+            python: "3.14"
             https_context: truststore
           # Nuitka builds for the host architecture, so the Intel bundle needs
           # an Intel runner. Intel support lasts as long as GitHub offers one.
@@ -64,6 +65,7 @@ jobs:
             artifact: Draftomen-unsigned-macos-x86_64.dmg
             artifact_name: draftomen-macos-x86_64-unsigned-development
             smoke_timeout: 60
+            python: "3.14"
             https_context: certifi
           - os: windows-latest
             platform: windows
@@ -73,6 +75,7 @@ jobs:
             artifact: Draftomen-unsigned-windows.exe
             artifact_name: draftomen-windows-unsigned-development
             smoke_timeout: 300
+            python: "3.12"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -143,6 +146,9 @@ jobs:
         with:
           version: "0.12.12"
           enable-cache: true
+          # Pinned so a runner image update cannot pick a Python that the
+          # pinned Nuitka does not support yet.
+          python-version: ${{ matrix.python }}
 
       - name: Sync dependencies
         run: uv sync --locked
