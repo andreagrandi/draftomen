@@ -2057,7 +2057,7 @@ def _inferred_colors(
         return None
     if _commitment_level(pick_index=pick_index, config=config) <= 0.0:
         return pair
-    if not _set_supports_triads(ratings_data=ratings_data, profile=profile, config=config):
+    if not set_supports_triads(ratings_data=ratings_data, profile=profile, config=config):
         return pair
 
     pair_rate = _pair_performance_rate(
@@ -2092,7 +2092,7 @@ def _inferred_colors(
     return pair if best_triad is None else best_triad
 
 
-def _set_supports_triads(
+def set_supports_triads(
     *,
     ratings_data: SeventeenLandsData | None,
     profile: SetProfile | None,

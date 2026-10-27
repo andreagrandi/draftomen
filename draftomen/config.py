@@ -57,6 +57,8 @@ class DeckBuilderConfig:
     near_tie_creature_preference_points: float = 2.0
     splash_max_cards: int = 2
     splash_elite_score_minimum: float = 70.0
+    # A three-color deck needs this many dual, tri or multicolor mana sources in the pool.
+    triad_min_fixing_sources: int = 3
     bench_card_count: int = 5
     land_count_iteration_limit: int = 4
     optimizer_beam_width: int = 24

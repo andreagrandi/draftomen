@@ -2,7 +2,7 @@
 
 The `build` subcommand runs the v1 deck-builder stages that are available in plain CLI mode:
 
-1. Score all two-color pairs from the drafted pool.
+1. Score all two-color pairs from the drafted pool. In sets where three-color decks are common, also score the ten three-color decks next to the pairs.
 2. Select deck spells for the chosen pair under cached empirical targets or Limited fallback defaults.
 3. Add a mana base and print a 40-card build sheet with bench cards.
 
@@ -17,6 +17,8 @@ The spell selector always considers cards that are castable in the chosen pair:
 - in-pair artifacts and other in-pair spells.
 
 Conservative splashing is on by default and can be disabled with `--no-splash` or through the TUI configuration opened with `c`. The builder uses the same shared policy as live picks: one third color, at most two `A-` or better cards, and at most one off-color mana pip per card. One card requires three sources and two cards require four. The builder may plan one basic land of the splash color, so the remaining sources must be deterministic drafted fixing lands usable by the primary pair.
+
+Three-color candidates use the same gate as live picks: the set's three-color game share must reach the pick engine threshold. In other sets only pairs are scored. A three-color deck is a candidate when its colors are balanced and the pool can fix them. For balance, each color must appear on at least 20% of the color marks across the deck's top 23 playable spells. For fixing, the pool must hold at least `triad_min_fixing_sources` non-basic cards that produce two or more of the deck's colors. A land counts only when every color it produces is one of the deck's colors, because the mana base plays no other nonbasic lands. A qualifying triad is ranked with the pairs by the same score, using the 17Lands win rate of that three-color deck. A three-color deck never gets a splash.
 
 ## Structural defaults
 
@@ -35,6 +37,7 @@ All tunables live in `draftomen/config.py` under `DeckBuilderConfig`:
 - `maximum_unresolved_metadata_ratio = 0.25`
 - `splash_max_cards = 2`
 - `splash_elite_score_minimum = 70.0`
+- `triad_min_fixing_sources = 3` dual lands, tri-lands or multicolor mana sources in the pool for a three-color deck
 - shared splash grade floor: `A-`
 - shared splash-color limit: `1`
 - shared source targets: `3` for one card, `4` for two cards
@@ -79,6 +82,8 @@ Before pair selection, the builder validates that enough picked cards have card 
 Drafted in-pair nonbasic lands are slotted first, up to the land-count target. A nonbasic land is in-pair when its produced mana is known and all produced colors are in the chosen pair. If splash cards are selected, nonbasic lands that produce the one splash color are included and the builder adds at most one basic of that color to meet the shared source target.
 
 Remaining slots are basics. After reserving any required splash basic, the other basics are split proportionally to colored pips in the final spell list, with a 7-source floor for each main color when the available land slots can satisfy it. Ties and leftover basics round toward the color with heavier double-pip requirements.
+
+A three-color deck splits its basics across all three colors by the same rules and plans no splash. The 7-source floor comes first, so when 17 lands cannot give every color seven sources, the basics go to the colors furthest below the floor. Only after that does the pip weighting apply.
 
 For 16-land aggressive builds, the output prints the caveat that basics can be preferable to slow taplands when curve pressure matters.
 
