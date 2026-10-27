@@ -37,7 +37,7 @@ from draftomen.profile_manifest import (
     load_profile_manifest,
 )
 from draftomen.set_profile import SetProfile
-from draftomen.set_card_data import SetCardData
+from draftomen.set_card_data import SetCardData, SetCardDataError
 from draftomen.seventeen import (
     ColorPairWinRate,
     RatingSampleCounts,
@@ -2038,26 +2038,177 @@ def _generate_with_card_fetcher(
     return report, bundle, fetch_calls
 
 
-def test_matching_scryfall_metadata_does_not_read_card_data(
+def _extra_card(
+    *, grp_id: int, name: str, oracle_id: str, type_line: str = "Creature — Vampire"
+) -> CardInfo:
+    return CardInfo(
+        grp_id=grp_id,
+        name=name,
+        colors=("B",),
+        mana_value=2,
+        rarity="rare",
+        types=("Creature",),
+        type_line=type_line,
+        set_code="new",
+        collector_number=str(grp_id),
+        arena_id=grp_id,
+        oracle_id=oracle_id,
+    )
+
+
+def _generate_with_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_read(*args: Any, **kwargs: Any) -> None:
-        pytest.fail("card data must not be read when Scryfall matches the set")
+    *,
+    extra_cards: tuple[CardInfo, ...] | None,
+    unreadable: bool = False,
+    set_card: CardInfo | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], bytes]:
+    import draftomen.card_data_export as card_export
 
-    monkeypatch.setattr(
-        workflow, "SetCardData", SimpleNamespace(from_gzip_bytes=fail_read)
+    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
+    monkeypatch.setattr(workflow, "_base_bytes", lambda *args, **kwargs: None)
+    root = tmp_path / "checkout"
+    card_data_dir = root / "website/public/card-data"
+    _static(card_data_dir, set_code="old", set_name="Old Set")
+    inventory, bulk = _source(tmp_path)
+    _manifest(root)
+    card_adapter, ratings_adapter, public_adapter, _, _ = _fixture_adapters()
+    if set_card is not None:
+
+        def fetch_set_card(*, set_code: str, timeout_seconds: int) -> CardDatabase:
+            return CardDatabase(cards={set_card.grp_id: set_card})
+
+        card_adapter = replace(card_adapter, fetch_database=fetch_set_card)
+    if extra_cards is not None:
+        scryfall = card_adapter.fetch_database(set_code="new", timeout_seconds=1)
+        cards = {**scryfall.cards, **{card.grp_id: card for card in extra_cards}}
+        (card_data_dir / "new.json.gz").write_bytes(
+            SetCardData.from_card_database(
+                CardDatabase(cards=cards), set_code="new", set_name="New Set"
+            ).to_gzip_bytes()
+        )
+    if unreadable:
+
+        def fail_read(*args: Any, **kwargs: Any) -> None:
+            raise SetCardDataError("unreadable fixture")
+
+        monkeypatch.setattr(
+            workflow, "SetCardData", SimpleNamespace(from_gzip_bytes=fail_read)
+        )
+    report = workflow.generate_website(
+        base_commit="base",
+        selection_mode="one",
+        selector="new",
+        repo_root=root,
+        bundle_dir=tmp_path / "bundle",
+        cache_dir=tmp_path / "cache",
+        inventory_file=inventory,
+        bulk_file=bulk,
+        fetch_json=lambda url, timeout: {
+            "formats_by_expansion": {"NEW": ["PremierDraft"]},
+            "live_formats_by_expansion": {},
+        },
+        clock=lambda: NOW,
+        card_metadata_adapter=card_adapter,
+        ratings_adapter=ratings_adapter,
+        public_draft_adapter=public_adapter,
     )
-
-    report, bundle, fetch_calls = _generate_with_card_fetcher(
-        tmp_path, monkeypatch, unmatched_scryfall=False
-    )
-
     assert report["status"] == "success"
+    profiles = root / "website/public/profiles"
+    artifact = load_profile_manifest(profiles / "manifest.json").select(
+        set_code="new", event_format="PremierDraft"
+    )
+    assert artifact is not None
+    object_bytes = (profiles / "objects" / f"{artifact.gzip_sha256}.json.gz").read_bytes()
+    ratings = {
+        item["card_key"]: item["gih_win_rate"]
+        for item in json.loads(gzip.decompress(object_bytes))["card_ratings"]
+    }
+    return report, ratings, object_bytes
+
+
+_THIN_KEY = "oracle_id:00000000-0000-4000-8000-000000001002"
+_BONUS_ORACLE_ID = "00000000-0000-4000-8000-000000001003"
+
+
+def test_bonus_sheet_card_from_card_data_is_rated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bonus = _extra_card(
+        grp_id=1003, name="Fixture Premier Only Card", oracle_id=_BONUS_ORACLE_ID
+    )
+
+    report, ratings, _ = _generate_with_artifact(
+        tmp_path, monkeypatch, extra_cards=(bonus,)
+    )
+
+    assert f"oracle_id:{_BONUS_ORACLE_ID}" in ratings
+    assert _THIN_KEY in ratings
     assert report["profiles"]["card_metadata_fallbacks"] == []
-    assert fetch_calls == ["new"]
-    summary = (bundle / "summary.md").read_text(encoding="utf-8")
-    assert "committed card data" not in summary
+
+
+def test_card_printed_in_set_and_bonus_sheet_keeps_set_rating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bonus printing gets the lower grpId, which would otherwise win the
+    # oracle group and replace the set printing's rating.
+    set_card = _extra_card(
+        grp_id=1003, name="Fixture Premier Only Card", oracle_id=_BONUS_ORACLE_ID
+    )
+    duplicate = _extra_card(
+        grp_id=1002, name="Fixture Premier Only Card", oracle_id=_BONUS_ORACLE_ID
+    )
+
+    _, with_artifact, _ = _generate_with_artifact(
+        tmp_path / "with",
+        monkeypatch,
+        extra_cards=(duplicate,),
+        set_card=set_card,
+    )
+    _, scryfall_only, _ = _generate_with_artifact(
+        tmp_path / "without", monkeypatch, extra_cards=None, set_card=set_card
+    )
+
+    bonus_key = f"oracle_id:{_BONUS_ORACLE_ID}"
+    assert with_artifact[bonus_key]["raw_value"] == pytest.approx(0.58)
+    assert with_artifact[bonus_key] == scryfall_only[bonus_key]
+
+
+def test_artifact_basic_lands_do_not_change_the_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    island = _extra_card(
+        grp_id=1003,
+        name="Island",
+        oracle_id="00000000-0000-4000-8000-000000001004",
+        type_line="Basic Land — Island",
+    )
+
+    _, _, with_artifact = _generate_with_artifact(
+        tmp_path / "with", monkeypatch, extra_cards=(island,)
+    )
+    _, _, unreadable = _generate_with_artifact(
+        tmp_path / "without", monkeypatch, extra_cards=(island,), unreadable=True
+    )
+
+    assert with_artifact == unreadable
+
+
+def test_unreadable_card_data_keeps_scryfall_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bonus = _extra_card(
+        grp_id=1003, name="Fixture Premier Only Card", oracle_id=_BONUS_ORACLE_ID
+    )
+
+    report, ratings, _ = _generate_with_artifact(
+        tmp_path, monkeypatch, extra_cards=(bonus,), unreadable=True
+    )
+
+    assert report["profiles"]["card_metadata_fallbacks"] == []
+    assert f"oracle_id:{_BONUS_ORACLE_ID}" not in ratings
+    assert _THIN_KEY in ratings
 
 
 def test_unmatched_scryfall_metadata_falls_back_to_committed_card_data(

@@ -104,6 +104,10 @@ While Scryfall has no Arena ids for the set, the daily refresh builds profiles
 from the committed card data. Once Scryfall adds ids, the daily refresh still
 never replaces the card data file, so re-exporting the set is a manual step.
 
+When Scryfall prints a set's bonus-sheet cards in another set, such as the
+Enchanting Tales in Wilds of Eldraine, the hosted refresh adds them from the
+committed card data, so their 17Lands ratings reach the profile.
+
 Live mode detects the set from the draft before loading card data. Its selected
 artifact is cached at the application-data
 `card-data/<lowercase-set-code>.json.gz` path (normally
