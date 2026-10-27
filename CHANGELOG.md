@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- Hosted set profiles now rate bonus-sheet cards, such as Wilds of Eldraine's
+  Enchanting Tales, using the committed card data. Scryfall prints these cards
+  under another set, so the refresh used to drop their 17Lands ratings. (#944)
 - The TUI and GUI now show a three-colour deck with its letters and name,
   such as `UBG Sultai`, wherever they show the inferred or built colour pair.
   Two-colour pairs look as before. The PRD and README describe three-colour

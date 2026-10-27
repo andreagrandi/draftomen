@@ -703,8 +703,8 @@ def _card_metadata_adapter_with_static_fallback(
     profile_plan: ProfilePlan,
     fallback_sets: set[str],
 ) -> CardMetadataAdapter:
-    """Wrap an adapter so a set Scryfall cannot match uses committed card data.
-    The wrapped fetcher runs once and the file is read only when no card matches.
+    """Wrap an adapter so committed card data fills what Scryfall lacks for a set.
+    A set with no Scryfall match uses the file whole; a match gains its bonus-sheet cards.
     """
 
     base = adapter if adapter is not None else CardMetadataAdapter()
@@ -714,11 +714,13 @@ def _card_metadata_adapter_with_static_fallback(
     def fetch_database(*, set_code: str, timeout_seconds: int) -> CardDatabase:
         database = original(set_code=set_code, timeout_seconds=timeout_seconds)
         requested = set_code.casefold()
-        if not isinstance(database, CardDatabase) or any(
-            card.set_code is not None and card.set_code.casefold() == requested
-            for card in database.cards.values()
-        ):
+        if not isinstance(database, CardDatabase):
             return database
+        set_cards = [
+            card
+            for card in database.cards.values()
+            if card.set_code is not None and card.set_code.casefold() == requested
+        ]
         path = static_paths.get(requested)
         if path is None:
             return database
@@ -728,8 +730,23 @@ def _card_metadata_adapter_with_static_fallback(
             )
         except (OSError, SetCardDataError):
             return database
-        fallback_sets.add(requested)
-        return card_data.to_card_database()
+        artifact_database = card_data.to_card_database()
+        if not set_cards:
+            fallback_sets.add(requested)
+            return artifact_database
+        # Scryfall prints bonus-sheet cards under another set, so the set filter drops them.
+        set_grp_ids = {card.grp_id for card in set_cards}
+        set_names = {card.name for card in set_cards}
+        bonus_cards = {
+            grp_id: card
+            for grp_id, card in artifact_database.cards.items()
+            if grp_id not in set_grp_ids
+            and card.name not in set_names
+            and "Basic" not in (card.type_line or "")
+        }
+        if not bonus_cards:
+            return database
+        return replace(database, cards={**database.cards, **bonus_cards})
 
     return replace(base, fetch_database=fetch_database)
 
