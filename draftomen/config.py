@@ -168,3 +168,27 @@ COLOR_TRIADS = (
     "URG",
     "BRG",
 )
+
+TRIAD_NAMES = {
+    "WUB": "Esper",
+    "WUR": "Jeskai",
+    "WUG": "Bant",
+    "WBR": "Mardu",
+    "WBG": "Abzan",
+    "WRG": "Naya",
+    "UBR": "Grixis",
+    "UBG": "Sultai",
+    "URG": "Temur",
+    "BRG": "Jund",
+}
+
+
+def deck_label(*, colors: str) -> str:
+    """Name a three-color deck after its letters, such as `UBG Sultai`.
+    Pairs and other values come back unchanged.
+    """
+
+    name = TRIAD_NAMES.get(colors)
+    if name is None:
+        return colors
+    return f"{colors} {name}"

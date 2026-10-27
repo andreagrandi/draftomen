@@ -37,6 +37,7 @@ from draftomen.augmented_model_client import (
     AugmentedModelOutcome,
 )
 from draftomen.cardimages import CardImageError
+from draftomen.config import deck_label
 from draftomen.draft_format import DraftFormat, rules_for_format
 from draftomen.draftmancer import MOCKED_DRAFT_FORMATS
 from draftomen.moxgate_server import MoxgatePortInUseError
@@ -1014,6 +1015,7 @@ class SessionAdapter(QObject):
 
     def _publish(self, *, snapshot: LiveSessionSnapshot) -> None:
         state = cast(dict[str, Any], _to_qml_value(snapshot))
+        _add_deck_labels(state=state)
         state["test_draft"] = self._test_draft_state_value()
         moxgate_state = self._moxgate_state_value()
         if moxgate_state is not None:
@@ -1039,6 +1041,21 @@ class SessionAdapter(QObject):
             current_colors=list(pool.get("current_colors") or []),
         )
         self.stateChanged.emit()
+
+
+def _add_deck_labels(*, state: dict[str, Any]) -> None:
+    """Add display labels such as `UBG Sultai` next to raw color pair strings.
+    Raw values stay in place because requests and identities use them.
+    """
+
+    pool = state.get("pool")
+    if isinstance(pool, dict) and pool.get("inferred_pair"):
+        pool["inferred_pair_label"] = deck_label(colors=pool["inferred_pair"])
+    build = state.get("build")
+    if isinstance(build, dict):
+        build["selected_pair_label"] = deck_label(colors=build["selected_pair"])
+        for option in build.get("pair_options") or []:
+            option["label"] = deck_label(colors=option["pair"])
 
 
 class _CardImageFetchWorker(QObject):

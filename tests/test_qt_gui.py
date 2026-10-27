@@ -7424,6 +7424,107 @@ del engine
     assert "TypeError" not in completed.stderr
 
 
+def test_qml_shows_three_color_deck_labels_and_keeps_pairs_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen import __version__
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter, _add_deck_labels
+from draftomen.qt_gui import _fixed_font_family
+from draftomen.qt_mock import MockSessionAdapter
+
+
+def find_visual_item(item: QQuickItem, object_name: str) -> QQuickItem | None:
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+preferences_dir = TemporaryDirectory()
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = MockSessionAdapter(session=MockLiveSession(scenario="ready"))
+preferences = GuiPreferencesAdapter(app_dir=preferences_dir.name)
+engine = QQmlApplicationEngine()
+qml_directory = Path.cwd() / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+context = engine.rootContext()
+context.setContextProperty("fixedFontFamily", _fixed_font_family())
+context.setContextProperty("sessionProvider", provider)
+context.setContextProperty("guiPreferences", preferences)
+context.setContextProperty("applicationTitle", "Draft Omen")
+context.setContextProperty("applicationVersion", __version__)
+context.setContextProperty("initialSurface", "live")
+context.setContextProperty("initialWindowWidth", 1600)
+context.setContextProperty("initialWindowHeight", 1000)
+engine.setInitialProperties({"provider": provider})
+engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+root = engine.rootObjects()[0]
+application.processEvents()
+
+def inject_triad_state():
+    state = dict(provider.state)
+    state["pool"] = dict(state["pool"], inferred_pair="UBG")
+    build = dict(state["build"])
+    options = [dict(option) for option in build["pair_options"]]
+    options[0]["pair"] = "UBG"
+    build["selected_pair"] = "UBG"
+    build["pair_options"] = options
+    state["build"] = build
+    _add_deck_labels(state=state)
+    assert state["pool"]["inferred_pair_label"] == "UBG Sultai"
+    assert build["selected_pair_label"] == "UBG Sultai"
+    assert options[0]["label"] == "UBG Sultai"
+    assert options[1]["label"] == options[1]["pair"] == "BG"
+    provider._replace_state(state=state)
+    application.processEvents()
+
+
+inject_triad_state()
+inferred = root.findChild(QObject, "poolInferredPair")
+assert inferred is not None
+assert inferred.property("text") == "UBG Sultai"
+
+root.setProperty("currentSurface", "build")
+application.processEvents()
+inject_triad_state()
+build_view = root.findChild(QObject, "buildView")
+assert build_view is not None
+assert build_view.property("selectedPairLabel") == "UBG Sultai"
+assert build_view.property("pairDescription").startswith("UBG Sultai was ")
+triad_option = find_visual_item(root.contentItem(), "widePairOptionUBG")
+pair_option = find_visual_item(root.contentItem(), "widePairOptionBG")
+assert triad_option is not None and pair_option is not None
+assert triad_option.property("text").startswith("UBG Sultai · score ")
+assert pair_option.property("text").startswith("BG · score ")
+selector = root.findChild(QObject, "buildPairSelector")
+assert selector is not None
+assert selector.property("valueRole") == "pair"
+assert selector.property("currentValue") == "UBG"
+assert selector.property("displayText") == "UBG Sultai"
+
+preferences.shutdown()
+del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "TypeError" not in completed.stderr
+    assert "ReferenceError" not in completed.stderr
+
+
 def test_qml_dimensional_controls_have_distinct_states_and_fit_narrow_window() -> None:
     probe = """
 from pathlib import Path

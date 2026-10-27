@@ -47,7 +47,12 @@ from draftomen.augmented_model_client import (
 )
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.cardimages import CardImageService, card_image_cache_dir
-from draftomen.config import COLOR_PAIRS, POLL_INTERVAL_SECONDS
+from draftomen.config import (
+    COLOR_PAIRS,
+    POLL_INTERVAL_SECONDS,
+    TRIAD_NAMES,
+    deck_label,
+)
 from draftomen.deckbuilder import BuildPool, ManaBase, PairSelection, SpellSelection
 from draftomen.draft_format import rules_for_format
 from draftomen.events import (
@@ -4016,15 +4021,19 @@ def _format_color_label(
 
 def _format_pair_label(*, pair: str, mana_icons_enabled: bool = False) -> str:
     if not mana_icons_enabled:
-        return pair
+        return deck_label(colors=pair)
 
     if not pair or any(symbol not in MANA_ICON_GLYPHS for symbol in pair):
-        return pair
+        return deck_label(colors=pair)
 
-    return "".join(
+    symbols = "".join(
         _format_mana_symbol(symbol=symbol, mana_icons_enabled=mana_icons_enabled)
         for symbol in pair
     )
+    name = TRIAD_NAMES.get(pair)
+    if name is None:
+        return symbols
+    return f"{symbols} {name}"
 
 
 def _format_color_count_label(*, color: str, mana_icons_enabled: bool = False) -> str:

@@ -6988,3 +6988,51 @@ def test_live_adapter_reports_a_real_port_in_use_error_naming_the_port(
             assert factory.runtimes == []
         finally:
             _stop_adapter(adapter)
+
+
+def test_session_adapter_publishes_deck_labels_for_triads_and_keeps_pairs(
+    qcore_application: QCoreApplication,
+) -> None:
+    del qcore_application
+    snapshot = MockLiveSession(scenario="ready").snapshot
+    assert snapshot.build is not None
+    triad_options = (
+        replace(snapshot.build.pair_options[0], pair="UBG"),
+        replace(snapshot.build.pair_options[1], pair="WU"),
+    )
+    triad_snapshot = replace(
+        snapshot,
+        pool=replace(snapshot.pool, inferred_pair="UBG"),
+        build=replace(
+            snapshot.build,
+            selected_pair="UBG",
+            pair_options=triad_options,
+        ),
+    )
+
+    triad_state = SessionAdapter(snapshot=triad_snapshot).state
+
+    assert triad_state["pool"]["inferred_pair"] == "UBG"
+    assert triad_state["pool"]["inferred_pair_label"] == "UBG Sultai"
+    assert triad_state["build"]["selected_pair"] == "UBG"
+    assert triad_state["build"]["selected_pair_label"] == "UBG Sultai"
+    assert [option["pair"] for option in triad_state["build"]["pair_options"]] == [
+        "UBG",
+        "WU",
+    ]
+    assert [option["label"] for option in triad_state["build"]["pair_options"]] == [
+        "UBG Sultai",
+        "WU",
+    ]
+
+    pair_snapshot = replace(
+        snapshot,
+        pool=replace(snapshot.pool, inferred_pair="WU"),
+    )
+    pair_state = SessionAdapter(snapshot=pair_snapshot).state
+    assert pair_state["pool"]["inferred_pair_label"] == "WU"
+
+    empty_state = SessionAdapter(snapshot=LiveSessionSnapshot()).state
+    assert empty_state["pool"]["inferred_pair"] is None
+    assert "inferred_pair_label" not in empty_state["pool"]
+    assert empty_state["build"] is None

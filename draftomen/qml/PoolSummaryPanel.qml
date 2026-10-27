@@ -186,7 +186,8 @@ Rectangle {
 
                     Label { text: "Inferred pair"; color: Theme.textMuted }
                     Label {
-                        text: root.pool.inferred_pair || "Open"
+                        objectName: "poolInferredPair"
+                        text: root.pool.inferred_pair_label || root.pool.inferred_pair || "Open"
                         color: Theme.text
                         font.bold: true
                     }
