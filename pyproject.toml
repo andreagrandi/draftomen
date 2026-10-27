@@ -1,6 +1,6 @@
 [project]
 name = "draftomen"
-version = "0.6.4"
+version = "0.6.5"
 description = "An unofficial draft assistant for MTG Arena"
 readme = "README.md"
 requires-python = ">=3.12"

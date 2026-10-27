@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-10-27
+
 - Pool Summary in the TUI and GUI now lists the colour combinations the
   engine weighed: the pairs among the pool's three heaviest colours and, in
   sets with common three-colour decks, their triad. Each row shows its win
