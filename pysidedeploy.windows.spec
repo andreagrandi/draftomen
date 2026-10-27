@@ -31,7 +31,7 @@ mode = onefile
 # supplied by the locked draftmancer extra synced by the bundle workflow.
 # The Microsoft Store update check imports winrt lazily inside
 # draftomen/update_check.py, so the Windows build includes it explicitly too.
-extra_args = --quiet --noinclude-qt-translations --include-data-files=draftomen/baseline_profiles/hob-quickdraft.json=draftomen/baseline_profiles/hob-quickdraft.json --company-name="Draft Omen" --product-name="Draft Omen" --file-version=0.6.4 --product-version=0.6.4 --file-description="An unofficial draft assistant for MTG Arena" --include-package=winrt --include-package=socketio --include-package=truststore --include-package=certifi --include-package-data=certifi
+extra_args = --quiet --noinclude-qt-translations --include-data-files=draftomen/baseline_profiles/hob-quickdraft.json=draftomen/baseline_profiles/hob-quickdraft.json --company-name="Draft Omen" --product-name="Draft Omen" --file-version=0.6.5 --product-version=0.6.5 --file-description="An unofficial draft assistant for MTG Arena" --include-package=winrt --include-package=socketio --include-package=truststore --include-package=certifi --include-package-data=certifi
 macos.permissions =
 
 # Fonts: none are bundled. The application intentionally uses Qt's system fixed
