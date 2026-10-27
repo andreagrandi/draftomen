@@ -4337,6 +4337,13 @@ def _start_real_test_draft_adapter(
         predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
         description="the initial Arena poll",
     )
+    # The poll records its thread before publishing, so wait for the snapshot too.
+    _process_until(
+        application=application,
+        predicate=lambda: adapter.state["pool"]["total_cards"]
+        == arenas[0].snapshot.pool.total_cards,
+        description="the initial Arena snapshot",
+    )
     assert len(arenas) == 1
     return adapter, arenas[0], factory, source
 
