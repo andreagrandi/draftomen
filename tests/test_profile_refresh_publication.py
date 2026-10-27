@@ -19,6 +19,12 @@ import scripts.profile_refresh_publication as publication
 import scripts.profile_refresh_workflow as workflow
 from tests.test_profile_refresh_workflow_helper import (
     NOW,
+    _OLD_CARD_AS_BONUS,
+    _THIN_CARD_AS_BONUS,
+    _NEW_PREMIER,
+    _committed_card_data_workspace,
+    _filters,
+    _generate_rebuild,
     _git_base_commit,
     _manifest,
     _partial_producer_bundle,
@@ -121,6 +127,82 @@ def test_prepare_publication_stages_real_producer_delta(
     assert (
         candidate / "website/public/profiles/objects" / f"{old_artifact.gzip_sha256}.json.gz"
     ).is_file()
+
+
+def test_prepare_publication_sets_manifest_checksum_matches_rebuilt_card_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    generator, _inventory, _bulk, base_commit = workspace
+    relative = "website/public/card-data/new.json.gz"
+    committed = (generator / relative).read_bytes()
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(formats=_NEW_PREMIER, live=_NEW_PREMIER),
+        fetch_rated_cards=lambda *, set_code: _OLD_CARD_AS_BONUS,
+    )
+    assert report["status"] == "success"
+    assert relative in {asset["path"] for asset in report["generated_assets"]}
+    candidate = tmp_path / "candidate"
+    _candidate_from_base(generator, candidate, base_commit)
+    assert (candidate / relative).read_bytes() == committed
+
+    publication.prepare_publication(
+        bundle_dir=tmp_path / "bundle",
+        repo_root=candidate,
+        expected_base=base_commit,
+        master_commit=base_commit,
+    )
+
+    staged = (candidate / relative).read_bytes()
+    assert staged != committed
+    entry = SetsManifest.from_bytes(
+        (candidate / "website/public/sets/manifest.json").read_bytes()
+    ).select(set_code="new")
+    assert entry is not None
+    assert entry.card_data.sha256 == hashlib.sha256(staged).hexdigest()
+    assert entry.card_data.bytes == len(staged)
+
+
+def test_prepare_publication_accepts_rebuild_failure_next_to_a_rebuilt_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    generator, _inventory, _bulk, base_commit = workspace
+
+    def fetch(*, set_code: str) -> Any:
+        if set_code == "new":
+            raise SeventeenLandsError("fixture ratings outage")
+        return _THIN_CARD_AS_BONUS
+
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(
+            formats={**_NEW_PREMIER, "OLD": ["PremierDraft"]},
+            live={**_NEW_PREMIER, "OLD": ["PremierDraft"]},
+        ),
+        fetch_rated_cards=fetch,
+    )
+    assert report["static"]["rebuilt"] == ["old"]
+    candidate = tmp_path / "candidate"
+    _candidate_from_base(generator, candidate, base_commit)
+
+    publication.prepare_publication(
+        bundle_dir=tmp_path / "bundle",
+        repo_root=candidate,
+        expected_base=base_commit,
+        master_commit=base_commit,
+    )
+
+    assert (candidate / "website/public/card-data/old.json.gz").read_bytes() == (
+        generator / "website/public/card-data/old.json.gz"
+    ).read_bytes()
 
 
 def test_prepare_rejects_protected_root_staleness_before_staging(

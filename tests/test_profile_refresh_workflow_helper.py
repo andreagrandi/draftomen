@@ -16,7 +16,11 @@ from typing import Any
 import pytest
 
 import scripts.profile_refresh_workflow as workflow
-from draftomen.card_data_export import build_card_database_from_scryfall_cards
+from draftomen.card_data_export import (
+    build_card_database_from_scryfall_cards,
+    prepare_set_data_export,
+    publish_set_data_export,
+)
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import COLOR_PAIRS
 from draftomen.pickengine import PickEngine
@@ -44,6 +48,7 @@ from draftomen.seventeen import (
     SeventeenCardStats,
     SeventeenLandsError,
     SeventeenLandsFormatData,
+    SeventeenLandsRatedCard,
     card_ratings_url,
     color_ratings_url,
     fetch_17lands_format_data,
@@ -2056,6 +2061,21 @@ def _extra_card(
     )
 
 
+def _scryfall_row(*, card: CardInfo, set_code: str) -> dict[str, Any]:
+    return {
+        "arena_id": card.grp_id,
+        "oracle_id": card.oracle_id,
+        "name": card.name,
+        "colors": list(card.colors),
+        "cmc": card.mana_value,
+        "rarity": card.rarity,
+        "type_line": card.type_line,
+        "set": set_code,
+        "set_name": "Bonus Set",
+        "collector_number": card.collector_number,
+    }
+
+
 def _generate_with_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2074,6 +2094,16 @@ def _generate_with_artifact(
     inventory, bulk = _source(tmp_path)
     _manifest(root)
     card_adapter, ratings_adapter, public_adapter, _, _ = _fixture_adapters()
+    rated = tuple(
+        SeventeenLandsRatedCard(name=card.name, arena_id=card.grp_id)
+        for card in (extra_cards or ())
+        if card.arena_id != 1002
+    )
+    if rated:
+        # The rebuild adds back what the artifact holds only if Scryfall prints it elsewhere.
+        with bulk.open("a", encoding="utf-8") as handle:
+            for card in extra_cards or ():
+                handle.write(json.dumps(_scryfall_row(card=card, set_code="bonus")) + "\n")
     if set_card is not None:
 
         def fetch_set_card(*, set_code: str, timeout_seconds: int) -> CardDatabase:
@@ -2113,6 +2143,7 @@ def _generate_with_artifact(
         card_metadata_adapter=card_adapter,
         ratings_adapter=ratings_adapter,
         public_draft_adapter=public_adapter,
+        fetch_rated_cards=lambda *, set_code: rated,
     )
     assert report["status"] == "success"
     profiles = root / "website/public/profiles"
@@ -2254,3 +2285,286 @@ def test_invalid_card_data_keeps_the_card_metadata_failure(
         and failure["category"] == "refresh-execution-failed"
         for failure in report["failures"]
     )
+
+
+_OLD_CARD_AS_BONUS = (SeventeenLandsRatedCard(name="Old Card", arena_id=1),)
+_THIN_CARD_AS_BONUS = (SeventeenLandsRatedCard(name="Fixture Thin Quick Card", arena_id=1002),)
+_NEW_PREMIER = {"NEW": ["PremierDraft"]}
+
+
+def _filters(*, formats: dict[str, list[str]], live: dict[str, list[str]]) -> Any:
+    return lambda url, timeout: {
+        "formats_by_expansion": formats,
+        "live_formats_by_expansion": live,
+    }
+
+
+def _committed_card_data_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, Path, str]:
+    """Commit plain card data for the old and new sets, as a published checkout holds it."""
+    import draftomen.card_data_export as card_export
+
+    monkeypatch.setattr(card_export, "_MIN_ARENA_IDS_FOR_FULL_DRAFT", 1)
+    root = tmp_path / "checkout"
+    card_dir = root / "website/public/card-data"
+    inventory, bulk = _source(tmp_path)
+    plan = prepare_set_data_export(
+        selector=None, output_dir=card_dir, inventory_file=inventory, bulk_file=bulk
+    )
+    card_dir.mkdir(parents=True)
+    for candidate in plan.pending:
+        publish_set_data_export(candidate=candidate)
+    _manifest(root)
+    return root, inventory, bulk, _git_base_commit(root)
+
+
+def _generate_rebuild(
+    tmp_path: Path,
+    workspace: tuple[Path, Path, Path, str],
+    *,
+    selection_mode: str,
+    filters: Any,
+    fetch_rated_cards: Any,
+    bundle_name: str = "bundle",
+) -> dict[str, Any]:
+    root, inventory, bulk, base_commit = workspace
+    card_adapter, ratings_adapter, public_adapter, _, _ = _fixture_adapters()
+    return workflow.generate_website(
+        base_commit=base_commit,
+        selection_mode=selection_mode,
+        selector=None,
+        repo_root=root,
+        bundle_dir=tmp_path / bundle_name,
+        cache_dir=tmp_path / f"{bundle_name}-cache",
+        inventory_file=inventory,
+        bulk_file=bulk,
+        fetch_json=filters,
+        clock=lambda: NOW,
+        card_metadata_adapter=card_adapter,
+        ratings_adapter=ratings_adapter,
+        public_draft_adapter=public_adapter,
+        fetch_rated_cards=fetch_rated_cards,
+    )
+
+
+def _asset_paths(report: dict[str, Any]) -> set[str]:
+    return {asset["path"] for asset in report["generated_assets"]}
+
+
+def test_active_run_fetches_rated_cards_only_for_selected_sets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    def fetch(*, set_code: str) -> tuple[SeventeenLandsRatedCard, ...]:
+        calls.append(set_code)
+        return ()
+
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(formats={**_NEW_PREMIER, "OLD": ["PremierDraft"]}, live=_NEW_PREMIER),
+        fetch_rated_cards=fetch,
+    )
+
+    assert [pair["set_code"] for pair in report["profiles"]["selected"]] == ["new"]
+    assert calls == ["new"]
+
+
+def test_historical_run_fetches_rated_cards_only_for_its_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    def fetch(*, set_code: str) -> tuple[SeventeenLandsRatedCard, ...]:
+        calls.append(set_code)
+        return ()
+
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="historical",
+        filters=_filters(
+            formats={**_NEW_PREMIER, "OLD": ["PremierDraft"]},
+            live={},
+        ),
+        fetch_rated_cards=fetch,
+    )
+
+    # The old set already has a published profile, so the batch holds only the new set.
+    assert {pair["set_code"] for pair in report["profiles"]["selected"]} == {"new"}
+    assert calls == ["new"]
+
+
+def test_all_mode_makes_no_rated_card_fetches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    def fetch(*, set_code: str) -> tuple[SeventeenLandsRatedCard, ...]:
+        calls.append(set_code)
+        return _OLD_CARD_AS_BONUS
+
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="all",
+        filters=_filters(formats=_NEW_PREMIER, live={}),
+        fetch_rated_cards=fetch,
+    )
+
+    assert report["profiles"]["selected"]
+    assert calls == []
+    assert report["static"]["rebuilt"] == []
+
+
+def test_rebuilt_card_data_with_changed_bytes_is_in_the_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    root = workspace[0]
+    target = root / "website/public/card-data/new.json.gz"
+    committed = target.read_bytes()
+
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(formats=_NEW_PREMIER, live=_NEW_PREMIER),
+        fetch_rated_cards=lambda *, set_code: _OLD_CARD_AS_BONUS,
+    )
+
+    relative = "website/public/card-data/new.json.gz"
+    assert report["status"] == "success"
+    assert report["static"]["rebuilt"] == ["new"]
+    assert relative in _asset_paths(report)
+    rebuilt = (tmp_path / "bundle/generated" / relative).read_bytes()
+    assert rebuilt != committed
+    assert rebuilt == target.read_bytes()
+    assert hashlib.sha256(rebuilt).hexdigest() in {
+        asset["sha256"] for asset in report["generated_assets"] if asset["path"] == relative
+    }
+    names = {
+        card.name
+        for card in SetCardData.from_gzip_bytes(rebuilt, expected_set_code="new")
+        .to_card_database()
+        .cards.values()
+    }
+    assert "Old Card" in names
+
+
+def test_unchanged_rebuilt_card_data_adds_no_card_data_asset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    target = workspace[0] / "website/public/card-data/new.json.gz"
+    committed = target.read_bytes()
+
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(formats=_NEW_PREMIER, live=_NEW_PREMIER),
+        fetch_rated_cards=lambda *, set_code: (),
+    )
+
+    assert report["status"] == "success"
+    assert report["static"]["rebuilt"] == []
+    assert target.read_bytes() == committed
+    assert not [
+        path for path in _asset_paths(report) if path.startswith("website/public/card-data/")
+    ]
+
+
+def test_ratings_fetch_failure_keeps_that_sets_card_data_and_rebuilds_the_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    card_dir = workspace[0] / "website/public/card-data"
+    new_before = (card_dir / "new.json.gz").read_bytes()
+    old_before = (card_dir / "old.json.gz").read_bytes()
+
+    def fetch(*, set_code: str) -> tuple[SeventeenLandsRatedCard, ...]:
+        if set_code == "new":
+            raise SeventeenLandsError("fixture ratings outage")
+        return _THIN_CARD_AS_BONUS
+
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(
+            formats={**_NEW_PREMIER, "OLD": ["PremierDraft"]},
+            live={**_NEW_PREMIER, "OLD": ["PremierDraft"]},
+        ),
+        fetch_rated_cards=fetch,
+    )
+
+    assert report["status"] == "failed"
+    assert {
+        "stage": "card-data-rebuild",
+        "category": "ratings-fetch-failed",
+        "set_code": "new",
+    } in report["failures"]
+    assert (card_dir / "new.json.gz").read_bytes() == new_before
+    assert report["static"]["rebuilt"] == ["old"]
+    assert (card_dir / "old.json.gz").read_bytes() != old_before
+
+
+def test_unmatched_bonus_card_reports_a_rebuild_failure_and_keeps_profiles_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+    target = workspace[0] / "website/public/card-data/new.json.gz"
+    committed = target.read_bytes()
+
+    report = _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(formats=_NEW_PREMIER, live=_NEW_PREMIER),
+        fetch_rated_cards=lambda *, set_code: (
+            SeventeenLandsRatedCard(name="Card Scryfall Lacks", arena_id=9999),
+        ),
+    )
+
+    assert {
+        "stage": "card-data-rebuild",
+        "category": "rebuild-failed",
+        "set_code": "new",
+    } in report["failures"]
+    assert target.read_bytes() == committed
+    assert report["static"]["rebuilt"] == []
+    assert report["profiles"]["successful"]
+
+
+def test_summary_lists_the_sets_with_rebuilt_card_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _committed_card_data_workspace(tmp_path, monkeypatch)
+
+    _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(formats=_NEW_PREMIER, live=_NEW_PREMIER),
+        fetch_rated_cards=lambda *, set_code: _OLD_CARD_AS_BONUS,
+    )
+    rebuilt_summary = (tmp_path / "bundle/summary.md").read_text(encoding="utf-8")
+    _generate_rebuild(
+        tmp_path,
+        workspace,
+        selection_mode="active",
+        filters=_filters(formats=_NEW_PREMIER, live=_NEW_PREMIER),
+        fetch_rated_cards=lambda *, set_code: _OLD_CARD_AS_BONUS,
+        bundle_name="second",
+    )
+    unchanged_summary = (tmp_path / "second/summary.md").read_text(encoding="utf-8")
+
+    assert "### Rebuilt card data\n\n- new\n" in rebuilt_summary
+    assert "### Rebuilt card data\n\n- None\n" in unchanged_summary

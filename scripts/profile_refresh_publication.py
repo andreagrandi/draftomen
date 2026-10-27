@@ -180,7 +180,7 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
     static = _mapping(report["static"], label="static")
     _exact_keys(
         static,
-        {"discovery_complete", "eligible_count", "already_valid_count", "selected", "successful"},
+        {"discovery_complete", "eligible_count", "already_valid_count", "selected", "successful", "rebuilt"},
         label="static",
     )
     if not isinstance(static["discovery_complete"], bool):
@@ -235,6 +235,16 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
         if identity in successful_pairs or identity not in selected_pairs or selected_pairs[identity] != name:
             _fail("profiles.successful contains an unselected or duplicate identity")
         successful_pairs.add(identity)
+    # Rebuilt card data and its failures belong to sets with a selected profile pair.
+    pair_names = {code: name for (code, _), name in selected_pairs.items()}
+    if not isinstance(static["rebuilt"], list):
+        _fail("static.rebuilt must be an array")
+    rebuilt_identities: dict[str, str] = {}
+    for index, code_value in enumerate(static["rebuilt"]):
+        code = _safe_code(code_value, label=f"static.rebuilt[{index}]")
+        if code in rebuilt_identities or code not in pair_names:
+            _fail("static.rebuilt contains an unselected or duplicate identity")
+        rebuilt_identities[code] = pair_names[code]
     if not isinstance(profiles["card_ratings"], list):
         _fail("profiles.card_ratings must be an array")
     if not isinstance(profiles["card_metadata_fallbacks"], list):
@@ -288,6 +298,10 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
         if code_value is None:
             continue
         code = _safe_code(code_value, label=f"failures[{index}].set_code")
+        if format_value is None and stage == "card-data-rebuild":
+            if code not in pair_names:
+                _fail("failure refers to an unselected rebuild identity")
+            continue
         if format_value is None:
             if code not in static_identities:
                 _fail("failure refers to an unselected static identity")
@@ -313,6 +327,7 @@ def _validate_report(report: Any, *, expected_base: str) -> dict[str, Any]:
     return {
         "static_identities": static_identities,
         "static_successes": static_successes,
+        "rebuilt_identities": rebuilt_identities,
         "selected_pairs": selected_pairs,
         "successful_pairs": successful_pairs,
         "failure_static": failure_static,
@@ -591,6 +606,7 @@ def _validate_and_stage(
 
     static_identities: dict[str, str] = evidence["static_identities"]
     descriptor_static_identities = dict(static_identities)
+    descriptor_static_identities.update(evidence["rebuilt_identities"])
     for code, event_format in evidence["successful_pairs"]:
         name = evidence["selected_pairs"][(code, event_format)]
         previous_name = descriptor_static_identities.get(code)
@@ -645,7 +661,11 @@ def _validate_and_stage(
             kind, identity = descriptor_kinds[relative]
             if kind == "object" and existing != payload:
                 _fail("content-addressed profile object conflicts with existing bytes")
-            if kind == "static" and existing != payload:
+            if (
+                kind == "static"
+                and existing != payload
+                and identity not in evidence["rebuilt_identities"]
+            ):
                 assert identity is not None
                 try:
                     SetCardData.from_gzip_bytes(
