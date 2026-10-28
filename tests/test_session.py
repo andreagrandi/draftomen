@@ -98,6 +98,7 @@ from draftomen.session import (
     CardView,
     ChangeRanking,
     ChangeContextualScoring,
+    ChangeCreaturePace,
     ChangeAugmentation,
     ChangeSplashPreference,
     ChooseAccount,
@@ -2109,6 +2110,136 @@ def test_live_session_contextual_mode_toggle_without_pack_publishes_only_mode(
     )
     assert initial.contextual_evidence == ContextualEvidenceState()
     assert changed.current_pack_event is None
+    assert changed.current_scored_pack is None
+    assert published[-1] is changed
+
+
+def _creature_pace_session_lines() -> list[str]:
+    pool = (9001,) * 18
+    return [
+        *_profiled_history_lines(pool_before_pick=pool)[:-1],
+        _pack_line(
+            event_name=CONTEXT_EVENT_NAME,
+            pack_number=1,
+            pick_number=4,
+            draft_pack=(9002, 9003),
+            picked_cards=pool,
+        ),
+    ]
+
+
+def _creature_pace_database() -> CardDatabase:
+    def card(*, grp_id: int, types: tuple[str, ...]) -> CardInfo:
+        return CardInfo(
+            grp_id=grp_id,
+            name=f"Pace Card {grp_id}",
+            colors=("W", "U"),
+            mana_value=2.0,
+            rarity="common",
+            types=types,
+            type_line=" ".join(types),
+        )
+
+    return CardDatabase(
+        cards={
+            9001: card(grp_id=9001, types=("Instant",)),
+            9002: card(grp_id=9002, types=("Creature",)),
+            9003: card(grp_id=9003, types=("Sorcery",)),
+        }
+    )
+
+
+def _creature_pace_reason_kinds(*, snapshot: LiveSessionSnapshot, grp_id: int) -> set[str]:
+    assert snapshot.current_scored_pack is not None
+    card = next(
+        card
+        for card in snapshot.current_scored_pack.cards
+        if card.card.grp_id == grp_id
+    )
+    return {reason.kind for reason in card.rationale.reasons}
+
+
+def test_live_session_creature_pace_toggle_rescores_current_pack(
+    tmp_path: Path,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_creature_pace_database(),
+    )
+
+    enabled = session.process_lines(lines=_creature_pace_session_lines())
+
+    assert enabled.creature_pace_enabled is True
+    assert enabled.current_scored_pack is not None
+    boosted = next(
+        card for card in enabled.current_scored_pack.cards if card.card.grp_id == 9002
+    )
+    assert boosted.creature_pace_bonus > 0.0
+    assert "creature_pace" in _creature_pace_reason_kinds(
+        snapshot=enabled, grp_id=9002
+    )
+
+    disabled = session.dispatch(command=ChangeCreaturePace(enabled=False))
+
+    assert disabled.creature_pace_enabled is False
+    assert disabled.current_pack_event == enabled.current_pack_event
+    assert disabled.current_scored_pack is not None
+    unboosted = next(
+        card for card in disabled.current_scored_pack.cards if card.card.grp_id == 9002
+    )
+    assert unboosted.creature_pace_bonus == 0.0
+    assert unboosted.raw_score == pytest.approx(
+        boosted.raw_score - boosted.creature_pace_bonus
+    )
+    assert "creature_pace" not in _creature_pace_reason_kinds(
+        snapshot=disabled, grp_id=9002
+    )
+
+    restored = session.dispatch(command=ChangeCreaturePace(enabled=True))
+
+    assert restored.creature_pace_enabled is True
+    assert restored.current_scored_pack is not None
+    again = next(
+        card for card in restored.current_scored_pack.cards if card.card.grp_id == 9002
+    )
+    assert again.raw_score == pytest.approx(boosted.raw_score)
+    assert "creature_pace" in _creature_pace_reason_kinds(
+        snapshot=restored, grp_id=9002
+    )
+
+
+def test_live_session_creature_pace_constructor_flag_disables_bonus(
+    tmp_path: Path,
+) -> None:
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        card_database=_creature_pace_database(),
+        creature_pace_enabled=False,
+    )
+
+    snapshot = session.process_lines(lines=_creature_pace_session_lines())
+
+    assert snapshot.creature_pace_enabled is False
+    assert "creature_pace" not in _creature_pace_reason_kinds(
+        snapshot=snapshot, grp_id=9002
+    )
+
+
+def test_live_session_creature_pace_toggle_without_pack_publishes_only_flag(
+    tmp_path: Path,
+) -> None:
+    published: list[LiveSessionSnapshot] = []
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=tmp_path / "app",
+        snapshot_publisher=published.append,
+    )
+
+    changed = session.dispatch(command=ChangeCreaturePace(enabled=False))
+
+    assert changed.creature_pace_enabled is False
     assert changed.current_scored_pack is None
     assert published[-1] is changed
 

@@ -141,6 +141,27 @@ Item {
                         Layout.fillWidth: true
                         ColumnLayout {
                             Layout.fillWidth: true
+                            Label { text: "Creature pace bonus"; color: Theme.text; font.bold: true }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "When your pool is short of the 15 to 17 creatures a 40-card deck needs, creatures you can cast get a small boost in close picks. It never outranks a clearly better card."
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.textPixelSize(11)
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        SettingsSwitch {
+                            objectName: "settingsCreaturePaceSwitch"
+                            checked: root.displayPreferences.creaturePaceEnabled
+                            Accessible.name: "Creature pace bonus"
+                            Accessible.description: "Give castable creatures a small boost in close picks when your pool is short of creatures. Saved for this desktop application."
+                            onToggled: root.displayPreferences.setCreaturePaceEnabled(checked)
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ColumnLayout {
+                            Layout.fillWidth: true
                             Label {
                                 objectName: "settingsAugmentedIntelligenceLabel"
                                 text: "Augmented Intelligence"

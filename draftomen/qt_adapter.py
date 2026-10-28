@@ -62,6 +62,7 @@ from draftomen.session import (
     CardImageRequest,
     ChangeAugmentation,
     ChangeContextualScoring,
+    ChangeCreaturePace,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
@@ -173,6 +174,7 @@ class TestDraftFactory(Protocol):
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> TestDraftRuntime:
         ...
 
@@ -195,6 +197,7 @@ class MoxgateFactory(Protocol):
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> MoxgateRuntime:
         ...
 
@@ -554,6 +557,7 @@ class GuiPreferencesAdapter(QObject):
     persistenceChanged = Signal()
     applicationFontPixelSizeChanged = Signal()
     contextualAdjustmentsEnabledChanged = Signal(bool)
+    creaturePaceEnabledChanged = Signal(bool)
     augmentedIntelligenceEnabledChanged = Signal(bool)
     mockedDraftEnabledChanged = Signal(bool)
     mockedDraftSourcesChanged = Signal()
@@ -632,6 +636,10 @@ class GuiPreferencesAdapter(QObject):
     @Property(bool, notify=contextualAdjustmentsEnabledChanged)
     def contextualAdjustmentsEnabled(self) -> bool:
         return self._preferences.contextual_adjustments_enabled
+
+    @Property(bool, notify=creaturePaceEnabledChanged)
+    def creaturePaceEnabled(self) -> bool:
+        return self._preferences.creature_pace_enabled
 
     @Property(bool, notify=augmentedIntelligenceEnabledChanged)
     def augmentedIntelligenceEnabled(self) -> bool:
@@ -713,6 +721,10 @@ class GuiPreferencesAdapter(QObject):
     @Slot(bool)
     def setContextualAdjustmentsEnabled(self, enabled: bool) -> None:
         self._replace_preferences(contextual_adjustments_enabled=enabled)
+
+    @Slot(bool)
+    def setCreaturePaceEnabled(self, enabled: bool) -> None:
+        self._replace_preferences(creature_pace_enabled=enabled)
 
     @Slot(bool)
     def setAugmentedIntelligenceEnabled(self, enabled: bool) -> None:
@@ -814,6 +826,8 @@ class GuiPreferencesAdapter(QObject):
             self.contextualAdjustmentsEnabledChanged.emit(
                 updated.contextual_adjustments_enabled
             )
+        if updated.creature_pace_enabled != previous.creature_pace_enabled:
+            self.creaturePaceEnabledChanged.emit(updated.creature_pace_enabled)
         if (
             updated.augmented_intelligence_enabled
             != previous.augmented_intelligence_enabled
@@ -911,6 +925,10 @@ class SessionAdapter(QObject):
     @Slot(bool)
     def setContextualScoringEnabled(self, enabled: bool) -> None:
         self._dispatch(command=ChangeContextualScoring(enabled=enabled))
+
+    @Slot(bool)
+    def setCreaturePaceEnabled(self, enabled: bool) -> None:
+        self._dispatch(command=ChangeCreaturePace(enabled=enabled))
 
     @Slot(bool)
     def setAugmentedIntelligenceEnabled(self, enabled: bool) -> None:
@@ -1217,6 +1235,7 @@ class _LiveSessionWorker(QObject):
         self._runtime_generation = 0
         self._splash_enabled = True
         self._contextual_adjustments_enabled = True
+        self._creature_pace_enabled = True
 
     def _arena_snapshot_publisher(self, snapshot: LiveSessionSnapshot) -> None:
         if self._authoritative_source != "arena":
@@ -1400,6 +1419,7 @@ class _LiveSessionWorker(QObject):
             self._contextual_adjustments_enabled = (
                 initial_snapshot.contextual_adjustments_enabled
             )
+            self._creature_pace_enabled = initial_snapshot.creature_pace_enabled
             self._start_image_worker()
             self._start_profile_worker()
             self._start_augmented_model_worker()
@@ -1457,7 +1477,9 @@ class _LiveSessionWorker(QObject):
                 self._splash_enabled = command.enabled
             elif isinstance(command, ChangeContextualScoring):
                 self._contextual_adjustments_enabled = command.enabled
-            if isinstance(command, ChangeContextualScoring):
+            elif isinstance(command, ChangeCreaturePace):
+                self._creature_pace_enabled = command.enabled
+            if isinstance(command, (ChangeContextualScoring, ChangeCreaturePace)):
                 return
             self._request_one_card_image()
             self._request_profile_refresh()
@@ -1800,6 +1822,7 @@ class _LiveSessionWorker(QObject):
                 ),
                 splash_enabled=self._splash_enabled,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+                creature_pace_enabled=self._creature_pace_enabled,
             )
             if self._stop_requested or self._test_draft_leaving:
                 runtime.close()
@@ -2175,6 +2198,7 @@ class _LiveSessionWorker(QObject):
                 ),
                 splash_enabled=self._splash_enabled,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+                creature_pace_enabled=self._creature_pace_enabled,
             )
         except MoxgatePortInUseError as error:
             self._set_moxgate_state(
@@ -2267,6 +2291,10 @@ class _LiveSessionWorker(QObject):
                 command=ChangeContextualScoring(
                     enabled=self._contextual_adjustments_enabled
                 )
+            )
+        if snapshot.creature_pace_enabled != self._creature_pace_enabled:
+            session.dispatch(
+                command=ChangeCreaturePace(enabled=self._creature_pace_enabled)
             )
 
     @Slot()

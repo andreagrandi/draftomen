@@ -31,7 +31,7 @@ from draftomen.backtest import (
 )
 from draftomen.carddb import CardDatabase, CardFace, CardInfo
 from draftomen.cardimages import CardImageError, CardImageService
-from draftomen.config import DECK_BUILDER, POLL_INTERVAL_SECONDS, SPLASH
+from draftomen.config import DECK_BUILDER, PICK_ENGINE, POLL_INTERVAL_SECONDS, SPLASH
 from draftomen.deckbuilder import (
     BuildPool,
     DeckBuilderError,
@@ -665,6 +665,7 @@ class LiveSessionSnapshot:
 
     status: ApplicationStatus = field(default_factory=ApplicationStatus)
     contextual_adjustments_enabled: bool = True
+    creature_pace_enabled: bool = True
     accounts: tuple[AccountIdentity, ...] = ()
     active_account: AccountIdentity | None = None
     draft: DraftIdentity | None = None
@@ -850,6 +851,13 @@ class ChangeContextualScoring:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangeCreaturePace:
+    """Request whether the creature pace bonus is applied to pick scores."""
+
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RequestRatingsDownload:
     """Request ratings retrieval for one active draft set.
     Progress and recoverable failures return through session state.
@@ -903,6 +911,7 @@ LiveSessionCommand: TypeAlias = (
     | ChangeRanking
     | ChangeSplashPreference
     | ChangeContextualScoring
+    | ChangeCreaturePace
     | ChangeAugmentation
     | RequestRatingsDownload
     | RequestBuild
@@ -932,6 +941,7 @@ class LiveSession:
         card_image_service: CardImageService | None = None,
         splash_enabled: bool = SPLASH.enabled_by_default,
         contextual_adjustments_enabled: bool = True,
+        creature_pace_enabled: bool = True,
         augmentation_enabled: bool = False,
         set_profile: SetProfile | None = None,
         profile_client: ProfileClient | None = None,
@@ -967,6 +977,7 @@ class LiveSession:
         self._ranking_mode = validate_ranking_mode(ranking_mode=ranking_mode)
         self._splash_enabled = splash_enabled
         self._contextual_adjustments_enabled = contextual_adjustments_enabled
+        self._creature_pace_enabled = creature_pace_enabled
         self._augmentation_enabled = augmentation_enabled
         self._card_database = card_database
         self._set_card_data_loader = set_card_data_loader
@@ -1052,6 +1063,7 @@ class LiveSession:
         ratings_state = self._initial_ratings_state()
         self._snapshot = LiveSessionSnapshot(
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+            creature_pace_enabled=self._creature_pace_enabled,
             contextual_evidence=self._current_contextual_evidence_locked(),
             augmentation=self._current_augmentation_state_locked(),
             status=_waiting_for_draft_status(setup_issue=initial_setup_issue),
@@ -1745,6 +1757,9 @@ class LiveSession:
             return self.snapshot
         if isinstance(command, ChangeContextualScoring):
             self._change_contextual_scoring(enabled=command.enabled)
+            return self.snapshot
+        if isinstance(command, ChangeCreaturePace):
+            self._change_creature_pace(enabled=command.enabled)
             return self.snapshot
         if isinstance(command, ChangeAugmentation):
             self._change_augmentation(enabled=command.enabled)
@@ -2557,6 +2572,10 @@ class LiveSession:
             ratings_data=ratings_data,
             splash_enabled=self._splash_enabled,
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+            config=replace(
+                PICK_ENGINE,
+                creature_pace_enabled=self._creature_pace_enabled,
+            ),
             set_profile=self._set_profile,
             augmented_artifact=self._effective_augmented_artifact_locked(),
             requested_format=self._active_ratings_formats()[0],
@@ -3222,6 +3241,26 @@ class LiveSession:
                 progress=progress,
                 errors=errors,
                 backtest=None,
+            )
+            if self._current_pack_event is None:
+                self._publish(snapshot=candidate_snapshot)
+                return
+
+            self._score_current_pack_locked(
+                snapshot=candidate_snapshot,
+                prepare_image_requests=False,
+                record_audit=False,
+            )
+
+    def _change_creature_pace(self, *, enabled: bool) -> None:
+        with self._state_lock:
+            if enabled == self._creature_pace_enabled:
+                return
+
+            self._creature_pace_enabled = enabled
+            candidate_snapshot = replace(
+                self.snapshot,
+                creature_pace_enabled=enabled,
             )
             if self._current_pack_event is None:
                 self._publish(snapshot=candidate_snapshot)
@@ -5090,6 +5129,7 @@ class LiveSession:
             snapshot = replace(
                 snapshot,
                 contextual_adjustments_enabled=self._contextual_adjustments_enabled,
+                creature_pace_enabled=self._creature_pace_enabled,
                 contextual_evidence=self._current_contextual_evidence_locked(),
                 augmentation=augmentation,
                 augmentation_message=augmentation_status_message(state=augmentation),

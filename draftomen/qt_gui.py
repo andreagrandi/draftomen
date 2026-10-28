@@ -356,6 +356,7 @@ def _live_session_factory(
     bulk_file: Path | None,
     poll_interval: float,
     contextual_adjustments_enabled: bool,
+    creature_pace_enabled: bool = True,
     augmentation_enabled: bool = False,
     augmented_model_client: AugmentedModelClient | None = None,
     profile_manifest_url: str | None = None,
@@ -395,12 +396,14 @@ def _live_session_factory(
             return LiveSession(
                 **common_kwargs,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
+                creature_pace_enabled=creature_pace_enabled,
                 card_database=build_card_database_from_bulk_file(path=bulk_file),
             )
         assert card_data_client is not None
         return LiveSession(
             **common_kwargs,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
+            creature_pace_enabled=creature_pace_enabled,
             set_card_data_loader=card_data_client.load,
         )
 
@@ -606,6 +609,7 @@ class _GuiTestDraftFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> TestDraftRuntime:
         """Create one isolated simulated draft with the shared preferences."""
         return create_test_draft_runtime(
@@ -621,6 +625,7 @@ class _GuiTestDraftFactory:
             snapshot_publisher=publisher,
             splash_enabled=splash_enabled,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
+            creature_pace_enabled=creature_pace_enabled,
             simulation_app_dir=self._simulation_app_dir,
             augmented_model_client=self._augmented_model_client,
             card_image_service=CardImageService(
@@ -668,6 +673,7 @@ class _GuiMoxgateFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> MoxgateRuntime:
         """Load the card data, then bind the receiver and start the isolated session."""
 
@@ -691,6 +697,7 @@ class _GuiMoxgateFactory:
             augmented_model_client=self._augmented_model_client,
             splash_enabled=splash_enabled,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
+            creature_pace_enabled=creature_pace_enabled,
         )
 
 
@@ -730,6 +737,7 @@ def _build_provider(
             bulk_file=args.bulk_file,
             poll_interval=args.poll_interval,
             contextual_adjustments_enabled=preferences.contextual_adjustments_enabled,
+            creature_pace_enabled=preferences.creature_pace_enabled,
             augmentation_enabled=preferences.augmented_intelligence_enabled,
             augmented_model_client=augmented_model_client,
             profile_manifest_url=resolved_profile_manifest_url,
@@ -1365,6 +1373,7 @@ def run_gui(
     preferences.contextualAdjustmentsEnabledChanged.connect(
         provider.setContextualScoringEnabled
     )
+    preferences.creaturePaceEnabledChanged.connect(provider.setCreaturePaceEnabled)
     preferences.augmentedIntelligenceEnabledChanged.connect(
         provider.setAugmentedIntelligenceEnabled
     )

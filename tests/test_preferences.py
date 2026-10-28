@@ -51,6 +51,7 @@ def test_tui_preferences_round_trip_atomically_to_explicit_app_directory(
             "augmented_intelligence_enabled": False,
             "build_details": True,
             "card_image_preview": "hide",
+            "creature_pace_enabled": True,
             "draft_identifier": True,
             "focused_card_details": True,
             "mana_pips_and_sources": True,
@@ -281,6 +282,94 @@ def test_gui_preferences_round_trip_contextual_adjustments(
     assert warning is None
 
 
+def test_gui_preferences_round_trip_creature_pace(tmp_path: Path) -> None:
+    expected = GuiDisplayPreferences(creature_pace_enabled=False)
+
+    assert save_gui_preferences(preferences=expected, app_dir=tmp_path / "app") is None
+    actual, warning = load_gui_preferences(app_dir=tmp_path / "app")
+
+    assert actual == expected
+    assert actual.creature_pace_enabled is False
+    assert warning is None
+
+
+def test_load_gui_preferences_defaults_creature_pace_for_existing_v1_file(
+    tmp_path: Path,
+) -> None:
+    path = gui_preferences_path(app_dir=tmp_path / "app")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"version": 1, "display": {"secondary_stats": False}}),
+        encoding="utf-8",
+    )
+
+    preferences, warning = load_gui_preferences(app_dir=path.parent)
+
+    assert preferences.creature_pace_enabled is True
+    assert warning is None
+
+
+def test_load_gui_preferences_uses_default_for_invalid_creature_pace(
+    tmp_path: Path,
+) -> None:
+    path = gui_preferences_path(app_dir=tmp_path / "app")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"version": 1, "display": {"creature_pace_enabled": "no"}}),
+        encoding="utf-8",
+    )
+
+    preferences, warning = load_gui_preferences(app_dir=path.parent)
+
+    assert preferences.creature_pace_enabled is True
+    assert warning is not None
+    assert "creature_pace_enabled" in warning
+
+
+def test_tui_preferences_round_trip_creature_pace(tmp_path: Path) -> None:
+    expected = TuiVisibilityPreferences(creature_pace_enabled=False)
+
+    assert save_tui_preferences(preferences=expected, app_dir=tmp_path / "app") is None
+    actual, warning = load_tui_preferences(app_dir=tmp_path / "app")
+
+    assert actual == expected
+    assert actual.creature_pace_enabled is False
+    assert warning is None
+
+
+def test_load_tui_preferences_defaults_creature_pace_for_existing_v1_file(
+    tmp_path: Path,
+) -> None:
+    path = tui_preferences_path(app_dir=tmp_path / "app")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"version": 1, "visibility": {"build_details": True}}),
+        encoding="utf-8",
+    )
+
+    preferences, warning = load_tui_preferences(app_dir=path.parent)
+
+    assert preferences.creature_pace_enabled is True
+    assert warning is None
+
+
+def test_load_tui_preferences_uses_default_for_invalid_creature_pace(
+    tmp_path: Path,
+) -> None:
+    path = tui_preferences_path(app_dir=tmp_path / "app")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"version": 1, "visibility": {"creature_pace_enabled": 1}}),
+        encoding="utf-8",
+    )
+
+    preferences, warning = load_tui_preferences(app_dir=path.parent)
+
+    assert preferences.creature_pace_enabled is True
+    assert warning is not None
+    assert "creature_pace_enabled" in warning
+
+
 def test_gui_preferences_round_trip_augmented_intelligence(tmp_path: Path) -> None:
     expected = GuiDisplayPreferences(augmented_intelligence_enabled=True)
 
@@ -319,6 +408,7 @@ def test_gui_preferences_round_trip_and_isolate_display_choices(
             "card_preview": False,
             "compact_density": True,
             "contextual_adjustments_enabled": False,
+            "creature_pace_enabled": True,
             "detailed_build_context": False,
             "mocked_draft_checkout_dir": "/opt/Draftmancer",
             "mocked_draft_enabled": True,

@@ -27,6 +27,7 @@ from draftomen.session import (
     ChangeAugmentation,
     ChangeRanking,
     ChangeContextualScoring,
+    ChangeCreaturePace,
     ChangeSplashPreference,
     ChooseAccount,
     ChooseRecommendation,
@@ -620,6 +621,7 @@ class MockLiveSession:
         self._contextual_adjustments_enabled = (
             snapshot.contextual_adjustments_enabled
         )
+        self._creature_pace_enabled = snapshot.creature_pace_enabled
         self._snapshot = self._with_contextual_mode(
             snapshot=snapshot,
         )
@@ -648,11 +650,13 @@ class MockLiveSession:
         if (
             snapshot.contextual_adjustments_enabled
             is self._contextual_adjustments_enabled
+            and snapshot.creature_pace_enabled is self._creature_pace_enabled
             and snapshot.contextual_evidence == evidence
         ):
             return snapshot
         return replace(
             snapshot,
+            creature_pace_enabled=self._creature_pace_enabled,
             contextual_adjustments_enabled=self._contextual_adjustments_enabled,
             contextual_evidence=evidence,
         )
@@ -722,6 +726,8 @@ class MockLiveSession:
             )
         elif isinstance(command, ChangeContextualScoring):
             self._contextual_adjustments_enabled = command.enabled
+        elif isinstance(command, ChangeCreaturePace):
+            self._creature_pace_enabled = command.enabled
         elif isinstance(command, ChangeAugmentation):
             # The static mock has no augmented model to enable.
             pass

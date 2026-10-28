@@ -127,6 +127,7 @@ def create_moxgate_runtime(
     contextual_adjustments_enabled: bool = True,
     event_publisher: EventPublisher | None = None,
     augmentation_enabled: bool = False,
+    creature_pace_enabled: bool = True,
     grp_ids_by_name: Mapping[str, tuple[int, ...]] | None = None,
 ) -> MoxgateRuntime:
     """Bind the receiver, then build the session and feeder around it.
@@ -149,6 +150,7 @@ def create_moxgate_runtime(
             augmented_model_client=augmented_model_client,
             splash_enabled=splash_enabled,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
+            creature_pace_enabled=creature_pace_enabled,
         )
         try:
             feeder = MoxgateSessionFeeder(

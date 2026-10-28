@@ -34,6 +34,7 @@ class TuiVisibilityPreferences:
     secondary_columns: bool = True
     build_details: bool = False
     splash_enabled: bool = True
+    creature_pace_enabled: bool = True
     augmented_intelligence_enabled: bool = False
     pool_metadata: bool = True
     pool_color_distribution: bool = True
@@ -221,6 +222,7 @@ class GuiDisplayPreferences:
     system_text_scaling: bool = True
     show_backtest: bool = False
     contextual_adjustments_enabled: bool = False
+    creature_pace_enabled: bool = True
     augmented_intelligence_enabled: bool = False
     mocked_draft_enabled: bool = False
     mocked_draft_checkout_dir: str = ""
