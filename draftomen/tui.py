@@ -767,6 +767,7 @@ class DraftomenTuiApp(App[None]):
         self._pool_grp_ids: tuple[int, ...] = ()
         self._pair_label = "open"
         self._color_candidates: tuple[ColorCandidate, ...] = ()
+        self._pool_state = PoolState()
         self._commitment_label = "0% open"
         self._data_source = "unknown"
         self._last_error: str | None = None
@@ -1598,6 +1599,7 @@ class DraftomenTuiApp(App[None]):
         self._pool_size = snapshot.pool.total_cards
         self._pair_label = snapshot.pool.inferred_pair or "open"
         self._color_candidates = snapshot.pool.color_candidates
+        self._pool_state = snapshot.pool
         self._commitment_label = _commitment_label(
             commitment=snapshot.pool.commitment,
         )
@@ -2450,6 +2452,7 @@ class DraftomenTuiApp(App[None]):
                     (
                         self._pool_size_text(),
                         *self._last_pick_lines(),
+                        *_format_pool_composition_lines(pool=self._pool_state),
                         f"Inferred pair: {inferred_pair}",
                         *self._color_candidate_lines(),
                         f"Build pair: {build_pair}",
@@ -3069,6 +3072,7 @@ class DraftomenTuiApp(App[None]):
             spell_selection=spell_selection,
             mana_base=result.domain_mana_base,
             card_database=self.card_database,
+            removal_count=result.removal_count,
             spell_sort_mode=self._build_spell_sort_mode,
             show_details=self._build_show_details,
             focused_card_index=self._build_focused_card_index,
@@ -3349,6 +3353,7 @@ def _format_tui_build_result(
     mana_base: ManaBase,
     card_database: CardDatabase,
     spell_sort_mode: str,
+    removal_count: int | None,
     show_details: bool,
     focused_card_index: int,
     width: int,
@@ -3373,7 +3378,9 @@ def _format_tui_build_result(
         f"Average mana value: {mana_base.average_mana_value:.2f}",
         (
             f"Creatures: {counts.creatures}; "
-            f"Noncreatures: {counts.noncreatures}; Lands: {mana_base.land_count}"
+            f"Noncreatures: {counts.noncreatures}; "
+            f"Removal: {_format_optional_count(count=removal_count)}; "
+            f"Lands: {mana_base.land_count}"
         ),
         (
             "Ratings: rows show 17Lands WR and 17Lands-style grade from "
@@ -4027,6 +4034,33 @@ def _format_color_label(
         _format_mana_symbol(symbol=color, mana_icons_enabled=mana_icons_enabled)
         for color in colors
     )
+
+
+def _format_pool_composition_lines(*, pool: PoolState) -> list[str]:
+    if pool.total_cards == 0:
+        return []
+    lines = [
+        (
+            f"Lands: {pool.land_count}; Creatures: {pool.creature_count}; "
+            f"Removal: {pool.removal_count}"
+        )
+    ]
+    pace = pool.creature_pace
+    if pace is None or pace.projected is None:
+        lines.append("Creature pace: —")
+        return lines
+    pace_text = (
+        f"Creature pace: {pace.projected} "
+        f"(target {pace.target_floor}-{pace.target_ceiling})"
+    )
+    if pace.projected < pace.target_floor:
+        pace_text += ", behind"
+    lines.append(pace_text)
+    return lines
+
+
+def _format_optional_count(*, count: int | None) -> str:
+    return "—" if count is None else str(count)
 
 
 def _format_color_candidate_lines(

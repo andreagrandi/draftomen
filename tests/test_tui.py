@@ -39,6 +39,7 @@ from draftomen.pool import (
     draft_state_path,
     save_draft_state,
 )
+from draftomen.pool_ledger import CreaturePace
 from draftomen.preferences import (
     TuiVisibilityPreferences,
     load_tui_preferences,
@@ -2236,6 +2237,13 @@ async def _assert_build_keybinding_opens_build_view(tmp_path: Path) -> None:
         assert "Set: MSH — Marvel Super Heroes" in app.build_view_text
         assert "Pool size: 1 cards" not in app.build_view_text
         assert "Average mana value:" in app.build_view_text
+        removal_count = app.session.snapshot.build.removal_count
+        assert removal_count is not None
+        assert f"; Removal: {removal_count}; Lands: " in app.build_view_text
+        app._adopt_build_result(
+            result=replace(app.session.snapshot.build, removal_count=4)
+        )
+        assert "; Removal: 4; Lands: " in app.build_view_text
         assert "Mana curve: 0:" not in app.build_view_text
         assert "Selected spells by mana value" in app.build_view_text
         assert "Picked pool" not in app.build_view_text
@@ -4273,3 +4281,70 @@ async def _assert_pool_summary_no_candidates(tmp_path: Path) -> None:
         await pilot.pause()
 
         assert "Candidates" not in _pool_summary_text(app=app)
+
+
+def test_tui_pool_summary_shows_composition_counts_and_creature_pace(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_pool_summary_composition_counts(tmp_path=tmp_path))
+
+
+async def _assert_pool_summary_composition_counts(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+        snapshot = app.session.snapshot
+        pool = replace(
+            snapshot.pool,
+            total_cards=24,
+            land_count=3,
+            creature_count=12,
+            removal_count=6,
+            creature_pace=CreaturePace(
+                projected=21,
+                target_floor=15,
+                target_ceiling=17,
+            ),
+        )
+        app._apply_session_snapshot(replace(snapshot, pool=pool))
+        await pilot.pause()
+
+        text = _pool_summary_text(app=app)
+        assert "Lands: 3; Creatures: 12; Removal: 6" in text
+        assert "Creature pace: 21 (target 15-17)" in text
+        assert "behind" not in text
+
+        behind_pool = replace(
+            pool,
+            creature_pace=CreaturePace(
+                projected=11,
+                target_floor=15,
+                target_ceiling=17,
+            ),
+        )
+        app._apply_session_snapshot(replace(snapshot, pool=behind_pool))
+        await pilot.pause()
+
+        assert "Creature pace: 11 (target 15-17), behind" in _pool_summary_text(
+            app=app
+        )
+
+
+def test_tui_pool_summary_omits_composition_counts_for_empty_pool(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_pool_summary_no_composition_counts(tmp_path=tmp_path))
+
+
+async def _assert_pool_summary_no_composition_counts(tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+
+        text = _pool_summary_text(app=app)
+        assert "Removal:" not in text
+        assert "Creature pace" not in text

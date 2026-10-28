@@ -21,6 +21,9 @@
 - The GUI draft view now shows lands, creatures, removal and creature pace in
   the pool summary, and the build page shows the removal count in both
   layouts. (#1001)
+- The TUI pool summary now shows lands, creatures, removal and creature pace
+  against the 15 to 17 target, and the TUI build summary shows the removal
+  count next to creatures and lands. (#1002)
 
 ## [0.6.5] - 2026-10-27
 
