@@ -14,6 +14,10 @@
   fewer castable creatures plays all of them instead of dropping the creature
   floor to 0, and the build shows a warning such as
   `Only 13 creatures available in WU`. (#999)
+- The session pool state now carries land, creature and removal counts and a
+  creature pace projection, and the build result carries a removal count, so
+  frontends can show them. Creature and removal counts include only cards the
+  likely pair can cast, and temporary taps do not count as removal. (#1000)
 
 ## [0.6.5] - 2026-10-27
 

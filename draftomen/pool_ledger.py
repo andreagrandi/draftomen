@@ -82,6 +82,15 @@ REMOVAL_ROLES = frozenset(
         Role.TEMPORARY_TAP,
     }
 )
+COUNTED_REMOVAL_ROLES = frozenset(
+    {
+        Role.HARD_REMOVAL,
+        Role.DAMAGE_REMOVAL,
+        Role.DISABLING_REMOVAL,
+        Role.CONDITIONAL_REMOVAL,
+        Role.BOUNCE,
+    }
+)
 REMOVAL_ROLE_KINDS: Mapping[Role, str] = {
     Role.HARD_REMOVAL: "destroy",
     Role.DAMAGE_REMOVAL: "damage",
@@ -432,6 +441,62 @@ class PoolRoleLedger:
             "urgency": self.urgency,
             "unique_card_count": self.unique_card_count,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class CreaturePace:
+    """Project the final creature count from the picks made so far.
+    A missing projection means no pick has been made yet.
+    """
+
+    projected: int | None
+    target_floor: int
+    target_ceiling: int
+
+
+def project_creature_pace(
+    *,
+    creature_count: int,
+    picks_made: int,
+    total_picks: int,
+    target_floor: int,
+    target_ceiling: int,
+) -> CreaturePace:
+    """Scale the creature count to the full draft and pair it with the target band.
+    Returns no projection before the first pick.
+    """
+
+    projected = (
+        None
+        if picks_made <= 0
+        else round(creature_count * total_picks / picks_made)
+    )
+    return CreaturePace(
+        projected=projected,
+        target_floor=target_floor,
+        target_ceiling=target_ceiling,
+    )
+
+
+def is_removal_card(*, card: CardInfo) -> bool:
+    """Return whether a card has at least one counted removal role.
+    Temporary taps do not count, and several removal roles count once.
+    """
+
+    return any(
+        assignment.role in COUNTED_REMOVAL_ROLES
+        and not _is_temporary_disable(assignment=assignment)
+        for assignment in resolve_card_roles(card).assignments
+    )
+
+
+def _is_temporary_disable(*, assignment: RoleAssignment) -> bool:
+    # Tapper text also resolves to disabling removal, marked temporary.
+    return (
+        assignment.role is Role.DISABLING_REMOVAL
+        and assignment.removal is not None
+        and assignment.removal.temporary
+    )
 
 
 def _cards_for_pool(

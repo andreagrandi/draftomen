@@ -7,8 +7,10 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Literal, TypeAlias
 
+from draftomen.config import DECK_BUILDER
 from draftomen.draft_format import QUICK_RULES
 from draftomen.pickengine import ColorCandidate
+from draftomen.pool_ledger import project_creature_pace
 from draftomen.session import (
     AccountIdentity,
     ApplicationPhase,
@@ -250,6 +252,16 @@ def _pool() -> PoolState:
         color_distribution=(("W", 0), ("U", 3), ("B", 3), ("R", 0), ("G", 15), ("C", 3)),
         mana_curve=(0, 3, 6, 12, 0, 0, 0),
         average_mana_value=17 / 7,
+        land_count=3,
+        creature_count=12,
+        removal_count=6,
+        creature_pace=project_creature_pace(
+            creature_count=12,
+            picks_made=24,
+            total_picks=QUICK_RULES.total_cards,
+            target_floor=DECK_BUILDER.creature_floor,
+            target_ceiling=DECK_BUILDER.creature_ceiling,
+        ),
     )
 
 
@@ -336,6 +348,7 @@ def _build() -> BuildResult:
         land_count=17,
         creature_count=7,
         instant_count=1,
+        removal_count=2,
     )
 
 

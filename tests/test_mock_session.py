@@ -66,6 +66,12 @@ def test_ready_mock_snapshot_covers_every_desktop_data_surface() -> None:
     assert snapshot.pool.total_cards == 24
     assert snapshot.pool.current_colors == ("W", "G")
     assert snapshot.pool.target_cards == 42
+    assert snapshot.pool.land_count == 3
+    assert snapshot.pool.creature_count == 12
+    assert snapshot.pool.removal_count == 6
+    assert snapshot.pool.creature_pace is not None
+    assert snapshot.pool.creature_pace.projected == 21
+    assert snapshot.pool.creature_pace.target_floor == 15
     assert sum(
         pool_card.quantity for pool_card in snapshot.pool.cards
     ) == snapshot.pool.total_cards
@@ -94,6 +100,7 @@ def test_ready_mock_snapshot_covers_every_desktop_data_surface() -> None:
     assert snapshot.build.spell_count == 23
     assert snapshot.build.land_count == 17
     assert snapshot.build.creature_count == 7
+    assert snapshot.build.removal_count == 2
     assert snapshot.build.instant_count == 1
     assert snapshot.backtest is not None
     assert snapshot.backtest.rows
