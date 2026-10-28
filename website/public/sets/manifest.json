@@ -90,8 +90,8 @@
         }
       },
       "card_data": {
-        "bytes": 47790,
-        "sha256": "e223e1d10752ecca127c1abafff31fd942c8cd2e6fba4342453cb7f4d0b8dfc3",
+        "bytes": 49831,
+        "sha256": "410ae482f975c8776ad52268260dd716f3deea22f924f7537805315340f28920",
         "url": "https://www.draftomen.com/card-data/dft.json.gz"
       },
       "name": "Aetherdrift",
@@ -502,12 +502,22 @@
     "mid": {
       "augmented": null,
       "card_data": {
-        "bytes": 62302,
-        "sha256": "f3cceafbaf4ee1c73dd7965993de9290f1763e9b59780ba92c0872c955c6ccaa",
+        "bytes": 61589,
+        "sha256": "8aea8b83deafa1581c24816b90282a6b50f7796932e1d28d0f270670110e685d",
         "url": "https://www.draftomen.com/card-data/mid.json.gz"
       },
       "name": "Innistrad: Midnight Hunt",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "mkm": {
       "augmented": null,
@@ -728,8 +738,8 @@
     "vow": {
       "augmented": null,
       "card_data": {
-        "bytes": 66238,
-        "sha256": "b2bb4d7f4a711aa13c84a38ed49a1e4445cc4d808fab608fd8513039d770ddf0",
+        "bytes": 64453,
+        "sha256": "1c6969ecc6909446e62412b4bcacb55632c599164408ee2d92a51e8924be63f5",
         "url": "https://www.draftomen.com/card-data/vow.json.gz"
       },
       "name": "Innistrad: Crimson Vow",
