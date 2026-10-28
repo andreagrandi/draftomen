@@ -12442,6 +12442,7 @@ for name in ("updateDialogWebsite", "updateDialogStore", "updateDialogReleases")
     button = root.findChild(QObject, name)
     assert button is not None
     assert button.isVisible() is (name == "__VISIBLE__"), name
+    assert button.property("text") == "Download Draft Omen update", name
 """
     probe = (
         probe.replace("__CHANNEL__", channel)
