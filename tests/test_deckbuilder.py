@@ -21,6 +21,7 @@ from draftomen.deckbuilder import (
     _build_optimizer_context,
     _card_quantity_key,
     _greedy_feasible_package,
+    _is_splash_card,
     _optimizer_card_keys,
     _optimizer_creature_score,
     _optimizer_curve_score,
@@ -1274,6 +1275,89 @@ def test_single_splash_card_uses_two_fixing_lands_and_one_planned_basic() -> Non
 
 
 
+def test_hybrid_card_castable_in_pair_is_selected_without_splash() -> None:
+    config = replace(
+        DECK_BUILDER,
+        target_spell_count=4,
+        creature_floor=0,
+        creature_ceiling=4,
+        minimum_two_drops=0,
+        maximum_expensive_spells=4,
+        bench_card_count=3,
+    )
+    pool_ids = (1, 2, 3, 4, 11)
+    database = _hybrid_card_database()
+
+    selection = select_deck_spells(
+        pool_grp_ids=pool_ids,
+        card_database=database,
+        pair="WU",
+        ratings_data=_hybrid_ratings_data(),
+        allow_splash=False,
+        config=config,
+    )
+    mana_base = select_mana_base(
+        pool_grp_ids=pool_ids,
+        card_database=database,
+        pair="WU",
+        spell_selection=selection,
+        config=config,
+    )
+
+    assert 11 in {card.card.grp_id for card in selection.spells}
+    assert selection.counts.splashes == 0
+    assert "G" not in dict(mana_base.source_counts)
+    assert "G" not in dict(mana_base.pip_counts)
+
+
+
+def test_hybrid_card_castable_in_pair_does_not_use_splash_cap() -> None:
+    config = replace(
+        DECK_BUILDER,
+        target_spell_count=4,
+        creature_floor=0,
+        creature_ceiling=4,
+        minimum_two_drops=0,
+        maximum_expensive_spells=4,
+        bench_card_count=3,
+    )
+    pool_ids = (1, 2, 3, 4, 5, 6, 8, 9, 10, 12)
+    database = _hybrid_card_database()
+
+    selection = select_deck_spells(
+        pool_grp_ids=pool_ids,
+        card_database=database,
+        pair="WU",
+        ratings_data=_hybrid_ratings_data(),
+        allow_splash=True,
+        config=config,
+    )
+    mana_base = select_mana_base(
+        pool_grp_ids=pool_ids,
+        card_database=database,
+        pair="WU",
+        spell_selection=selection,
+        config=config,
+    )
+
+    assert {5, 6, 12} <= {card.card.grp_id for card in selection.spells}
+    assert selection.counts.splashes == 2
+    assert "B" not in dict(mana_base.source_counts)
+
+
+
+def test_card_with_off_pair_pip_still_counts_as_splash() -> None:
+    database = _hybrid_card_database()
+    green_pip = database.lookup(grp_id=13)
+    green_white_hybrid = database.lookup(grp_id=11)
+    green_pip_with_hybrid = replace(green_white_hybrid, mana_cost="{G}{G/W}")
+
+    assert _is_splash_card(card=green_pip, pair="WU") is True
+    assert _is_splash_card(card=green_pip_with_hybrid, pair="WU") is True
+    assert _is_splash_card(card=green_white_hybrid, pair="WU") is False
+
+
+
 def test_near_tie_creature_preference_applies_while_floor_unmet() -> None:
     config = replace(
         DECK_BUILDER,
@@ -1794,6 +1878,56 @@ def _ratings_data() -> SeventeenLandsData:
         )
     )
 
+
+
+
+def _hybrid_card_database() -> CardDatabase:
+    cards = dict(_splash_card_database(fixing_count=3).cards)
+    cards[11] = _card(
+        grp_id=11,
+        name="Green White Hybrid",
+        colors=("G", "W"),
+        mana_cost="{1}{G/W}",
+    )
+    cards[12] = _card(
+        grp_id=12,
+        name="White Black Hybrid",
+        colors=("W", "B"),
+        mana_cost="{1}{W/B}",
+    )
+    cards[13] = _card(
+        grp_id=13,
+        name="Green Pip Creature",
+        colors=("G",),
+        mana_cost="{1}{G}",
+    )
+    return CardDatabase(cards=cards)
+
+
+
+def _hybrid_ratings_data() -> SeventeenLandsData:
+    return _ratings_data_from_entries(
+        entries=(
+            (1, "White Playable", "W", 0.55),
+            (2, "Blue Playable", "U", 0.55),
+            (3, "Second White Playable", "W", 0.54),
+            (4, "Second Blue Playable", "U", 0.54),
+            (5, "Red Bomb One", "R", 0.70),
+            (6, "Red Bomb Two", "R", 0.69),
+            (11, "Green White Hybrid", "GW", 0.65),
+            (12, "White Black Hybrid", "WB", 0.71),
+            (13, "Green Pip Creature", "G", 0.66),
+            *tuple(
+                (
+                    grp_id,
+                    f"Distribution Card {grp_id}",
+                    "B",
+                    0.50 + ((grp_id - 100) * 0.002),
+                )
+                for grp_id in range(100, 120)
+            ),
+        )
+    )
 
 
 

@@ -6,6 +6,9 @@
 
 - Native bundle builds now pin Python 3.14 on macOS and 3.12 on Windows, so
   a runner image that ships a newer Python cannot break the Nuitka build.
+- The deck builder no longer treats a hybrid card that the pair can cast, such
+  as {R/W} in a white deck, as a splash card. These cards used to sit on the
+  bench with `cut: splash cap` when no splash was active. (#998)
 
 ## [0.6.5] - 2026-10-27
 
