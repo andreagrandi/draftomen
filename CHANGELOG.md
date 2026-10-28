@@ -18,6 +18,13 @@
   creature pace projection, and the build result carries a removal count, so
   frontends can show them. Creature and removal counts include only cards the
   likely pair can cast, and temporary taps do not count as removal. (#1000)
+- The pick engine has a creature pace term. After pack 1, when the pool
+  projects below 15 castable creatures, castable creatures get up to 2 extra
+  points and a reason such as
+  `creature needed, 9 so far, on pace for 13 of 15`. In a backtest on 800 FRA
+  and 800 HOB trophy drafts, top-1 agreement was unchanged and more
+  engine-drafted pools reached 15 creatures, so the term is on by default.
+  (#1003)
 - The GUI draft view now shows lands, creatures, removal and creature pace in
   the pool summary, and the build page shows the removal count in both
   layouts. (#1001)
