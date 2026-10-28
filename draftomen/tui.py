@@ -91,6 +91,7 @@ from draftomen.session import (
     BuildResult,
     CardView,
     ChangeAugmentation,
+    ChangeCreaturePace,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
@@ -226,6 +227,12 @@ _VISIBILITY_BOOLEAN_OPTIONS = (
         "splash_enabled",
         "Splash recommendations — consider one supported third color for "
         "exceptionally strong cards.",
+    ),
+    (
+        "creature_pace_enabled",
+        "Creature pace bonus — When your pool is short of the 15 to 17 creatures "
+        "a 40-card deck needs, creatures you can cast get a small boost in close "
+        "picks. It never outranks a clearly better card.",
     ),
     (
         "augmented_intelligence_enabled",
@@ -508,6 +515,7 @@ class TuiMoxgateFactory(Protocol):
         event_publisher: EventPublisher,
         splash_enabled: bool,
         augmentation_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> MoxgateRuntime: ...
 
 
@@ -715,6 +723,9 @@ class DraftomenTuiApp(App[None]):
                 augmentation_enabled=(
                     self.visibility_preferences.augmented_intelligence_enabled
                 ),
+                creature_pace_enabled=(
+                    self.visibility_preferences.creature_pace_enabled
+                ),
             )
             self.session = self._moxgate_runtime.session
         else:
@@ -730,6 +741,9 @@ class DraftomenTuiApp(App[None]):
                 splash_enabled=self.visibility_preferences.splash_enabled,
                 augmentation_enabled=(
                     self.visibility_preferences.augmented_intelligence_enabled
+                ),
+                creature_pace_enabled=(
+                    self.visibility_preferences.creature_pace_enabled
                 ),
                 profile_client=profile_client,
                 augmented_model_client=augmented_model_client,
@@ -973,6 +987,9 @@ class DraftomenTuiApp(App[None]):
             command=ChangeAugmentation(
                 enabled=preferences.augmented_intelligence_enabled,
             ),
+        )
+        self.session.dispatch(
+            command=ChangeCreaturePace(enabled=preferences.creature_pace_enabled),
         )
         if had_build_result and splash_changed:
             self._request_build_view(success_message=None)
@@ -4275,6 +4292,7 @@ def run_tui_moxgate_watch(
         event_publisher: EventPublisher,
         splash_enabled: bool,
         augmentation_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> MoxgateRuntime:
         runtime = create_moxgate_runtime(
             card_database=card_database,
@@ -4288,6 +4306,7 @@ def run_tui_moxgate_watch(
             augmented_model_client=augmented_model_client,
             splash_enabled=splash_enabled,
             augmentation_enabled=augmentation_enabled,
+            creature_pace_enabled=creature_pace_enabled,
             grp_ids_by_name=grp_ids_by_name,
         )
         runtimes.append(runtime)

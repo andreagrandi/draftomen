@@ -2637,6 +2637,75 @@ def test_tui_starts_with_the_saved_augmented_intelligence_preference(
     assert app.session._augmentation_enabled is True
 
 
+def test_tui_config_shows_the_creature_pace_switch_on_by_default(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_creature_pace_switch_is_shown(tmp_path=tmp_path))
+
+
+async def _assert_creature_pace_switch_is_shown(*, tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        dialog = app.screen
+        switch = dialog.query_one("#visibility-creature-pace-enabled", Switch)
+        labels = [str(label.render()) for label in dialog.query(Static)]
+
+        assert switch.value is True
+        assert any(
+            "Creature pace bonus" in label
+            and "15 to 17 creatures" in label
+            and "never outranks a clearly better card" in label
+            for label in labels
+        )
+
+
+def test_tui_config_switch_turns_creature_pace_off_and_back_on(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_creature_pace_switch(tmp_path=tmp_path))
+
+
+async def _assert_creature_pace_switch(*, tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert app.session._creature_pace_enabled is True
+
+        await _save_tui_config(app=app, pilot=pilot, creature_pace_enabled=False)
+
+        assert app.visibility_preferences.creature_pace_enabled is False
+        assert app.session._creature_pace_enabled is False
+        saved, _ = load_tui_preferences(app_dir=tmp_path / "app")
+        assert saved.creature_pace_enabled is False
+
+        await pilot.press("c")
+        await pilot.pause()
+        await pilot.click("#reset-visibility")
+        await pilot.pause()
+        switch = app.screen.query_one("#visibility-creature-pace-enabled", Switch)
+        assert switch.value is True
+        await pilot.click("#save-visibility")
+        await pilot.pause()
+
+        assert app.session._creature_pace_enabled is True
+
+
+def test_tui_starts_with_the_saved_creature_pace_preference(
+    tmp_path: Path,
+) -> None:
+    app = _tui_app(
+        tmp_path=tmp_path,
+        visibility_preferences=TuiVisibilityPreferences(
+            creature_pace_enabled=False,
+        ),
+    )
+
+    assert app.session._creature_pace_enabled is False
+
+
 def test_tui_focused_card_names_its_pair_partner_only_when_pairs_moved_it(
     tmp_path: Path,
 ) -> None:
@@ -4078,6 +4147,7 @@ def _moxgate_tui_app(*, tmp_path: Path) -> DraftomenTuiApp:
         event_publisher: EventPublisher,
         splash_enabled: bool,
         augmentation_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> MoxgateRuntime:
         return create_moxgate_runtime(
             card_database=_moxgate_database(*grp_ids),
@@ -4088,6 +4158,7 @@ def _moxgate_tui_app(*, tmp_path: Path) -> DraftomenTuiApp:
             port=0,
             splash_enabled=splash_enabled,
             augmentation_enabled=augmentation_enabled,
+            creature_pace_enabled=creature_pace_enabled,
         )
 
     return DraftomenTuiApp(

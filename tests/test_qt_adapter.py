@@ -83,6 +83,7 @@ from draftomen.session import (
     CardView,
     ChangeAugmentation,
     ChangeContextualScoring,
+    ChangeCreaturePace,
     ChangeRanking,
     ChangeSplashPreference,
     ChooseAccount,
@@ -2059,6 +2060,37 @@ def test_gui_preferences_adapter_persists_display_choices_independently(
         adapter.shutdown()
 
 
+def test_gui_preferences_adapter_persists_creature_pace_toggle(
+    qcore_application: QCoreApplication,
+    tmp_path: Path,
+) -> None:
+    adapter = GuiPreferencesAdapter(app_dir=tmp_path / "app")
+    pace_changes: list[bool] = []
+    adapter.creaturePaceEnabledChanged.connect(pace_changes.append)
+    reloaded: GuiPreferencesAdapter | None = None
+
+    try:
+        assert adapter.creaturePaceEnabled is True
+        adapter.setCreaturePaceEnabled(True)
+        assert pace_changes == []
+        adapter.setCreaturePaceEnabled(False)
+        adapter.setCreaturePaceEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.persistenceMessage == "Saved",
+            description="the creature pace preference save",
+        )
+        reloaded = GuiPreferencesAdapter(app_dir=tmp_path / "app")
+
+        assert adapter.creaturePaceEnabled is False
+        assert pace_changes == [False]
+        assert reloaded.creaturePaceEnabled is False
+    finally:
+        adapter.shutdown()
+        if reloaded is not None:
+            reloaded.shutdown()
+
+
 def test_gui_preferences_adapter_persists_augmented_intelligence_toggle(
     qcore_application: QCoreApplication,
     tmp_path: Path,
@@ -3436,6 +3468,7 @@ class _RecordingTestDraftFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> object:
         self.create_calls.append(
             {
@@ -3446,6 +3479,7 @@ class _RecordingTestDraftFactory:
                 "contextual_adjustments_enabled": (
                     contextual_adjustments_enabled
                 ),
+                "creature_pace_enabled": creature_pace_enabled,
             }
         )
         self.create_thread_ids.append(threading.get_ident())
@@ -3460,6 +3494,7 @@ class _RecordingTestDraftFactory:
                 publisher=publisher,
                 splash_enabled=splash_enabled,
                 contextual_adjustments_enabled=contextual_adjustments_enabled,
+                creature_pace_enabled=creature_pace_enabled,
             )
         if self.runtime is None:
             raise AssertionError("the test-draft factory has no runtime.")
@@ -4252,6 +4287,7 @@ class _RealTestDraftRuntimeFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> _CountingTestDraftRuntime:
         """Build one runtime that publishes through the worker's publisher."""
 
@@ -4276,6 +4312,7 @@ class _RealTestDraftRuntimeFactory:
             snapshot_publisher=recording_publisher,
             splash_enabled=splash_enabled,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
+            creature_pace_enabled=creature_pace_enabled,
             simulation_app_dir=simulation_app_dir,
             socket_client=self._socket,
             augmented_model_client=self._augmented_model_client,
@@ -5073,12 +5110,14 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
     try:
         adapter.setSplashEnabled(False)
         adapter.setContextualScoringEnabled(False)
+        adapter.setCreaturePaceEnabled(False)
         _process_until(
             application=qcore_application,
             predicate=lambda: arena.commands
             == [
                 ChangeSplashPreference(enabled=False),
                 ChangeContextualScoring(enabled=False),
+                ChangeCreaturePace(enabled=False),
             ],
             description="the Arena preference commands",
         )
@@ -5097,6 +5136,7 @@ def test_live_adapter_carries_preferences_across_test_draft_sources(
             "draft_format": DraftFormat.QUICK,
             "splash_enabled": False,
             "contextual_adjustments_enabled": False,
+            "creature_pace_enabled": False,
         }
         assert adapter.state["recommendations"]["splash_enabled"] is False
         assert adapter.state["contextual_adjustments_enabled"] is False
@@ -6412,12 +6452,14 @@ class _FakeMoxgateFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> MoxgateRuntime:
         self.create_thread_ids.append(threading.get_ident())
         self.create_calls.append(
             {
                 "splash_enabled": splash_enabled,
                 "contextual_adjustments_enabled": contextual_adjustments_enabled,
+                "creature_pace_enabled": creature_pace_enabled,
             }
         )
         if self.blocker is not None:
@@ -6446,6 +6488,7 @@ class _RealMoxgateFactory:
         publisher: SnapshotPublisher,
         splash_enabled: bool,
         contextual_adjustments_enabled: bool,
+        creature_pace_enabled: bool,
     ) -> MoxgateRuntime:
         grp_ids = _moxgate_all_grp_ids(_MOXGATE_PACKS)
         runtime = create_moxgate_runtime(
@@ -6456,6 +6499,7 @@ class _RealMoxgateFactory:
             port=self._port,
             splash_enabled=splash_enabled,
             contextual_adjustments_enabled=contextual_adjustments_enabled,
+            creature_pace_enabled=creature_pace_enabled,
         )
         self.runtimes.append(runtime)
         return runtime
@@ -6596,7 +6640,11 @@ def test_live_adapter_publishes_waiting_with_the_endpoint_and_simulated_state(
         }
         assert arena.snapshot.pool.total_cards != runtime.session.snapshot.pool.total_cards
         assert factory.create_calls == [
-            {"splash_enabled": True, "contextual_adjustments_enabled": True}
+            {
+                "splash_enabled": True,
+                "contextual_adjustments_enabled": True,
+                "creature_pace_enabled": True,
+            }
         ]
         assert runtime.drain_thread_ids
         assert runtime.drain_thread_ids[0] != threading.get_ident()
@@ -7084,3 +7132,68 @@ def test_session_adapter_publishes_deck_labels_for_triads_and_keeps_pairs(
     assert empty_state["pool"]["inferred_pair"] is None
     assert "inferred_pair_label" not in empty_state["pool"]
     assert empty_state["build"] is None
+
+
+def test_live_adapter_replays_creature_pace_preference_on_leave(
+    qcore_application: QCoreApplication,
+) -> None:
+    arenas: list[_FakeSession] = []
+    simulated_session = _FakeTestDraftSession()
+    runtime = _FakeTestDraftRuntime(
+        session=simulated_session,
+        controller=_FakeTestDraftController(),
+    )
+    factory = _RecordingTestDraftFactory(set_codes=("hob",), runtime=runtime)
+
+    def session_factory(publish: SnapshotPublisher) -> LiveSession:
+        arena = _FakeSession(publish=publish)
+        arenas.append(arena)
+        return cast(LiveSession, arena)
+
+    adapter = LiveSessionAdapter(
+        session_factory=session_factory,
+        poll_interval_ms=60_000,
+        test_draft_factory=cast("TestDraftFactory", factory),
+    )
+    adapter.start()
+    try:
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: bool(arenas) and bool(arenas[0].poll_thread_ids),
+            description="the initial Arena poll",
+        )
+        arena = arenas[0]
+        adapter.startTestDraft("manual", "hob", "quick")
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["offer_generation"] == 1,
+            description="the manual Test Draft offer",
+        )
+        assert arena.commands == []
+        assert adapter.state["creature_pace_enabled"] is True
+
+        adapter.setCreaturePaceEnabled(False)
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: simulated_session.commands
+            == [ChangeCreaturePace(enabled=False)],
+            description="the creature pace preference inside the simulated draft",
+        )
+        assert arena.commands == []
+
+        adapter.leaveTestDraft()
+        _process_until(
+            application=qcore_application,
+            predicate=lambda: adapter.state["test_draft"]["phase"] == "idle"
+            and [
+                command
+                for command in arena.commands
+                if isinstance(command, ChangeCreaturePace)
+            ]
+            == [ChangeCreaturePace(enabled=False)],
+            description="the replayed Arena creature pace preference",
+        )
+        assert adapter.state["creature_pace_enabled"] is False
+    finally:
+        adapter.shutdown()
+        adapter.wait_for_shutdown()

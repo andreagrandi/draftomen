@@ -193,6 +193,30 @@ def test_live_gui_uses_set_scoped_card_data_client_without_startup_fetch(
     assert session.card_database is database
 
 
+def test_live_gui_session_factory_passes_saved_creature_pace_preference(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    preferences = GuiPreferencesAdapter(app_dir=app_dir)
+    try:
+        default_enabled = preferences.creaturePaceEnabled
+    finally:
+        preferences.shutdown()
+    assert default_enabled is True
+
+    for enabled in (True, False):
+        session = _live_session_factory(
+            log_path=tmp_path / "Player.log",
+            app_dir=app_dir,
+            bulk_file=None,
+            poll_interval=0.01,
+            contextual_adjustments_enabled=True,
+            creature_pace_enabled=enabled,
+        )(lambda snapshot: None)
+
+        assert session.snapshot.creature_pace_enabled is enabled
+
+
 def test_live_gui_bulk_file_injects_local_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -780,8 +804,10 @@ def test_gui_mocked_draft_hob_offer_loads_validated_augmented_model(
         publisher=lambda snapshot: None,
         splash_enabled=True,
         contextual_adjustments_enabled=True,
+        creature_pace_enabled=False,
     )
     try:
+        assert runtime.session.snapshot.creature_pace_enabled is False
         inspection = runtime.controller.start()
         basic_rows = tuple(
             (row.card.grp_id, row.score)
@@ -8765,6 +8791,93 @@ with TemporaryDirectory() as preferences_dir:
     assert "TypeError" not in completed.stderr
 
 
+def test_qml_settings_creature_pace_switch_toggles_preference_offscreen() -> None:
+    probe = """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, Qt, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_mock import MockSessionAdapter
+
+HELP_TEXT = (
+    "When your pool is short of the 15 to 17 creatures a 40-card deck needs, "
+    "creatures you can cast get a small boost in close picks. It never "
+    "outranks a clearly better card."
+)
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+provider = MockSessionAdapter(session=MockLiveSession(scenario="ready"))
+
+with TemporaryDirectory() as preferences_dir:
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    changes = []
+    preferences.creaturePaceEnabledChanged.connect(changes.append)
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", "monospace")
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "0.0")
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "settings")
+    context.setContextProperty("initialWindowWidth", 900)
+    context.setContextProperty("initialWindowHeight", 760)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+
+    switch = root.findChild(QObject, "settingsCreaturePaceSwitch")
+    assert switch is not None
+    assert switch.property("checked") is True
+    assert preferences.creaturePaceEnabled is True
+    help_texts = [
+        label.property("text")
+        for label in root.findChildren(QObject)
+        if label.property("text") == HELP_TEXT
+    ]
+    assert help_texts == [HELP_TEXT]
+
+    switch.forceActiveFocus()
+    QTest.keyClick(root, Qt.Key_Space)
+    application.processEvents()
+    assert switch.property("checked") is False
+    assert preferences.creaturePaceEnabled is False
+    assert changes == [False]
+    QTest.keyClick(root, Qt.Key_Space)
+    application.processEvents()
+    assert switch.property("checked") is True
+    assert preferences.creaturePaceEnabled is True
+    assert changes == [False, True]
+
+    for _ in range(100):
+        application.processEvents()
+        if preferences.persistenceMessage == "Saved":
+            break
+        QTest.qWait(10)
+    preferences.shutdown()
+    del root
+    del engine
+"""
+    completed = _run_qml_probe(probe)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
 def test_qml_settings_switches_expose_contrast_states_and_keyboard_toggle() -> None:
     probe = """
 from pathlib import Path
@@ -9478,9 +9591,11 @@ def test_moxgate_factory_starts_without_any_bulk_file_and_loads_card_data_once(
             publisher=lambda snapshot: None,
             splash_enabled=False,
             contextual_adjustments_enabled=True,
+            creature_pace_enabled=False,
         )
         try:
             assert runtime.state.phase == "waiting"
+            assert runtime.session.snapshot.creature_pace_enabled is False
         finally:
             runtime.close()
 
@@ -9505,12 +9620,14 @@ def test_moxgate_factory_raises_a_load_failure_and_retries_on_the_next_start(
             publisher=lambda snapshot: None,
             splash_enabled=False,
             contextual_adjustments_enabled=True,
+            creature_pace_enabled=True,
         )
 
     factory.create_runtime(
         publisher=lambda snapshot: None,
         splash_enabled=False,
         contextual_adjustments_enabled=True,
+        creature_pace_enabled=True,
     ).close()
 
     assert len(attempts) == 2

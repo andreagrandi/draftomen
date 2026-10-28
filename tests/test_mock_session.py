@@ -9,6 +9,7 @@ from draftomen.session import (
     ChangeAugmentation,
     ChangeRanking,
     ChangeContextualScoring,
+    ChangeCreaturePace,
     ChooseRecommendation,
     ContextualEvidenceStatus,
     DataLoadPhase,
@@ -217,6 +218,21 @@ def test_mock_contextual_mode_survives_scenario_replacement_commands() -> None:
     enabled = session.dispatch(command=ChangeContextualScoring(enabled=True))
     assert enabled.contextual_adjustments_enabled is True
     assert enabled.contextual_evidence.status is ContextualEvidenceStatus.EXACT
+
+
+def test_mock_creature_pace_flag_survives_scenario_replacement() -> None:
+    session = MockLiveSession()
+    assert session.snapshot.creature_pace_enabled is True
+
+    disabled = session.dispatch(command=ChangeCreaturePace(enabled=False))
+    assert disabled.creature_pace_enabled is False
+
+    progress = session.dispatch(command=RequestRatingsDownload(set_code="OTJ"))
+    assert progress.creature_pace_enabled is False
+    assert session.select_scenario(scenario="ready").creature_pace_enabled is False
+
+    enabled = session.dispatch(command=ChangeCreaturePace(enabled=True))
+    assert enabled.creature_pace_enabled is True
 
 
 def test_mock_provider_retries_and_dismisses_errors_by_identifier() -> None:

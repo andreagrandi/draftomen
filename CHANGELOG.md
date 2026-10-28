@@ -25,6 +25,10 @@
   and 800 HOB trophy drafts, top-1 agreement was unchanged and more
   engine-drafted pools reached 15 creatures, so the term is on by default.
   (#1003)
+- GUI Settings and the TUI settings have a "Creature pace bonus" switch, on by
+  default and saved with the other preferences. Turning it off removes the
+  creature pace reason and score change from the current recommendations. The
+  pool summary still shows the creature pace line. (#1004)
 - The GUI draft view now shows lands, creatures, removal and creature pace in
   the pool summary, and the build page shows the removal count in both
   layouts. (#1001)
