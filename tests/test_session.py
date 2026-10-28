@@ -453,6 +453,178 @@ def test_pool_state_publishes_canonical_commitment_colors(
     assert pool.color_candidates == commitment.candidates
 
 
+def _pair_scored_pack(*, pair: str | None) -> ScoredPack:
+    commitment = ColorCommitment(
+        pick_index=7,
+        pool_size=6,
+        color_weights=(("W", 3.0), ("U", 2.0)),
+        inferred_pair=pair,
+        level=0.5,
+        candidates=(),
+    )
+    return ScoredPack(
+        cards=(),
+        normalization=ScoreNormalization(
+            lower_rating=0.0,
+            upper_rating=1.0,
+            neutral_rating=0.5,
+        ),
+        source_summary="fixture",
+        commitment=commitment,
+        splash_state=SplashState(
+            enabled=True,
+            base_pair=pair,
+            active_color=None,
+            picked_card_count=6,
+            fixing_sources=(),
+            aggressive=False,
+        ),
+    )
+
+
+def _count_card(
+    *,
+    grp_id: int,
+    colors: tuple[str, ...],
+    types: tuple[str, ...],
+    oracle_text: str = "",
+) -> CardInfo:
+    return CardInfo(
+        grp_id=grp_id,
+        name=f"Count Card {grp_id}",
+        colors=colors,
+        mana_value=2.0,
+        rarity="common",
+        types=types,
+        mana_cost="".join(f"{{{color}}}" for color in colors) or None,
+        oracle_text=oracle_text,
+        type_line=" ".join(types),
+    )
+
+
+def test_pool_state_counts_creatures_and_removal_castable_in_likely_pair(
+    tmp_path: Path,
+) -> None:
+    cards = (
+        _count_card(grp_id=1, colors=("W",), types=("Creature",)),
+        _count_card(grp_id=2, colors=("U",), types=("Creature",)),
+        _count_card(grp_id=3, colors=("R",), types=("Creature",)),
+        _count_card(
+            grp_id=4,
+            colors=("W",),
+            types=("Instant",),
+            oracle_text="Destroy target creature.",
+        ),
+        _count_card(
+            grp_id=5,
+            colors=("R",),
+            types=("Instant",),
+            oracle_text="Deals 3 damage to target creature.",
+        ),
+        _count_card(grp_id=6, colors=(), types=("Land",)),
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        card_database=CardDatabase(cards={card.grp_id: card for card in cards}),
+    )
+
+    pool = session._pool_state(
+        pool_grp_ids=(1, 2, 3, 4, 5, 6),
+        scored_pack=_pair_scored_pack(pair="WU"),
+    )
+
+    assert pool.creature_count == 2
+    assert pool.removal_count == 1
+    assert pool.creature_pace is not None
+    assert pool.creature_pace.projected == round(2 * pool.target_cards / 6)
+    assert pool.creature_pace.target_floor == 15
+    assert pool.creature_pace.target_ceiling == 17
+
+    unpaired = session._pool_state(
+        pool_grp_ids=(1, 2, 3, 4, 5, 6),
+        scored_pack=_pair_scored_pack(pair=None),
+    )
+
+    assert unpaired.creature_count == 3
+    assert unpaired.removal_count == 2
+
+
+def test_pool_state_land_count_includes_dual_lands_by_quantity(
+    tmp_path: Path,
+) -> None:
+    cards = (
+        _count_card(grp_id=1, colors=(), types=("Land",)),
+        _count_card(grp_id=2, colors=(), types=("Land",)),
+        _count_card(grp_id=3, colors=("W",), types=("Creature",)),
+    )
+    dual = replace(cards[1], produced_mana=("W", "U"), name="Dual Land")
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        card_database=CardDatabase(
+            cards={1: cards[0], 2: dual, 3: cards[2]}
+        ),
+    )
+
+    pool = session._pool_state(pool_grp_ids=(1, 2, 2, 3))
+
+    assert pool.land_count == 3
+    assert pool.creature_count == 1
+
+
+def test_build_result_removal_count_counts_multi_role_card_once(
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    cards = {
+        1: _count_card(
+            grp_id=1,
+            colors=("W",),
+            types=("Instant",),
+            oracle_text=(
+                "Destroy target creature.\n"
+                "Return target creature to its owner's hand."
+            ),
+        ),
+        2: _count_card(grp_id=2, colors=("W",), types=("Creature",)),
+        3: _count_card(
+            grp_id=3,
+            colors=("U",),
+            types=("Instant",),
+            oracle_text="Draw a card.",
+        ),
+        4: _count_card(
+            grp_id=4,
+            colors=("U",),
+            types=("Instant",),
+            oracle_text=(
+                "Tap target creature an opponent controls. It doesn't untap "
+                "during its controller's next untap step."
+            ),
+        ),
+    }
+    state = _draft_state(
+        account_id="account-1",
+        screen_name="Player",
+        draft_id="draft-1",
+        updated_at="2026-08-23T10:00:00+00:00",
+        pool_grp_ids=tuple(cards),
+    )
+    save_draft_state(state=state, app_dir=app_dir)
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        app_dir=app_dir,
+        card_database=CardDatabase(cards=cards),
+    )
+    session.dispatch(command=ChooseAccount(account_id="account-1"))
+
+    snapshot = session.dispatch(
+        command=RequestBuild(pair_override="WU", allow_splash=False)
+    )
+
+    assert snapshot.build is not None
+    assert snapshot.build.removal_count == 1
+
+
 def _recent_pick_session(
     tmp_path: Path,
     *,

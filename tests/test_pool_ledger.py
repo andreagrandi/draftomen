@@ -11,8 +11,11 @@ from draftomen.pickengine import PickEngine
 from draftomen.pool_ledger import (
     COMPLETED_POOL,
     PRE_PICK_PROJECTION,
+    CreaturePace,
     LedgerStage,
     _likely_projection,
+    is_removal_card,
+    project_creature_pace,
     evaluate_completed_pool_role_ledger,
     project_pool_role_ledger,
 )
@@ -635,3 +638,70 @@ def test_ledger_rejects_unknown_likely_pair() -> None:
             set_profile=None,
             likely_pair="WUBR",
         )
+
+
+def test_project_creature_pace_scales_count_to_the_full_draft() -> None:
+    pace = project_creature_pace(
+        creature_count=6,
+        picks_made=14,
+        total_picks=42,
+        target_floor=15,
+        target_ceiling=17,
+    )
+
+    assert pace == CreaturePace(projected=18, target_floor=15, target_ceiling=17)
+
+
+def test_project_creature_pace_has_no_projection_before_first_pick() -> None:
+    pace = project_creature_pace(
+        creature_count=0,
+        picks_made=0,
+        total_picks=42,
+        target_floor=15,
+        target_ceiling=17,
+    )
+
+    assert pace.projected is None
+
+
+def _removal_probe(*, oracle_text: str) -> CardInfo:
+    return CardInfo(
+        grp_id=1,
+        name="Probe",
+        colors=("W",),
+        mana_value=2.0,
+        rarity="common",
+        types=("Instant",),
+        oracle_text=oracle_text,
+        type_line="Instant",
+    )
+
+
+def test_is_removal_card_counts_removal_and_skips_non_removal() -> None:
+    assert is_removal_card(
+        card=_removal_probe(oracle_text="Destroy target creature.")
+    )
+    assert not is_removal_card(card=_removal_probe(oracle_text="Draw a card."))
+
+
+def test_is_removal_card_ignores_temporary_tapper() -> None:
+    tapper = _removal_probe(
+        oracle_text=(
+            "Tap target creature an opponent controls. It doesn't untap "
+            "during its controller's next untap step."
+        )
+    )
+
+    assert not is_removal_card(card=tapper)
+
+
+def test_is_removal_card_counts_permanent_disabling_removal() -> None:
+    pacifism = _removal_probe(
+        oracle_text=(
+            "Enchant creature an opponent controls. "
+            "Enchanted creature can't attack or block."
+        )
+    )
+
+    assert is_removal_card(card=pacifism)
+

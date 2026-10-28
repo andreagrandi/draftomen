@@ -31,7 +31,7 @@ from draftomen.backtest import (
 )
 from draftomen.carddb import CardDatabase, CardFace, CardInfo
 from draftomen.cardimages import CardImageError, CardImageService
-from draftomen.config import POLL_INTERVAL_SECONDS, SPLASH
+from draftomen.config import DECK_BUILDER, POLL_INTERVAL_SECONDS, SPLASH
 from draftomen.deckbuilder import (
     BuildPool,
     DeckBuilderError,
@@ -80,7 +80,12 @@ from draftomen.pool import (
     list_account_profiles,
     list_draft_states,
 )
-from draftomen.pool_ledger import PoolRoleLedger
+from draftomen.pool_ledger import (
+    CreaturePace,
+    PoolRoleLedger,
+    is_removal_card,
+    project_creature_pace,
+)
 from draftomen.profile_client import (
     ProfileClient,
     ProfileRefreshOutcome,
@@ -99,8 +104,9 @@ from draftomen.set_profile import (
     SetProfileError,
     load_scoring_profile,
 )
+from draftomen.splash import card_is_castable_in_pair
 
-logger = logging.getLogger(__name__)
+logger =logging.getLogger(__name__)
 
 PathInput: TypeAlias = str | PathLike[str]
 SnapshotPublisher: TypeAlias = Callable[["LiveSessionSnapshot"], None]
@@ -506,6 +512,10 @@ class PoolState:
     current_colors: tuple[str, ...] = ()
     role_ledger: PoolRoleLedger | None = None
     color_candidates: tuple[ColorCandidate, ...] = ()
+    land_count: int = 0
+    creature_count: int = 0
+    removal_count: int = 0
+    creature_pace: CreaturePace | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -596,6 +606,7 @@ class BuildResult:
     land_count: int | None = None
     creature_count: int | None = None
     instant_count: int | None = None
+    removal_count: int | None = None
     role_ledger: PoolRoleLedger | None = None
     domain_pool: BuildPool | None = None
     domain_selection: PairSelection | None = None
@@ -1954,6 +1965,11 @@ class LiveSession:
             land_count=mana_base.total_cards - spell_selection.counts.total,
             creature_count=spell_selection.counts.creatures,
             instant_count=spell_selection.counts.instants,
+            removal_count=sum(
+                1
+                for spell in spell_selection.spells
+                if is_removal_card(card=spell.card)
+            ),
             warnings=(
                 spell_selection.warnings
                 + tuple(
@@ -4052,6 +4068,36 @@ class LiveSession:
                 else None
             ),
         )
+    @staticmethod
+    def _pool_card_counts(
+        *,
+        pool_grp_ids: tuple[int, ...],
+        database: CardDatabase,
+        pair: str | None,
+    ) -> tuple[int, int, int]:
+        """Count lands, creatures, and removal among the drafted cards.
+        Creatures and removal count only cards the likely pair can cast.
+        """
+
+        land_count = 0
+        creature_count = 0
+        removal_count = 0
+        for grp_id in pool_grp_ids:
+            card = database.lookup(grp_id=grp_id)
+            if any("Land" in type_line for type_line in card.types):
+                land_count += 1
+                continue
+            if pair is not None and not card_is_castable_in_pair(
+                card=card,
+                base_pair=pair,
+            ):
+                continue
+            if any("Creature" in type_line for type_line in card.types):
+                creature_count += 1
+            if is_removal_card(card=card):
+                removal_count += 1
+        return land_count, creature_count, removal_count
+
     def _pool_state(
         self,
         *,
@@ -4094,6 +4140,11 @@ class LiveSession:
             )
             for grp_id in dict.fromkeys(pool_grp_ids)
         )
+        land_count, creature_count, removal_count = self._pool_card_counts(
+            pool_grp_ids=pool_grp_ids,
+            database=database,
+            pair=inferred_pair,
+        )
         recent_picks = self._prepare_recent_pick_images(
             pool_grp_ids=pool_grp_ids,
         )
@@ -4132,6 +4183,16 @@ class LiveSession:
             average_mana_value=average_mana_value,
             role_ledger=role_ledger,
             color_candidates=color_candidates,
+            land_count=land_count,
+            creature_count=creature_count,
+            removal_count=removal_count,
+            creature_pace=project_creature_pace(
+                creature_count=creature_count,
+                picks_made=len(pool_grp_ids),
+                total_picks=target_cards,
+                target_floor=DECK_BUILDER.creature_floor,
+                target_ceiling=DECK_BUILDER.creature_ceiling,
+            ),
         )
 
     def _select_recovered_state(self, *, state: DraftState) -> None:
