@@ -27,11 +27,13 @@ Rectangle {
     }
 
     // Panel height that shows everything down to the mana curve bars and
-    // their labels; the recent picks below stay reachable by scrolling.
+    // their labels; the composition counts, candidates and recent picks below
+    // stay reachable by scrolling.
     readonly property real manaCurveRequiredHeight: root.hasPool
         ? Theme.panelPadding * 2 + poolHeader.implicitHeight
             + poolColumn.spacing + poolContent.implicitHeight
             - recentPicksGallery.implicitHeight - poolContent.spacing
+            - poolComposition.implicitHeight - poolContent.spacing
             - (poolCandidates.visible
                 ? poolCandidates.implicitHeight + poolContent.spacing : 0)
         : 0
@@ -48,6 +50,25 @@ Rectangle {
         if (average === null || average === undefined)
             return "Average mana value: —"
         return "Average mana value: " + Number(average).toFixed(2)
+    }
+
+    function poolCountText(value) {
+        return value === null || value === undefined ? "—" : String(value)
+    }
+
+    readonly property var creaturePace: root.pool && root.pool.creature_pace
+        ? root.pool.creature_pace : null
+    readonly property bool hasCreaturePace: root.creaturePace !== null
+        && root.creaturePace.projected !== null
+        && root.creaturePace.projected !== undefined
+    readonly property bool creaturePaceBehind: root.hasCreaturePace
+        && Number(root.creaturePace.projected) < Number(root.creaturePace.target_floor)
+
+    function creaturePaceText() {
+        if (!root.hasCreaturePace)
+            return "Creature pace: —"
+        return "On pace for " + root.creaturePace.projected + " creatures · target "
+            + root.creaturePace.target_floor + " to " + root.creaturePace.target_ceiling
     }
 
     function manaLabel(index) {
@@ -321,6 +342,72 @@ Rectangle {
                                 horizontalAlignment: Text.AlignHCenter
                             }
                         }
+                    }
+                }
+
+                ColumnLayout {
+                    id: poolComposition
+                    objectName: "poolComposition"
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Label {
+                        text: "COMPOSITION"
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.textPixelSize(11)
+                        font.bold: true
+                        font.letterSpacing: 1
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 14
+
+                        Row {
+                            spacing: 5
+                            Label { text: "Lands"; color: Theme.textMuted }
+                            Label {
+                                objectName: "poolLandCount"
+                                text: root.poolCountText(root.pool.land_count)
+                                color: Theme.text
+                                font.family: fixedFontFamily
+                                font.bold: true
+                            }
+                        }
+
+                        Row {
+                            spacing: 5
+                            Label { text: "Creatures"; color: Theme.textMuted }
+                            Label {
+                                objectName: "poolCreatureCount"
+                                text: root.poolCountText(root.pool.creature_count)
+                                color: Theme.text
+                                font.family: fixedFontFamily
+                                font.bold: true
+                            }
+                        }
+
+                        Row {
+                            spacing: 5
+                            Label { text: "Removal"; color: Theme.textMuted }
+                            Label {
+                                objectName: "poolRemovalCount"
+                                text: root.poolCountText(root.pool.removal_count)
+                                color: Theme.text
+                                font.family: fixedFontFamily
+                                font.bold: true
+                            }
+                        }
+                    }
+
+                    Label {
+                        objectName: "poolCreaturePace"
+                        Layout.fillWidth: true
+                        text: root.creaturePaceText()
+                        color: root.creaturePaceBehind ? Theme.warning : Theme.primary
+                        font.pixelSize: Theme.textPixelSize(11)
+                        wrapMode: Text.WordWrap
+                        Accessible.name: text
                     }
                 }
 

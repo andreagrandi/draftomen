@@ -56,6 +56,15 @@ def test_qt_translation_publishes_plain_values_without_domain_payloads() -> None
     assert values["set_profile"]["maturity"] == "mature"
     assert values["set_profile"]["refresh_outcome"] == "unchanged"
     assert values["pool"]["average_mana_value"] == pytest.approx(17 / 7)
+    assert values["pool"]["land_count"] == 3
+    assert values["pool"]["creature_count"] == 12
+    assert values["pool"]["removal_count"] == 6
+    assert values["pool"]["creature_pace"] == {
+        "projected": 21,
+        "target_floor": 15,
+        "target_ceiling": 17,
+    }
+    assert values["build"]["removal_count"] == 2
     recent_picks = values["pool"]["recent_picks"]
     assert isinstance(recent_picks, list)
     assert isinstance(recent_picks[0], dict)
