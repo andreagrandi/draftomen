@@ -15,7 +15,7 @@ from draftomen.carddb import (
     CardInfo,
     build_card_database_from_scryfall_cards,
 )
-from draftomen.config import COLOR_PAIRS, PickEngineConfig
+from draftomen.config import COLOR_PAIRS, PICK_ENGINE, PickEngineConfig
 from draftomen.events import (
     PackOfferedEvent,
 )
@@ -33,6 +33,7 @@ from draftomen.pickengine import (
     PickReason,
     PickRationale,
     PickScoringContext,
+    ScoredCard,
     ScoredPack,
     _pair_performance_rate,
     _recommendation_comparison_summary,
@@ -426,7 +427,11 @@ def test_every_engine_row_has_an_immutable_ordered_pick_rationale() -> None:
 
 
 def test_rationale_score_accounting_preserves_open_ramp_and_locked_math() -> None:
-    engine = PickEngine(ratings_data=_ratings_data())
+    # The creature pace term has its own accounting test.
+    engine = PickEngine(
+        ratings_data=_ratings_data(),
+        config=replace(PICK_ENGINE, creature_pace_enabled=False),
+    )
     database = _card_database()
     local_roles_database = _contextual_database()
     database = replace(
@@ -5262,3 +5267,206 @@ def test_color_candidates_with_two_colors_have_a_single_pair_row() -> None:
 
     assert [row.colors for row in scored_pack.commitment.candidates] == ["UB"]
     assert scored_pack.commitment.candidates[0].inferred is True
+
+
+def _creature_pace_database() -> CardDatabase:
+    return CardDatabase(
+        cards={
+            **_card_database().cards,
+            301: _card(grp_id=301, name="Pace Creature", colors=("W",)),
+            302: _card(
+                grp_id=302,
+                name="Pace Spell",
+                colors=("W",),
+                types=("Instant",),
+            ),
+            303: _card(grp_id=303, name="Off Pair Creature", colors=("R",)),
+        }
+    )
+
+
+def _creature_pace_ratings(
+    *,
+    creature_gih: float,
+    spell_gih: float,
+) -> SeventeenLandsData:
+    data = _ratings_data()
+    primary = replace(
+        data.primary,
+        card_ratings={
+            **data.primary.card_ratings,
+            301: _stats(grp_id=301, name="Pace Creature", gih=creature_gih, games_in_hand=900),
+            302: _stats(grp_id=302, name="Pace Spell", gih=spell_gih, games_in_hand=900),
+            303: _stats(
+                grp_id=303,
+                name="Off Pair Creature",
+                color="R",
+                gih=creature_gih,
+                games_in_hand=900,
+            ),
+        },
+    )
+    return replace(data, primary=primary)
+
+
+def _score_creature_pace_pack(
+    *,
+    creature_gih: float,
+    spell_gih: float,
+    enabled: bool,
+    pack_number: int = 1,
+    pool_grp_ids: tuple[int, ...] = (1, 2),
+    offered_grp_ids: tuple[int, ...] = (301, 302, 303),
+) -> ScoredPack:
+    config = replace(PICK_ENGINE, creature_pace_enabled=enabled)
+    return PickEngine(
+        ratings_data=_creature_pace_ratings(
+            creature_gih=creature_gih,
+            spell_gih=spell_gih,
+        ),
+        config=config,
+    ).score_pack(
+        offered_grp_ids=offered_grp_ids,
+        card_database=_creature_pace_database(),
+        pool_grp_ids=pool_grp_ids,
+        pack_number=pack_number,
+        pick_number=11,
+        global_pick_index=(26 if pack_number == 1 else 12),
+        estimated_remaining_picks=(16 if pack_number == 1 else 30),
+    )
+
+
+def _by_grp_id(scored_pack: ScoredPack) -> dict[int, ScoredCard]:
+    return {card.card.grp_id: card for card in scored_pack.cards}
+
+
+def test_creature_pace_bonus_lets_creature_overtake_slightly_better_spell() -> None:
+    off = _by_grp_id(
+        _score_creature_pace_pack(creature_gih=0.60, spell_gih=0.601, enabled=False)
+    )
+    on_pack = _score_creature_pace_pack(
+        creature_gih=0.60,
+        spell_gih=0.601,
+        enabled=True,
+    )
+    on = _by_grp_id(on_pack)
+
+    assert off[302].raw_score > off[301].raw_score
+    assert off[302].raw_score - off[301].raw_score < on[301].creature_pace_bonus
+    assert on[301].raw_score > on[302].raw_score
+    assert on_pack.cards[0].card.grp_id == 301
+    assert on[301].creature_pace_bonus > 0.0
+    assert on[301].raw_score == pytest.approx(
+        off[301].raw_score + on[301].creature_pace_bonus
+    )
+
+
+def test_creature_pace_bonus_never_exceeds_cap_or_reorders_clear_gaps() -> None:
+    off_pack = _score_creature_pace_pack(
+        creature_gih=0.55,
+        spell_gih=0.65,
+        enabled=False,
+    )
+    on_pack = _score_creature_pace_pack(
+        creature_gih=0.55,
+        spell_gih=0.65,
+        enabled=True,
+    )
+    off = _by_grp_id(off_pack)
+    on = _by_grp_id(on_pack)
+
+    assert off[302].raw_score - off[301].raw_score > PICK_ENGINE.creature_pace_max_bonus
+    assert [card.card.grp_id for card in on_pack.cards] == [
+        card.card.grp_id for card in off_pack.cards
+    ]
+    assert 0.0 < on[301].creature_pace_bonus <= PICK_ENGINE.creature_pace_max_bonus
+    assert all(
+        card.creature_pace_bonus <= PICK_ENGINE.creature_pace_max_bonus
+        for card in on_pack.cards
+    )
+
+
+def test_creature_pace_bonus_is_skipped_when_disabled() -> None:
+    scored_pack = PickEngine(
+        ratings_data=_creature_pace_ratings(creature_gih=0.60, spell_gih=0.61),
+        config=replace(PICK_ENGINE, creature_pace_enabled=False),
+    ).score_pack(
+        offered_grp_ids=(301, 302),
+        card_database=_creature_pace_database(),
+        pool_grp_ids=(1, 2),
+        pack_number=1,
+        pick_number=11,
+        global_pick_index=26,
+        estimated_remaining_picks=16,
+    )
+
+    assert PICK_ENGINE.creature_pace_enabled is True
+    assert all(card.creature_pace_bonus == 0.0 for card in scored_pack.cards)
+
+
+def test_creature_pace_bonus_skips_pack_one() -> None:
+    scored_pack = _score_creature_pace_pack(
+        creature_gih=0.60,
+        spell_gih=0.61,
+        enabled=True,
+        pack_number=0,
+    )
+
+    assert all(card.creature_pace_bonus == 0.0 for card in scored_pack.cards)
+
+
+def test_creature_pace_bonus_skips_pool_on_pace() -> None:
+    database = _creature_pace_database()
+    pool = (1, 2) + (301,) * 14
+    scored_pack = _score_creature_pace_pack(
+        creature_gih=0.60,
+        spell_gih=0.61,
+        enabled=True,
+        pool_grp_ids=pool,
+    )
+
+    assert database.lookup(grp_id=301).types == ("Creature",)
+    assert all(card.creature_pace_bonus == 0.0 for card in scored_pack.cards)
+
+
+def test_creature_pace_bonus_skips_off_pair_creatures_and_non_creatures() -> None:
+    scored_pack = _score_creature_pace_pack(
+        creature_gih=0.60,
+        spell_gih=0.61,
+        enabled=True,
+    )
+    by_id = _by_grp_id(scored_pack)
+
+    assert scored_pack.commitment.inferred_pair == "WU"
+    assert by_id[301].creature_pace_bonus > 0.0
+    assert by_id[302].creature_pace_bonus == 0.0
+    assert by_id[303].creature_pace_bonus == 0.0
+
+
+def test_creature_pace_reason_reports_counts_and_renders() -> None:
+    scored_pack = _score_creature_pace_pack(
+        creature_gih=0.60,
+        spell_gih=0.61,
+        enabled=True,
+    )
+    creature = _by_grp_id(scored_pack)[301]
+    reasons = [
+        reason for reason in creature.rationale.reasons if reason.kind == "creature_pace"
+    ]
+
+    assert len(reasons) == 1
+    assert reasons[0].contribution == pytest.approx(creature.creature_pace_bonus)
+    assert reasons[0].phrase == "creature needed, 2 so far, on pace for 3 of 15"
+    assert creature.rationale.total_contribution == pytest.approx(
+        creature.raw_score - creature.base_score
+    )
+    detailed = render_pick_rationale_detailed(scored_card=creature)
+    assert (
+        f"Creature needed: 2 so far, on pace for 3 of 15 "
+        f"(+{creature.creature_pace_bonus:.2f} DO points)."
+    ) in detailed
+    assert "Creature pace contributes" in render_pick_rationale_concise(
+        scored_card=creature
+    )
+    other = _by_grp_id(scored_pack)[302]
+    assert all(reason.kind != "creature_pace" for reason in other.rationale.reasons)

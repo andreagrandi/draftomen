@@ -134,6 +134,13 @@ class PickEngineConfig:
     early_pair_tiebreaker_score_threshold: float = 3.0
     early_pair_tiebreaker_pair_weight_threshold: float = 0.25
     early_pair_tiebreaker_max_offered_cards: int = 16
+    # After pack 1, creatures get a bonus while the pool projects below the
+    # creature floor. The cap matches
+    # DeckBuilderConfig.near_tie_creature_preference_points, so the term only
+    # changes close calls. Being this many creatures short gives the full bonus.
+    creature_pace_enabled: bool = True
+    creature_pace_max_bonus: float = 2.0
+    creature_pace_shortfall_scale: float = 4.0
 
 
 DECK_BUILDER = DeckBuilderConfig()

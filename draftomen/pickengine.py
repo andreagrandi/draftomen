@@ -20,6 +20,7 @@ from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import (
     COLOR_PAIRS,
     COLOR_TRIADS,
+    DECK_BUILDER,
     PICK_ENGINE,
     SPLASH,
     PickEngineConfig,
@@ -32,6 +33,7 @@ from draftomen.pool_ledger import (
     PoolRoleLedger,
     PRE_PICK_PROJECTION,
     TargetCoverage,
+    project_creature_pace,
     project_pool_role_ledger,
 )
 from draftomen.profile_statistics import RATE_PRIOR_STRENGTH, shrink_mean
@@ -110,10 +112,12 @@ _PICK_REASON_KINDS = (
     "redundancy",
     "unsupported_payoff",
     "fixing",
+    "creature_pace",
     "splash",
     "tiebreaker",
 )
 _CONCISE_REASON_LABELS: Mapping[str, str] = {
+    "creature_pace": "Creature pace",
     "color": "Color fit",
     "role": "Role fit",
     "urgency": "Timing",
@@ -584,7 +588,11 @@ def render_pick_rationale_detailed(
     for reason in rationale.reasons:
         if reason.kind == "fixing":
             continue
-        if reason.kind == "color" or reason.kind in _TERM_BOUNDS:
+        if (
+            reason.kind == "color"
+            or reason.kind == "creature_pace"
+            or reason.kind in _TERM_BOUNDS
+        ):
             if _precise_contribution(reason.contribution) in {
                 "+0.00 DO points",
                 "-0.00 DO points",
@@ -658,6 +666,8 @@ def _detailed_reason(*, reason: PickReason) -> str | None:
         stem = "; ".join(descriptions)
     elif reason.kind == "synergy":
         stem = "Works with support already in your deck"
+    elif reason.kind == "creature_pace":
+        stem = f"Creature needed: {reason.preserved_evidence[0]}"
     else:
         stem = {
             "urgency": (
@@ -823,6 +833,9 @@ class ScoredCard:
     rationale: PickRationale = PickRationale()
     # Set only when the Card Pairs correction moved this card up the ranking.
     card_pair_partner: str | None = None
+    creature_pace_bonus: float = 0.0
+    # Counts behind the bonus, such as "9 so far, on pace for 13 of 15".
+    creature_pace_evidence: str | None = None
 
     @property
     def no_data(self) -> bool:
@@ -848,6 +861,17 @@ class ScoredCard:
             basic_score=self.basic_score,
             augmentation_delta=self.augmentation_delta,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _CreaturePaceBonus:
+    """Creature pace bonus shared by every offered creature in one pack.
+    Evidence holds the pool count and projection behind the bonus.
+    """
+
+    pair: str
+    bonus: float
+    evidence: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1034,6 +1058,12 @@ class PickEngine:
             pool_grp_ids=pool_grp_ids,
             offered_grp_ids=offered_grp_ids,
         )
+        creature_pace = self._creature_pace_bonus(
+            card_database=card_database,
+            pool_grp_ids=pool_grp_ids,
+            commitment=commitment,
+            stage=resolved_stage,
+        )
         scored_cards = tuple(
             self._score_card(
                 grp_id=grp_id,
@@ -1047,6 +1077,7 @@ class PickEngine:
                 augmentation_delta=(
                     0.0 if augmentation is None else augmentation.deltas[index]
                 ),
+                creature_pace=creature_pace,
                 profile=active_profile,
                 normalization=normalization,
                 profile_lookup=profile_lookup,
@@ -1081,6 +1112,64 @@ class PickEngine:
             role_ledger=role_ledger,
             scoring_context=active_context,
             comparison_summary=comparison_summary,
+        )
+
+    def _creature_pace_bonus(
+        self,
+        *,
+        card_database: CardDatabase,
+        pool_grp_ids: tuple[int, ...],
+        commitment: ColorCommitment,
+        stage: LedgerStage | None,
+    ) -> _CreaturePaceBonus | None:
+        """Return the pack-wide creature bonus when the pool is behind pace.
+        Applies only after pack 1 and only once a pair is inferred.
+        """
+
+        config = self.config
+        pair = commitment.inferred_pair
+        if (
+            not config.creature_pace_enabled
+            or stage is None
+            or stage.pack_number < 1
+            or pair is None
+        ):
+            return None
+
+        creature_count = 0
+        for grp_id in pool_grp_ids:
+            pool_card = card_database.lookup(grp_id=grp_id)
+            if (
+                not any("Land" in type_line for type_line in pool_card.types)
+                and any("Creature" in type_line for type_line in pool_card.types)
+                and card_is_castable_in_pair(card=pool_card, base_pair=pair)
+            ):
+                creature_count += 1
+        picks_made = stage.global_pick_index - 1
+        total_picks = stage.global_pick_index + stage.estimated_remaining_picks
+        pace = project_creature_pace(
+            creature_count=creature_count,
+            picks_made=picks_made,
+            total_picks=total_picks,
+            target_floor=DECK_BUILDER.creature_floor,
+            target_ceiling=DECK_BUILDER.creature_ceiling,
+        )
+        if pace.projected is None or pace.projected >= pace.target_floor:
+            return None
+
+        shortfall_factor = min(
+            1.0,
+            (pace.target_floor - pace.projected)
+            / config.creature_pace_shortfall_scale,
+        )
+        progress = min(1.0, picks_made / total_picks)
+        return _CreaturePaceBonus(
+            pair=pair,
+            bonus=config.creature_pace_max_bonus * shortfall_factor * progress,
+            evidence=(
+                f"{creature_count} so far, on pace for {pace.projected} "
+                f"of {pace.target_floor}"
+            ),
         )
 
     def _best_on_color_score(
@@ -1240,6 +1329,7 @@ class PickEngine:
         best_on_color_score: float | None,
         scoring_context: PickScoringContext | None,
         augmentation_delta: float,
+        creature_pace: _CreaturePaceBonus | None,
         contextual_adjustments_enabled: bool,
         profile: SetProfile | None,
         normalization: ScoreNormalization,
@@ -1301,8 +1391,23 @@ class PickEngine:
             contextual_breakdown = ContextualScoreBreakdown()
             contextual_evidence = ()
         contextual_adjustment = contextual_breakdown.aggregate
+        creature_pace_bonus = 0.0
+        creature_pace_evidence = None
+        if (
+            creature_pace is not None
+            and not card.unknown
+            and not freely_available_basic
+            and any("Creature" in type_line for type_line in card.types)
+            and card_is_castable_in_pair(card=card, base_pair=creature_pace.pair)
+        ):
+            creature_pace_bonus = creature_pace.bonus
+            creature_pace_evidence = creature_pace.evidence
         raw_score = _clamp(
-            value=(base_score * color_factor) + contextual_adjustment,
+            value=(
+                (base_score * color_factor)
+                + contextual_adjustment
+                + creature_pace_bonus
+            ),
             lower=0.0,
             upper=100.0,
         )
@@ -1367,6 +1472,8 @@ class PickEngine:
             contextual_profile_confidence=_contextual_profile_confidence(
                 scoring_context=scoring_context,
             ),
+            creature_pace_bonus=creature_pace_bonus,
+            creature_pace_evidence=creature_pace_evidence,
         )
 
 
@@ -2586,6 +2693,16 @@ def _pick_rationale_for_card(
                 contribution=contribution,
                 phrase=_CONTEXTUAL_REASON_PHRASES[kind],
                 evidence=evidence,
+            )
+        )
+
+    if card.creature_pace_bonus > 0.01 and card.creature_pace_evidence is not None:
+        reasons.append(
+            PickReason(
+                kind="creature_pace",
+                contribution=card.creature_pace_bonus,
+                phrase=f"creature needed, {card.creature_pace_evidence}",
+                evidence=card.creature_pace_evidence,
             )
         )
 

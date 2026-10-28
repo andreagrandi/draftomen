@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.config import DECK_BUILDER
+from draftomen.config import DECK_BUILDER, PICK_ENGINE
 from draftomen.draft_format import DraftFormat, rules_for_format
 from draftomen.pickengine import PickEngine
 from draftomen.pool_ledger import (
@@ -416,7 +417,11 @@ def test_pick_contextual_terms_are_stage_aware_and_saturate_at_target() -> None:
             oracle_text="When this creature enters the battlefield, draw a card.",
         ),
     )
-    engine = PickEngine(set_profile=profile)
+    # Creature pace would add its own reason to the rationale checked below.
+    engine = PickEngine(
+        set_profile=profile,
+        config=replace(PICK_ENGINE, creature_pace_enabled=False),
+    )
 
     early = engine.score_pack(
         offered_grp_ids=(2,),
