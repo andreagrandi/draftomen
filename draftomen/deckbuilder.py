@@ -193,6 +193,7 @@ class SpellSelection:
     splash_fixing_sources: int = 0
     splash_planned_basic_sources: int = 0
     structure_targets: StructuralTargets | None = None
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -673,6 +674,12 @@ def select_deck_spells(
                 else 0
             ),
             structure_targets=structure_targets,
+            warnings=_short_creature_warnings(
+                candidates=candidates,
+                pair=resolved_pair,
+                splash_limit=splash_limit,
+                config=effective_config,
+            ),
         )
 
     raise DeckBuilderError("Could not select deck spells with the configured constraints.")
@@ -1540,15 +1547,18 @@ def _config_with_structure_targets(
         upper=config.deck_size,
     )
     creature_center = _round_half_up(structure_targets.average_creature_count)
+    # Trophy averages narrow the configured creature band but never leave it.
+    band_floor = min(config.creature_floor, config.target_spell_count)
+    band_ceiling = min(config.creature_ceiling, config.target_spell_count)
     creature_floor = _clamp_int(
         value=math.floor(structure_targets.average_creature_count),
-        lower=0,
-        upper=config.target_spell_count,
+        lower=band_floor,
+        upper=band_ceiling,
     )
     creature_ceiling = _clamp_int(
         value=max(creature_center, math.ceil(structure_targets.average_creature_count)),
         lower=creature_floor,
-        upper=config.target_spell_count,
+        upper=band_ceiling,
     )
     target_spell_count = config.target_spell_count
     if config.target_spell_count == DECK_BUILDER.target_spell_count:
@@ -1656,9 +1666,14 @@ def _constraints_for_plan(
     resolved_splash_limit = min(splash_limit, requested_target)
     non_splash_count = pool_counts.total - pool_counts.splashes
     target = min(requested_target, non_splash_count + resolved_splash_limit)
+    selectable_creatures = _selectable_creature_count(
+        candidates=candidates,
+        pair=pair,
+        splash_limit=resolved_splash_limit,
+    )
 
     creature_floor = (
-        min(config.creature_floor, pool_counts.creatures, target)
+        min(config.creature_floor, selectable_creatures, target)
         if plan.enforce_creature_floor
         else 0
     )
@@ -1692,6 +1707,44 @@ def _constraints_for_plan(
         maximum_expensive_spells=maximum_expensive_spells,
         maximum_splash_spells=min(resolved_splash_limit, target),
     )
+
+
+
+def _selectable_creature_count(
+    *,
+    candidates: tuple[ScoredCard, ...],
+    pair: str,
+    splash_limit: int,
+) -> int:
+    """Count creatures the builder can play under the splash limit.
+    Splash creatures beyond the limit cannot help meet the creature floor.
+    """
+
+    creatures = tuple(card for card in candidates if _is_creature_card(card=card.card))
+    splash_creatures = sum(
+        1 for card in creatures if _is_splash_card(card=card.card, pair=pair)
+    )
+    return len(creatures) - splash_creatures + min(splash_creatures, splash_limit)
+
+
+
+def _short_creature_warnings(
+    *,
+    candidates: tuple[ScoredCard, ...],
+    pair: str,
+    splash_limit: int,
+    config: DeckBuilderConfig,
+) -> tuple[str, ...]:
+    selectable_creatures = _selectable_creature_count(
+        candidates=candidates,
+        pair=pair,
+        splash_limit=min(splash_limit, config.target_spell_count),
+    )
+    if selectable_creatures >= config.creature_floor:
+        return ()
+
+    noun = "creature" if selectable_creatures == 1 else "creatures"
+    return (f"Only {selectable_creatures} {noun} available in {pair}",)
 
 
 
@@ -3610,6 +3663,7 @@ def _format_structure_checks(
         f"Selected spells: {counts.total}/{selection.requested_spell_count}",
         f"Creature count: {counts.creatures} "
         f"(target {constraints.creature_floor}-{constraints.creature_ceiling})",
+        *(f"Warning: {warning}" for warning in selection.warnings),
         f"Two-drops MV {config.two_drop_mana_value:g}: {counts.two_drops} "
         f"(minimum {constraints.minimum_two_drops})",
         f"Expensive spells MV >= {config.expensive_spell_mana_value:g}: "
@@ -3635,6 +3689,7 @@ def _format_spell_selection(
         f"Selected spells: {counts.total}/{selection.requested_spell_count}",
         f"Creature count: {counts.creatures} "
         f"(target {constraints.creature_floor}-{constraints.creature_ceiling})",
+        *(f"Warning: {warning}" for warning in selection.warnings),
         f"Two-drops MV {config.two_drop_mana_value:g}: {counts.two_drops} "
         f"(minimum {constraints.minimum_two_drops})",
         f"Expensive spells MV >= {config.expensive_spell_mana_value:g}: "

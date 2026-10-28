@@ -48,7 +48,7 @@ class DeckBuilderConfig:
     top_heavy_land_count: int = 18
     aggressive_average_mana_value_max: float = 2.7
     top_heavy_average_mana_value_min: float = 3.4
-    creature_floor: int = 14
+    creature_floor: int = 15
     creature_ceiling: int = 17
     minimum_two_drops: int = 5
     maximum_expensive_spells: int = 3

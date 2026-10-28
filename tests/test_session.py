@@ -7160,6 +7160,9 @@ def test_live_session_build_request_publishes_structured_ordered_result(
     assert snapshot.build.instant_count == (
         snapshot.build.domain_spell_selection.counts.instants
     )
+    spell_warnings = snapshot.build.domain_spell_selection.warnings
+    assert spell_warnings[0].startswith("Only ")
+    assert snapshot.build.warnings[: len(spell_warnings)] == spell_warnings
     assert any(
         option.pair == "WU" and option.selected and option.automatic
         for option in snapshot.build.pair_options

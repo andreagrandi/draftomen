@@ -2485,7 +2485,7 @@ def test_config_exposes_documented_tunables() -> None:
     assert config.DECK_BUILDER.default_land_count == 17
     assert config.DECK_BUILDER.aggressive_land_count == 16
     assert config.DECK_BUILDER.top_heavy_land_count == 18
-    assert config.DECK_BUILDER.creature_floor == 14
+    assert config.DECK_BUILDER.creature_floor == 15
     assert config.DECK_BUILDER.creature_ceiling == 17
     assert config.DECK_BUILDER.minimum_two_drops == 5
     assert config.DECK_BUILDER.maximum_expensive_spells == 3

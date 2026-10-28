@@ -917,7 +917,7 @@ def test_spell_optimizer_uses_exact_spell_constraints() -> None:
 
     assert selection.constraints == SpellConstraints(
         spell_count=23,
-        creature_floor=14,
+        creature_floor=15,
         creature_ceiling=17,
         minimum_two_drops=5,
         maximum_expensive_spells=3,
@@ -1141,10 +1141,121 @@ def test_build_sheet_uses_structure_targets_and_prints_similarity() -> None:
     assert build_sheet.spell_selection.counts.total == 22
     assert build_sheet.spell_selection.counts.creatures == 10
     assert build_sheet.spell_selection.constraints.creature_floor == 10
-    assert build_sheet.spell_selection.constraints.creature_ceiling == 10
+    assert build_sheet.spell_selection.constraints.creature_ceiling == 15
+    assert build_sheet.spell_selection.warnings == ("Only 10 creatures available in WU",)
+    assert "Creature count: 10 (target 10-15)" in output
+    assert "Warning: Only 10 creatures available in WU" in output
     assert build_sheet.mana_base.land_count == 18
     assert "Similarity: 17Lands trophy WU decks in TST (n=3)" in output
     assert "avg 10.0 creatures / 18.0 lands; your build: 10 / 18" in output
+
+
+
+def test_build_sheet_plays_creature_band_over_stronger_noncreature_spells() -> None:
+    database = _creature_band_card_database(creature_count=20)
+
+    build_sheet = select_build_sheet(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        pair="WU",
+        ratings_data=_creature_band_ratings_data(database=database),
+    )
+
+    spell_selection = build_sheet.spell_selection
+    assert 15 <= spell_selection.counts.creatures <= 17
+    assert spell_selection.constraints.creature_floor == 15
+    assert spell_selection.constraints.creature_ceiling == 17
+    assert spell_selection.warnings == ()
+
+
+
+def test_build_sheet_plays_every_creature_from_a_short_pool_with_warning() -> None:
+    database = _creature_band_card_database(creature_count=13)
+    pool = BuildPool(
+        set_code="TST",
+        pool_grp_ids=tuple(sorted(database.cards)),
+        source_label="short creature pool",
+    )
+
+    selection, build_sheet = build_deck_from_pool(
+        pool=pool,
+        card_database=database,
+        ratings_data=_creature_band_ratings_data(database=database),
+        forced_pair="WU",
+    )
+    output = format_build_result(
+        pool=pool,
+        selection=selection,
+        spell_selection=build_sheet.spell_selection,
+        mana_base=build_sheet.mana_base,
+    )
+
+    spell_selection = build_sheet.spell_selection
+    assert spell_selection.counts.creatures == 13
+    assert spell_selection.constraints.creature_floor == 13
+    assert spell_selection.warnings == ("Only 13 creatures available in WU",)
+    assert "Creature count: 13 (target 13-17)" in output
+    assert "Warning: Only 13 creatures available in WU" in output
+
+
+
+def test_build_sheet_clamps_low_structure_target_into_creature_band() -> None:
+    database = _creature_band_card_database(creature_count=20)
+    ratings_data = replace(
+        _creature_band_ratings_data(database=database),
+        structure_targets={
+            "WU": _structure_targets(
+                pair="WU",
+                average_creature_count=12.0,
+                average_land_count=17.0,
+                average_two_drop_count=5.0,
+                average_expensive_spell_count=0.0,
+                sample_size=3,
+            )
+        },
+    )
+
+    build_sheet = select_build_sheet(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        pair="WU",
+        ratings_data=ratings_data,
+    )
+
+    spell_selection = build_sheet.spell_selection
+    assert spell_selection.structure_targets is not None
+    assert spell_selection.counts.creatures >= 15
+    assert spell_selection.constraints.creature_floor == 15
+
+
+
+def test_creature_floor_ignores_splash_creatures_beyond_the_splash_limit() -> None:
+    cards = dict(_splash_card_database(fixing_count=2).cards)
+    cards[11] = _card(grp_id=11, name="White Instant", colors=("W",), types=("Instant",))
+    cards[12] = _card(grp_id=12, name="Blue Instant", colors=("U",), types=("Instant",))
+    config = replace(
+        DECK_BUILDER,
+        target_spell_count=7,
+        creature_floor=6,
+        creature_ceiling=7,
+        minimum_two_drops=0,
+        maximum_expensive_spells=7,
+        bench_card_count=0,
+    )
+
+    selection = select_deck_spells(
+        pool_grp_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12),
+        card_database=CardDatabase(cards=cards),
+        pair="WU",
+        ratings_data=_splash_ratings_data(),
+        allow_splash=True,
+        config=config,
+    )
+
+    assert selection.constraints.maximum_splash_spells == 1
+    assert selection.constraints.creature_floor == 5
+    assert selection.counts.creatures == 5
+    assert selection.warnings == ("Only 5 creatures available in WU",)
 
 
 
@@ -1707,6 +1818,49 @@ def _targeted_card_database() -> CardDatabase:
         )
 
     return CardDatabase(cards=cards)
+
+
+
+def _creature_band_card_database(*, creature_count: int) -> CardDatabase:
+    cards: dict[int, CardInfo] = {}
+    for offset in range(creature_count):
+        grp_id = 801 + offset
+        cards[grp_id] = _card(
+            grp_id=grp_id,
+            name=f"Band Creature {grp_id}",
+            colors=("W",) if offset % 2 == 0 else ("U",),
+            mana_value=2.0 if offset < 6 else 3.0,
+            types=("Creature — Fixture",),
+            mana_cost="{1}{W}" if offset % 2 == 0 else "{1}{U}",
+        )
+
+    for offset in range(25):
+        grp_id = 901 + offset
+        cards[grp_id] = _card(
+            grp_id=grp_id,
+            name=f"Band Instant {grp_id}",
+            colors=("W",) if offset % 2 == 0 else ("U",),
+            mana_value=3.0,
+            types=("Instant",),
+            mana_cost="{2}{W}" if offset % 2 == 0 else "{2}{U}",
+        )
+
+    return CardDatabase(cards=cards)
+
+
+
+def _creature_band_ratings_data(*, database: CardDatabase) -> SeventeenLandsData:
+    return _ratings_data_from_entries(
+        entries=tuple(
+            (
+                card.grp_id,
+                card.name,
+                card.colors[0],
+                0.66 if "Instant" in card.types else 0.52,
+            )
+            for card in database.cards.values()
+        )
+    )
 
 
 
@@ -2349,7 +2503,8 @@ def test_triad_mana_base_spreads_basics_by_pips_without_splash() -> None:
         pool=_triad_pool(database),
         card_database=database,
         ratings_data=_triad_ratings_data(share=0.17),
-        config=replace(DECK_BUILDER, main_color_source_floor=0),
+        # The fixture has 15 creatures; a lower floor keeps green as the lightest color.
+        config=replace(DECK_BUILDER, main_color_source_floor=0, creature_floor=14),
     )
 
     mana_base = build_sheet.mana_base
