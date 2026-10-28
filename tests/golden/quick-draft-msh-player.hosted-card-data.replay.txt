@@ -709,13 +709,13 @@ Draft: 00000000-0000-4000-8000-000000000004
 Color pair: WB (automatic; 17Lands WR neutral 50.0%)
 
 Deck summary:
-Deck size: 40 cards (22 spells + 18 lands)
+Deck size: 40 cards (23 spells + 17 lands)
 Average mana value: 3.09
-Mana curve: 0: 0 | 1: 1 | 2: 5 | 3: 9 | 4: 6 | 5: 0 | 6+: 1
-Creatures: 15; Non-creatures: 7; Lands: 18
-Land count: 18 (deck-size fill after spell-count relaxation)
-Mana pips: W 1, B 21
-Sources: W 7, B 11 (floor 7)
+Mana curve: 0: 0 | 1: 1 | 2: 5 | 3: 10 | 4: 6 | 5: 0 | 6+: 1
+Creatures: 16; Non-creatures: 7; Lands: 17
+Land count: 17 (default curve: avg MV 3.09)
+Mana pips: W 2, B 21
+Sources: W 7, B 10 (floor 7)
 
 Selected spells:
 Creatures:
@@ -730,6 +730,7 @@ Creatures:
 - MV 3 | score 50 | Ninja of the Hand (B)
 - MV 3 | score 50 | Ninja of the Hand (B)
 - MV 3 | score 50 | Ninja of the Hand (B)
+- MV 3 | score 50 | War Machine, Legacy of Iron (WR)
 - MV 4 | score 50 | Crossbones, Malicious Mercenary (B)
 - MV 4 | score 50 | Moonstone, Harsh Mistress (B)
 - MV 4 | score 50 | Unliving Legionnaire (B)
@@ -747,19 +748,19 @@ Nonbasic lands:
 - none
 Basics:
 - 7 Plains
-- 11 Swamp
+- 10 Swamp
 
 Structure checks:
 Eligible spells for WB: 23
-Selected spells: 22/23
-Creature count: 15 (target 14-17)
+Selected spells: 23/23
+Creature count: 16 (target 14-17)
 Two-drops MV 2: 5 (minimum 5)
 Expensive spells MV >= 6: 1 (soft cap 3)
 Splash: enabled; no eligible A- or better single-pip third-color card in the pool
 Relaxation order: expensive-spell cap -> minimum two-drop quota -> creature ceiling -> creature floor -> eligible-card shortage
-Applied relaxations: eligible-card shortage
+Applied relaxations: none
 Bench:
-- MV 3 | score 50 | War Machine, Legacy of Iron (WR) (cut: splash cap)
+- none
 
 Color-pair reasoning:
 Diagnostic: compares playable-card quality with 17Lands color-pair context; it is not another decklist.

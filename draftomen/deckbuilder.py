@@ -1585,7 +1585,22 @@ def _clamp_int(*, value: int, lower: int, upper: int) -> int:
 
 
 def _card_splash_colors(*, card: CardInfo, pair: str) -> tuple[str, ...]:
-    return tuple(color for color in card.colors if color not in pair)
+    if card_is_castable_in_pair(card=card, base_pair=pair):
+        return ()
+
+    outside_colors = tuple(color for color in card.colors if color not in pair)
+    if not card.mana_cost:
+        return outside_colors
+
+    # Hybrid symbols that a pair color can pay do not need splash mana.
+    needed_colors = {
+        color
+        for symbol in MANA_SYMBOL_PATTERN.findall(card.mana_cost)
+        if not any(pair_color in symbol for pair_color in pair)
+        for color in outside_colors
+        if color in symbol
+    }
+    return tuple(color for color in outside_colors if color in needed_colors) or outside_colors
 
 
 
