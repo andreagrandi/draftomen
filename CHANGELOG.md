@@ -18,6 +18,9 @@
   creature pace projection, and the build result carries a removal count, so
   frontends can show them. Creature and removal counts include only cards the
   likely pair can cast, and temporary taps do not count as removal. (#1000)
+- The GUI draft view now shows lands, creatures, removal and creature pace in
+  the pool summary, and the build page shows the removal count in both
+  layouts. (#1001)
 
 ## [0.6.5] - 2026-10-27
 

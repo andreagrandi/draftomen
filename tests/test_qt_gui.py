@@ -5733,6 +5733,49 @@ unavailable_pool_state["pool"] = unavailable_pool
 provider._replace_state(state=unavailable_pool_state)
 application.processEvents()
 assert pool_average.property("text") == "Average mana value: —"
+pool_land_count = wide_pool.findChild(QObject, "poolLandCount")
+pool_creature_count = wide_pool.findChild(QObject, "poolCreatureCount")
+pool_removal_count = wide_pool.findChild(QObject, "poolRemovalCount")
+pool_pace = wide_pool.findChild(QObject, "poolCreaturePace")
+assert pool_land_count is not None and pool_creature_count is not None
+assert pool_removal_count is not None and pool_pace is not None
+assert pool_land_count.property("text") == "3"
+assert pool_creature_count.property("text") == "12"
+assert pool_removal_count.property("text") == "6"
+assert pool_pace.property("text") == "On pace for 21 creatures · target 15 to 17"
+behind_state = dict(provider.state)
+behind_pool = dict(behind_state["pool"])
+behind_pool["creature_pace"] = {
+    "projected": 12,
+    "target_floor": 15,
+    "target_ceiling": 17,
+}
+behind_state["pool"] = behind_pool
+provider._replace_state(state=behind_state)
+application.processEvents()
+assert pool_pace.property("text") == "On pace for 12 creatures · target 15 to 17"
+behind_color = pool_pace.property("color")
+no_pace_state = dict(provider.state)
+no_pace_pool = dict(no_pace_state["pool"])
+no_pace_pool["creature_pace"] = None
+no_pace_pool["land_count"] = None
+no_pace_state["pool"] = no_pace_pool
+provider._replace_state(state=no_pace_state)
+application.processEvents()
+assert pool_pace.property("text") == "Creature pace: —"
+assert pool_land_count.property("text") == "—"
+assert pool_pace.property("color") != behind_color
+no_projection_pool = dict(no_pace_pool)
+no_projection_pool["creature_pace"] = {
+    "projected": None,
+    "target_floor": 15,
+    "target_ceiling": 17,
+}
+no_projection_state = dict(no_pace_state)
+no_projection_state["pool"] = no_projection_pool
+provider._replace_state(state=no_projection_state)
+application.processEvents()
+assert pool_pace.property("text") == "Creature pace: —"
 provider.selectScenario("warning")
 application.processEvents()
 restored_state = dict(provider.state)
@@ -6920,18 +6963,26 @@ application.processEvents()
 build_view = root.findChild(QObject, "buildView")
 narrow_type_summary = find_visual_item(root.contentItem(), "narrowBuildTypeSummary")
 assert narrow_type_summary is not None and narrow_type_summary.isVisible()
-assert narrow_type_summary.property("text") == "7 creatures · 1 instant"
+assert narrow_type_summary.property("text") == "7 creatures · 1 instant · 2 removal"
 changed_state = dict(provider.state)
 changed_build = dict(changed_state["build"])
 changed_build["creature_count"] = 5
 changed_build["instant_count"] = 2
+changed_build["removal_count"] = 4
 changed_state["build"] = changed_build
 provider._replace_state(state=changed_state)
 application.processEvents()
-assert narrow_type_summary.property("text") == "5 creatures · 2 instants"
+assert narrow_type_summary.property("text") == "5 creatures · 2 instants · 4 removal"
+missing_removal_state = dict(provider.state)
+missing_removal_build = dict(missing_removal_state["build"])
+missing_removal_build["removal_count"] = None
+missing_removal_state["build"] = missing_removal_build
+provider._replace_state(state=missing_removal_state)
+application.processEvents()
+assert narrow_type_summary.property("text") == "5 creatures · 2 instants · — removal"
 provider.selectScenario("ready")
 application.processEvents()
-assert narrow_type_summary.property("text") == "7 creatures · 1 instant"
+assert narrow_type_summary.property("text") == "7 creatures · 1 instant · 2 removal"
 assert build_view is not None
 initial_focus_key = build_view.property("publishedBuildFocusKey")
 assert initial_focus_key
@@ -6980,7 +7031,7 @@ QTest.keyClick(root, Qt.Key_Space)
 application.processEvents()
 assert any(isinstance(command, RequestBuild) and command.pair_override == "BG" for command in provider.commands)
 assert provider.state["build"]["selected_pair"] == "BG"
-assert narrow_type_summary.property("text") == "7 creatures · 1 instant"
+assert narrow_type_summary.property("text") == "7 creatures · 1 instant · 2 removal"
 spell_button = find_visual_item(root.contentItem(), "buildSpellButton1")
 assert build_view is not None and spell_button is not None
 spell_button.forceActiveFocus()
@@ -7084,6 +7135,27 @@ assert wide_creature_count is not None and wide_creature_count.isVisible()
 assert wide_instant_count is not None and wide_instant_count.isVisible()
 assert wide_creature_count.property("text") == "7"
 assert wide_instant_count.property("text") == "1"
+wide_removal_count = find_visual_item(root.contentItem(), "wideBuildRemovalCount")
+assert wide_removal_count is not None and wide_removal_count.isVisible()
+assert wide_removal_count.property("text") == "2"
+wide_removal_state = dict(provider.state)
+wide_removal_build = dict(wide_removal_state["build"])
+wide_removal_build["removal_count"] = 5
+wide_removal_state["build"] = wide_removal_build
+provider._replace_state(state=wide_removal_state)
+application.processEvents()
+assert wide_removal_count.property("text") == "5"
+assert narrow_type_summary.property("text") == "7 creatures · 1 instant · 5 removal"
+null_removal_state = dict(provider.state)
+null_removal_build = dict(null_removal_state["build"])
+null_removal_build["removal_count"] = None
+null_removal_state["build"] = null_removal_build
+provider._replace_state(state=null_removal_state)
+application.processEvents()
+assert wide_removal_count.property("text") == "—"
+provider.selectScenario("ready")
+application.processEvents()
+assert wide_removal_count.property("text") == "2"
 assert pair_selector.isVisible()
 assert rebuild.isVisible()
 

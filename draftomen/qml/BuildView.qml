@@ -26,7 +26,8 @@ Item {
         warnings: [],
         land_count: null,
         creature_count: null,
-        instant_count: null
+        instant_count: null,
+        removal_count: null
     })
     readonly property int wideMinimumWidth: 220 + 360 + 240 + Theme.gutter * 2
     readonly property int wideBuildCardMinimumHeight: 300
@@ -556,6 +557,10 @@ Item {
                                 Label { text: root.build.deck_size === 40 ? "DECK SIZE READY" : "DECK SIZE CHECK"; color: root.build.deck_size === 40 ? Theme.primary : Theme.warning; font.pixelSize: Theme.textPixelSize(10); font.bold: true }
                                 Label { text: "LANDS"; color: Theme.textMuted; font.pixelSize: Theme.textPixelSize(10); font.bold: true }
                                 Label { text: "SUGGESTED DECK"; color: Theme.textMuted; font.pixelSize: Theme.textPixelSize(10); font.bold: true }
+                                Label { objectName: "wideBuildRemovalCount"; text: root.countText(root.build.removal_count); color: Theme.primary; font.pixelSize: Theme.textPixelSize(18); font.bold: true }
+                                Item { Layout.fillWidth: true }
+                                Label { text: "REMOVAL"; color: Theme.textMuted; font.pixelSize: Theme.textPixelSize(10); font.bold: true }
+                                Item { Layout.fillWidth: true }
                             }
                         }
                     }
@@ -901,7 +906,8 @@ Item {
                                 objectName: "narrowBuildTypeSummary"
                                 Layout.fillWidth: true
                                 text: root.countLabel(root.build.creature_count, "creature") + " · "
-                                    + root.countLabel(root.build.instant_count, "instant")
+                                    + root.countLabel(root.build.instant_count, "instant") + " · "
+                                    + root.countText(root.build.removal_count) + " removal"
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.textPixelSize(11)
                             }
