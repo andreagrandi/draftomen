@@ -1169,6 +1169,41 @@ def test_build_sheet_plays_creature_band_over_stronger_noncreature_spells() -> N
 
 
 
+def test_build_sheet_counts_hybrid_creatures_toward_the_creature_band() -> None:
+    database = _creature_band_card_database(creature_count=12)
+    cards = dict(database.cards)
+    hybrid_ids = (851, 852, 853)
+    for grp_id, colors, mana_cost in (
+        (851, ("G", "W"), "{1}{G/W}"),
+        (852, ("W", "B"), "{1}{W/B}"),
+        (853, ("U", "B"), "{2}{U/B}"),
+    ):
+        cards[grp_id] = _card(
+            grp_id=grp_id,
+            name=f"Band Hybrid Creature {grp_id}",
+            colors=colors,
+            mana_value=3.0,
+            types=("Creature — Fixture",),
+            mana_cost=mana_cost,
+        )
+    database = CardDatabase(cards=cards)
+
+    build_sheet = select_build_sheet(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        pair="WU",
+        ratings_data=_creature_band_ratings_data(database=database),
+    )
+
+    spell_selection = build_sheet.spell_selection
+    assert spell_selection.counts.creatures >= 15
+    assert spell_selection.counts.splashes == 0
+    assert spell_selection.constraints.creature_floor == 15
+    assert spell_selection.warnings == ()
+    assert set(hybrid_ids) <= {card.card.grp_id for card in spell_selection.spells}
+
+
+
 def test_build_sheet_plays_every_creature_from_a_short_pool_with_warning() -> None:
     database = _creature_band_card_database(creature_count=13)
     pool = BuildPool(

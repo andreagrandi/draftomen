@@ -38,6 +38,9 @@
 - The GUI Live Draft focused intel panel now shows a "Why this score" section
   with the pick explanation, including the creature pace line when that
   setting is on. (#1013)
+- A deck builder test now checks that a WU pool with 12 WU creatures and 3
+  hybrid creatures castable in WU builds a deck with at least 15 creatures,
+  all 3 hybrids and no splash. (#1012)
 
 ## [0.6.5] - 2026-10-27
 
