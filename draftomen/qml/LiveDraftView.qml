@@ -683,18 +683,24 @@ Item {
                 spacing: Theme.gutter
 
                 CardPreview {
+                    id: wideCardPreview
                     objectName: "wideLiveCardPreview"
                     Layout.fillWidth: true
+                    // The reasons row adds height; the pool gives it up but
+                    // keeps its current minimum instead of the full curve.
                     Layout.preferredHeight: Math.max(
                         root.wideCardPreviewCurrentMinimumHeight,
                         Math.min(
-                            root.wideCardPreviewPreferredHeight,
+                            root.wideCardPreviewPreferredHeight
+                                + wideCardPreview.reasonsRequiredHeight,
                             root.wideRecommendationsAvailableHeight
                                 - Theme.gutter
-                                - Math.max(
-                                    root.widePoolDetailsCurrentMinimumHeight,
-                                    widePoolDetails.manaCurveRequiredHeight
-                                )
+                                - (wideCardPreview.reasonsRequiredHeight > 0
+                                    ? root.widePoolDetailsCurrentMinimumHeight
+                                    : Math.max(
+                                        root.widePoolDetailsCurrentMinimumHeight,
+                                        widePoolDetails.manaCurveRequiredHeight
+                                    ))
                         )
                     )
                     Layout.minimumHeight: root.wideCardPreviewCurrentMinimumHeight
@@ -825,10 +831,12 @@ Item {
         StackLayout {
             Layout.fillWidth: true
             Layout.preferredHeight: root.narrowDetailsPreferredHeight
+                + narrowCardPreview.reasonsRequiredHeight
             Layout.minimumHeight: root.narrowDetailsMinimumHeight
             currentIndex: detailTabs.currentIndex
 
             CardPreview {
+                id: narrowCardPreview
                 objectName: "narrowLiveCardPreview"
                 recommendation: root.selectedRecommendation
                 detailedIntel: true

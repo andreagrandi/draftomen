@@ -3138,7 +3138,7 @@ try:
     assert live_preview is not None
     live_image = live_preview.findChild(QObject, "cardPreviewImage")
     assert live_image is not None
-    live_explanation = live_preview.findChild(QObject, "cardPreviewExplanation")
+    live_explanation = live_preview.findChild(QObject, "cardPreviewReasonsText")
     assert live_explanation is not None
     wait_until(
         lambda: any(
@@ -3148,8 +3148,15 @@ try:
         ),
         "the selected production recommendation",
     )
-    assert live_explanation.isVisible() is False
-    assert live_explanation.property("text") == ""
+    selected_concise = next(
+        recommendation["concise_explanation"]
+        for recommendation in provider.state["recommendations"]["cards"]
+        if recommendation["card"]["grp_id"]
+        == provider.state["recommendations"]["selected_grp_id"]
+    )
+    assert selected_concise
+    assert live_explanation.isVisible() is True
+    assert live_explanation.property("text") == selected_concise
     wait_until(
         lambda: provider.state["card_image"]["phase"] == "ready"
         and live_preview.property("imageCurrent") is True
@@ -3182,8 +3189,15 @@ try:
         and image_source(live_image) != first_recommendation_source,
         "the visible changed recommendation image",
     )
-    assert live_explanation.isVisible() is False
-    assert live_explanation.property("text") == ""
+    selected_concise = next(
+        recommendation["concise_explanation"]
+        for recommendation in provider.state["recommendations"]["cards"]
+        if recommendation["card"]["grp_id"]
+        == provider.state["recommendations"]["selected_grp_id"]
+    )
+    assert selected_concise
+    assert live_explanation.isVisible() is True
+    assert live_explanation.property("text") == selected_concise
     next_recommendation_source = image_source(live_image)
     assert next_recommendation_source
     assert recording_session.build_requests == []
@@ -3614,7 +3628,13 @@ preview = host.findChild(QObject, "cardPreviewProbe")
 assert preview is not None
 details = preview.findChild(QObject, "cardPreviewDetails")
 explanation = preview.findChild(QObject, "cardPreviewExplanation")
+reasons = preview.findChild(QObject, "cardPreviewReasons")
+reasons_heading = preview.findChild(QObject, "cardPreviewReasonsHeading")
+reasons_text = preview.findChild(QObject, "cardPreviewReasonsText")
+image_frame = preview.findChild(QObject, "cardPreviewImageFrame")
 assert details is not None
+assert reasons is not None and reasons_heading is not None
+assert reasons_text is not None and image_frame is not None
 assert explanation is not None
 
 
@@ -3622,69 +3642,104 @@ def check_mode(*, detailed, width, height, expected, stress):
     host.resize(width, height)
     preview.forceActiveFocus()
     preview.setProperty("detailedIntel", detailed)
+    shown = reasons_text if detailed else explanation
+    scroller = reasons if detailed else details
     wait_until(
-        lambda: explanation.property("text") == expected
+        lambda: shown.property("text") == expected
+        and scroller.width() > 0
+        and abs(preview.width() - width) <= 1
         and (
             not stress
-            or details.property("contentHeight") > details.height() + 1
+            or scroller.property("contentHeight") > scroller.height() + 1
         ),
         "the preview mode layout",
     )
-    assert explanation.property("text") == expected, (detailed, width, height)
-    assert explanation.isVisible() is not detailed, (detailed, width, height)
+    wait_until_stable(
+        lambda: (
+            rect_in(reasons, preview)[0].y(),
+            rect_in(details, preview)[1].y(),
+            rect_in(image_frame, preview)[1].y(),
+        ),
+        "the preview geometry to settle",
+    )
+    assert shown.property("text") == expected, (detailed, width, height)
+    assert shown.isVisible() is True, (detailed, width, height)
+    assert reasons.isVisible() is detailed, (detailed, width, height)
+    assert reasons_heading.isVisible() is detailed, (detailed, width, height)
+    assert reasons_heading.property("text") == "Why this score"
     if detailed:
-        return
-    assert_contained(preview, details, explanation)
-    if not detailed:
+        assert explanation.isVisible() is False
+        assert explanation.property("text") == ""
+        assert preview.property("reasonsRequiredHeight") > 0
+        row_top_left, row_bottom_right = rect_in(reasons, preview)
+        assert row_top_left.x() >= -1 and row_top_left.y() >= -1
+        assert row_bottom_right.x() <= preview.width() + 1
+        assert row_bottom_right.y() <= preview.height() + 1
+        label_left, label_right = rect_in(reasons_text, preview)
+        assert label_left.x() >= -1 and label_right.x() <= preview.width() + 1
+        assert float(reasons_text.property("paintedWidth")) <= reasons_text.width() + 1
+        reasons_top = rect_in(reasons, preview)[0].y()
+        details_bottom = rect_in(details, preview)[1].y()
+        frame_bottom = rect_in(image_frame, preview)[1].y()
+        assert reasons_top >= max(details_bottom, frame_bottom) - 1, (
+            width,
+            height,
+            reasons_top,
+            details_bottom,
+            frame_bottom,
+        )
+    else:
+        assert preview.property("reasonsRequiredHeight") == 0
+        assert_contained(preview, details, explanation)
         assert details.property("activeFocusOnTab") is False
     if not stress:
         return
     wait_until_stable(
-        lambda: (details.property("contentHeight"), details.height()),
+        lambda: (scroller.property("contentHeight"), scroller.height()),
         "the explanation layout to settle",
     )
-    assert details.property("contentHeight") > details.height() + 1, (
+    assert scroller.property("contentHeight") > scroller.height() + 1, (
         detailed,
         width,
         height,
-        details.property("contentHeight"),
-        details.height(),
+        scroller.property("contentHeight"),
+        scroller.height(),
     )
-    details.forceActiveFocus()
+    scroller.forceActiveFocus()
     QTest.keyClick(host, Qt.Key_End)
     wait_until(
         lambda: abs(
-            details.property("contentY")
-            - max(0, details.property("contentHeight") - details.height())
+            scroller.property("contentY")
+            - max(0, scroller.property("contentHeight") - scroller.height())
         )
         <= 1,
-        "the detailed explanation scrolled to its end",
+        "the explanation scrolled to its end",
     )
-    maximum = max(0, details.property("contentHeight") - details.height())
-    assert abs(details.property("contentY") - maximum) <= 1, (
+    maximum = max(0, scroller.property("contentHeight") - scroller.height())
+    assert abs(scroller.property("contentY") - maximum) <= 1, (
         detailed,
         width,
         height,
-        details.property("contentY"),
+        scroller.property("contentY"),
         maximum,
     )
-    label_bottom = explanation.mapToItem(
-        details,
-        QPointF(0, explanation.height()),
+    label_bottom = shown.mapToItem(
+        scroller,
+        QPointF(0, shown.height()),
     ).y()
-    assert -1 <= label_bottom <= details.height() + 1, (
+    assert -1 <= label_bottom <= scroller.height() + 1, (
         detailed,
         width,
         height,
         label_bottom,
-        details.height(),
+        scroller.height(),
     )
     QTest.keyClick(host, Qt.Key_Home)
     wait_until(
-        lambda: details.property("contentY") <= 1,
-        "the detailed explanation scrolled back to its start",
+        lambda: scroller.property("contentY") <= 1,
+        "the explanation scrolled back to its start",
     )
-    assert details.property("contentY") <= 1
+    assert scroller.property("contentY") <= 1
 
 
 try:
@@ -3726,7 +3781,7 @@ try:
         detailed=True,
         width=360,
         height=600,
-        expected="",
+        expected=initial_concise,
         stress=False,
     )
     check_mode(
@@ -3740,14 +3795,14 @@ try:
         detailed=True,
         width=550,
         height=600,
-        expected="",
+        expected=initial_concise,
         stress=False,
     )
     check_mode(
         detailed=True,
         width=550,
         height=430,
-        expected="",
+        expected=initial_concise,
         stress=False,
     )
 
@@ -3779,18 +3834,22 @@ try:
             == replacement.card.grp_id,
         "the replacement recommendation in detailed mode",
     )
-    assert explanation.property("text") == ""
+    assert reasons_text.property("text") == replacement_concise
+    assert reasons_text.isVisible() is True
+    assert reasons_heading.isVisible() is True
     assert explanation.isVisible() is False
     preview.setProperty("detailedIntel", False)
     application.processEvents()
+    assert reasons_heading.isVisible() is False
     assert explanation.property("text") == replacement_concise, (
         explanation.property("text"),
         replacement_concise,
     )
     preview.setProperty("detailedIntel", True)
     application.processEvents()
-    assert explanation.property("text") == ""
-    assert explanation.isVisible() is False
+    assert reasons_text.property("text") == replacement_concise
+    assert reasons_text.isVisible() is True
+    assert reasons_heading.isVisible() is True
 
     other_recommendation = next(
         recommendation
@@ -3805,7 +3864,7 @@ try:
             == other_recommendation.card.grp_id,
         "the selected recommendation identity in detailed mode",
     )
-    assert explanation.property("text") == ""
+    assert reasons_text.property("text") == other_recommendation.concise_explanation
     preview.setProperty("detailedIntel", False)
     application.processEvents()
     assert explanation.property("text") == other_recommendation.concise_explanation
@@ -3875,17 +3934,18 @@ try:
     )
     for detailed, width, height, expected in (
         (False, 360, 600, compact_long),
-        (True, 360, 600, ""),
+        (True, 360, 600, compact_long),
         (False, 550, 600, compact_long),
-        (True, 550, 600, ""),
-        (True, 550, 430, ""),
+        (True, 550, 600, compact_long),
+        (True, 550, 430, compact_long),
+        (True, 320, 300, compact_long),
     ):
         check_mode(
             detailed=detailed,
             width=width,
             height=height,
             expected=expected,
-            stress=not detailed,
+            stress=True,
         )
 
     host.setProperty("useOverride", True)
@@ -3895,6 +3955,7 @@ try:
     application.processEvents()
     assert preview.property("recommendation") is None
     assert explanation.property("text") == ""
+    assert reasons.isVisible() is False
     with log_path.open(mode="a", encoding="utf-8") as log_file:
         log_file.writelines(fixture_log_lines[7:])
     wait_until(
@@ -3943,6 +4004,300 @@ finally:
         probe,
         timeout=25,
         environment={"DRAFTOMEN_E2E_APP_DIR": str(app_dir)},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Binding loop detected" not in completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
+def test_qml_card_preview_shows_creature_pace_line_only_when_enabled_offscreen() -> None:
+    probe = """
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+from PySide6.QtQuickControls2 import QQuickStyle
+
+from draftomen.pickengine import render_pick_rationale_concise
+from draftomen.qt_gui import _fixed_font_family
+from tests.test_pickengine import _by_grp_id, _score_creature_pace_pack
+
+
+def concise_for(*, enabled):
+    scored_pack = _score_creature_pace_pack(
+        creature_gih=0.60,
+        spell_gih=0.61,
+        enabled=enabled,
+    )
+    return render_pick_rationale_concise(scored_card=_by_grp_id(scored_pack)[301])
+
+
+project_root = Path.cwd()
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+qml = b'''
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+
+ApplicationWindow {
+    width: 360
+    height: 600
+    visible: true
+
+    CardPreview {
+        objectName: "cardPreviewProbe"
+        anchors.fill: parent
+        detailedIntel: true
+    }
+}
+'''
+engine = QQmlApplicationEngine()
+qml_directory = project_root / "draftomen" / "qml"
+engine.addImportPath(str(qml_directory))
+engine.rootContext().setContextProperty("fixedFontFamily", _fixed_font_family())
+component = QQmlComponent(engine)
+component.setData(qml, QUrl.fromLocalFile(str(qml_directory / "CardPreviewProbe.qml")))
+assert component.status() == QQmlComponent.Status.Ready, [
+    error.toString() for error in component.errors()
+]
+host = component.create()
+host.show()
+preview = host.findChild(QObject, "cardPreviewProbe")
+explanation = preview.findChild(QObject, "cardPreviewReasonsText")
+heading = preview.findChild(QObject, "cardPreviewReasonsHeading")
+assert explanation is not None and heading is not None
+
+
+def show(*, enabled):
+    concise = concise_for(enabled=enabled)
+    preview.setProperty(
+        "recommendation",
+        {
+            "card": {
+                "grp_id": 301,
+                "name": "Pace Creature",
+                "colors": ["W"],
+                "types": ["Creature"],
+                "mana_value": 2,
+            },
+            "score": 55,
+            "concise_explanation": concise,
+        },
+    )
+    application.processEvents()
+    return concise
+
+
+on_text = show(enabled=True)
+assert "Creature pace contributes" in on_text
+assert explanation.property("text") == on_text
+assert explanation.isVisible() is True
+assert heading.isVisible() is True
+
+off_text = show(enabled=False)
+assert "Creature pace contributes" not in off_text
+assert explanation.property("text") == off_text
+host.close()
+del engine
+"""
+    completed = _run_qml_probe(probe, timeout=25)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Unable to assign" not in completed.stderr
+    assert "TypeError" not in completed.stderr
+
+
+def test_qml_wide_live_draft_shows_reasons_row_without_overlap_offscreen(
+    tmp_path: Path,
+) -> None:
+    screenshot_directory = Path(
+        os.environ.get("DRAFTOMEN_LAYOUT_SHOT_DIR", str(tmp_path / "shots"))
+    )
+    probe = """
+import os
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PySide6.QtCore import QObject, QPointF, QUrl, Qt
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtTest import QTest
+
+from draftomen.mock_session import MockLiveSession
+from draftomen.qt_adapter import GuiPreferencesAdapter
+from draftomen.qt_mock import MockSessionAdapter
+
+
+QQuickStyle.setStyle("Fusion")
+application = QGuiApplication([])
+session = MockLiveSession(scenario="ready")
+provider = MockSessionAdapter(session=session)
+screenshot_directory = Path(os.environ["DRAFTOMEN_SHOT_DIR"])
+
+SHORT = (
+    "Base win rate gives 55 DO points. Creature pace contributes +2 DO points. "
+    "The pick fits the likely WU pair."
+)
+LONG = " ".join(
+    "Sentence number %d explains one more reason for this score." % number
+    for number in range(1, 40)
+)
+
+
+def wait_until(predicate, label) -> None:
+    for _ in range(300):
+        application.processEvents()
+        if predicate():
+            return
+        QTest.qWait(10)
+    raise AssertionError("Timed out waiting for " + label)
+
+
+def publish_explanation(*, text) -> None:
+    cards = tuple(
+        replace(card, concise_explanation=text)
+        for card in session.snapshot.recommendations.cards
+    )
+    recommendations = replace(session.snapshot.recommendations, cards=cards)
+    provider._publish(
+        snapshot=replace(session.snapshot, recommendations=recommendations)
+    )
+    application.processEvents()
+
+
+def find_visual_item(item, object_name):
+    if item.objectName() == object_name:
+        return item
+    for child in item.childItems():
+        found = find_visual_item(child, object_name)
+        if found is not None:
+            return found
+    return None
+
+
+def rect_in(item, ancestor):
+    top_left = item.mapToItem(ancestor, QPointF(0, 0))
+    bottom_right = item.mapToItem(
+        ancestor, QPointF(item.width(), item.height())
+    )
+    return top_left, bottom_right
+
+
+with TemporaryDirectory() as preferences_dir:
+    preferences = GuiPreferencesAdapter(app_dir=preferences_dir)
+    engine = QQmlApplicationEngine()
+    qml_directory = Path.cwd() / "draftomen" / "qml"
+    engine.addImportPath(str(qml_directory))
+    context = engine.rootContext()
+    context.setContextProperty("fixedFontFamily", "monospace")
+    context.setContextProperty("sessionProvider", provider)
+    context.setContextProperty("applicationTitle", "Draft Omen")
+    context.setContextProperty("applicationVersion", "0.0")
+    context.setContextProperty("guiPreferences", preferences)
+    context.setContextProperty("initialSurface", "live")
+    context.setContextProperty("initialWindowWidth", 1440)
+    context.setContextProperty("initialWindowHeight", 900)
+    engine.setInitialProperties({"provider": provider})
+    engine.load(QUrl.fromLocalFile(str(qml_directory / "Main.qml")))
+    assert engine.rootObjects()
+    root = engine.rootObjects()[0]
+    application.processEvents()
+    live_view = root.findChild(QObject, "liveDraftView")
+    assert live_view is not None
+
+    def check_layout(*, width, height, compact, text, long_text):
+        preferences.setCompactDensity(compact)
+        root.resize(width, height)
+        publish_explanation(text=text)
+        preview = find_visual_item(root.contentItem(), "wideLiveCardPreview")
+        pool = find_visual_item(root.contentItem(), "wideLivePoolDetails")
+        assert preview is not None and pool is not None
+        reasons = preview.findChild(QObject, "cardPreviewReasons")
+        reasons_text = preview.findChild(QObject, "cardPreviewReasonsText")
+        details = preview.findChild(QObject, "cardPreviewDetails")
+        frame = preview.findChild(QObject, "cardPreviewImageFrame")
+        where = (width, height, compact, long_text)
+        wait_until(
+            lambda: live_view.property("wideRecommendations") is True
+            and reasons_text.property("text") == text
+            and reasons.isVisible()
+            and abs(root.width() - width) <= 1,
+            "the wide reasons row " + repr(where),
+        )
+        previous = None
+        for _ in range(100):
+            application.processEvents()
+            QTest.qWait(10)
+            current = (
+                rect_in(reasons, preview)[0].y(),
+                rect_in(pool, root.contentItem())[0].y(),
+                pool.height(),
+            )
+            if current == previous:
+                break
+            previous = current
+        reasons_top, reasons_bottom = rect_in(reasons, preview)
+        details_bottom = rect_in(details, preview)[1].y()
+        frame_bottom = rect_in(frame, preview)[1].y()
+        assert details_bottom <= reasons_top.y() + 1, (where, details_bottom, reasons_top)
+        assert frame_bottom <= reasons_top.y() + 1, (where, frame_bottom, reasons_top)
+        assert reasons_bottom.y() <= preview.height() + 1, (where, reasons_bottom)
+        assert reasons_top.x() >= -1 and reasons_bottom.x() <= preview.width() + 1
+        pool_minimum = live_view.property("widePoolDetailsCurrentMinimumHeight")
+        assert pool.height() >= pool_minimum - 1, (where, pool.height(), pool_minimum)
+        label_bottom = reasons_text.mapToItem(
+            reasons, QPointF(0, reasons_text.height())
+        ).y()
+        if not long_text:
+            assert reasons.property("contentHeight") <= reasons.height() + 1, where
+            assert reasons.property("contentY") == 0, where
+            assert label_bottom <= reasons.height() + 1, (where, label_bottom)
+            assert rect_in(reasons_text, preview)[1].y() <= preview.height() + 1
+            return
+        assert reasons.property("contentHeight") > reasons.height() + 1, where
+        reasons.forceActiveFocus()
+        QTest.keyClick(root, Qt.Key_End)
+        maximum = reasons.property("contentHeight") - reasons.height()
+        wait_until(
+            lambda: abs(reasons.property("contentY") - maximum) <= 1,
+            "the long explanation scrolled to its end " + repr(where),
+        )
+        label_bottom = reasons_text.mapToItem(
+            reasons, QPointF(0, reasons_text.height())
+        ).y()
+        assert -1 <= label_bottom <= reasons.height() + 1, (where, label_bottom)
+        QTest.keyClick(root, Qt.Key_Home)
+        wait_until(
+            lambda: reasons.property("contentY") <= 1,
+            "the long explanation scrolled back " + repr(where),
+        )
+
+    for width, height in ((1352, 762), (1400, 900)):
+        for compact in (False, True):
+            check_layout(
+                width=width, height=height, compact=compact, text=SHORT, long_text=False
+            )
+            if (width, height, compact) == (1352, 762, False):
+                screenshot_directory.mkdir(parents=True, exist_ok=True)
+                image = root.grabWindow()
+                assert image.save(str(screenshot_directory / "layout_1352x762.png"))
+            check_layout(
+                width=width, height=height, compact=compact, text=LONG, long_text=True
+            )
+
+    preferences.shutdown()
+    del root
+    del engine
+"""
+    completed = _run_qml_probe(
+        probe,
+        timeout=60,
+        environment={"DRAFTOMEN_SHOT_DIR": str(screenshot_directory)},
     )
 
     assert completed.returncode == 0, completed.stderr
