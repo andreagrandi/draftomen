@@ -90,6 +90,14 @@ Rectangle {
             + ", Augmented DO Score " + root.recommendation.score
         : ""
 
+    readonly property string reasonsText: recommendation
+        ? recommendation.concise_explanation || "" : ""
+    readonly property bool reasonsVisible:
+        detailedIntel && reasonsText !== ""
+    // Cap the row so a long explanation scrolls instead of taking the panel.
+    readonly property real reasonsMaximumHeight: 160
+    readonly property real reasonsRequiredHeight: reasonsVisible
+        ? reasonsRow.implicitHeight + previewLayout.rowSpacing : 0
     readonly property real imageFrameAvailableHeight: Math.max(
         0,
         root.height - Theme.panelPadding * 2
@@ -103,6 +111,7 @@ Rectangle {
         root.height - Theme.panelPadding * 2
             - previewHeading.implicitHeight
             - previewLayout.rowSpacing * 2
+            - root.reasonsRequiredHeight
     )
     readonly property real detailedContentWidth: root.width
         - Theme.panelPadding * 2 - previewLayout.columnSpacing
@@ -500,8 +509,7 @@ Rectangle {
                     }
                 }
 
-                // Detailed intel already shows every score as a structured
-                // field, so the narrative paragraph only repeats them.
+                // Detailed intel shows the explanation in its own row below.
                 Label {
                     objectName: "cardPreviewExplanation"
                     visible: !root.detailedIntel
@@ -515,6 +523,93 @@ Rectangle {
                     wrapMode: Text.WordWrap
                 }
 
+            }
+        }
+
+        Flickable {
+            id: reasonsRow
+            objectName: "cardPreviewReasons"
+            visible: root.reasonsVisible
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.preferredHeight: reasonsRow.implicitHeight
+            implicitHeight: Math.min(
+                root.reasonsMaximumHeight,
+                reasonsColumn.implicitHeight
+            )
+            contentWidth: width
+            contentHeight: reasonsColumn.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Pane
+            Accessible.name: "Why this score"
+            Accessible.description: "Use Up and Down, Page Up, Page Down, Home, or End to scroll the score reasons."
+
+            function scrollTo(position) {
+                contentY = Math.max(0, Math.min(
+                    position, Math.max(0, contentHeight - height)
+                ))
+            }
+
+            Keys.onPressed: function(event) {
+                const pageStep = Math.max(1, height - 24)
+                const lineStep = 40
+                switch (event.key) {
+                case Qt.Key_Up:
+                    reasonsRow.scrollTo(contentY - lineStep)
+                    break
+                case Qt.Key_Down:
+                    reasonsRow.scrollTo(contentY + lineStep)
+                    break
+                case Qt.Key_PageUp:
+                    reasonsRow.scrollTo(contentY - pageStep)
+                    break
+                case Qt.Key_PageDown:
+                    reasonsRow.scrollTo(contentY + pageStep)
+                    break
+                case Qt.Key_Home:
+                    reasonsRow.scrollTo(0)
+                    break
+                case Qt.Key_End:
+                    reasonsRow.scrollTo(contentHeight - height)
+                    break
+                default:
+                    return
+                }
+                event.accepted = true
+            }
+
+            ScrollBar.vertical: ScrollBar {
+                objectName: "cardPreviewReasonsScrollBar"
+                policy: ScrollBar.AsNeeded
+                width: 8
+                Accessible.name: "Score reasons vertical scrollbar"
+            }
+
+            ColumnLayout {
+                id: reasonsColumn
+                width: reasonsRow.width
+                spacing: 4
+
+                Label {
+                    objectName: "cardPreviewReasonsHeading"
+                    Layout.fillWidth: true
+                    text: "Why this score"
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.textPixelSize(11)
+                    font.bold: true
+                }
+
+                Label {
+                    objectName: "cardPreviewReasonsText"
+                    Layout.fillWidth: true
+                    text: root.reasonsText
+                    textFormat: Text.PlainText
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.textPixelSize(12)
+                    wrapMode: Text.WordWrap
+                }
             }
         }
 

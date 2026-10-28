@@ -35,6 +35,9 @@
 - The TUI pool summary now shows lands, creatures, removal and creature pace
   against the 15 to 17 target, and the TUI build summary shows the removal
   count next to creatures and lands. (#1002)
+- The GUI Live Draft focused intel panel now shows a "Why this score" section
+  with the pick explanation, including the creature pace line when that
+  setting is on. (#1013)
 
 ## [0.6.5] - 2026-10-27
 
