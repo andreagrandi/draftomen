@@ -6,6 +6,8 @@
 
 - Native bundle builds now pin Python 3.14 on macOS and 3.12 on Windows, so
   a runner image that ships a newer Python cannot break the Nuitka build.
+- The update dialog button now reads "Download Draft Omen update" for every
+  install channel, instead of naming the website, Store or GitHub page.
 
 ## [0.6.5] - 2026-10-27
 

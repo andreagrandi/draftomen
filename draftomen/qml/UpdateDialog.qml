@@ -87,7 +87,7 @@ Dialog {
             objectName: "updateDialogWebsite"
             visible: root.channel !== "store" && root.channel !== "github"
             Layout.alignment: Qt.AlignHCenter
-            text: "Website download page"
+            text: "Download Draft Omen update"
             implicitWidth: 200
             Accessible.name: "Open the Draft Omen website download page"
             Accessible.description: root.websiteUrl
@@ -98,7 +98,7 @@ Dialog {
             objectName: "updateDialogStore"
             visible: root.channel === "store"
             Layout.alignment: Qt.AlignHCenter
-            text: "Microsoft Store listing"
+            text: "Download Draft Omen update"
             implicitWidth: 200
             Accessible.name: "Open the Draft Omen Microsoft Store listing"
             Accessible.description: root.storeUrl
@@ -109,7 +109,7 @@ Dialog {
             objectName: "updateDialogReleases"
             visible: root.channel === "github"
             Layout.alignment: Qt.AlignHCenter
-            text: "GitHub releases"
+            text: "Download Draft Omen update"
             implicitWidth: 200
             Accessible.name: "Open the Draft Omen GitHub releases page"
             Accessible.description: root.releasesUrl
