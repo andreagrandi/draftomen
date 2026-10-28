@@ -9,6 +9,11 @@
 - The deck builder no longer treats a hybrid card that the pair can cast, such
   as {R/W} in a white deck, as a splash card. These cards used to sit on the
   bench with `cut: splash cap` when no splash was active. (#998)
+- Suggested decks now play 15 to 17 creatures, up from a floor of 14, and
+  17Lands trophy averages can no longer pull the target below 15. A pool with
+  fewer castable creatures plays all of them instead of dropping the creature
+  floor to 0, and the build shows a warning such as
+  `Only 13 creatures available in WU`. (#999)
 
 ## [0.6.5] - 2026-10-27
 

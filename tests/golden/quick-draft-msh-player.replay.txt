@@ -755,7 +755,7 @@ Basics:
 Structure checks:
 Eligible spells for WU: 40
 Selected spells: 24/24
-Creature count: 23 (target 14-23)
+Creature count: 23 (target 15-23)
 Two-drops MV 2: 23 (minimum 5)
 Expensive spells MV >= 6: 0 (soft cap 3)
 Splash: enabled; no eligible A- or better single-pip third-color card in the pool

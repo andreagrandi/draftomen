@@ -6,10 +6,10 @@ Color pair: WU (automatic; 17Lands WR neutral 50.0%)
 
 Deck summary:
 Deck size: 40 cards (23 spells + 17 lands)
-Average mana value: 2.91
-Mana curve: 0: 0 | 1: 0 | 2: 5 | 3: 17 | 4: 0 | 5: 0 | 6+: 1
-Creatures: 15; Non-creatures: 8; Lands: 17
-Land count: 17 (default curve: avg MV 2.91)
+Average mana value: 3.04
+Mana curve: 0: 0 | 1: 0 | 2: 5 | 3: 16 | 4: 0 | 5: 0 | 6+: 2
+Creatures: 16; Non-creatures: 7; Lands: 17
+Land count: 17 (default curve: avg MV 3.04)
 Mana pips: W 12, U 11
 Sources: W 9, U 8 (floor 7)
 
@@ -30,6 +30,7 @@ Creatures:
 - MV 3 | score 50 | Omen Reader (W)
 - MV 3 | score 50 | Tide Scholar (U)
 - MV 6 | score 50 | Cloudtop Colossus (W)
+- MV 6 | score 50 | Deepwater Leviathan (U)
 Non-creatures:
 - MV 3 | score 50 | Borrowed Time (W)
 - MV 3 | score 50 | Cancel the Alarm (U)
@@ -38,7 +39,6 @@ Non-creatures:
 - MV 3 | score 50 | Essence Scatter (W)
 - MV 3 | score 50 | Frost Trick (U)
 - MV 3 | score 50 | Guiding Light (W)
-- MV 3 | score 50 | Hold Still (U)
 Lands:
 Nonbasic lands:
 - none
@@ -49,16 +49,16 @@ Basics:
 Structure checks:
 Eligible spells for WU: 28
 Selected spells: 23/23
-Creature count: 15 (target 14-17)
+Creature count: 16 (target 15-17)
 Two-drops MV 2: 5 (minimum 5)
-Expensive spells MV >= 6: 1 (soft cap 3)
+Expensive spells MV >= 6: 2 (soft cap 3)
 Splash: enabled; no eligible A- or better single-pip third-color card in the pool
 Relaxation order: expensive-spell cap -> minimum two-drop quota -> creature ceiling -> creature floor -> eligible-card shortage
 Applied relaxations: none
 Bench:
-- MV 6 | score 50 | Deepwater Leviathan (U) (cut: lower score)
 - MV 6 | score 50 | Sanctum Behemoth (W) (cut: lower score)
 - MV 6 | score 50 | Skyline Colossus (U) (cut: lower score)
+- MV 3 | score 50 | Hold Still (U) (cut: lower score)
 - MV 3 | score 50 | Insightful Study (W) (cut: lower score)
 - MV 3 | score 50 | Jury-Rig (U) (cut: lower score)
 

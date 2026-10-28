@@ -1955,7 +1955,8 @@ class LiveSession:
             creature_count=spell_selection.counts.creatures,
             instant_count=spell_selection.counts.instants,
             warnings=(
-                tuple(
+                spell_selection.warnings
+                + tuple(
                     f"Applied spell-selection relaxation: {relaxation}"
                     for relaxation in spell_selection.applied_relaxations
                 )
