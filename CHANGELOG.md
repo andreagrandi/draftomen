@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- The deck builder now gives a color at least 6 land sources when a spell in
+  the deck has two or more symbols of that color, such as `{1}{B}{B}`. When
+  the lands cannot reach 6, the builder cuts the card and picks a
+  replacement. The build sheet names the card and says whether the builder
+  added basics or cut it. About 85% of such cards in winning three-color
+  17Lands decks had 6 or more sources of their color. (#1025)
 - The deck builder now gives each color of a three-color deck at least 4
   land sources when it splits the basics. Dual lands count toward each color
   they make, and non-land fixers do not count. The lightest color of a

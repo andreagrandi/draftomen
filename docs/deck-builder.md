@@ -52,6 +52,7 @@ All tunables live in `draftomen/config.py` under `DeckBuilderConfig`:
 - planned splash basics: at most `1`
 - `main_color_source_floor = 7`
 - `triad_min_color_land_sources = 4`
+- `double_symbol_min_color_land_sources = 6`
 - `structure_maindeck_rate_threshold = 0.5`
 
 These are the fallback FR-5.6 structural defaults: established Limited consensus values used when no empirical 17Lands target cache exists for the selected set and pair.
@@ -93,6 +94,8 @@ Drafted in-pair nonbasic lands are slotted first, up to the land-count target. A
 Remaining slots are basics. After reserving any required splash basic, the other basics are split proportionally to colored pips in the final spell list, with a 7-source floor for each main color when the available land slots can satisfy it. Ties and leftover basics round toward the color with heavier double-pip requirements.
 
 A three-color deck splits its basics across all three colors by the same rules and plans no splash. Every color first gets at least 4 land sources (`triad_min_color_land_sources = 4`). A dual land counts toward each color it makes, and non-land fixers do not count. `scripts/measure_deck_rules.py` found that the lightest color of a winning three-color deck had 4 or more land sources in about 90% of decks, on the 17Lands FRA PremierDraft dump retrieved 2026-10-29. Two-color decks have no such minimum. The 7-source floor comes next, so when 17 lands cannot give every color seven sources, the basics go to the colors furthest below the floor. Only after that does the pip weighting apply.
+
+A spell with two or more symbols of one main color, such as `{1}{B}{B}`, needs at least 6 land sources of that color (`double_symbol_min_color_land_sources = 6`). Hybrid symbols do not count. The basic split meets this floor after the three-color minimum of 4 and before the 7-source floor. When the floor changes the split, the build sheet adds a mana note that names the card and says the builder added basics of its color. When no split can reach 6, the builder cuts the card, selects spells again without it, and adds a mana note that names the cut card. The same rule applies to two-color decks, where the 7-source floor almost always covers it already. `scripts/measure_deck_rules.py` found that about 85% of cards with two symbols of one color in winning three-color decks had 6 or more land sources of that color, and 8% had 5. The figure comes from the 17Lands FRA PremierDraft dump retrieved 2026-10-29.
 
 For 16-land aggressive builds, the output prints the caveat that basics can be preferable to slow taplands when curve pressure matters.
 

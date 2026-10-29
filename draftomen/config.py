@@ -98,6 +98,10 @@ class DeckBuilderConfig:
     # The lightest color of a winning three-color deck had 4 or more land sources in about
     # 90% of decks, from scripts/measure_deck_rules.py on the 17Lands FRA PremierDraft dump.
     triad_min_color_land_sources: int = 4
+    # In winning three-color decks, about 85% of cards with two symbols of one color had 6 or
+    # more land sources of that color, from scripts/measure_deck_rules.py on the 17Lands FRA
+    # PremierDraft dump.
+    double_symbol_min_color_land_sources: int = 6
     structure_maindeck_rate_threshold: float = 0.5
     structure_min_land_count: int = 14
     structure_max_land_count: int = 20

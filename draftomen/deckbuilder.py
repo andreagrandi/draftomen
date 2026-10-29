@@ -25,7 +25,12 @@ from draftomen.config import (
     SPLASH,
     DeckBuilderConfig,
 )
-from draftomen.pickengine import PickEngine, ScoredCard, set_supports_triads
+from draftomen.pickengine import (
+    COLOR_LOWERCASE_NAMES,
+    PickEngine,
+    ScoredCard,
+    set_supports_triads,
+)
 from draftomen.pool import DraftState, list_draft_states
 from draftomen.pool_ledger import (
     PACKAGE_ROLES,
@@ -732,56 +737,43 @@ def select_build_sheet(
         structure_targets=structure_targets,
     )
     _validate_deck_builder_config(config=effective_config)
-    spell_selection = select_deck_spells(
-        pool_grp_ids=pool_grp_ids,
-        card_database=card_database,
-        pair=resolved_pair,
-        ratings_data=ratings_data,
-        allow_splash=allow_splash,
-        config=effective_config,
-        set_profile=set_profile,
-    )
-    seen_targets = {spell_selection.counts.total}
-    for _ in range(effective_config.land_count_iteration_limit):
-        land_count = _curve_land_count(
-            selection=spell_selection,
-            config=effective_config,
-        )[0]
-        desired_spell_count = max(0, effective_config.deck_size - land_count)
-        if desired_spell_count == spell_selection.counts.total:
-            break
-
-        if desired_spell_count in seen_targets:
-            break
-
-        seen_targets.add(desired_spell_count)
-        spell_selection = select_deck_spells(
+    spell_pool = pool_grp_ids
+    cut_notes: list[str] = []
+    while True:
+        spell_selection, mana_base = _select_spells_and_mana_base(
             pool_grp_ids=pool_grp_ids,
+            spell_pool_grp_ids=spell_pool,
             card_database=card_database,
             pair=resolved_pair,
             ratings_data=ratings_data,
             allow_splash=allow_splash,
-            config=replace(effective_config, target_spell_count=desired_spell_count),
+            config=effective_config,
             set_profile=set_profile,
         )
-
-    mana_base = select_mana_base(
-        pool_grp_ids=pool_grp_ids,
-        card_database=card_database,
-        pair=resolved_pair,
-        spell_selection=spell_selection,
-        config=effective_config,
-    )
-    if mana_base.total_cards != effective_config.deck_size:
-        mana_base = select_mana_base(
-            pool_grp_ids=pool_grp_ids,
-            card_database=card_database,
-            pair=resolved_pair,
+        short_cards = _double_symbol_short_cards(
             spell_selection=spell_selection,
-            land_count=max(0, effective_config.deck_size - spell_selection.counts.total),
-            reason="deck-size fill after spell-count relaxation",
+            mana_base=mana_base,
             config=effective_config,
         )
+        if not short_cards:
+            break
+
+        cut_grp_ids = {card.card.grp_id for card, _ in short_cards}
+        spell_pool = tuple(
+            grp_id for grp_id in spell_pool if grp_id not in cut_grp_ids
+        )
+        cut_notes.extend(
+            _double_symbol_cut_note(
+                card=card,
+                color=color,
+                mana_base=mana_base,
+                config=effective_config,
+            )
+            for card, color in short_cards
+        )
+
+    if cut_notes:
+        mana_base = replace(mana_base, caveats=mana_base.caveats + tuple(cut_notes))
 
     return BuildSheet(
         spell_selection=spell_selection,
@@ -793,6 +785,121 @@ def select_build_sheet(
             set_profile=set_profile,
             likely_pair=resolved_pair,
         ),
+    )
+
+
+def _select_spells_and_mana_base(
+    *,
+    pool_grp_ids: tuple[int, ...],
+    spell_pool_grp_ids: tuple[int, ...],
+    card_database: CardDatabase,
+    pair: str,
+    ratings_data: SeventeenLandsData | None,
+    allow_splash: bool,
+    config: DeckBuilderConfig,
+    set_profile: SetProfile | None,
+) -> tuple[SpellSelection, ManaBase]:
+    spell_selection = select_deck_spells(
+        pool_grp_ids=spell_pool_grp_ids,
+        card_database=card_database,
+        pair=pair,
+        ratings_data=ratings_data,
+        allow_splash=allow_splash,
+        config=config,
+        set_profile=set_profile,
+    )
+    seen_targets = {spell_selection.counts.total}
+    for _ in range(config.land_count_iteration_limit):
+        land_count = _curve_land_count(
+            selection=spell_selection,
+            config=config,
+        )[0]
+        desired_spell_count = max(0, config.deck_size - land_count)
+        if desired_spell_count == spell_selection.counts.total:
+            break
+
+        if desired_spell_count in seen_targets:
+            break
+
+        seen_targets.add(desired_spell_count)
+        spell_selection = select_deck_spells(
+            pool_grp_ids=spell_pool_grp_ids,
+            card_database=card_database,
+            pair=pair,
+            ratings_data=ratings_data,
+            allow_splash=allow_splash,
+            config=replace(config, target_spell_count=desired_spell_count),
+            set_profile=set_profile,
+        )
+
+    mana_base = select_mana_base(
+        pool_grp_ids=pool_grp_ids,
+        card_database=card_database,
+        pair=pair,
+        spell_selection=spell_selection,
+        config=config,
+    )
+    if mana_base.total_cards != config.deck_size:
+        mana_base = select_mana_base(
+            pool_grp_ids=pool_grp_ids,
+            card_database=card_database,
+            pair=pair,
+            spell_selection=spell_selection,
+            land_count=max(0, config.deck_size - spell_selection.counts.total),
+            reason="deck-size fill after spell-count relaxation",
+            config=config,
+        )
+
+    return spell_selection, mana_base
+
+
+def _double_symbol_colors(*, card: CardInfo, colors: str) -> tuple[str, ...]:
+    front_cost = (card.mana_cost or "").split(" // ")[0]
+    counts: Counter[str] = Counter()
+    for symbol in MANA_SYMBOL_PATTERN.findall(front_cost):
+        if "/" in symbol:
+            continue
+
+        matched = [color for color in colors if color in symbol]
+        if len(matched) == 1:
+            counts[matched[0]] += 1
+
+    return tuple(color for color in colors if counts[color] >= 2)
+
+
+def _double_symbol_short_cards(
+    *,
+    spell_selection: SpellSelection,
+    mana_base: ManaBase,
+    config: DeckBuilderConfig,
+) -> tuple[tuple[ScoredCard, str], ...]:
+    sources = dict(mana_base.source_counts)
+    short_cards: list[tuple[ScoredCard, str]] = []
+    seen_grp_ids: set[int] = set()
+    for scored_card in spell_selection.spells:
+        if scored_card.card.grp_id in seen_grp_ids:
+            continue
+
+        for color in _double_symbol_colors(card=scored_card.card, colors=mana_base.pair):
+            if sources.get(color, 0) < config.double_symbol_min_color_land_sources:
+                seen_grp_ids.add(scored_card.card.grp_id)
+                short_cards.append((scored_card, color))
+                break
+
+    return tuple(short_cards)
+
+
+def _double_symbol_cut_note(
+    *,
+    card: ScoredCard,
+    color: str,
+    mana_base: ManaBase,
+    config: DeckBuilderConfig,
+) -> str:
+    name = COLOR_LOWERCASE_NAMES[color]
+    return (
+        f"Cut {card.card.name}: it needs {config.double_symbol_min_color_land_sources} "
+        f"{name} land sources and the lands give {dict(mana_base.source_counts)[color]}."
     )
 
 
@@ -893,11 +1000,35 @@ def select_mana_base(
         pair=mana_colors,
         nonbasic_lands=nonbasic_lands,
     )
+    double_symbol_colors = tuple(
+        color
+        for color in resolved_pair
+        if any(
+            color in _double_symbol_colors(card=scored_card.card, colors=resolved_pair)
+            for scored_card in spell_selection.spells
+        )
+    )
     base_basic_counts = _basic_land_counts(
         pair=resolved_pair,
         slots=basic_slots,
         pip_counts=pip_counts,
         double_pip_counts=double_pip_counts,
+        source_counts=source_counts,
+        config=config,
+        double_symbol_colors=double_symbol_colors,
+    )
+    added_notes = _double_symbol_added_notes(
+        spell_selection=spell_selection,
+        pair=resolved_pair,
+        floor_basics=base_basic_counts,
+        unfloored_basics=_basic_land_counts(
+            pair=resolved_pair,
+            slots=basic_slots,
+            pip_counts=pip_counts,
+            double_pip_counts=double_pip_counts,
+            source_counts=source_counts,
+            config=config,
+        ),
         source_counts=source_counts,
         config=config,
     )
@@ -919,12 +1050,49 @@ def select_mana_base(
         source_counts=_ordered_color_items(values=final_source_counts, pair=mana_colors),
         average_mana_value=_average_mana_value(cards=spell_selection.spells),
         reason=effective_reason,
-        caveats=_mana_base_caveats(
+        caveats=added_notes
+        + _mana_base_caveats(
             land_count=resolved_land_count,
             nonbasic_lands=nonbasic_lands,
             config=config,
         ),
     )
+
+
+def _double_symbol_added_notes(
+    *,
+    spell_selection: SpellSelection,
+    pair: str,
+    floor_basics: tuple[BasicLandCount, ...],
+    unfloored_basics: tuple[BasicLandCount, ...],
+    source_counts: dict[str, int],
+    config: DeckBuilderConfig,
+) -> tuple[str, ...]:
+    minimum = config.double_symbol_min_color_land_sources
+    with_floor = dict(source_counts)
+    without_floor = dict(source_counts)
+    for basic in floor_basics:
+        with_floor[basic.color] += basic.count
+    for basic in unfloored_basics:
+        without_floor[basic.color] += basic.count
+
+    notes: list[str] = []
+    seen_grp_ids: set[int] = set()
+    for scored_card in spell_selection.spells:
+        if scored_card.card.grp_id in seen_grp_ids:
+            continue
+
+        for color in _double_symbol_colors(card=scored_card.card, colors=pair):
+            if without_floor[color] < minimum <= with_floor[color]:
+                seen_grp_ids.add(scored_card.card.grp_id)
+                name = COLOR_LOWERCASE_NAMES[color]
+                notes.append(
+                    f"{scored_card.card.name} needs {minimum} {name} land sources "
+                    f"for its {name} symbols: added {name} basics."
+                )
+                break
+
+    return tuple(notes)
 
 
 def format_build_result(
@@ -3431,6 +3599,7 @@ def _basic_land_counts(
     double_pip_counts: dict[str, int],
     source_counts: dict[str, int],
     config: DeckBuilderConfig,
+    double_symbol_colors: tuple[str, ...] = (),
 ) -> tuple[BasicLandCount, ...]:
     if slots <= 0:
         return ()
@@ -3460,6 +3629,8 @@ def _basic_land_counts(
             minimum_sources=(
                 config.triad_min_color_land_sources if len(colors) == 3 else 0
             ),
+            double_symbol_colors=double_symbol_colors,
+            double_symbol_minimum=config.double_symbol_min_color_land_sources,
             double_heavy_color=double_heavy_color,
             pip_heavy_color=pip_heavy_color,
         ),
@@ -3523,12 +3694,18 @@ def _basic_split_sort_key(
     source_counts: dict[str, int],
     source_floor: int,
     minimum_sources: int,
+    double_symbol_colors: tuple[str, ...],
+    double_symbol_minimum: int,
     double_heavy_color: str,
     pip_heavy_color: str,
 ) -> tuple[float, ...]:
     minimum_shortage = sum(
         max(0, minimum_sources - (source_counts[color] + counts[color]))
         for color in colors
+    )
+    double_symbol_shortage = sum(
+        max(0, double_symbol_minimum - (source_counts[color] + counts[color]))
+        for color in double_symbol_colors
     )
     shortage = sum(
         max(0, source_floor - (source_counts[color] + counts[color]))
@@ -3540,6 +3717,7 @@ def _basic_split_sort_key(
     )
     return (
         minimum_shortage,
+        double_symbol_shortage,
         shortage,
         proportion_error,
         -counts[double_heavy_color],
@@ -3998,6 +4176,11 @@ def _validate_deck_builder_config(*, config: DeckBuilderConfig) -> None:
 
     if config.triad_min_color_land_sources < 0:
         raise DeckBuilderError("Deck-builder triad source minimum must be non-negative.")
+
+    if config.double_symbol_min_color_land_sources < 0:
+        raise DeckBuilderError(
+            "Deck-builder double-symbol source minimum must be non-negative."
+        )
 
     if config.creature_floor < 0 or config.creature_ceiling < 0:
         raise DeckBuilderError("Deck-builder creature constraints must be non-negative.")
