@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- The deck builder now scores a three-color deck by its fixing pieces. It
+  moves the 17Lands win rate of the deck by the measured gap for that piece
+  count, from -18.5 points with none to +2.0 points with six or more. Two-color
+  decks are unchanged, and the build sheet prints the count and the adjustment
+  for each three-color deck. (#1021)
 - The deck builder now sorts pool cards into land sources, non-land fixers
   and cards that do not fix. A three-color deck counts basic landcycling
   cards, any-color mana rocks and Treasure makers as fixing. It no longer

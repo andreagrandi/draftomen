@@ -120,6 +120,8 @@ class PairScore:
     pair_win_rate: float | None
     pair_win_rate_score: float
     blended_score: float
+    fixing_piece_count: int | None = None
+    fixing_win_rate_adjustment: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1319,6 +1321,7 @@ def _score_pair(
     scored_cards: tuple[ScoredCard, ...],
     ratings_data: SeventeenLandsData | None,
     config: DeckBuilderConfig,
+    fixing_piece_count: int | None = None,
 ) -> PairScore:
     playable_cards = tuple(
         card for card in scored_cards if _is_base_eligible_spell_for_pair(card=card, pair=pair)
@@ -1327,7 +1330,16 @@ def _score_pair(
     playable_score_sum = sum(card.raw_score for card in top_cards)
     average_playable_score = playable_score_sum / config.target_spell_count
     pair_win_rate = _pair_win_rate(pair=pair, ratings_data=ratings_data)
-    pair_win_rate_score = _pair_win_rate_score(pair_win_rate=pair_win_rate, config=config)
+    fixing_win_rate_adjustment = 0.0
+    if fixing_piece_count is not None:
+        gaps = config.triad_fixing_win_rate_gaps
+        fixing_win_rate_adjustment = gaps[min(fixing_piece_count, len(gaps) - 1)]
+
+    pair_win_rate_score = _pair_win_rate_score(
+        pair_win_rate=pair_win_rate,
+        config=config,
+        adjustment=fixing_win_rate_adjustment,
+    )
     blended_score = _blended_score(
         average_playable_score=average_playable_score,
         pair_win_rate_score=pair_win_rate_score,
@@ -1341,6 +1353,8 @@ def _score_pair(
         pair_win_rate=pair_win_rate,
         pair_win_rate_score=pair_win_rate_score,
         blended_score=blended_score,
+        fixing_piece_count=fixing_piece_count,
+        fixing_win_rate_adjustment=fixing_win_rate_adjustment,
     )
 
 
@@ -1380,6 +1394,7 @@ def _qualifying_triad_scores(
                 scored_cards=scored_cards,
                 ratings_data=ratings_data,
                 config=config,
+                fixing_piece_count=fixing_count,
             )
         )
 
@@ -3931,8 +3946,10 @@ def _pair_win_rate_score(
     *,
     pair_win_rate: float | None,
     config: DeckBuilderConfig,
+    adjustment: float = 0.0,
 ) -> float:
     win_rate = config.neutral_pair_win_rate if pair_win_rate is None else pair_win_rate
+    win_rate += adjustment
     return _clamp(value=win_rate * 100.0, lower=0.0, upper=100.0)
 
 
@@ -3996,6 +4013,9 @@ def _validate_deck_builder_config(*, config: DeckBuilderConfig) -> None:
 
     if config.triad_min_fixing_sources < 0:
         raise DeckBuilderError("Deck-builder triad fixing minimum must be non-negative.")
+
+    if not config.triad_fixing_win_rate_gaps:
+        raise DeckBuilderError("Deck-builder triad fixing win rate gaps must not be empty.")
 
     if config.structure_maindeck_rate_threshold < 0:
         raise DeckBuilderError("Deck-builder structure threshold must be non-negative.")
@@ -4121,12 +4141,19 @@ def _format_pair_score(
     config: DeckBuilderConfig,
 ) -> str:
     win_rate_label = _format_win_rate(score=score)
-    return (
+    line = (
         f"- {score.pair}: strength {_format_score(score.blended_score, config=config)}; "
         f"top {target_spell_count} playable quality sum "
         f"{_format_score(score.playable_score_sum, config=config)}; "
         f"17Lands WR {win_rate_label}; playables {score.playable_count}"
     )
+    if score.fixing_piece_count is not None:
+        line += (
+            f"; fixing pieces {score.fixing_piece_count}, WR adjustment "
+            f"{score.fixing_win_rate_adjustment * 100.0:+.1f} pts"
+        )
+
+    return line
 
 
 
