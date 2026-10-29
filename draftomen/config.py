@@ -59,6 +59,17 @@ class DeckBuilderConfig:
     splash_elite_score_minimum: float = 70.0
     # A three-color deck needs this many dual, tri or multicolor mana sources in the pool.
     triad_min_fixing_sources: int = 3
+    # Win rate gap by fixing piece count, from scripts/measure_deck_rules.py on the 17Lands
+    # FRA PremierDraft dump, retrieved 2026-10-29. The last value covers that count and more.
+    triad_fixing_win_rate_gaps: tuple[float, ...] = (
+        -0.185,
+        -0.075,
+        -0.049,
+        -0.023,
+        -0.016,
+        -0.003,
+        0.020,
+    )
     bench_card_count: int = 5
     land_count_iteration_limit: int = 4
     optimizer_beam_width: int = 24

@@ -27,6 +27,7 @@ from draftomen.deckbuilder import (
     _optimizer_creature_score,
     _optimizer_curve_score,
     _optimizer_objective,
+    _score_pair,
     _select_with_constraints,
     build_deck_from_pool,
     classify_fixing_card,
@@ -2772,6 +2773,104 @@ def test_config_rejects_negative_triad_fixing_minimum() -> None:
     config = replace(DECK_BUILDER, triad_min_fixing_sources=-1)
 
     with pytest.raises(DeckBuilderError, match="triad fixing minimum"):
+        select_color_pair(
+            pool_grp_ids=(1,),
+            card_database=_card_database(),
+            ratings_data=_ratings_data(),
+            config=config,
+        )
+
+
+def _triad_scored_cards() -> tuple[ScoredCard, ...]:
+    database = _triad_pool_database()
+    scored_pool = PickEngine(ratings_data=_triad_ratings_data(share=0.17)).score_pack(
+        offered_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        pool_grp_ids=(),
+        pick_index=1,
+    )
+    return scored_pool.cards
+
+
+def _score_triad(*, fixing_piece_count: int | None) -> Any:
+    return _score_pair(
+        pair="UBG",
+        scored_cards=_triad_scored_cards(),
+        ratings_data=_triad_ratings_data(share=0.17),
+        config=DECK_BUILDER,
+        fixing_piece_count=fixing_piece_count,
+    )
+
+
+def test_triad_with_no_fixing_pieces_scores_below_triad_with_four() -> None:
+    bare = _score_triad(fixing_piece_count=0)
+    fixed = _score_triad(fixing_piece_count=4)
+
+    assert bare.blended_score < fixed.blended_score
+    assert bare.fixing_piece_count == 0
+    assert bare.fixing_win_rate_adjustment == DECK_BUILDER.triad_fixing_win_rate_gaps[0]
+    assert fixed.fixing_piece_count == 4
+    assert fixed.fixing_win_rate_adjustment == DECK_BUILDER.triad_fixing_win_rate_gaps[4]
+    assert bare.pair_win_rate == fixed.pair_win_rate == 0.6
+
+
+def test_triad_fixing_counts_above_the_last_gap_use_the_last_gap() -> None:
+    last_gap = DECK_BUILDER.triad_fixing_win_rate_gaps[-1]
+    last_index = len(DECK_BUILDER.triad_fixing_win_rate_gaps) - 1
+
+    at_last = _score_triad(fixing_piece_count=last_index)
+    above = _score_triad(fixing_piece_count=last_index + 5)
+
+    assert above.fixing_win_rate_adjustment == last_gap
+    assert above.fixing_piece_count == last_index + 5
+    assert above.blended_score == at_last.blended_score
+
+
+def test_two_color_pair_score_ignores_fixing_pieces() -> None:
+    database = _triad_pool_database(fixing_count=4)
+    ratings_data = _triad_ratings_data(share=0.17)
+
+    selection = select_color_pair(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        ratings_data=ratings_data,
+    )
+    pair_score = next(score for score in selection.ranked_scores if score.pair == "UB")
+    unadjusted = _score_pair(
+        pair="UB",
+        scored_cards=_triad_scored_cards(),
+        ratings_data=ratings_data,
+        config=DECK_BUILDER,
+    )
+
+    assert pair_score.fixing_piece_count is None
+    assert pair_score.fixing_win_rate_adjustment == 0.0
+    assert pair_score.pair_win_rate_score == unadjusted.pair_win_rate_score
+    assert pair_score.pair_win_rate_score == DECK_BUILDER.neutral_pair_win_rate * 100.0
+
+
+def test_build_sheet_prints_fixing_pieces_for_triads_only() -> None:
+    database = _triad_pool_database(fixing_count=4)
+    pool = _triad_pool(database)
+
+    selection, _ = build_deck_from_pool(
+        pool=pool,
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+    output = format_build_result(pool=pool, selection=selection)
+
+    triad_line = next(line for line in output.splitlines() if line.startswith("- UBG:"))
+    pair_line = next(line for line in output.splitlines() if line.startswith("- UB:"))
+    assert "fixing pieces 4, WR adjustment -1.6 pts" in triad_line
+    assert "fixing pieces" not in pair_line
+    assert "WR adjustment" not in pair_line
+
+
+def test_config_rejects_empty_triad_fixing_win_rate_gaps() -> None:
+    config = replace(DECK_BUILDER, triad_fixing_win_rate_gaps=())
+
+    with pytest.raises(DeckBuilderError, match="triad fixing win rate gaps"):
         select_color_pair(
             pool_grp_ids=(1,),
             card_database=_card_database(),
