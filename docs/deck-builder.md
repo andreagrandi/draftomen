@@ -18,7 +18,15 @@ The spell selector always considers cards that are castable in the chosen pair:
 
 Conservative splashing is on by default and can be disabled with `--no-splash` or through the TUI configuration opened with `c`. The builder uses the same shared policy as live picks: one third color, at most two `A-` or better cards, and at most one off-color mana pip per card. One card requires three sources and two cards require four. The builder may plan one basic land of the splash color, so the remaining sources must be deterministic drafted fixing lands usable by the primary pair.
 
-Three-color candidates use the same gate as live picks: the set's three-color game share must reach the pick engine threshold. In other sets only pairs are scored. A three-color deck is a candidate when its colors are balanced and the pool can fix them. For balance, each color must appear on at least 20% of the color marks across the deck's top 23 playable spells. For fixing, the pool must hold at least `triad_min_fixing_sources` non-basic cards that produce two or more of the deck's colors. A land counts only when every color it produces is one of the deck's colors, because the mana base plays no other nonbasic lands. A qualifying triad is ranked with the pairs by the same score, using the 17Lands win rate of that three-color deck. A three-color deck never gets a splash.
+Three-color candidates use the same gate as live picks: the set's three-color game share must reach the pick engine threshold. In other sets only pairs are scored. A three-color deck is a candidate when its colors are balanced and the pool can fix them. For balance, each color must appear on at least 20% of the color marks across the deck's top 23 playable spells. For fixing, the pool must hold at least `triad_min_fixing_sources` land sources and non-land fixers together. A qualifying triad is ranked with the pairs by the same score, using the 17Lands win rate of that three-color deck. A three-color deck never gets a splash.
+
+The builder sorts each pool card into one of three fixing groups for a deck's colors:
+
+- Land source: a nonbasic land that makes two or more of the deck's colors and no other color, because the mana base plays no other nonbasic lands.
+- Non-land fixer: a card with basic landcycling, a permanent that taps for one mana of any color, or a card that creates a Treasure token.
+- Not fixing: every other card. This includes basic lands and a spell such as Soul Tether, the prepared spell of Konstrari Improviser, whose token taps for two colors only after a second spell is cast.
+
+Source minimums count land sources only. Fixing counts for three-color decks count both land sources and non-land fixers.
 
 ## Structural defaults
 
@@ -37,7 +45,7 @@ All tunables live in `draftomen/config.py` under `DeckBuilderConfig`:
 - `maximum_unresolved_metadata_ratio = 0.25`
 - `splash_max_cards = 2`
 - `splash_elite_score_minimum = 70.0`
-- `triad_min_fixing_sources = 3` dual lands, tri-lands or multicolor mana sources in the pool for a three-color deck
+- `triad_min_fixing_sources = 3` land sources and non-land fixers in the pool for a three-color deck
 - shared splash grade floor: `A-`
 - shared splash-color limit: `1`
 - shared source targets: `3` for one card, `4` for two cards

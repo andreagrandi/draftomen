@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- The deck builder now sorts pool cards into land sources, non-land fixers
+  and cards that do not fix. A three-color deck counts basic landcycling
+  cards, any-color mana rocks and Treasure makers as fixing. It no longer
+  counts Konstrari Improviser, whose token needs a second spell before it
+  makes mana. (#1020)
 - Add `scripts/measure_deck_rules.py`, which reads a local 17Lands game data
   file and prints the color and mana stats of winning decks, such as dual land
   counts, sources for double-symbol cards and splash card grades. It uses
