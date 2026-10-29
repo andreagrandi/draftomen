@@ -52,6 +52,8 @@ from draftomen.splash import (
     card_is_castable_in_pair,
     grade_at_least,
     infer_splash_state,
+    splash_basic_sources,
+    splash_required_sources,
     splash_requirement,
 )
 from draftomen.setinfo import format_set_label
@@ -215,6 +217,7 @@ class SpellSelection:
     splash_color: str | None = None
     splash_fixing_sources: int = 0
     splash_planned_basic_sources: int = 0
+    splash_required_sources: int = 0
     structure_targets: StructuralTargets | None = None
     warnings: tuple[str, ...] = ()
 
@@ -671,6 +674,14 @@ def select_deck_spells(
             pair=resolved_pair,
             config=effective_config,
         )
+        splash_required = _selected_splash_required_sources(
+            cards=selected,
+            pair=resolved_pair,
+        )
+        splash_card_selected = splash_color is not None and any(
+            _is_splash_card(card=scored_card.card, pair=resolved_pair)
+            for scored_card in selected
+        )
         return SpellSelection(
             pair=resolved_pair,
             spells=selected,
@@ -692,10 +703,14 @@ def select_deck_spells(
             splash_color=splash_color,
             splash_fixing_sources=splash_fixing_sources,
             splash_planned_basic_sources=(
-                SPLASH.planned_basic_sources
-                if splash_color is not None and splash_limit > 0
+                splash_basic_sources(
+                    required_sources=splash_required,
+                    fixing_sources=splash_fixing_sources,
+                )
+                if splash_card_selected
                 else 0
             ),
+            splash_required_sources=splash_required,
             structure_targets=structure_targets,
             warnings=_short_creature_warnings(
                 candidates=candidates,
@@ -1867,16 +1882,20 @@ def _supported_splash_card_limit(
     if not state.enabled or color is None:
         return 0
 
-    available_sources = (
-        state.fixing_for(color=color) + SPLASH.planned_basic_sources
-    )
-    if available_sources >= SPLASH.multiple_card_sources:
-        return min(config.splash_max_cards, SPLASH.maximum_cards)
+    return min(config.splash_max_cards, SPLASH.maximum_cards)
 
-    if available_sources >= SPLASH.single_card_sources:
-        return min(config.splash_max_cards, 1)
 
-    return 0
+def _selected_splash_required_sources(
+    *,
+    cards: tuple[ScoredCard, ...],
+    pair: str,
+) -> int:
+    pips = [
+        splash_requirement(card=scored_card.card, base_pair=pair)[1]
+        for scored_card in cards
+        if _is_splash_card(card=scored_card.card, pair=pair)
+    ]
+    return splash_required_sources(off_color_pips=max(pips, default=1))
 
 
 def _constraints_for_plan(
@@ -3498,25 +3517,19 @@ def _splash_basic_land_counts(
     pair: str,
     nonbasic_lands: tuple[LandCard, ...],
 ) -> tuple[BasicLandCount, ...]:
-    if not splash_colors or SPLASH.planned_basic_sources <= 0:
+    if not splash_colors:
         return ()
 
     splash_color = splash_colors[0]
-    splash_card_count = sum(
-        _is_splash_card(card=scored_card.card, pair=pair)
-        for scored_card in selected_spells
-    )
-    required_sources = (
-        SPLASH.single_card_sources
-        if splash_card_count <= 1
-        else SPLASH.multiple_card_sources
-    )
     drafted_sources = sum(
         splash_color in land.source_colors for land in nonbasic_lands
     )
-    basic_count = min(
-        SPLASH.planned_basic_sources,
-        max(0, required_sources - drafted_sources),
+    basic_count = splash_basic_sources(
+        required_sources=_selected_splash_required_sources(
+            cards=selected_spells,
+            pair=pair,
+        ),
+        fixing_sources=drafted_sources,
     )
     if basic_count <= 0:
         return ()
@@ -3986,34 +3999,30 @@ def _format_splash_note(*, selection: SpellSelection) -> str:
 
     if selection.splash_color is None:
         return (
-            "Splash: enabled; no eligible A- or better single-pip "
-            "third-color card in the pool"
+            "Splash: enabled; no eligible A- or better third-color card "
+            "with one or two symbols of that color in the pool"
         )
 
     available_sources = (
-        selection.splash_fixing_sources + SPLASH.planned_basic_sources
+        selection.splash_fixing_sources + selection.splash_planned_basic_sources
     )
-    required_sources = (
-        SPLASH.single_card_sources
-        if selection.constraints.maximum_splash_spells <= 1
-        else SPLASH.multiple_card_sources
-    )
+    required_sources = selection.splash_required_sources
     if selection.constraints.maximum_splash_spells <= 0:
         return (
             f"Splash: {selection.splash_color} unsupported "
             f"({selection.splash_fixing_sources} drafted fixing + "
-            f"{SPLASH.planned_basic_sources} planned basic = "
-            f"{available_sources}/{SPLASH.single_card_sources} sources; "
+            f"{selection.splash_planned_basic_sources} basics = "
+            f"{available_sources}/{required_sources} sources; "
             "off-pair cards excluded)"
         )
 
     return (
         f"Splash: {selection.splash_color} enabled "
         f"({selection.splash_fixing_sources} drafted fixing + "
-        f"{selection.splash_planned_basic_sources} planned basic = "
+        f"{selection.splash_planned_basic_sources} basics = "
         f"{available_sources}/{required_sources} sources; "
         f"selected {selection.counts.splashes}/"
-        f"{selection.constraints.maximum_splash_spells} A- or better single-pip cards)"
+        f"{selection.constraints.maximum_splash_spells} A- or better splash cards)"
     )
 
 

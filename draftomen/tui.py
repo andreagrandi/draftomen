@@ -4466,8 +4466,10 @@ def _format_splash_details(*, scored_card: ScoredCard) -> str:
                 splash.splash_color,
                 "basic land",
             )
+            if splash.planned_basic_sources > 1 and not basic_name.endswith("s"):
+                basic_name = f"{basic_name}s"
             source_parts.append(
-                f"{splash.planned_basic_sources} planned {basic_name}"
+                f"{splash.planned_basic_sources} basic {basic_name}"
             )
         source_line = (
             f"Mana support: {splash.available_sources} of "

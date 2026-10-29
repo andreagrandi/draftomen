@@ -174,7 +174,7 @@ Both defaults derive from the running OS user's home directory, which is what gu
   - creature floor: 14–17 creatures (configurable defaults);
   - curve quotas: minimum ~5–6 cards at MV 2, soft cap ~2–3 at MV ≥ 6;
   - when a creature and non-creature are near-equal in score and the creature floor is unmet, prefer the creature;
-  - splash rule on by default and optional through TUI configuration or `--no-splash`: one additional color, ≤ 2 `A-` or better single-pip cards, with three sources for one card or four for two (including at most one planned basic).
+  - splash rule on by default and optional through TUI configuration or `--no-splash`: one additional color, ≤ 3 `A-` or better cards with one or two symbols of the splash color, with three sources for one-symbol cards or four when a card has two symbols. Basics of the splash color count fully.
 - FR-5.4 **Stage 3 — mana base.** Default 17 lands; 16 if aggressive (low avg MV + 2-drop quota filled), 18 if top-heavy. Drafted in-color nonbasics slot in first (documented caveat: prefer basics over taplands in 16-land aggressive builds). Remaining basics split proportionally to colored pips in the final 23, with a per-main-color floor (~7 sources), rounding toward the double-pip-heavy color.
 - FR-5.5 **Build sheet output:** pair + its 17lands WR; spells sorted by curve, creatures and non-creatures separated; land section (nonbasics first, then basic counts); bench of 3–5 nearest cuts with one-line reasons (e.g., "cut: 5th 4-drop, curve full"). Exactly 40 cards, always.
 - FR-5.6 **Winning-deck alignment.** Two tiers:

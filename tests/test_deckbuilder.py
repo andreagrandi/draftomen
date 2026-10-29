@@ -24,6 +24,7 @@ from draftomen.deckbuilder import (
     _build_optimizer_context,
     _card_quantity_key,
     _double_symbol_colors,
+    _format_splash_note,
     _greedy_feasible_package,
     _is_splash_card,
     _optimizer_card_keys,
@@ -44,6 +45,7 @@ from draftomen.deckbuilder import (
 )
 from draftomen.pickengine import PickEngine, ScoredCard, ScoredPack
 from draftomen.pool import DraftState, save_draft_state
+from draftomen.splash import assess_splash_card, infer_splash_state
 from draftomen.seventeen import (
     QUICK_DRAFT_FORMAT,
     ColorPairWinRate,
@@ -1276,6 +1278,7 @@ def test_creature_floor_ignores_splash_creatures_beyond_the_splash_limit() -> No
     cards[12] = _card(grp_id=12, name="Blue Instant", colors=("U",), types=("Instant",))
     config = replace(
         DECK_BUILDER,
+        splash_max_cards=1,
         target_spell_count=7,
         creature_floor=6,
         creature_ceiling=7,
@@ -1300,7 +1303,7 @@ def test_creature_floor_ignores_splash_creatures_beyond_the_splash_limit() -> No
 
 
 
-def test_allow_splash_selects_at_most_two_elite_off_pair_cards_with_fixing() -> None:
+def test_allow_splash_selects_at_most_three_elite_off_pair_cards_with_fixing() -> None:
     config = replace(
         DECK_BUILDER,
         target_spell_count=4,
@@ -1310,7 +1313,7 @@ def test_allow_splash_selects_at_most_two_elite_off_pair_cards_with_fixing() -> 
         maximum_expensive_spells=4,
         bench_card_count=3,
     )
-    pool_ids = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    pool_ids = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14)
 
     no_splash = select_deck_spells(
         pool_grp_ids=pool_ids,
@@ -1333,10 +1336,11 @@ def test_allow_splash_selects_at_most_two_elite_off_pair_cards_with_fixing() -> 
     assert no_splash.eligible_count == 4
     assert splash.splash_color == "R"
     assert splash.splash_fixing_sources == 3
+    assert splash.splash_required_sources == 4
     assert splash.splash_planned_basic_sources == 1
-    assert splash.counts.splashes == 2
-    assert [card.card.grp_id for card in splash.spells[:2]] == [5, 6]
-    assert 7 not in {card.card.grp_id for card in splash.spells}
+    assert splash.counts.splashes == 3
+    assert [card.card.grp_id for card in splash.spells[:3]] == [5, 6, 7]
+    assert 14 not in {card.card.grp_id for card in splash.spells}
 
 
 
@@ -1352,7 +1356,7 @@ def test_allow_splash_caps_target_when_splash_limit_makes_pool_short() -> None:
     )
 
     selection = select_deck_spells(
-        pool_grp_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+        pool_grp_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14),
         card_database=_splash_card_database(fixing_count=3),
         pair="WU",
         ratings_data=_splash_ratings_data(),
@@ -1360,13 +1364,13 @@ def test_allow_splash_caps_target_when_splash_limit_makes_pool_short() -> None:
         config=config,
     )
 
-    assert selection.counts.total == 6
-    assert selection.counts.splashes == 2
+    assert selection.counts.total == 7
+    assert selection.counts.splashes == 3
     assert "eligible-card shortage" in selection.applied_relaxations
 
 
 
-def test_allow_splash_requires_two_fixing_sources() -> None:
+def test_allow_splash_with_one_dual_fills_the_rest_with_basics() -> None:
     config = replace(
         DECK_BUILDER,
         target_spell_count=4,
@@ -1387,11 +1391,13 @@ def test_allow_splash_requires_two_fixing_sources() -> None:
     )
 
     assert selection.splash_fixing_sources == 1
-    assert selection.counts.splashes == 0
-    assert selection.eligible_count == 4
+    assert selection.splash_planned_basic_sources == 2
+    assert selection.splash_required_sources == 3
+    assert selection.counts.splashes == 1
+    assert selection.eligible_count == 5
 
 
-def test_single_splash_card_uses_two_fixing_lands_and_one_planned_basic() -> None:
+def test_single_splash_card_uses_two_fixing_lands_and_one_basic() -> None:
     config = replace(
         DECK_BUILDER,
         target_spell_count=4,
@@ -1421,10 +1427,138 @@ def test_single_splash_card_uses_two_fixing_lands_and_one_planned_basic() -> Non
     )
 
     assert selection.counts.splashes == 1
-    assert selection.constraints.maximum_splash_spells == 1
+    assert selection.constraints.maximum_splash_spells == 3
     assert _basic_count(mana_base=mana_base, name="Mountain") == 1
     assert dict(mana_base.source_counts)["R"] == 3
 
+
+
+_SPLASH_CONFIG = replace(
+    DECK_BUILDER,
+    target_spell_count=4,
+    creature_floor=0,
+    creature_ceiling=4,
+    minimum_two_drops=0,
+    maximum_expensive_spells=4,
+    bench_card_count=0,
+)
+
+
+def _splash_build(
+    *,
+    pool_ids: tuple[int, ...],
+    fixing_count: int,
+    config: DeckBuilderConfig = _SPLASH_CONFIG,
+) -> tuple[SpellSelection, ManaBase]:
+    database = _splash_card_database(fixing_count=fixing_count)
+    selection = select_deck_spells(
+        pool_grp_ids=pool_ids,
+        card_database=database,
+        pair="WU",
+        ratings_data=_splash_ratings_data(),
+        allow_splash=True,
+        config=config,
+    )
+    mana_base = select_mana_base(
+        pool_grp_ids=pool_ids,
+        card_database=database,
+        pair="WU",
+        spell_selection=selection,
+        config=config,
+    )
+    return selection, mana_base
+
+
+def test_single_symbol_splash_without_dual_uses_three_basics() -> None:
+    selection, mana_base = _splash_build(pool_ids=(1, 2, 3, 4, 5), fixing_count=0)
+
+    assert 5 in {card.card.grp_id for card in selection.spells}
+    assert _basic_count(mana_base=mana_base, name="Mountain") == 3
+    assert dict(mana_base.source_counts)["R"] == 3
+    assert sum(basic.count for basic in mana_base.basic_lands) == mana_base.land_count
+    assert "0 drafted fixing + 3 basics = 3/3 sources" in _format_splash_note(
+        selection=selection
+    )
+
+
+@pytest.mark.parametrize(
+    ("pool_ids", "fixing_count", "mountains"),
+    [((1, 2, 3, 4, 7), 0, 4), ((1, 2, 3, 4, 7, 8), 1, 3)],
+)
+def test_two_symbol_splash_card_gets_four_sources(
+    pool_ids: tuple[int, ...],
+    fixing_count: int,
+    mountains: int,
+) -> None:
+    selection, mana_base = _splash_build(pool_ids=pool_ids, fixing_count=fixing_count)
+
+    assert 7 in {card.card.grp_id for card in selection.spells}
+    assert selection.splash_required_sources == 4
+    assert _basic_count(mana_base=mana_base, name="Mountain") == mountains
+    assert dict(mana_base.source_counts)["R"] == 4
+    assert f"{fixing_count} drafted fixing + {mountains} basics = 4/4 sources" in (
+        _format_splash_note(selection=selection)
+    )
+
+
+def test_fourth_eligible_splash_card_is_left_out() -> None:
+    config = replace(_SPLASH_CONFIG, target_spell_count=7)
+
+    selection, _ = _splash_build(
+        pool_ids=(1, 2, 3, 4, 5, 6, 7, 14),
+        fixing_count=0,
+        config=config,
+    )
+
+    selected_ids = {card.card.grp_id for card in selection.spells}
+    assert selection.counts.splashes == 3
+    assert {5, 6, 7} <= selected_ids
+    assert 14 not in selected_ids
+
+
+@pytest.mark.parametrize(
+    ("card_id", "required_sources"),
+    [(5, 3), (7, 4)],
+)
+def test_pick_assessment_and_build_sheet_agree_on_splash_sources(
+    card_id: int,
+    required_sources: int,
+) -> None:
+    database = _splash_card_database(fixing_count=1)
+    ratings_data = _splash_ratings_data()
+    base_pool = (1, 2, 3, 4, 8)
+    state = infer_splash_state(
+        pool_grp_ids=base_pool,
+        card_database=database,
+        ratings_data=ratings_data,
+        base_pair="WU",
+        enabled=True,
+    )
+
+    assessment = assess_splash_card(
+        card=database.lookup(grp_id=card_id),
+        grade=ratings_data.rating_for(grp_id=card_id).letter_grade,
+        base_score=80.0,
+        best_on_color_score=None,
+        locked=False,
+        state=state,
+    )
+    selection, mana_base = _splash_build(
+        pool_ids=base_pool + (card_id,),
+        fixing_count=1,
+    )
+
+    assert assessment.classification == "splash-ready"
+    assert assessment.required_sources == required_sources
+    assert assessment.splash_color == selection.splash_color == "R"
+    assert assessment.required_sources == selection.splash_required_sources
+    assert assessment.fixing_sources == selection.splash_fixing_sources == 1
+    assert (
+        assessment.planned_basic_sources
+        == selection.splash_planned_basic_sources
+        == _basic_count(mana_base=mana_base, name="Mountain")
+    )
+    assert dict(mana_base.source_counts)["R"] == assessment.available_sources
 
 
 def test_hybrid_card_castable_in_pair_is_selected_without_splash() -> None:
@@ -1929,6 +2063,12 @@ def _splash_card_database(*, fixing_count: int) -> CardDatabase:
             colors=("R",),
             mana_cost="{3}{R}{R}",
         ),
+        14: _card(
+            grp_id=14,
+            name="Red Bomb Four",
+            colors=("R",),
+            mana_cost="{2}{R}",
+        ),
     }
     if fixing_count >= 1:
         cards[8] = _card(
@@ -1974,6 +2114,7 @@ def _splash_ratings_data() -> SeventeenLandsData:
             (5, "Red Bomb One", "R", 0.70),
             (6, "Red Bomb Two", "R", 0.69),
             (7, "Red Bomb Three", "R", 0.68),
+            (14, "Red Bomb Four", "R", 0.67),
             *tuple(
                 (
                     grp_id,

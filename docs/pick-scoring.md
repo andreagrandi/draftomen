@@ -464,11 +464,12 @@ Splash recommendations are enabled by default. Open the TUI configuration with `
 The splash policy is deliberately narrower than general three-color drafting:
 
 - Keep exactly one inferred two-color primary pair and consider at most one additional color. When the engine has inferred a three-color deck, it plans no splash, and cards outside those three colors are off-color.
-- Take at most two splash cards.
-- Require each splash card to have only one mana pip of the splash color and no other color outside the primary pair.
+- Take at most three splash cards.
+- Require each splash card to have one or two symbols of the splash color and no other color outside the primary pair.
 - Require at least an `A-` 17Lands grade and a base DO Score advantage of `5.0` over the best offered on-color card.
-- Require three sources for one splash card and four sources for two. At most one source may be a planned basic; the rest must be deterministic drafted fixing lands that are castable in the primary pair.
-- Before color lock, an unsupported `A` or `A+` card may be marked `Splash?` as a speculative pick. Speculative splashes are disabled after lock and in aggressive pools.
+- Require three land sources of the splash color for a one-symbol card and four for a two-symbol card. Basics count fully, so a splash needs no drafted dual land. Drafted fixing lands castable in the primary pair replace basics one for one, and the card details show the split.
+- These limits come from `scripts/measure_deck_rules.py` on the 17Lands FRA PremierDraft dump retrieved 2026-10-29. Nearly all winning splash decks splashed one color and 1 to 3 cards, 14 to 22% had no dual land for the splash, and 70% of decks splashing a two-symbol card had 4 or more splash sources. The deck builder uses the same limits, so the pick overlay and the build sheet agree for the same pool.
+- Before color lock, an unsupported `A` or `A+` card may be marked `Splash?` as a speculative pick. Because basics now cover every source target, no card is unsupported by sources, so this label no longer appears in practice. Speculative splashes are disabled after lock and in aggressive pools.
 - Aggressive pools require a supported `A` or better splash.
 
 The `Fit` column uses `Splash X` for a supported splash, `Splash? X` for a speculative one, and `Fix X` when a fixing land directly supports the active splash color. Focused card details show the source count and the exact acceptance or rejection reason. Once a splash color has been established, cards of any other third color remain ordinary off-color cards.

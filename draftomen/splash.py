@@ -27,6 +27,7 @@ class SplashState:
     picked_card_count: int
     fixing_sources: tuple[tuple[str, int], ...]
     aggressive: bool
+    required_sources: int = 0
 
     def fixing_for(self, *, color: str) -> int:
         return dict(self.fixing_sources).get(color, 0)
@@ -87,6 +88,7 @@ def infer_splash_state(
     eligible_by_color: dict[str, list[tuple[float, int]]] = {
         color: [] for color in COLOR_ORDER if color not in base_pair
     }
+    required_by_color: dict[str, int] = {}
     for index, grp_id in enumerate(pool_grp_ids):
         card = card_database.lookup(grp_id=grp_id)
         splash_color, off_color_pips = splash_requirement(card=card, base_pair=base_pair)
@@ -101,11 +103,14 @@ def infer_splash_state(
         eligible_by_color[splash_color].append(
             (0.0 if win_rate is None else win_rate, -index)
         )
+        required_by_color[splash_color] = max(
+            required_by_color.get(splash_color, 0),
+            splash_required_sources(off_color_pips=off_color_pips, config=config),
+        )
 
     active_color = _active_splash_color(
         eligible_by_color=eligible_by_color,
         fixing_sources=fixing_sources,
-        config=config,
     )
     picked_card_count = (
         0 if active_color is None else len(eligible_by_color[active_color])
@@ -121,6 +126,9 @@ def infer_splash_state(
             card_database=card_database,
             base_pair=base_pair,
             config=config,
+        ),
+        required_sources=(
+            0 if active_color is None else required_by_color[active_color]
         ),
     )
 
@@ -167,19 +175,16 @@ def assess_splash_card(
             if active_color is None
             else state.fixing_for(color=active_color) + 1
         )
-        required_sources = _required_sources(
-            splash_card_count=max(1, state.picked_card_count),
-            config=config,
-        )
+        required_sources = _plan_required_sources(state=state, config=config)
         return _assessment(
             classification="splash-fixer",
             state=state,
             splash_color=active_color,
             grade=grade,
             fixing_sources=fixing_sources,
-            planned_basic_sources=min(
-                config.planned_basic_sources,
-                required_sources,
+            planned_basic_sources=splash_basic_sources(
+                required_sources=required_sources,
+                fixing_sources=fixing_sources,
             ),
             required_sources=required_sources,
             reasons=("produces the active splash color",),
@@ -282,13 +287,15 @@ def assess_splash_card(
             reasons=("card is not enough better than the best on-color option",),
         )
 
-    prospective_count = state.picked_card_count + 1
-    required_sources = _required_sources(
-        splash_card_count=prospective_count,
-        config=config,
+    required_sources = max(
+        splash_required_sources(off_color_pips=off_color_pips, config=config),
+        state.required_sources,
     )
     fixing_sources = state.fixing_for(color=splash_color)
-    planned_basics = min(config.planned_basic_sources, required_sources)
+    planned_basics = splash_basic_sources(
+        required_sources=required_sources,
+        fixing_sources=fixing_sources,
+    )
     available_sources = fixing_sources + planned_basics
     supported_grade = config.supported_minimum_grade
     if state.aggressive:
@@ -308,7 +315,7 @@ def assess_splash_card(
             fixing_sources=fixing_sources,
             planned_basic_sources=planned_basics,
             required_sources=required_sources,
-            reasons=("elite single-pip card has sufficient mana support",),
+            reasons=("elite card has sufficient mana support",),
         )
 
     if (
@@ -355,6 +362,29 @@ def assess_splash_card(
         required_sources=required_sources,
         reasons=tuple(reasons) or ("splash requirements are not met",),
     )
+
+
+def splash_required_sources(
+    *,
+    off_color_pips: int,
+    config: SplashConfig = SPLASH,
+) -> int:
+    """Return the land sources a splash card needs, set by its symbol count.
+    One symbol needs fewer sources than two symbols of the splash color.
+    """
+
+    if off_color_pips >= 2:
+        return config.double_symbol_sources
+
+    return config.single_symbol_sources
+
+
+def splash_basic_sources(*, required_sources: int, fixing_sources: int) -> int:
+    """Return the splash-color basics the deck plays beside drafted fixing.
+    Drafted fixing lands replace basics one for one.
+    """
+
+    return max(0, required_sources - fixing_sources)
 
 
 def splash_requirement(*, card: CardInfo, base_pair: str) -> tuple[str | None, int]:
@@ -477,7 +507,6 @@ def _active_splash_color(
     *,
     eligible_by_color: dict[str, list[tuple[float, int]]],
     fixing_sources: dict[str, int],
-    config: SplashConfig,
 ) -> str | None:
     candidates = tuple(
         color for color, cards in eligible_by_color.items() if cards
@@ -488,32 +517,12 @@ def _active_splash_color(
     return max(
         candidates,
         key=lambda color: (
-            _supported_card_count(
-                card_count=len(eligible_by_color[color]),
-                fixing_sources=fixing_sources.get(color, 0),
-                config=config,
-            ),
             len(eligible_by_color[color]),
             max(eligible_by_color[color]),
             fixing_sources.get(color, 0),
             -COLOR_ORDER.index(color),
         ),
     )
-
-
-def _supported_card_count(
-    *,
-    card_count: int,
-    fixing_sources: int,
-    config: SplashConfig,
-) -> int:
-    available_sources = fixing_sources + config.planned_basic_sources
-    if available_sources >= config.multiple_card_sources:
-        return min(card_count, config.maximum_cards)
-    if available_sources >= config.single_card_sources:
-        return min(card_count, 1)
-
-    return 0
 
 
 def _pool_is_aggressive(
@@ -574,14 +583,8 @@ def _is_splash_fixer(
     ):
         return False
 
-    required_sources = _required_sources(
-        splash_card_count=max(1, state.picked_card_count),
-        config=config,
-    )
-    available_sources = (
-        state.fixing_for(color=active_color) + config.planned_basic_sources
-    )
-    return available_sources < required_sources
+    required_sources = _plan_required_sources(state=state, config=config)
+    return state.fixing_for(color=active_color) < required_sources
 
 
 def _is_drafted_fixing_land(*, card: CardInfo) -> bool:
@@ -593,15 +596,8 @@ def _is_drafted_fixing_land(*, card: CardInfo) -> bool:
     return is_land and not is_basic
 
 
-def _required_sources(
-    *,
-    splash_card_count: int,
-    config: SplashConfig,
-) -> int:
-    if splash_card_count <= 1:
-        return config.single_card_sources
-
-    return config.multiple_card_sources
+def _plan_required_sources(*, state: SplashState, config: SplashConfig) -> int:
+    return max(state.required_sources, config.single_symbol_sources)
 
 
 def _global_grade(

@@ -15,11 +15,14 @@ class SplashConfig:
 
     enabled_by_default: bool = True
     maximum_colors: int = 1
-    maximum_cards: int = 2
-    maximum_off_color_pips: int = 1
-    single_card_sources: int = 3
-    multiple_card_sources: int = 4
-    planned_basic_sources: int = 1
+    maximum_cards: int = 3
+    maximum_off_color_pips: int = 2
+    # Sources by splash symbol count, from scripts/measure_deck_rules.py on the 17Lands FRA
+    # PremierDraft dump, retrieved 2026-10-29. Nearly all winning splash decks played 1 to 3
+    # splash cards. 70% of decks splashing a two-symbol card had 4 or more splash sources, and
+    # 14 to 22% had no dual for the splash. Basics fill the gap, so the deck always has them.
+    single_symbol_sources: int = 3
+    double_symbol_sources: int = 4
     supported_minimum_grade: str = "A-"
     speculative_minimum_grade: str = "A"
     minimum_score_advantage: float = 5.0
@@ -55,7 +58,7 @@ class DeckBuilderConfig:
     two_drop_mana_value: float = 2.0
     expensive_spell_mana_value: float = 6.0
     near_tie_creature_preference_points: float = 2.0
-    splash_max_cards: int = 2
+    splash_max_cards: int = 3
     splash_elite_score_minimum: float = 70.0
     # Win rate gap by fixing piece count, from scripts/measure_deck_rules.py on the 17Lands
     # FRA PremierDraft dump, retrieved 2026-10-29. The last value covers that count and more.

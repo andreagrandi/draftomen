@@ -733,13 +733,7 @@ def _splash_supported(
     splash_color, off_color_pips = splash_requirement(card=card, base_pair=pair)
     if splash_color != active_color or off_color_pips > SPLASH.maximum_off_color_pips:
         return False
-    fixing = splash_state.fixing_for(color=active_color)
-    required_sources = (
-        SPLASH.single_card_sources
-        if splash_state.picked_card_count <= 1
-        else SPLASH.multiple_card_sources
-    )
-    return fixing + SPLASH.planned_basic_sources >= required_sources
+    return True
 
 
 def _evaluate_pool(
