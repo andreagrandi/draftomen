@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 from draftomen.card_data_client import CardDataClient  # noqa: E402
 from draftomen.config import SPLASH  # noqa: E402
 from draftomen.seventeen import GRADE_LABELS  # noqa: E402
-from draftomen.splash import _pool_is_aggressive, grade_at_least  # noqa: E402
+from draftomen.splash import _pool_is_aggressive  # noqa: E402
 from scripts.measure_deck_rules import (  # noqa: E402
     WIN_CUTOFFS,
     CardIndex,
@@ -28,6 +28,8 @@ from scripts.measure_deck_rules import (  # noqa: E402
 )
 
 SPEEDS = ("aggressive", "other")
+# The aggressive pool gate this experiment measured, removed in #1043.
+GATE = "A"
 
 
 @dataclass(slots=True)
@@ -107,7 +109,8 @@ def main() -> int:
         group.splash_cards += len(splashed)
         group.grades.update(splashed)
         group.gate_decks += all(
-            grade_at_least(grade=grade, minimum=SPLASH.aggressive_minimum_grade)
+            grade in GRADE_LABELS
+            and GRADE_LABELS.index(grade) >= GRADE_LABELS.index(GATE)
             for grade in splashed
         )
 
@@ -127,11 +130,10 @@ def main() -> int:
 def print_splash_rate(*, groups: dict[str, SpeedGroup]) -> None:
     """Print how often each speed splashes and how many splashes pass the A gate."""
 
-    gate = SPLASH.aggressive_minimum_grade
     print("### Splash rate\n")
     print(
         "| Speed | Decks | Splash decks | Splash rate | Splash cards per splash deck "
-        f"| Splash decks with only {gate} or better |"
+        f"| Splash decks with only {GATE} or better |"
     )
     print("| --- | --- | --- | --- | --- | --- |")
     for speed, group in groups.items():

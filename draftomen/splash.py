@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from draftomen.carddb import CardDatabase, CardInfo
 from draftomen.config import DECK_BUILDER, SPLASH, SplashConfig
-from draftomen.seventeen import GRADE_LABELS, SeventeenLandsData
+from draftomen.seventeen import SeventeenLandsData
 
 COLOR_ORDER = ("W", "U", "B", "R", "G")
 MANA_SYMBOL_PATTERN = re.compile(r"\{([^}]+)\}")
@@ -302,16 +302,8 @@ def assess_splash_card(
         fixing_sources=fixing_sources,
     )
     available_sources = fixing_sources + planned_basics
-    aggressive_grade_missing = state.aggressive and not grade_at_least(
-        grade=grade,
-        minimum=config.aggressive_minimum_grade,
-    )
 
-    if (
-        grade is not None
-        and available_sources >= required_sources
-        and not aggressive_grade_missing
-    ):
+    if grade is not None and available_sources >= required_sources:
         return _assessment(
             classification="splash-ready",
             state=state,
@@ -328,11 +320,6 @@ def assess_splash_card(
     reasons: list[str] = []
     if grade is None:
         reasons.append("card has no 17Lands rating")
-    elif aggressive_grade_missing:
-        reasons.append(
-            f"aggressive pools need a grade of {config.aggressive_minimum_grade} "
-            "or better"
-        )
     if available_sources < required_sources:
         reasons.append(
             f"needs {required_sources - available_sources} more deterministic sources"
@@ -421,13 +408,6 @@ def card_is_castable_in_pair(*, card: CardInfo, base_pair: str) -> bool:
         base_pair=base_pair,
     )
     return splash_color is None and off_color_pips == 0
-
-
-def grade_at_least(*, grade: str | None, minimum: str) -> bool:
-    if grade not in GRADE_LABELS or minimum not in GRADE_LABELS:
-        return False
-
-    return GRADE_LABELS.index(grade) >= GRADE_LABELS.index(minimum)
 
 
 def _assessment(

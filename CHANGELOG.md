@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Aggressive pools no longer need an `A` grade for a splash card. They use
+  the same splash rule as other pools. A third of aggressive winning FRA
+  17Lands decks splashed, at the same grades as other decks, and the `A` gate
+  would have allowed 1% of those splashes. (#1043)
 - Added `experiments/aggressive-splash`, which measures how often aggressive
   and other winning FRA 17Lands decks splash, and the grades of the cards
   they splash. A third of aggressive winning decks splash, at the same grades
