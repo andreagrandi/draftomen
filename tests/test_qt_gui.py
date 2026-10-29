@@ -8046,7 +8046,7 @@ assert tags == [True, False, False, False]
 assert find_all(rows[0], "poolCandidateLabel")[0].property("font").bold()
 reasons = [find_all(row, "poolCandidateReason")[0] for row in rows]
 assert [reason.property("visible") for reason in reasons] == [False, False, False, True]
-assert reasons[3].property("text") == "blue below 20% of the pool"
+assert reasons[3].property("text") == "blue has 3 cards, triads need 4"
 assert section.property("visible")
 
 state = dict(provider.state)

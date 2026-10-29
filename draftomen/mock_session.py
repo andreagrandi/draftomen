@@ -247,7 +247,7 @@ def _pool() -> PoolState:
                 colors="WUG",
                 win_rate=0.537,
                 inferred=False,
-                blocked_reason="blue below 20% of the pool",
+                blocked_reason="blue has 3 cards, triads need 4",
             ),
         ),
         color_distribution=(("W", 0), ("U", 3), ("B", 3), ("R", 0), ("G", 15), ("C", 3)),

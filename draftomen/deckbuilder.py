@@ -1412,12 +1412,9 @@ def _triad_is_balanced(
         color: sum(1 for card in top_cards if color in card.card.colors)
         for color in triad
     }
-    total = sum(color_counts.values())
-    if total <= 0:
-        return False
 
     return all(
-        count / total >= PICK_ENGINE.triad_min_color_share
+        count >= PICK_ENGINE.triad_min_color_cards
         for count in color_counts.values()
     )
 
