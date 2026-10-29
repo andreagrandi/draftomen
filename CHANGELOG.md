@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- The deck builder no longer needs three fixing pieces in the pool before it
+  scores a three-color deck. Every balanced three-color deck is scored, and
+  its fixing adjustment decides how much the missing fixing costs. The
+  `triad_min_fixing_sources` setting is gone. (#1022)
 - The deck builder now scores a three-color deck by its fixing pieces. It
   moves the 17Lands win rate of the deck by the measured gap for that piece
   count, from -18.5 points with none to +2.0 points with six or more. Two-color

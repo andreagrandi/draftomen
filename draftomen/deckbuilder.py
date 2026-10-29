@@ -1385,9 +1385,6 @@ def _qualifying_triad_scores(
             pool_grp_ids=pool_grp_ids,
             card_database=card_database,
         )
-        if fixing_count < config.triad_min_fixing_sources:
-            continue
-
         scores.append(
             _score_pair(
                 pair=triad,
@@ -4010,9 +4007,6 @@ def _validate_deck_builder_config(*, config: DeckBuilderConfig) -> None:
 
     if config.splash_elite_score_minimum < 0:
         raise DeckBuilderError("Deck-builder splash score threshold must be non-negative.")
-
-    if config.triad_min_fixing_sources < 0:
-        raise DeckBuilderError("Deck-builder triad fixing minimum must be non-negative.")
 
     if not config.triad_fixing_win_rate_gaps:
         raise DeckBuilderError("Deck-builder triad fixing win rate gaps must not be empty.")

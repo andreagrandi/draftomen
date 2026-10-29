@@ -2577,18 +2577,22 @@ def test_triad_mana_base_meets_source_floors_before_pip_weighting() -> None:
     assert build_sheet.spell_selection.splash_color is None
 
 
-def test_triad_with_too_little_fixing_falls_back_to_best_pair() -> None:
-    database = _triad_pool_database(fixing_count=2)
+def test_balanced_triad_with_no_dual_lands_is_scored_and_listed() -> None:
+    database = _triad_pool_database(fixing_count=0)
+    pool = _triad_pool(database)
 
-    selection, build_sheet = build_deck_from_pool(
-        pool=_triad_pool(database),
+    selection, _ = build_deck_from_pool(
+        pool=pool,
         card_database=database,
         ratings_data=_triad_ratings_data(share=0.17),
     )
+    output = format_build_result(pool=pool, selection=selection)
 
-    assert len(selection.chosen.pair) == 2
-    assert "UBG" not in {score.pair for score in selection.ranked_scores}
-    assert len(build_sheet.mana_base.basic_lands) <= 2
+    triad_score = next(score for score in selection.ranked_scores if score.pair == "UBG")
+    assert triad_score.fixing_piece_count == 0
+    assert triad_score.fixing_win_rate_adjustment == DECK_BUILDER.triad_fixing_win_rate_gaps[0]
+    pair_strengths = output.split("Pair strengths:", maxsplit=1)[1]
+    assert any(line.startswith("- UBG:") for line in pair_strengths.splitlines())
 
 
 def test_prepared_spell_token_mana_is_not_fixing() -> None:
@@ -2719,14 +2723,16 @@ def test_triad_fixing_ignores_prepared_spell_tokens_and_counts_nonland_fixers() 
         card_database=without_fixer,
         ratings_data=_triad_ratings_data(share=0.17),
     )
-    assert "UBG" not in {score.pair for score in selection.ranked_scores}
+    without_score = next(score for score in selection.ranked_scores if score.pair == "UBG")
+    assert without_score.fixing_piece_count == 2
 
     selection, _ = build_deck_from_pool(
         pool=_triad_pool(with_fixer),
         card_database=with_fixer,
         ratings_data=_triad_ratings_data(share=0.17),
     )
-    assert "UBG" in {score.pair for score in selection.ranked_scores}
+    with_score = next(score for score in selection.ranked_scores if score.pair == "UBG")
+    assert with_score.fixing_piece_count == 3
 
 
 def test_mostly_two_color_pool_with_few_off_color_cards_builds_pair() -> None:
@@ -2767,18 +2773,6 @@ def test_basic_splits_keep_two_color_results_and_enumerate_three_colors() -> Non
     assert len(splits) == 10
     assert all(sum(split.values()) == 3 for split in splits)
     assert {"U": 1, "B": 1, "G": 1} in splits
-
-
-def test_config_rejects_negative_triad_fixing_minimum() -> None:
-    config = replace(DECK_BUILDER, triad_min_fixing_sources=-1)
-
-    with pytest.raises(DeckBuilderError, match="triad fixing minimum"):
-        select_color_pair(
-            pool_grp_ids=(1,),
-            card_database=_card_database(),
-            ratings_data=_ratings_data(),
-            config=config,
-        )
 
 
 def _triad_scored_cards() -> tuple[ScoredCard, ...]:
@@ -2920,4 +2914,5 @@ def test_triad_fixing_ignores_lands_outside_the_triad() -> None:
         ratings_data=_triad_ratings_data(share=0.17),
     )
 
-    assert "UBG" not in {score.pair for score in selection.ranked_scores}
+    triad_score = next(score for score in selection.ranked_scores if score.pair == "UBG")
+    assert triad_score.fixing_piece_count == 2
