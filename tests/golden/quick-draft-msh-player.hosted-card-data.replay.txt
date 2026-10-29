@@ -713,7 +713,7 @@ Deck size: 40 cards (23 spells + 17 lands)
 Average mana value: 3.09
 Mana curve: 0: 0 | 1: 1 | 2: 5 | 3: 10 | 4: 6 | 5: 0 | 6+: 1
 Creatures: 16; Non-creatures: 7; Lands: 17
-Land count: 17 (default curve: avg MV 3.09)
+Land count: 17 (17 lands for every curve: avg MV 3.09)
 Mana pips: W 2, B 21
 Sources: W 7, B 10 (floor 7)
 

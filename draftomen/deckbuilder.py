@@ -1064,12 +1064,7 @@ def select_mana_base(
         source_counts=_ordered_color_items(values=final_source_counts, pair=mana_colors),
         average_mana_value=_average_mana_value(cards=spell_selection.spells),
         reason=effective_reason,
-        caveats=added_notes
-        + _mana_base_caveats(
-            land_count=resolved_land_count,
-            nonbasic_lands=nonbasic_lands,
-            config=config,
-        ),
+        caveats=added_notes,
     )
 
 
@@ -3383,29 +3378,9 @@ def _curve_land_count(
     config: DeckBuilderConfig,
 ) -> tuple[int, str]:
     average_mana_value = _average_mana_value(cards=selection.spells)
-    if (
-        average_mana_value >= config.top_heavy_average_mana_value_min
-        or selection.counts.expensive > config.maximum_expensive_spells
-    ):
-        return (
-            config.top_heavy_land_count,
-            f"top-heavy curve: avg MV {average_mana_value:.2f}",
-        )
-
-    if (
-        average_mana_value <= config.aggressive_average_mana_value_max
-        and selection.counts.two_drops >= config.minimum_two_drops
-    ):
-        return (
-            config.aggressive_land_count,
-            "aggressive curve: "
-            f"avg MV {average_mana_value:.2f}, "
-            f"{selection.counts.two_drops} two-drops",
-        )
-
     return (
         config.default_land_count,
-        f"default curve: avg MV {average_mana_value:.2f}",
+        f"{config.default_land_count} lands for every curve: avg MV {average_mana_value:.2f}",
     )
 
 
@@ -3741,21 +3716,6 @@ def _average_mana_value(*, cards: tuple[ScoredCard, ...]) -> float:
         return 0.0
 
     return sum(card.card.mana_value or 0.0 for card in cards) / len(cards)
-
-
-def _mana_base_caveats(
-    *,
-    land_count: int,
-    nonbasic_lands: tuple[LandCard, ...],
-    config: DeckBuilderConfig,
-) -> tuple[str, ...]:
-    if land_count == config.aggressive_land_count and nonbasic_lands:
-        return (
-            "16-land caveat: prefer basics over slow taplands when curve pressure matters.",
-        )
-
-    return ()
-
 
 
 def _format_player_build_sheet(
@@ -4158,12 +4118,8 @@ def _validate_deck_builder_config(*, config: DeckBuilderConfig) -> None:
     if config.target_spell_count <= 0:
         raise DeckBuilderError("Deck-builder target spell count must be greater than zero.")
 
-    if min(
-        config.default_land_count,
-        config.aggressive_land_count,
-        config.top_heavy_land_count,
-    ) < 0:
-        raise DeckBuilderError("Deck-builder land counts must be non-negative.")
+    if config.default_land_count < 0:
+        raise DeckBuilderError("Deck-builder land count must be non-negative.")
 
     if config.land_count_iteration_limit <= 0:
         raise DeckBuilderError("Deck-builder land-count iterations must be positive.")

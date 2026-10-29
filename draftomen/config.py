@@ -16,6 +16,9 @@ class SplashConfig:
     enabled_by_default: bool = True
     maximum_colors: int = 1
     maximum_cards: int = 3
+    # 86% of splashed cards in winning FRA decks had 1 symbol and 14% had 2. Of about 2,500
+    # single-splash decks, 5 played a card with 3 or more. From experiments/mana-defaults on the
+    # 17Lands FRA dumps, retrieved 2026-10-29.
     maximum_off_color_pips: int = 2
     # Sources by splash symbol count, from scripts/measure_deck_rules.py on the 17Lands FRA
     # PremierDraft dump, retrieved 2026-10-29. Nearly all winning splash decks played 1 to 3
@@ -48,9 +51,11 @@ class DeckBuilderConfig:
     pair_score_win_rate_weight: float = 0.15
     neutral_pair_win_rate: float = 0.5
     pair_score_decimal_places: int = 2
+    # Winning FRA decks played 17 lands at every curve: 66% of aggressive decks, 77 to 80% of
+    # default decks and 78 to 85% of top-heavy decks. 18 lands was 1 to 2%. From
+    # experiments/mana-defaults on the 17Lands FRA dumps, retrieved 2026-10-29.
     default_land_count: int = 17
-    aggressive_land_count: int = 16
-    top_heavy_land_count: int = 18
+    # These bounds now only set the curve center of the optimizer's curve score.
     aggressive_average_mana_value_max: float = 2.7
     top_heavy_average_mana_value_min: float = 3.4
     creature_floor: int = 15
@@ -98,6 +103,8 @@ class DeckBuilderConfig:
         "creature floor",
         "eligible-card shortage",
     )
+    # 93 to 96% of winning two-color decks had 7 or more sources of the lighter main color,
+    # from experiments/mana-defaults on the 17Lands FRA dumps, retrieved 2026-10-29.
     main_color_source_floor: int = 7
     # The lightest color of a winning three-color deck had 4 or more land sources in about
     # 90% of decks, from scripts/measure_deck_rules.py on the 17Lands FRA PremierDraft dump.

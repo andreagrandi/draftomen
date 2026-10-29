@@ -710,13 +710,13 @@ Draft: 00000000-0000-4000-8000-000000000004
 Color pair: WU (automatic; 17Lands WR neutral 50.0%)
 
 Deck summary:
-Deck size: 40 cards (24 spells + 16 lands)
+Deck size: 40 cards (23 spells + 17 lands)
 Average mana value: 2.04
-Mana curve: 0: 0 | 1: 0 | 2: 23 | 3: 1 | 4: 0 | 5: 0 | 6+: 0
-Creatures: 23; Non-creatures: 1; Lands: 16
-Land count: 16 (aggressive curve: avg MV 2.04, 23 two-drops)
+Mana curve: 0: 0 | 1: 0 | 2: 22 | 3: 1 | 4: 0 | 5: 0 | 6+: 0
+Creatures: 22; Non-creatures: 1; Lands: 17
+Land count: 17 (17 lands for every curve: avg MV 2.04)
 Mana pips: W 0, U 1
-Sources: W 7, U 9 (floor 7)
+Sources: W 7, U 10 (floor 7)
 
 Selected spells:
 Creatures:
@@ -727,7 +727,6 @@ Creatures:
 - MV 2 | score 50 | Fixture Card 105003 (C)
 - MV 2 | score 50 | Fixture Card 105003 (C)
 - MV 2 | score 50 | Fixture Card 105003 (C)
-- MV 2 | score 50 | Fixture Card 105005 (C)
 - MV 2 | score 50 | Fixture Card 105006 (C)
 - MV 2 | score 50 | Fixture Card 105014 (C)
 - MV 2 | score 50 | Fixture Card 105017 (C)
@@ -750,23 +749,23 @@ Nonbasic lands:
 - none
 Basics:
 - 7 Plains
-- 9 Island
+- 10 Island
 
 Structure checks:
 Eligible spells for WU: 40
-Selected spells: 24/24
-Creature count: 23 (target 15-23)
-Two-drops MV 2: 23 (minimum 5)
+Selected spells: 23/23
+Creature count: 22 (target 15-22)
+Two-drops MV 2: 22 (minimum 5)
 Expensive spells MV >= 6: 0 (soft cap 3)
 Splash: enabled; no eligible third-color card with one or two symbols of that color in the pool
 Relaxation order: expensive-spell cap -> minimum two-drop quota -> creature ceiling -> creature floor -> eligible-card shortage
 Applied relaxations: creature ceiling
 Bench:
+- MV 2 | score 50 | Fixture Card 105005 (C) (cut: creature ceiling)
 - MV 2 | score 50 | Fixture Card 105013 (C) (cut: creature ceiling)
 - MV 2 | score 50 | Fixture Card 104998 (C) (cut: creature ceiling)
 - MV 2 | score 50 | Fixture Card 105033 (C) (cut: creature ceiling)
 - MV 2 | score 50 | Fixture Card 105000 (C) (cut: creature ceiling)
-- MV 2 | score 50 | Fixture Card 105031 (C) (cut: creature ceiling)
 
 Color-pair reasoning:
 Diagnostic: compares playable-card quality with 17Lands color-pair context; it is not another decklist.

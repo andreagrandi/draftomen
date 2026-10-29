@@ -2483,8 +2483,6 @@ def test_config_exposes_documented_tunables() -> None:
     assert config.DECK_BUILDER.pair_score_card_weight == 0.85
     assert config.DECK_BUILDER.pair_score_win_rate_weight == 0.15
     assert config.DECK_BUILDER.default_land_count == 17
-    assert config.DECK_BUILDER.aggressive_land_count == 16
-    assert config.DECK_BUILDER.top_heavy_land_count == 18
     assert config.DECK_BUILDER.creature_floor == 15
     assert config.DECK_BUILDER.creature_ceiling == 17
     assert config.DECK_BUILDER.minimum_two_drops == 5
