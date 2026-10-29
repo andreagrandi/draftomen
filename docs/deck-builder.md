@@ -109,3 +109,27 @@ When the pool cannot satisfy every default and still produce the target spell co
 5. eligible-card shortage.
 
 The build sheet prints both the relaxation order and the relaxations that were actually applied.
+
+## Measuring winning decks
+
+`scripts/measure_deck_rules.py` measures how winning 17Lands decks were built. It reads local files only and never opens a network connection.
+
+```
+uv run python scripts/measure_deck_rules.py --game-data game_data_public.FRA.PremierDraft.csv.gz --set-code FRA
+```
+
+The game data file is a 17Lands public dump for PremierDraft or PickTwoDraft. The script needs the set's cached card data and cached 17Lands ratings, and stops with an error if either is missing. The ratings come from the event of the game data file. Pass `--ratings-format PremierDraft` or `--ratings-format QuickDraft` to grade with another format, for example when no PickTwoDraft ratings are cached. Use `--app-dir` to point at a data directory other than `~/.draftomen`.
+
+A winning deck has 7 or more wins in PremierDraft and 4 or more in PickTwoDraft. Decks need at least 3 games and 15 to 19 lands. A source is a land that makes the color. A non-land fixer is a spell that makes two-color or any-color mana, makes a Treasure, or searches for a basic land, which includes basic landcycling.
+
+Each stat feeds these rules:
+
+- Share of two-color, splash and three-color decks, with win rates: how often the builder should pick a three-color deck or a splash.
+- Lightest color card share percentiles: the share of cards each color of a three-color deck needs.
+- In-color dual lands and win rate by fixing pieces: the three-color score by fixing pieces, and three-color decks without dual lands.
+- Sources of the lightest color: the land minimum for each color of a three-color deck.
+- Sources behind each double-symbol card: the source count for cards with two symbols of one color.
+- Splash cards per deck: the card count that separates a splash from a third main color.
+- Splash sources and splash basics: how many sources a splash needs and whether basics can supply them.
+- Grades of splashed cards: the minimum grade for a splash card.
+- Win rate by non-land fixer count: which spells count as fixing.

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Add `scripts/measure_deck_rules.py`, which reads a local 17Lands game data
+  file and prints the color and mana stats of winning decks, such as dual land
+  counts, sources for double-symbol cards and splash card grades. It uses
+  cached files only and never opens a network connection. (#1019)
 - The pool summary creature and removal counts no longer jump between picks.
   After a pick they used to count every color until the next pack was scored,
   then drop back to the likely pair. They now keep counting against the last
