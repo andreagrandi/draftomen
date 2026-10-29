@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- The pool summary creature and removal counts no longer jump between picks.
+  After a pick they used to count every color until the next pack was scored,
+  then drop back to the likely pair. They now keep counting against the last
+  pair, and the GUI and TUI labels show it, such as `Creatures (WU)`, or
+  `Creatures (any color)` before a pair is inferred.
 - Native bundle builds now pin Python 3.14 on macOS and 3.12 on Windows, so
   a runner image that ships a newer Python cannot break the Nuitka build.
 - The deck builder no longer treats a hybrid card that the pair can cast, such

@@ -263,6 +263,7 @@ def _pool() -> PoolState:
             target_floor=DECK_BUILDER.creature_floor,
             target_ceiling=DECK_BUILDER.creature_ceiling,
         ),
+        count_pair="WG",
     )
 
 

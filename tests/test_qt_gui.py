@@ -6123,6 +6123,11 @@ assert pool_removal_count is not None and pool_pace is not None
 assert pool_land_count.property("text") == "3"
 assert pool_creature_count.property("text") == "12"
 assert pool_removal_count.property("text") == "6"
+pool_creature_label = wide_pool.findChild(QObject, "poolCreatureCountLabel")
+pool_removal_label = wide_pool.findChild(QObject, "poolRemovalCountLabel")
+assert pool_creature_label is not None and pool_removal_label is not None
+assert pool_creature_label.property("text") == "Creatures (WG)"
+assert pool_removal_label.property("text") == "Removal (WG)"
 assert pool_pace.property("text") == "On pace for 21 creatures · target 15 to 17"
 behind_state = dict(provider.state)
 behind_pool = dict(behind_state["pool"])
@@ -6140,11 +6145,13 @@ no_pace_state = dict(provider.state)
 no_pace_pool = dict(no_pace_state["pool"])
 no_pace_pool["creature_pace"] = None
 no_pace_pool["land_count"] = None
+no_pace_pool["count_pair"] = None
 no_pace_state["pool"] = no_pace_pool
 provider._replace_state(state=no_pace_state)
 application.processEvents()
 assert pool_pace.property("text") == "Creature pace: —"
 assert pool_land_count.property("text") == "—"
+assert pool_creature_label.property("text") == "Creatures (any color)"
 assert pool_pace.property("color") != behind_color
 no_projection_pool = dict(no_pace_pool)
 no_projection_pool["creature_pace"] = {

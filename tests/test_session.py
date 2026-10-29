@@ -548,6 +548,42 @@ def test_pool_state_counts_creatures_and_removal_castable_in_likely_pair(
 
     assert unpaired.creature_count == 3
     assert unpaired.removal_count == 2
+    assert pool.count_pair == "WU"
+    assert unpaired.count_pair is None
+
+
+def test_pool_state_keeps_pair_filter_between_pick_and_next_scored_pack(
+    tmp_path: Path,
+) -> None:
+    cards = (
+        _count_card(grp_id=1, colors=("W",), types=("Creature",)),
+        _count_card(grp_id=2, colors=("U",), types=("Creature",)),
+        _count_card(grp_id=3, colors=("R",), types=("Creature",)),
+        _count_card(
+            grp_id=4,
+            colors=("R",),
+            types=("Instant",),
+            oracle_text="Deals 3 damage to target creature.",
+        ),
+    )
+    session = LiveSession(
+        log_path=tmp_path / "Player.log",
+        card_database=CardDatabase(cards={card.grp_id: card for card in cards}),
+    )
+    scored = session._pool_state(
+        pool_grp_ids=(1, 2, 3, 4),
+        scored_pack=_pair_scored_pack(pair="WU"),
+    )
+
+    after_pick = session._pool_state(
+        pool_grp_ids=(1, 2, 3, 4, 3),
+        retained_current_colors=scored.current_colors,
+    )
+
+    assert scored.creature_count == 2
+    assert after_pick.creature_count == 2
+    assert after_pick.removal_count == 0
+    assert after_pick.count_pair == "WU"
 
 
 def test_pool_state_land_count_includes_dual_lands_by_quantity(
