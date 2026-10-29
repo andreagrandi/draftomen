@@ -102,7 +102,7 @@ Item {
                             Label { text: "Splash recommendations"; color: Theme.text; font.bold: true }
                             Label {
                                 Layout.fillWidth: true
-                                text: "Consider supported single-pip cards when fixing allows."
+                                text: "Consider up to three strong cards of one extra color."
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.textPixelSize(11)
                                 wrapMode: Text.WordWrap

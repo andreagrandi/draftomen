@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- Splashes can now run on basic lands. A splash covers one color and up to 3
+  cards. A card with one symbol of the splash color needs 3 land sources, and
+  a card with two symbols needs 4. Basics of the splash color fill whatever
+  the drafted dual lands do not cover, so a splash no longer needs 2 duals.
+  The pick overlay and the build sheet use the same rule. In winning 17Lands
+  splash decks, 14 to 22% had no dual land for the splash, and 70% of decks
+  splashing a two-symbol card had 4 or more splash sources. (#1026)
 - The deck builder now gives a color at least 6 land sources when a spell in
   the deck has two or more symbols of that color, such as `{1}{B}{B}`. When
   the lands cannot reach 6, the builder cuts the card and picks a

@@ -159,6 +159,7 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
             ["G", 0],
         ],
         "picked_card_count": 0,
+        "required_sources": 0,
     }
     scored_cards = {card.card.grp_id: card for card in scored_pack.cards}
     for candidate in decision["candidates"]:

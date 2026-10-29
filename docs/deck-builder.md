@@ -16,7 +16,7 @@ The spell selector always considers cards that are castable in the chosen pair:
 - colorless nonland spells, including colorless artifacts;
 - in-pair artifacts and other in-pair spells.
 
-Conservative splashing is on by default and can be disabled with `--no-splash` or through the TUI configuration opened with `c`. The builder uses the same shared policy as live picks: one third color, at most two `A-` or better cards, and at most one off-color mana pip per card. One card requires three sources and two cards require four. The builder may plan one basic land of the splash color, so the remaining sources must be deterministic drafted fixing lands usable by the primary pair.
+Conservative splashing is on by default and can be disabled with `--no-splash` or through the TUI configuration opened with `c`. The builder uses the same shared policy as live picks: one third color and at most three `A-` or better cards, each with one or two symbols of the splash color and no symbol of another outside color. A splash with only one-symbol cards needs 3 land sources of the splash color, and a splash with a two-symbol card needs 4. Basics of the splash color count fully, so the builder adds as many as the drafted fixing lands leave short. `scripts/measure_deck_rules.py` found on the 17Lands FRA PremierDraft dump retrieved 2026-10-29 that one splash color was played in 87 to 89% of winning splash decks, nearly all of them splashed 1 to 3 cards, and most had 3 or 4 splash sources. 14 to 22% had no dual land for the splash and used 2 or 3 basics. Two-symbol cards were 14% of splashed cards, and 70% of decks splashing one had 4 or more splash sources.
 
 Three-color candidates use the same gate as live picks: the set's three-color game share must reach the pick engine threshold. In other sets only pairs are scored. A three-color deck is a candidate when each of its colors appears on at least 4 of the deck's top 23 playable spells (`triad_min_color_cards = 4`). A color with 1 to 3 cards is a splash, so splash rules apply instead. 17Lands labels a third color with 1 to 3 cards a splash and 4 or more a main color, and in 98% of three-color decks the lightest color has 4 or more cards. A pool with no fixing still gets its balanced three-color decks scored, and the fixing adjustment below decides how much fixing helps. A qualifying triad is ranked with the pairs by the same score, using the 17Lands win rate of that three-color deck. The builder moves that win rate by the measured gap between FRA PremierDraft three-color decks with the same number of fixing pieces and all three-color decks. The gaps are -18.5 points for 0 pieces, -7.5 for 1, -4.9 for 2, -2.3 for 3, -1.6 for 4, -0.3 for 5 and +2.0 for 6 or more. `scripts/measure_deck_rules.py` measured them on the 17Lands FRA PremierDraft dump retrieved 2026-10-29. The script counts the fixing pieces in the deck, while the builder counts them in the pool. Two-color decks get no adjustment. The build sheet prints the fixing piece count and the adjustment next to each three-color deck. A three-color deck never gets a splash.
 
@@ -43,13 +43,14 @@ All tunables live in `draftomen/config.py` under `DeckBuilderConfig`:
 - `maximum_expensive_spells = 3` at mana value 6 or greater
 - `near_tie_creature_preference_points = 2.0`
 - `maximum_unresolved_metadata_ratio = 0.25`
-- `splash_max_cards = 2`
+- `splash_max_cards = 3`
 - `splash_elite_score_minimum = 70.0`
 - `triad_fixing_win_rate_gaps` moves a three-color deck's win rate by its fixing piece count, from -18.5 points at 0 pieces to +2.0 points at 6 or more
 - shared splash grade floor: `A-`
 - shared splash-color limit: `1`
-- shared source targets: `3` for one card, `4` for two cards
-- planned splash basics: at most `1`
+- shared splash symbol limit: `2` symbols of the splash color per card
+- shared source targets: `3` for one-symbol cards, `4` when a card has two symbols
+- splash basics: as many as the drafted fixing lands leave short of the source target
 - `main_color_source_floor = 7`
 - `triad_min_color_land_sources = 4`
 - `double_symbol_min_color_land_sources = 6`
@@ -89,9 +90,9 @@ Before pair selection, the builder validates that enough picked cards have card 
 
 ## Mana base
 
-Drafted in-pair nonbasic lands are slotted first, up to the land-count target. A nonbasic land is in-pair when its produced mana is known and all produced colors are in the chosen pair. If splash cards are selected, nonbasic lands that produce the one splash color are included and the builder adds at most one basic of that color to meet the shared source target.
+Drafted in-pair nonbasic lands are slotted first, up to the land-count target. A nonbasic land is in-pair when its produced mana is known and all produced colors are in the chosen pair. If splash cards are selected, nonbasic lands that produce the one splash color are included and the builder adds basics of that color until the deck meets the shared source target of 3 or 4.
 
-Remaining slots are basics. After reserving any required splash basic, the other basics are split proportionally to colored pips in the final spell list, with a 7-source floor for each main color when the available land slots can satisfy it. Ties and leftover basics round toward the color with heavier double-pip requirements.
+Remaining slots are basics. After reserving the splash basics, the other basics are split proportionally to colored pips in the final spell list, with a 7-source floor for each main color when the available land slots can satisfy it. Ties and leftover basics round toward the color with heavier double-pip requirements.
 
 A three-color deck splits its basics across all three colors by the same rules and plans no splash. Every color first gets at least 4 land sources (`triad_min_color_land_sources = 4`). A dual land counts toward each color it makes, and non-land fixers do not count. `scripts/measure_deck_rules.py` found that the lightest color of a winning three-color deck had 4 or more land sources in about 90% of decks, on the 17Lands FRA PremierDraft dump retrieved 2026-10-29. Two-color decks have no such minimum. The 7-source floor comes next, so when 17 lands cannot give every color seven sources, the basics go to the colors furthest below the floor. Only after that does the pip weighting apply.
 

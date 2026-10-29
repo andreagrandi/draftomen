@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from draftomen.carddb import CardDatabase, CardInfo
+from draftomen.config import SPLASH
 from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
 from draftomen.draft_format import (
     DraftFormat,
@@ -559,7 +560,7 @@ def _format_splash_status(*, scored_pack: ScoredPack) -> str | None:
     fixing_sources = state.fixing_for(color=state.active_color)
     return (
         f"splash {state.active_color} "
-        f"{state.picked_card_count}/2 cards, "
+        f"{state.picked_card_count}/{SPLASH.maximum_cards} cards, "
         f"{fixing_sources} drafted fixing"
     )
 
