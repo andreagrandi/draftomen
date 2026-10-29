@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Added `experiments/speculative-splash`, which measures when winning FRA
+  17Lands drafters took the cards they splashed, their grades, and whether
+  off-color picks ended up splashed, in a main color or in the sideboard. The
+  findings propose keeping the current pick rule with no grade floor. No app
+  behavior changes. (#1028)
 - Splash cards no longer need a minimum grade. A splash card goes in when it
   beats the card it replaces, and a third-color card sets the splash color
   when its 17Lands win rate beats the weakest of the pool's best 23 on-pair
