@@ -16,7 +16,9 @@ The spell selector always considers cards that are castable in the chosen pair:
 - colorless nonland spells, including colorless artifacts;
 - in-pair artifacts and other in-pair spells.
 
-Conservative splashing is on by default and can be disabled with `--no-splash` or through the TUI configuration opened with `c`. The builder uses the same shared policy as live picks: one third color and at most three `A-` or better cards, each with one or two symbols of the splash color and no symbol of another outside color. A splash with only one-symbol cards needs 3 land sources of the splash color, and a splash with a two-symbol card needs 4. Basics of the splash color count fully, so the builder adds as many as the drafted fixing lands leave short. `scripts/measure_deck_rules.py` found on the 17Lands FRA PremierDraft dump retrieved 2026-10-29 that one splash color was played in 87 to 89% of winning splash decks, nearly all of them splashed 1 to 3 cards, and most had 3 or 4 splash sources. 14 to 22% had no dual land for the splash and used 2 or 3 basics. Two-symbol cards were 14% of splashed cards, and 70% of decks splashing one had 4 or more splash sources.
+Conservative splashing is on by default and can be disabled with `--no-splash` or through the TUI configuration opened with `c`. The builder uses the same shared policy as live picks: one third color and at most three cards, each with one or two symbols of the splash color and no symbol of another outside color. A splash with only one-symbol cards needs 3 land sources of the splash color, and a splash with a two-symbol card needs 4. Basics of the splash color count fully, so the builder adds as many as the drafted fixing lands leave short. `scripts/measure_deck_rules.py` found on the 17Lands FRA PremierDraft dump retrieved 2026-10-29 that one splash color was played in 87 to 89% of winning splash decks, nearly all of them splashed 1 to 3 cards, and most had 3 or 4 splash sources. 14 to 22% had no dual land for the splash and used 2 or 3 basics. Two-symbol cards were 14% of splashed cards, and 70% of decks splashing one had 4 or more splash sources.
+
+A splash card has no minimum grade, but it needs a 17Lands rating. Of the cards that winning decks splashed in the same dump, only 17% (Premier) and 14% (Pick Two) were `A-` or better, 40% and 36% were `B` or better, and the most common grade was `C+` at 26%. A splash card goes in only when it beats the card it replaces, so the optimizer's score ranking decides, and a third-color card sets the splash color only when its 17Lands win rate beats the weakest of the pool's best 23 on-pair spells.
 
 Three-color candidates use the same gate as live picks: the set's three-color game share must reach the pick engine threshold. In other sets only pairs are scored. A three-color deck is a candidate when each of its colors appears on at least 4 of the deck's top 23 playable spells (`triad_min_color_cards = 4`). A color with 1 to 3 cards is a splash, so splash rules apply instead. 17Lands labels a third color with 1 to 3 cards a splash and 4 or more a main color, and in 98% of three-color decks the lightest color has 4 or more cards. A pool with no fixing still gets its balanced three-color decks scored, and the fixing adjustment below decides how much fixing helps. A qualifying triad is ranked with the pairs by the same score, using the 17Lands win rate of that three-color deck. The builder moves that win rate by the measured gap between FRA PremierDraft three-color decks with the same number of fixing pieces and all three-color decks. The gaps are -18.5 points for 0 pieces, -7.5 for 1, -4.9 for 2, -2.3 for 3, -1.6 for 4, -0.3 for 5 and +2.0 for 6 or more. `scripts/measure_deck_rules.py` measured them on the 17Lands FRA PremierDraft dump retrieved 2026-10-29. The script counts the fixing pieces in the deck, while the builder counts them in the pool. Two-color decks get no adjustment. The build sheet prints the fixing piece count and the adjustment next to each three-color deck. A three-color deck never gets a splash.
 
@@ -44,9 +46,8 @@ All tunables live in `draftomen/config.py` under `DeckBuilderConfig`:
 - `near_tie_creature_preference_points = 2.0`
 - `maximum_unresolved_metadata_ratio = 0.25`
 - `splash_max_cards = 3`
-- `splash_elite_score_minimum = 70.0`
 - `triad_fixing_win_rate_gaps` moves a three-color deck's win rate by its fixing piece count, from -18.5 points at 0 pieces to +2.0 points at 6 or more
-- shared splash grade floor: `A-`
+- shared splash grade floor: none, a splash card only has to beat the card it replaces
 - shared splash-color limit: `1`
 - shared splash symbol limit: `2` symbols of the splash color per card
 - shared source targets: `3` for one-symbol cards, `4` when a card has two symbols
@@ -144,5 +145,5 @@ Each stat feeds these rules:
 - Sources behind each double-symbol card: the source count for cards with two symbols of one color.
 - Splash cards per deck: the card count that separates a splash from a third main color.
 - Splash sources and splash basics: how many sources a splash needs and whether basics can supply them.
-- Grades of splashed cards: the minimum grade for a splash card.
+- Grades of splashed cards: why a splash card needs no minimum grade.
 - Win rate by non-land fixer count: which spells count as fixing.

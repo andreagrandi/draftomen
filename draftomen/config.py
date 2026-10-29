@@ -23,9 +23,11 @@ class SplashConfig:
     # 14 to 22% had no dual for the splash. Basics fill the gap, so the deck always has them.
     single_symbol_sources: int = 3
     double_symbol_sources: int = 4
-    supported_minimum_grade: str = "A-"
     speculative_minimum_grade: str = "A"
-    minimum_score_advantage: float = 5.0
+    # No minimum grade for splash cards. Of the cards winning FRA decks splashed in the same
+    # dump, only 17% (Premier) and 14% (Pick Two) were A- or better, and C+ was the most common
+    # grade at 26%. A splash card only has to beat the card it replaces.
+    minimum_score_advantage: float = 0.0
     ready_score_multiplier: float = 0.95
     speculative_score_multiplier: float = 0.85
     fixer_score_multiplier: float = 1.05
@@ -59,7 +61,6 @@ class DeckBuilderConfig:
     expensive_spell_mana_value: float = 6.0
     near_tie_creature_preference_points: float = 2.0
     splash_max_cards: int = 3
-    splash_elite_score_minimum: float = 70.0
     # Win rate gap by fixing piece count, from scripts/measure_deck_rules.py on the 17Lands
     # FRA PremierDraft dump, retrieved 2026-10-29. The last value covers that count and more.
     triad_fixing_win_rate_gaps: tuple[float, ...] = (

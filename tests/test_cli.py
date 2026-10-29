@@ -2136,7 +2136,7 @@ def test_build_defaults_to_splash_but_requires_an_eligible_card(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "Splash: enabled; no eligible A- or better" in captured.out
+    assert "Splash: enabled; no eligible third-color card" in captured.out
     assert "Eligible spells for WU: 4" in captured.out
     assert captured.err == ""
 
@@ -2493,7 +2493,6 @@ def test_config_exposes_documented_tunables() -> None:
     assert config.DECK_BUILDER.expensive_spell_mana_value == 6.0
     assert config.DECK_BUILDER.near_tie_creature_preference_points == 2.0
     assert config.DECK_BUILDER.splash_max_cards == 3
-    assert config.DECK_BUILDER.splash_elite_score_minimum == 70.0
     assert config.DECK_BUILDER.maximum_unresolved_metadata_ratio == 0.25
     assert config.DECK_BUILDER.main_color_source_floor == 7
     assert config.DECK_BUILDER.structure_maindeck_rate_threshold == 0.5

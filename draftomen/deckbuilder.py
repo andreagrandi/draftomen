@@ -50,7 +50,6 @@ from draftomen.seventeen import (
 from draftomen.splash import (
     SplashState,
     card_is_castable_in_pair,
-    grade_at_least,
     infer_splash_state,
     splash_basic_sources,
     splash_required_sources,
@@ -1686,9 +1685,6 @@ def _is_eligible_spell_for_pair(
     if not _is_spell_card(card=card.card):
         return False
 
-    if card.raw_score < config.splash_elite_score_minimum:
-        return False
-
     candidate_color, off_color_pips = splash_requirement(
         card=card.card,
         base_pair=pair,
@@ -1699,10 +1695,7 @@ def _is_eligible_spell_for_pair(
     if off_color_pips > SPLASH.maximum_off_color_pips:
         return False
 
-    return grade_at_least(
-        grade=card.rating.letter_grade,
-        minimum=SPLASH.supported_minimum_grade,
-    )
+    return card.rating.letter_grade is not None
 
 
 
@@ -3999,7 +3992,7 @@ def _format_splash_note(*, selection: SpellSelection) -> str:
 
     if selection.splash_color is None:
         return (
-            "Splash: enabled; no eligible A- or better third-color card "
+            "Splash: enabled; no eligible third-color card "
             "with one or two symbols of that color in the pool"
         )
 
@@ -4022,7 +4015,7 @@ def _format_splash_note(*, selection: SpellSelection) -> str:
         f"{selection.splash_planned_basic_sources} basics = "
         f"{available_sources}/{required_sources} sources; "
         f"selected {selection.counts.splashes}/"
-        f"{selection.constraints.maximum_splash_spells} A- or better splash cards)"
+        f"{selection.constraints.maximum_splash_spells} splash cards)"
     )
 
 
@@ -4205,9 +4198,6 @@ def _validate_deck_builder_config(*, config: DeckBuilderConfig) -> None:
 
     if config.splash_max_cards < 0:
         raise DeckBuilderError("Deck-builder splash maximum must be non-negative.")
-
-    if config.splash_elite_score_minimum < 0:
-        raise DeckBuilderError("Deck-builder splash score threshold must be non-negative.")
 
     if not config.triad_fixing_win_rate_gaps:
         raise DeckBuilderError("Deck-builder triad fixing win rate gaps must not be empty.")

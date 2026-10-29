@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Splash cards no longer need a minimum grade. A splash card goes in when it
+  beats the card it replaces, and a third-color card sets the splash color
+  when its 17Lands win rate beats the weakest of the pool's best 23 on-pair
+  spells. Aggressive pools still need an `A`. Of the cards that winning FRA
+  17Lands decks splashed, only 17% (Premier) and 14% (Pick Two) were `A-` or
+  better, and the most common grade was `C+`. (#1027)
 - Splashes can now run on basic lands. A splash covers one color and up to 3
   cards. A card with one symbol of the splash color needs 3 land sources, and
   a card with two symbols needs 4. Basics of the splash color fill whatever

@@ -5296,6 +5296,88 @@ def test_triad_base_has_no_splash_and_marks_outside_cards_off_color() -> None:
     assert assessment.reasons == ("card is outside the three-color deck",)
 
 
+def test_b_graded_single_symbol_card_is_splash_ready_when_sources_allow_it() -> None:
+    base_ratings = _splash_ratings_data()
+    card_ratings = dict(base_ratings.primary.card_ratings)
+    card_ratings[105] = _stats(
+        grp_id=105,
+        name="Red Splash Bomb",
+        color="R",
+        gih=0.63,
+        games_in_hand=900,
+    )
+    ratings_data = replace(
+        base_ratings,
+        primary=replace(base_ratings.primary, card_ratings=card_ratings),
+    )
+
+    scored_pack = PickEngine(ratings_data=ratings_data).score_pack(
+        offered_grp_ids=(105,),
+        card_database=_splash_card_database(),
+        pool_grp_ids=(101, 102, 101, 102),
+        pick_index=10,
+    )
+    red_card = scored_pack.cards[0]
+
+    assert ratings_data.rating_for(grp_id=105).letter_grade == "B"
+    assert red_card.color_fit == "splash-ready"
+    assert red_card.splash.reasons == ("card has sufficient mana support",)
+    assert red_card.splash.available_sources == red_card.splash.required_sources == 3
+
+
+def test_splash_card_that_only_ties_the_best_on_color_option_is_rejected() -> None:
+    database = _splash_card_database()
+    ratings_data = _splash_ratings_data()
+    state = infer_splash_state(
+        pool_grp_ids=(101, 102, 101, 102),
+        card_database=database,
+        ratings_data=ratings_data,
+        base_pair="WU",
+        enabled=True,
+    )
+
+    def assess(*, best_on_color_score: float):
+        return assess_splash_card(
+            card=database.lookup(grp_id=105),
+            grade="B",
+            base_score=60.0,
+            best_on_color_score=best_on_color_score,
+            locked=False,
+            state=state,
+        )
+
+    tied = assess(best_on_color_score=60.0)
+    better = assess(best_on_color_score=59.0)
+
+    assert tied.classification == "off-color"
+    assert tied.score_advantage == 0.0
+    assert tied.reasons == ("card is not enough better than the best on-color option",)
+    assert better.classification == "splash-ready"
+
+
+def test_unrated_splash_card_is_not_splash_ready() -> None:
+    database = _splash_card_database()
+    state = infer_splash_state(
+        pool_grp_ids=(101, 102, 101, 102),
+        card_database=database,
+        ratings_data=_splash_ratings_data(),
+        base_pair="WU",
+        enabled=True,
+    )
+
+    assessment = assess_splash_card(
+        card=database.lookup(grp_id=105),
+        grade=None,
+        base_score=60.0,
+        best_on_color_score=50.0,
+        locked=False,
+        state=state,
+    )
+
+    assert assessment.classification == "off-color"
+    assert assessment.reasons == ("card has no 17Lands rating",)
+
+
 def _candidate_rows(*, scored_pack: ScoredPack) -> dict[str, ColorCandidate]:
     return {row.colors: row for row in scored_pack.commitment.candidates}
 
