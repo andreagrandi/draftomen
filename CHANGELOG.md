@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- The deck builder now gives each color of a three-color deck at least 4
+  land sources when it splits the basics. Dual lands count toward each color
+  they make, and non-land fixers do not count. The lightest color of a
+  winning three-color deck had 4 or more land sources in about 90% of 17Lands
+  decks. Two-color mana bases are unchanged. (#1024)
 - A three-color deck is now a triad candidate only when each of its colors
   appears on at least 4 of the top 23 playable spells. A color with 1 to 3
   cards is a splash, so splash rules apply instead. 17Lands labels a third

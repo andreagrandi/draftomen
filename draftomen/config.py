@@ -95,6 +95,9 @@ class DeckBuilderConfig:
         "eligible-card shortage",
     )
     main_color_source_floor: int = 7
+    # The lightest color of a winning three-color deck had 4 or more land sources in about
+    # 90% of decks, from scripts/measure_deck_rules.py on the 17Lands FRA PremierDraft dump.
+    triad_min_color_land_sources: int = 4
     structure_maindeck_rate_threshold: float = 0.5
     structure_min_land_count: int = 14
     structure_max_land_count: int = 20
