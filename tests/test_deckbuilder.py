@@ -18,10 +18,12 @@ from draftomen.deckbuilder import (
     ManaBase,
     SpellConstraints,
     SpellCounts,
+    SpellSelection,
     _basic_land_counts,
     _basic_splits,
     _build_optimizer_context,
     _card_quantity_key,
+    _double_symbol_colors,
     _greedy_feasible_package,
     _is_splash_card,
     _optimizer_card_keys,
@@ -2991,3 +2993,260 @@ def test_triad_is_not_scored_when_lightest_color_has_three_cards() -> None:
     assert "UBG" not in {score.pair for score in selection.ranked_scores}
     assert len(selection.chosen.pair) == 2
     assert build_sheet.spell_selection.splash_color == "G"
+
+
+def _double_symbol_database(*, double_cost: str, plain_count: int) -> CardDatabase:
+    cards: dict[int, CardInfo] = {}
+    for offset in range(plain_count):
+        grp_id = 701 + offset
+        is_white = offset % 2 == 0
+        cards[grp_id] = _card(
+            grp_id=grp_id,
+            name=f"Plain Fixture {grp_id}",
+            colors=("W",) if is_white else ("U",),
+            mana_value=3.0,
+            types=("Creature — Fixture",) if offset < 14 else ("Instant",),
+            mana_cost="{1}{W}" if is_white else "{1}{U}",
+        )
+
+    cards[790] = _card(
+        grp_id=790,
+        name="Double Symbol Fixture",
+        colors=("U",),
+        mana_value=3.0,
+        types=("Creature — Fixture",),
+        mana_cost=double_cost,
+    )
+    return CardDatabase(cards=cards)
+
+
+def _double_symbol_triad_spells(*, double_cost: str) -> tuple[SpellSelection, CardDatabase]:
+    cards: dict[int, CardInfo] = {}
+    for offset in range(22):
+        grp_id = 801 + offset
+        color = "W" if offset < 10 else "U" if offset < 19 else "B"
+        cards[grp_id] = _card(
+            grp_id=grp_id,
+            name=f"Triad Fixture {grp_id}",
+            colors=(color,),
+            mana_value=3.0,
+            types=("Creature — Fixture",) if offset < 14 else ("Instant",),
+            mana_cost=f"{{1}}{{{color}}}",
+        )
+
+    cards[890] = _card(
+        grp_id=890,
+        name="Hapatra Fixture",
+        colors=("B",),
+        mana_value=3.0,
+        types=("Creature — Fixture",),
+        mana_cost=double_cost,
+    )
+    database = CardDatabase(cards=cards)
+    spell_selection = select_deck_spells(
+        pool_grp_ids=tuple(sorted(cards)),
+        card_database=database,
+        pair="WUB",
+    )
+    return spell_selection, database
+
+
+def test_double_symbol_colors_ignore_hybrid_and_back_face_symbols() -> None:
+    double_black = _card(grp_id=1, name="A", colors=("B",), mana_cost="{1}{B}{B}")
+    hybrid = _card(grp_id=2, name="B", colors=("W", "B"), mana_cost="{W/B}{W/B}")
+    single = _card(grp_id=3, name="C", colors=("B",), mana_cost="{2}{B}")
+    two_sided = _card(grp_id=4, name="D", colors=("B",), mana_cost="{B} // {B}{B}")
+    no_cost = _card(grp_id=5, name="E", colors=("B",), mana_cost=None)
+
+    assert _double_symbol_colors(card=double_black, colors="WUB") == ("B",)
+    assert _double_symbol_colors(card=hybrid, colors="WUB") == ()
+    assert _double_symbol_colors(card=single, colors="WUB") == ()
+    assert _double_symbol_colors(card=two_sided, colors="WUB") == ()
+    assert _double_symbol_colors(card=no_cost, colors="WUB") == ()
+
+
+def test_triad_basics_give_a_double_symbol_color_six_land_sources() -> None:
+    def split(double_symbol_colors: tuple[str, ...]) -> dict[str, int]:
+        basics = _basic_land_counts(
+            pair="UBG",
+            slots=17,
+            pip_counts={"U": 20, "B": 10, "G": 1},
+            double_pip_counts={"U": 0, "B": 0, "G": 0},
+            source_counts={"U": 0, "B": 0, "G": 0},
+            config=DECK_BUILDER,
+            double_symbol_colors=double_symbol_colors,
+        )
+        return {basic.color: basic.count for basic in basics}
+
+    assert split(()) == {"U": 7, "B": 6, "G": 4}
+    assert split(("G",))["G"] == 6
+
+
+def test_double_symbol_floor_counts_dual_lands_toward_the_color() -> None:
+    basics = _basic_land_counts(
+        pair="UBG",
+        slots=15,
+        pip_counts={"U": 20, "B": 10, "G": 1},
+        double_pip_counts={"U": 0, "B": 0, "G": 0},
+        source_counts={"U": 0, "B": 0, "G": 2},
+        config=DECK_BUILDER,
+        double_symbol_colors=("G",),
+    )
+
+    assert {basic.color: basic.count for basic in basics}["G"] == 4
+
+
+def test_mana_base_notes_basics_added_for_a_double_symbol_card() -> None:
+    spell_selection, database = _double_symbol_triad_spells(double_cost="{1}{B}{B}")
+
+    mana_base = select_mana_base(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        pair="WUB",
+        spell_selection=spell_selection,
+        config=replace(DECK_BUILDER, main_color_source_floor=0),
+    )
+
+    sources = dict(mana_base.source_counts)
+    assert sources["B"] >= 6
+    note = (
+        "Hapatra Fixture needs 6 black land sources for its black symbols: "
+        "added black basics."
+    )
+    assert mana_base.caveats.count(note) == 1
+
+
+def test_mana_base_has_no_double_symbol_note_for_hybrid_costs() -> None:
+    spell_selection, database = _double_symbol_triad_spells(double_cost="{W/B}{W/B}")
+
+    mana_base = select_mana_base(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        pair="WUB",
+        spell_selection=spell_selection,
+        config=replace(DECK_BUILDER, main_color_source_floor=0),
+    )
+
+    assert not any("symbols" in caveat for caveat in mana_base.caveats)
+
+
+def test_two_color_build_with_normal_lands_adds_no_double_symbol_notes() -> None:
+    database = _double_symbol_database(double_cost="{1}{U}{U}", plain_count=24)
+
+    build_sheet = select_build_sheet(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        pair="WU",
+    )
+
+    assert any(
+        scored.card.grp_id == 790 for scored in build_sheet.spell_selection.spells
+    )
+    assert not any("symbols" in c or "Cut" in c for c in build_sheet.mana_base.caveats)
+
+
+def _three_double_symbol_database() -> CardDatabase:
+    cards: dict[int, CardInfo] = {}
+    for color_index, color in enumerate(("W", "U", "B")):
+        for offset in range(6):
+            grp_id = 900 + color_index * 10 + offset
+            cards[grp_id] = _card(
+                grp_id=grp_id,
+                name=f"Plain {color} {offset}",
+                colors=(color,),
+                mana_value=3.0,
+                types=("Creature — Fixture",) if offset < 5 else ("Instant",),
+                mana_cost=f"{{1}}{{{color}}}",
+            )
+
+        cards[850 + color_index] = _card(
+            grp_id=850 + color_index,
+            name=f"Double {color}",
+            colors=(color,),
+            mana_value=3.0,
+            types=("Creature — Fixture",),
+            mana_cost=f"{{1}}{{{color}}}{{{color}}}",
+        )
+
+    for offset in range(4):
+        cards[960 + offset] = _card(
+            grp_id=960 + offset,
+            name=f"Colorless Spare {offset}",
+            colors=(),
+            mana_value=3.0,
+            types=("Artifact",),
+            mana_cost="{3}",
+        )
+
+    return CardDatabase(cards=cards)
+
+
+def test_build_sheet_cuts_double_symbol_cards_of_the_color_left_below_six() -> None:
+    database = _three_double_symbol_database()
+
+    build_sheet = select_build_sheet(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        card_database=database,
+        pair="WUB",
+    )
+
+    mana_base = build_sheet.mana_base
+    sources = dict(mana_base.source_counts)
+    short_colors = [color for color, count in sources.items() if count < 6]
+    assert len(short_colors) == 1
+    short_color = short_colors[0]
+    doubles = {"W": 850, "U": 851, "B": 852}
+    spell_ids = {scored.card.grp_id for scored in build_sheet.spell_selection.spells}
+    assert doubles[short_color] not in spell_ids
+    for color, grp_id in doubles.items():
+        if color != short_color:
+            assert grp_id in spell_ids
+
+    assert mana_base.total_cards == DECK_BUILDER.deck_size
+    assert build_sheet.spell_selection.counts.total == 23
+    cut_name = f"Double {short_color}"
+    assert any(
+        caveat.startswith(f"Cut {cut_name}: it needs 6 ") for caveat in mana_base.caveats
+    )
+
+
+def test_formatted_build_sheet_shows_the_cut_note() -> None:
+    database = _three_double_symbol_database()
+    pool = BuildPool(
+        pool_grp_ids=tuple(sorted(database.cards)),
+        source_label="fixture",
+        set_code="TST",
+    )
+    selection = select_color_pair(
+        pool_grp_ids=pool.pool_grp_ids,
+        card_database=database,
+        ratings_data=_ratings_data(),
+        forced_pair="WU",
+    )
+    build_sheet = select_build_sheet(
+        pool_grp_ids=pool.pool_grp_ids,
+        card_database=database,
+        pair="WUB",
+    )
+
+    output = format_build_result(
+        pool=pool,
+        selection=selection,
+        spell_selection=build_sheet.spell_selection,
+        mana_base=build_sheet.mana_base,
+    )
+
+    assert "Mana notes:" in output
+    assert "Cut Double " in output
+
+
+def test_config_rejects_negative_double_symbol_minimum() -> None:
+    config = replace(DECK_BUILDER, double_symbol_min_color_land_sources=-1)
+
+    with pytest.raises(DeckBuilderError, match="double-symbol source minimum"):
+        select_build_sheet(
+            pool_grp_ids=(1,),
+            card_database=_card_database(),
+            pair="WU",
+            config=config,
+        )
