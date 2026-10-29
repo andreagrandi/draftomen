@@ -4304,7 +4304,7 @@ async def _assert_pool_summary_color_candidates(tmp_path: Path) -> None:
                 colors="WUB",
                 win_rate=0.537,
                 inferred=False,
-                blocked_reason="black below 20% of the pool",
+                blocked_reason="black has 3 cards, triads need 4",
             ),
             ColorCandidate(
                 colors="WB", win_rate=None, inferred=False, blocked_reason=None
@@ -4326,7 +4326,7 @@ async def _assert_pool_summary_color_candidates(tmp_path: Path) -> None:
         assert "Candidates:" in text
         assert "56.6%  inferred" in text
         assert "55.5%" in text
-        assert "53.7%  black below 20% of the pool" in text
+        assert "53.7%  black has 3 cards, triads need 4" in text
         assert "no data" in text
 
 

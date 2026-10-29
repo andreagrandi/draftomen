@@ -1946,6 +1946,13 @@ def build_pick_scoring_context(
             config=config,
             profile_lookup=profile_lookup,
         ),
+        triad_card_counts=_triad_card_counts(
+            pool_grp_ids=pool_grp_ids,
+            card_database=card_database,
+            ratings_data=ratings_data,
+            config=config,
+            profile_lookup=profile_lookup,
+        ),
         pick_index=resolved_stage.global_pick_index,
         ratings_data=ratings_data,
         profile=set_profile,
@@ -2089,8 +2096,16 @@ def _color_commitment(
         config=config,
         profile_lookup=profile_lookup,
     )
+    triad_card_counts = _triad_card_counts(
+        pool_grp_ids=pool_grp_ids,
+        card_database=card_database,
+        ratings_data=ratings_data,
+        config=config,
+        profile_lookup=profile_lookup,
+    )
     inferred_pair = _inferred_colors(
         weights=weights,
+        triad_card_counts=triad_card_counts,
         pick_index=pick_index,
         ratings_data=ratings_data,
         profile=profile,
@@ -2108,6 +2123,7 @@ def _color_commitment(
         level=level,
         candidates=_color_candidates(
             weights=weights,
+            triad_card_counts=triad_card_counts,
             inferred=inferred_pair,
             pick_index=pick_index,
             ratings_data=ratings_data,
@@ -2117,23 +2133,62 @@ def _color_commitment(
     )
 
 
+def _triad_card_counts(
+    *,
+    pool_grp_ids: tuple[int, ...],
+    card_database: CardDatabase,
+    ratings_data: SeventeenLandsData | None,
+    config: PickEngineConfig,
+    profile_lookup: _ProfileRatingLookup | None = None,
+) -> dict[str, dict[str, int]]:
+    """Count pool cards per triad color among the top playable spells.
+    Mirrors the deck builder, which ranks the spells a triad can cast by rating.
+    """
+
+    rated_cards: list[tuple[float, frozenset[str]]] = []
+    for grp_id in pool_grp_ids:
+        card = card_database.lookup(grp_id=grp_id)
+        if card.unknown or any("Land" in type_line for type_line in card.types):
+            continue
+
+        rating = _rating_for(
+            ratings_data=ratings_data,
+            grp_id=grp_id,
+            config=config,
+            profile_lookup=profile_lookup,
+        )
+        rated_cards.append(
+            (_base_rating(rating=rating, config=config), frozenset(card.colors))
+        )
+
+    rated_cards.sort(key=lambda item: item[0], reverse=True)
+    counts: dict[str, dict[str, int]] = {}
+    for triad in COLOR_TRIADS:
+        top_cards = [
+            colors for _, colors in rated_cards if colors.issubset(triad)
+        ][: DECK_BUILDER.target_spell_count]
+        counts[triad] = {
+            color: sum(1 for colors in top_cards if color in colors)
+            for color in triad
+        }
+
+    return counts
+
+
 def _triad_blocking_color(
     *,
     triad: str,
-    weights: dict[str, float],
+    triad_card_counts: dict[str, dict[str, int]],
     config: PickEngineConfig,
-) -> tuple[str, float] | None:
-    """Return the lowest-share triad color under the minimum share, if any.
-    The share check mirrors the one in _inferred_colors.
+) -> tuple[str, int] | None:
+    """Return the triad color with the fewest cards if it is under the minimum.
+    The count check is the one _inferred_colors uses.
     """
 
-    total_weight = sum(weights.values())
-    if total_weight <= config.pool_weight_epsilon:
-        return None
-    shares = {color: weights.get(color, 0.0) / total_weight for color in triad}
-    lowest = min(triad, key=lambda color: shares[color])
-    if shares[lowest] < config.triad_min_color_share:
-        return lowest, shares[lowest]
+    counts = triad_card_counts[triad]
+    lowest = min(triad, key=lambda color: counts[color])
+    if counts[lowest] < config.triad_min_color_cards:
+        return lowest, counts[lowest]
 
     return None
 
@@ -2141,6 +2196,7 @@ def _triad_blocking_color(
 def _color_candidates(
     *,
     weights: dict[str, float],
+    triad_card_counts: dict[str, dict[str, int]],
     inferred: str | None,
     pick_index: int,
     ratings_data: SeventeenLandsData | None,
@@ -2188,11 +2244,16 @@ def _color_candidates(
     ):
         triad = next(item for item in COLOR_TRIADS if set(item) == set(base))
         blocked_reason: str | None = None
-        blocking = _triad_blocking_color(triad=triad, weights=weights, config=config)
+        blocking = _triad_blocking_color(
+            triad=triad,
+            triad_card_counts=triad_card_counts,
+            config=config,
+        )
         if blocking is not None:
             blocked_reason = (
-                f"{COLOR_LOWERCASE_NAMES[blocking[0]]} below "
-                f"{config.triad_min_color_share:.0%} of the pool"
+                f"{COLOR_LOWERCASE_NAMES[blocking[0]]} has {blocking[1]} "
+                f"{'card' if blocking[1] == 1 else 'cards'}, "
+                f"triads need {config.triad_min_color_cards}"
             )
         elif _commitment_level(pick_index=pick_index, config=config) <= 0.0:
             blocked_reason = "open picks consider pairs only"
@@ -2281,6 +2342,7 @@ def _inferred_pair(
 def _inferred_colors(
     *,
     weights: dict[str, float],
+    triad_card_counts: dict[str, dict[str, int]],
     pick_index: int,
     ratings_data: SeventeenLandsData | None,
     profile: SetProfile | None,
@@ -2307,15 +2369,13 @@ def _inferred_colors(
     if pair_rate is None:
         return pair
 
-    total_weight = sum(weights.values())
-    if total_weight <= config.pool_weight_epsilon:
-        return pair
     best_triad: str | None = None
     best_rate = pair_rate
     for triad in COLOR_TRIADS:
-        if any(
-            weights.get(color, 0.0) / total_weight < config.triad_min_color_share
-            for color in triad
+        if _triad_blocking_color(
+            triad=triad,
+            triad_card_counts=triad_card_counts,
+            config=config,
         ):
             continue
         triad_rate = _triad_performance_rate(

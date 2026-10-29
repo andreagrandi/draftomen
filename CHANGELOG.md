@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- A three-color deck is now a triad candidate only when each of its colors
+  appears on at least 4 of the top 23 playable spells. A color with 1 to 3
+  cards is a splash, so splash rules apply instead. 17Lands labels a third
+  color with 1 to 3 cards a splash, and in 98% of three-color decks the
+  lightest color has 4 or more cards. The deck builder and the pick engine
+  both use the new count, and the pick engine shows it in the blocked reason,
+  such as "green has 3 cards, triads need 4". The `triad_min_color_share`
+  setting is gone. (#1023)
 - The deck builder no longer needs three fixing pieces in the pool before it
   scores a three-color deck. Every balanced three-color deck is scored, and
   its fixing adjustment decides how much the missing fixing costs. The

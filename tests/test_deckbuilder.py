@@ -2026,7 +2026,11 @@ def _triad_pool_database(
 
 
 
-def _triad_ratings_data(*, share: float | None) -> SeventeenLandsData:
+def _triad_ratings_data(
+    *,
+    share: float | None,
+    green_gih: float = 0.55,
+) -> SeventeenLandsData:
     database = _triad_pool_database(fixing_count=0)
     base = _ratings_data()
     primary = replace(
@@ -2036,7 +2040,7 @@ def _triad_ratings_data(*, share: float | None) -> SeventeenLandsData:
                 grp_id=grp_id,
                 name=card.name,
                 color=card.colors[0],
-                gih=0.55,
+                gih=green_gih if card.colors == ("G",) else 0.55,
             )
             for grp_id, card in database.cards.items()
         },
@@ -2916,3 +2920,29 @@ def test_triad_fixing_ignores_lands_outside_the_triad() -> None:
 
     triad_score = next(score for score in selection.ranked_scores if score.pair == "UBG")
     assert triad_score.fixing_piece_count == 2
+
+
+def test_triad_is_scored_when_lightest_color_has_four_cards() -> None:
+    database = _triad_pool_database(blue_count=10, black_count=9, green_count=4)
+
+    selection, _ = build_deck_from_pool(
+        pool=_triad_pool(database),
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+
+    assert "UBG" in {score.pair for score in selection.ranked_scores}
+
+
+def test_triad_is_not_scored_when_lightest_color_has_three_cards() -> None:
+    database = _triad_pool_database(blue_count=10, black_count=10, green_count=3)
+
+    selection, build_sheet = build_deck_from_pool(
+        pool=_triad_pool(database),
+        card_database=database,
+        ratings_data=_triad_ratings_data(share=0.17, green_gih=0.70),
+    )
+
+    assert "UBG" not in {score.pair for score in selection.ranked_scores}
+    assert len(selection.chosen.pair) == 2
+    assert build_sheet.spell_selection.splash_color == "G"

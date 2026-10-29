@@ -7050,7 +7050,7 @@ def test_session_adapter_publishes_color_candidates_with_labels(
             colors="WU",
             win_rate=None,
             inferred=False,
-            blocked_reason="white below 20% of the pool",
+            blocked_reason="white has 3 cards, triads need 4",
         ),
     )
     candidate_snapshot = replace(
@@ -7075,7 +7075,7 @@ def test_session_adapter_publishes_color_candidates_with_labels(
             "label": "WU",
             "win_rate": None,
             "inferred": False,
-            "blocked_reason": "white below 20% of the pool",
+            "blocked_reason": "white has 3 cards, triads need 4",
         },
     ]
 

@@ -135,9 +135,10 @@ class PickEngineConfig:
     pool_weight_epsilon: float = 0.01
     minimum_pair_colors: int = 2
     # Three-color decks are considered only in sets where at least 10% of
-    # decks play them, and only when each color holds 20% of the pool weight.
+    # decks play them, and only when each color is on at least this many of
+    # the top 23 playable spells. Fewer cards make the color a splash.
     three_color_share_threshold: float = 0.10
-    triad_min_color_share: float = 0.2
+    triad_min_color_cards: int = 4
     premier_fallback_enabled: bool = True
     # Open picks use pair win rates only as a close-pick tiebreaker.
     early_pair_tiebreaker_score_threshold: float = 3.0

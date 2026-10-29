@@ -4933,7 +4933,9 @@ def _context_ledger(
     )
 
 
-_TRIAD_POOL = (201, 202, 211, 212, 221, 222)
+_TRIAD_POOL = tuple(
+    base + offset for base in (200, 210, 220) for offset in (1, 2, 3, 3)
+)
 _TRIAD_OFFER = (204, 214, 224, 231, 241)
 
 
@@ -5032,6 +5034,46 @@ def test_balanced_pool_in_three_color_set_infers_winning_triad() -> None:
         assert by_id[grp_id].color_fit == "off-color"
         assert by_id[grp_id].score < by_id[204].score
     assert scored_pack.splash_state.active_color is None
+
+
+def test_triad_needs_four_cards_in_its_lightest_color() -> None:
+    ratings_data = _triad_ratings_data()
+    blue_black = (201, 202, 203, 204, 211, 212, 213, 214)
+
+    four_green = _score_triad_pool(
+        ratings_data=ratings_data,
+        pool_grp_ids=(*blue_black, 221, 222, 223, 224),
+    )
+    three_green = _score_triad_pool(
+        ratings_data=ratings_data,
+        pool_grp_ids=(*blue_black, 221, 222, 223),
+    )
+
+    assert four_green.commitment.inferred_pair == "UBG"
+    assert three_green.commitment.inferred_pair == "UB"
+
+
+def test_triad_counts_only_the_top_23_pool_cards_by_rating() -> None:
+    ratings_data = _triad_ratings_data()
+    primary = ratings_data.primary
+    low_green = {
+        grp_id: replace(stats, gih_win_rate=0.50) if 221 <= grp_id <= 224 else stats
+        for grp_id, stats in primary.card_ratings.items()
+    }
+    ratings_data = replace(
+        ratings_data,
+        primary=replace(primary, card_ratings=low_green),
+    )
+    blue_black = (201, 202, 203, 204, 211, 212, 213, 214) * 3
+
+    scored_pack = _score_triad_pool(
+        ratings_data=ratings_data,
+        pool_grp_ids=(221, 222, 223, 224, *blue_black),
+    )
+
+    rows = _candidate_rows(scored_pack=scored_pack)
+    assert scored_pack.commitment.inferred_pair == "UB"
+    assert rows["UBG"].blocked_reason == "green has 0 cards, triads need 4"
 
 
 def test_mostly_two_color_pool_keeps_pair_despite_high_triad_rate() -> None:
@@ -5214,8 +5256,8 @@ def test_color_candidates_in_pair_only_set_have_no_triad_row() -> None:
     assert set(_candidate_rows(scored_pack=scored_pack)) == {"UB", "UG", "BG"}
 
 
-def test_color_candidates_name_color_below_triad_share() -> None:
-    pool = (201, 201, 201, 201, 202, 202, 202, 202, 211, 212, 221)
+def test_color_candidates_name_color_below_triad_card_minimum() -> None:
+    pool = (201, 201, 201, 201, 202, 202, 202, 202, 211, 212, 213, 214, 221, 222, 223)
 
     scored_pack = _score_triad_pool(
         ratings_data=_triad_ratings_data(),
@@ -5224,7 +5266,7 @@ def test_color_candidates_name_color_below_triad_share() -> None:
 
     rows = _candidate_rows(scored_pack=scored_pack)
     assert scored_pack.commitment.inferred_pair == "UB"
-    assert rows["UBG"].blocked_reason == "green below 20% of the pool"
+    assert rows["UBG"].blocked_reason == "green has 3 cards, triads need 4"
 
 
 def test_color_candidates_explain_open_picks_consider_pairs_only() -> None:
