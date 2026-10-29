@@ -29,7 +29,8 @@ class SplashConfig:
     minimum_score_advantage: float = 0.0
     ready_score_multiplier: float = 0.95
     fixer_score_multiplier: float = 1.05
-    aggressive_minimum_grade: str = "A"
+    # Aggressive pools follow the same rule. In experiments/aggressive-splash, a third of
+    # aggressive winning FRA decks splashed, at the same grades as other decks.
     aggressive_minimum_spells: int = 8
     aggressive_average_mana_value_max: float = 2.7
     aggressive_minimum_two_drop_ratio: float = 0.3

@@ -3000,7 +3000,7 @@ def test_drafted_basic_is_not_counted_as_extra_splash_fixing() -> None:
     assert red_bomb.splash.planned_basic_sources == 2
 
 
-def test_aggressive_pool_rejects_a_minus_splash_and_accepts_a_grade() -> None:
+def test_aggressive_pool_accepts_b_and_c_grade_splash() -> None:
     database = _splash_card_database()
     state = infer_splash_state(
         pool_grp_ids=(101, 102, 101, 102, 101, 102, 101, 102),
@@ -3019,14 +3019,11 @@ def test_aggressive_pool_rejects_a_minus_splash_and_accepts_a_grade() -> None:
             state=state,
         )
 
-    below = assess(grade="A-")
-    at_minimum = assess(grade="A")
-
     assert state.aggressive is True
-    assert below.classification == "off-color"
-    assert below.reasons == ("aggressive pools need a grade of A or better",)
-    assert at_minimum.classification == "splash-ready"
-    assert at_minimum.reasons == ("card has sufficient mana support",)
+    for grade in ("B", "C"):
+        assessment = assess(grade=grade)
+        assert assessment.classification == "splash-ready"
+        assert assessment.reasons == ("card has sufficient mana support",)
 
 
 def test_hybrid_symbol_payable_with_primary_color_does_not_require_splash() -> None:
