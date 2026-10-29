@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Added `experiments/aggressive-splash`, which measures how often aggressive
+  and other winning FRA 17Lands decks splash, and the grades of the cards
+  they splash. A third of aggressive winning decks splash, at the same grades
+  as other decks, and the `A` gate would allow 1% of those splashes. The
+  findings propose dropping the gate. No app behavior changes. (#1040)
 - Removed the `Splash?` speculative splash label and its 0.85 score
   multiplier. Since splashes can run on basic lands, every splash card has
   enough sources, so the label could no longer appear. The aggressive pool
