@@ -921,7 +921,7 @@ def test_concise_reasons_use_magnitude_ties_and_stable_nonadditive_fallback() ->
                 ),
                 PickReason(
                     kind="splash",
-                    phrase="splash speculative assessment",
+                    phrase="splash ready assessment",
                     evidence=("raw_splash_label",),
                 ),
                 PickReason(
@@ -955,7 +955,7 @@ def test_concise_reasons_use_magnitude_ties_and_stable_nonadditive_fallback() ->
                 ),
                 PickReason(
                     kind="splash",
-                    phrase="splash speculative assessment",
+                    phrase="splash ready assessment",
                     evidence=("raw_splash_label",),
                 ),
                 PickReason(
@@ -969,7 +969,7 @@ def test_concise_reasons_use_magnitude_ties_and_stable_nonadditive_fallback() ->
     assert render_pick_rationale_concise(scored_card=fallback) == (
         "Rating: known rating. "
         "Color fit contributes +0 DO points. "
-        "Speculative splash is a consideration."
+        "Supported splash is available."
     )
 
 
@@ -3000,20 +3000,33 @@ def test_drafted_basic_is_not_counted_as_extra_splash_fixing() -> None:
     assert red_bomb.splash.planned_basic_sources == 2
 
 
-def test_aggressive_pool_does_not_take_an_unsupported_speculative_splash() -> None:
-    scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
-        offered_grp_ids=(105, 108),
-        card_database=_splash_card_database(),
+def test_aggressive_pool_rejects_a_minus_splash_and_accepts_a_grade() -> None:
+    database = _splash_card_database()
+    state = infer_splash_state(
         pool_grp_ids=(101, 102, 101, 102, 101, 102, 101, 102),
-        pick_index=10,
+        card_database=database,
+        ratings_data=_splash_ratings_data(),
+        base_pair="WU",
+        enabled=True,
     )
-    red_bomb = next(card for card in scored_pack.cards if card.card.grp_id == 105)
 
-    assert scored_pack.splash_state.aggressive is True
-    assert red_bomb.color_fit == "off-color"
-    assert "aggressive pools require supported exceptional splashes" in (
-        red_bomb.splash.reasons
-    )
+    def assess(*, grade: str):
+        return assess_splash_card(
+            card=database.lookup(grp_id=105),
+            grade=grade,
+            base_score=80.0,
+            best_on_color_score=50.0,
+            state=state,
+        )
+
+    below = assess(grade="A-")
+    at_minimum = assess(grade="A")
+
+    assert state.aggressive is True
+    assert below.classification == "off-color"
+    assert below.reasons == ("aggressive pools need a grade of A or better",)
+    assert at_minimum.classification == "splash-ready"
+    assert at_minimum.reasons == ("card has sufficient mana support",)
 
 
 def test_hybrid_symbol_payable_with_primary_color_does_not_require_splash() -> None:
@@ -5286,7 +5299,6 @@ def test_triad_base_has_no_splash_and_marks_outside_cards_off_color() -> None:
         grade="A",
         base_score=90.0,
         best_on_color_score=40.0,
-        locked=True,
         state=state,
     )
 
@@ -5342,7 +5354,6 @@ def test_splash_card_that_only_ties_the_best_on_color_option_is_rejected() -> No
             grade="B",
             base_score=60.0,
             best_on_color_score=best_on_color_score,
-            locked=False,
             state=state,
         )
 
@@ -5370,7 +5381,6 @@ def test_unrated_splash_card_is_not_splash_ready() -> None:
         grade=None,
         base_score=60.0,
         best_on_color_score=50.0,
-        locked=False,
         state=state,
     )
 

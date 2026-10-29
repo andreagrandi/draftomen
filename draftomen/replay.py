@@ -639,9 +639,6 @@ def _format_color_fit(card: ScoredCard) -> str:
     if card.color_fit == "splash-ready":
         return f"Splash {card.splash.splash_color}"
 
-    if card.color_fit == "splash-speculative":
-        return f"Splash?{card.splash.splash_color}"
-
     if card.color_fit == "splash-fixer":
         return f"Fix {card.splash.splash_color}"
 

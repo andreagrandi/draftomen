@@ -193,7 +193,7 @@ def _recommendations() -> tuple[Recommendation, ...]:
         (69, 0.584, 1.23, "Quick", "On color", "C+", "Efficient on-color option."),
         (68, 0.582, 6.27, "Quick", "On color", "C+", "Playable curve support."),
         (67, 0.579, 7.09, "Quick", "On color", "C+", "Solid creature depth."),
-        (65, 0.577, 6.33, "Quick", "Splash?", "C+", "Powerful if fixing improves."),
+        (65, 0.577, 6.33, "Quick", "Splash B", "C+", "Beats the best on-color card."),
         (62, 0.572, 5.37, "Quick", "Off color", "C", "Strong card outside the pool."),
         (62, 0.571, 5.48, "Quick", "Any", "C", "Flexible mana source."),
     )

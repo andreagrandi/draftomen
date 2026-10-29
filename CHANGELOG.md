@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- Removed the `Splash?` speculative splash label and its 0.85 score
+  multiplier. Since splashes can run on basic lands, every splash card has
+  enough sources, so the label could no longer appear. The aggressive pool
+  setting is now `aggressive_minimum_grade` and still needs an `A`. (#1039)
 - Added `experiments/speculative-splash`, which measures when winning FRA
   17Lands drafters took the cards they splashed, their grades, and whether
   off-color picks ended up splashed, in a main color or in the sideboard. The

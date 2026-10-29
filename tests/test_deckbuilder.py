@@ -1660,7 +1660,6 @@ def test_pick_assessment_and_build_sheet_agree_on_splash_sources(
         grade=ratings_data.rating_for(grp_id=card_id).letter_grade,
         base_score=80.0,
         best_on_color_score=None,
-        locked=False,
         state=state,
     )
     selection, mana_base = _splash_build(

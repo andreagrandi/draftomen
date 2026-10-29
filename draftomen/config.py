@@ -23,14 +23,13 @@ class SplashConfig:
     # 14 to 22% had no dual for the splash. Basics fill the gap, so the deck always has them.
     single_symbol_sources: int = 3
     double_symbol_sources: int = 4
-    speculative_minimum_grade: str = "A"
     # No minimum grade for splash cards. Of the cards winning FRA decks splashed in the same
     # dump, only 17% (Premier) and 14% (Pick Two) were A- or better, and C+ was the most common
     # grade at 26%. A splash card only has to beat the card it replaces.
     minimum_score_advantage: float = 0.0
     ready_score_multiplier: float = 0.95
-    speculative_score_multiplier: float = 0.85
     fixer_score_multiplier: float = 1.05
+    aggressive_minimum_grade: str = "A"
     aggressive_minimum_spells: int = 8
     aggressive_average_mana_value_max: float = 2.7
     aggressive_minimum_two_drop_ratio: float = 0.3
