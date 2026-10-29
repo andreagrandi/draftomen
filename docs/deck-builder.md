@@ -36,9 +36,8 @@ All tunables live in `draftomen/config.py` under `DeckBuilderConfig`:
 
 - `deck_size = 40`
 - `target_spell_count = 23`
-- `default_land_count = 17`
-- `aggressive_land_count = 16` when average mana value is low and the 2-drop quota is filled
-- `top_heavy_land_count = 18` when average mana value is high
+- `default_land_count = 17` for every curve. Winning FRA decks played 17 lands at every curve: 66% of aggressive decks, 77 to 80% of default decks and 78 to 85% of top-heavy decks, and 18 lands was 1 to 2%. The source is `experiments/mana-defaults` on the 17Lands FRA dumps, retrieved 2026-10-29.
+- `aggressive_average_mana_value_max = 2.7` and `top_heavy_average_mana_value_min = 3.4` only set the center of the optimizer's curve score. They no longer change the land count.
 - `creature_floor = 14`
 - `creature_ceiling = 17`
 - `minimum_two_drops = 5` at mana value 2
@@ -49,10 +48,10 @@ All tunables live in `draftomen/config.py` under `DeckBuilderConfig`:
 - `triad_fixing_win_rate_gaps` moves a three-color deck's win rate by its fixing piece count, from -18.5 points at 0 pieces to +2.0 points at 6 or more
 - shared splash grade floor: none, a splash card only has to beat the card it replaces
 - shared splash-color limit: `1`
-- shared splash symbol limit: `2` symbols of the splash color per card
+- shared splash symbol limit: `2` symbols of the splash color per card. 86% of splashed cards in winning FRA decks had 1 symbol and 14% had 2. Of about 2,500 single-splash decks, 5 played a card with 3 or more. The source is `experiments/mana-defaults`
 - shared source targets: `3` for one-symbol cards, `4` when a card has two symbols
 - splash basics: as many as the drafted fixing lands leave short of the source target
-- `main_color_source_floor = 7`
+- `main_color_source_floor = 7`. 93 to 96% of winning two-color decks had 7 or more sources of the lighter main color. The source is `experiments/mana-defaults`
 - `triad_min_color_land_sources = 4`
 - `double_symbol_min_color_land_sources = 6`
 - `structure_maindeck_rate_threshold = 0.5`
@@ -85,7 +84,7 @@ The frozen HOB draw-second regression compares the optimized package with the pr
 Candidate order is the existing score order. Beam states, replacements, and final ties preserve stable candidate order and card identity, so repeated runs with the same pool, ratings, and configuration return the same package.
 
 The optimizer changes only package ranking. It still enforces pool quantity limits, the requested spell count, creature floor and ceiling, two-drop minimum, expensive-spell cap, and splash eligibility/limits. If a pool is infeasible, the existing relaxation order remains: expensive-spell cap, minimum two-drop quota, creature ceiling, creature floor, then eligible-card shortage.
-When the curve calls for 16 or 18 lands, the builder reselects the spell count to keep the final deck exactly 40 cards.
+The builder plays 17 lands and 23 spells at every curve, so the final deck is exactly 40 cards.
 
 Before pair selection, the builder validates that enough picked cards have card metadata to identify playable spells reliably. If too much metadata is missing, or unresolved cards make the playable count fall below the spell target, the builder refuses to print a deck and asks the user to refresh card data or pass a current bulk file.
 
@@ -98,8 +97,6 @@ Remaining slots are basics. After reserving the splash basics, the other basics 
 A three-color deck splits its basics across all three colors by the same rules and plans no splash. Every color first gets at least 4 land sources (`triad_min_color_land_sources = 4`). A dual land counts toward each color it makes, and non-land fixers do not count. `scripts/measure_deck_rules.py` found that the lightest color of a winning three-color deck had 4 or more land sources in about 90% of decks, on the 17Lands FRA PremierDraft dump retrieved 2026-10-29. Two-color decks have no such minimum. The 7-source floor comes next, so when 17 lands cannot give every color seven sources, the basics go to the colors furthest below the floor. Only after that does the pip weighting apply.
 
 A spell with two or more symbols of one main color, such as `{1}{B}{B}`, needs at least 6 land sources of that color (`double_symbol_min_color_land_sources = 6`). Hybrid symbols do not count. The basic split meets this floor after the three-color minimum of 4 and before the 7-source floor. When the floor changes the split, the build sheet adds a mana note that names the card and says the builder added basics of its color. When no split can reach 6, the builder cuts the card, selects spells again without it, and adds a mana note that names the cut card. The same rule applies to two-color decks, where the 7-source floor almost always covers it already. `scripts/measure_deck_rules.py` found that about 85% of cards with two symbols of one color in winning three-color decks had 6 or more land sources of that color, and 8% had 5. The figure comes from the 17Lands FRA PremierDraft dump retrieved 2026-10-29.
-
-For 16-land aggressive builds, the output prints the caveat that basics can be preferable to slow taplands when curve pressure matters.
 
 ## Build sheet
 

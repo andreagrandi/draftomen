@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- The deck builder now plays 17 lands in every deck. It no longer drops to 16
+  lands for an aggressive curve or rises to 18 for a top-heavy one. Winning
+  FRA 17Lands decks played 17 lands at every curve, 66% of aggressive decks
+  and 78 to 85% of top-heavy ones, and only 1 to 2% played 18. Added
+  `experiments/mana-defaults`, which also measured the 7-source floor for each
+  main color and the 2-symbol splash limit. Both stay, and the docs now cite
+  their source. (#1018)
 - Aggressive pools no longer need an `A` grade for a splash card. They use
   the same splash rule as other pools. A third of aggressive winning FRA
   17Lands decks splashed, at the same grades as other decks, and the `A` gate

@@ -465,7 +465,7 @@ The splash policy is deliberately narrower than general three-color drafting:
 
 - Keep exactly one inferred two-color primary pair and consider at most one additional color. When the engine has inferred a three-color deck, it plans no splash, and cards outside those three colors are off-color.
 - Take at most three splash cards.
-- Require each splash card to have one or two symbols of the splash color and no other color outside the primary pair.
+- Require each splash card to have one or two symbols of the splash color and no other color outside the primary pair. `experiments/mana-defaults/findings.md` found that 86% of the cards winning FRA decks splashed had one symbol of the splash color and 14% had two. 5 of about 2,500 single-splash decks played a card with three.
 - Require no minimum grade, only a 17Lands rating. The card must strictly beat the best offered on-color card on base DO Score. A tie is rejected.
 - A third-color card counts toward the splash plan only when its 17Lands win rate beats the weakest of the pool's best 23 on-pair spells. A pool with fewer rated on-pair spells than that counts any rated third-color card. A card with no win rate never counts.
 - Require three land sources of the splash color for a one-symbol card and four for a two-symbol card. Basics count fully, so a splash needs no drafted dual land. Drafted fixing lands castable in the primary pair replace basics one for one, and the card details show the split.

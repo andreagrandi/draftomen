@@ -1007,7 +1007,7 @@ def test_bounded_optimizer_build_preserves_deck_size_lands_and_pips() -> None:
 
 
 
-def test_build_sheet_reselects_aggressive_spell_count_to_keep_40_cards() -> None:
+def test_build_sheet_plays_17_lands_and_23_spells_for_aggressive_curve() -> None:
     database = _curve_card_database(mana_value=2.0, count=30)
 
     build_sheet = select_build_sheet(
@@ -1016,13 +1016,13 @@ def test_build_sheet_reselects_aggressive_spell_count_to_keep_40_cards() -> None
         pair="WU",
     )
 
-    assert build_sheet.spell_selection.counts.total == 24
-    assert build_sheet.mana_base.land_count == DECK_BUILDER.aggressive_land_count
+    assert build_sheet.spell_selection.counts.total == 23
+    assert build_sheet.mana_base.land_count == 17
     assert build_sheet.mana_base.total_cards == DECK_BUILDER.deck_size
 
 
 
-def test_build_sheet_reselects_top_heavy_spell_count_to_keep_40_cards() -> None:
+def test_build_sheet_plays_17_lands_and_23_spells_for_top_heavy_curve() -> None:
     database = _curve_card_database(mana_value=4.0, count=30)
 
     build_sheet = select_build_sheet(
@@ -1031,8 +1031,8 @@ def test_build_sheet_reselects_top_heavy_spell_count_to_keep_40_cards() -> None:
         pair="WU",
     )
 
-    assert build_sheet.spell_selection.counts.total == 22
-    assert build_sheet.mana_base.land_count == DECK_BUILDER.top_heavy_land_count
+    assert build_sheet.spell_selection.counts.total == 23
+    assert build_sheet.mana_base.land_count == 17
     assert build_sheet.mana_base.total_cards == DECK_BUILDER.deck_size
 
 
@@ -1958,7 +1958,7 @@ def test_format_build_result_reports_spell_selection_and_attribution(tmp_path: P
     assert "Deck size: 40 cards" in output
     assert "Selected spells:" in output
     assert "Structure checks:" in output
-    assert "Selected spells: 5/24" in output
+    assert "Selected spells: 5/23" in output
     assert "Lands:" in output
     assert "Splash: R enabled (" in output
     assert "Card data from 17Lands" in output
