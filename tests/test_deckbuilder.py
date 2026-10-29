@@ -9,11 +9,12 @@ from typing import Any
 
 import pytest
 
-from draftomen.carddb import CardDatabase, CardInfo, build_card_database_from_bulk_file
+from draftomen.carddb import CardDatabase, CardFace, CardInfo, build_card_database_from_bulk_file
 from draftomen.config import DECK_BUILDER, DeckBuilderConfig
 from draftomen.deckbuilder import (
     BuildPool,
     DeckBuilderError,
+    FixingKind,
     ManaBase,
     SpellConstraints,
     SpellCounts,
@@ -28,6 +29,7 @@ from draftomen.deckbuilder import (
     _optimizer_objective,
     _select_with_constraints,
     build_deck_from_pool,
+    classify_fixing_card,
     format_build_result,
     load_persisted_pool,
     load_pool_file,
@@ -2486,6 +2488,8 @@ def _card(
     types: tuple[str, ...] = ("Creature",),
     mana_cost: str | None = None,
     produced_mana: tuple[str, ...] = (),
+    oracle_text: str | None = None,
+    faces: tuple[CardFace, ...] = (),
 ) -> CardInfo:
     return CardInfo(
         grp_id=grp_id,
@@ -2496,6 +2500,8 @@ def _card(
         types=types,
         mana_cost=mana_cost,
         produced_mana=produced_mana,
+        oracle_text=oracle_text,
+        faces=faces,
     )
 
 
@@ -2582,6 +2588,144 @@ def test_triad_with_too_little_fixing_falls_back_to_best_pair() -> None:
     assert len(selection.chosen.pair) == 2
     assert "UBG" not in {score.pair for score in selection.ranked_scores}
     assert len(build_sheet.mana_base.basic_lands) <= 2
+
+
+def test_prepared_spell_token_mana_is_not_fixing() -> None:
+    improviser = _card(
+        grp_id=1,
+        name="Konstrari Improviser // Soul Tether",
+        colors=("R",),
+        types=("Creature // Sorcery",),
+        produced_mana=("G", "R"),
+        faces=(
+            CardFace(
+                name="Konstrari Improviser",
+                type_line="Creature — Human Artificer",
+                oracle_text=(
+                    "This creature enters prepared. (While it's prepared, you may cast "
+                    "a copy of its spell. Doing so unprepares it.)"
+                ),
+            ),
+            CardFace(
+                name="Soul Tether",
+                type_line="Sorcery",
+                oracle_text=(
+                    "Create a Heartwood token. (It's a red and green artifact with "
+                    "\"{T}: Add {R} or {G}.\")"
+                ),
+            ),
+        ),
+    )
+
+    assert classify_fixing_card(card=improviser, colors="BRG") is FixingKind.NOT_FIXING
+
+
+def test_basic_landcycling_card_and_any_color_rock_are_nonland_fixers() -> None:
+    landcycler = _card(
+        grp_id=1,
+        name="Landcycling Beast",
+        colors=("G",),
+        oracle_text="Trample\nBasic landcycling {1}{G} ({1}{G}, Discard this card: Search your library for a basic land card.)",
+    )
+    murmuring_volume = _card(
+        grp_id=2,
+        name="Murmuring Volume",
+        colors=(),
+        types=("Artifact",),
+        produced_mana=("W", "U", "B", "R", "G"),
+        oracle_text="{T}: Add one mana of any color.\n{2}, {T}, Discard a card: Draw a card.",
+    )
+    treasure_maker = _card(
+        grp_id=3,
+        name="Treasure Sorcery",
+        colors=("R",),
+        types=("Sorcery",),
+        oracle_text="Create a Treasure token. Draw a card.",
+    )
+
+    assert classify_fixing_card(card=landcycler, colors="UBG") is FixingKind.NONLAND_FIXER
+    assert classify_fixing_card(card=murmuring_volume, colors="UBG") is FixingKind.NONLAND_FIXER
+    assert classify_fixing_card(card=treasure_maker, colors="UBG") is FixingKind.NONLAND_FIXER
+
+
+def test_any_color_mana_on_a_sorcery_is_not_fixing() -> None:
+    ritual = _card(
+        grp_id=1,
+        name="Colorful Ritual",
+        colors=("R",),
+        types=("Sorcery",),
+        oracle_text="{T}: Add one mana of any color.",
+    )
+
+    assert classify_fixing_card(card=ritual, colors="UBG") is FixingKind.NOT_FIXING
+
+
+def test_two_color_land_is_land_source_only_when_both_colors_are_deck_colors() -> None:
+    dual = _card(
+        grp_id=1,
+        name="Blue Black Dual",
+        colors=(),
+        mana_value=0.0,
+        types=("Land",),
+        produced_mana=("U", "B"),
+    )
+    basic = _card(
+        grp_id=2,
+        name="Island",
+        colors=(),
+        mana_value=0.0,
+        types=("Basic Land — Island",),
+        produced_mana=("U",),
+    )
+
+    assert classify_fixing_card(card=dual, colors="UBG") is FixingKind.LAND_SOURCE
+    assert classify_fixing_card(card=dual, colors="UB") is FixingKind.LAND_SOURCE
+    assert classify_fixing_card(card=dual, colors="URG") is FixingKind.NOT_FIXING
+    assert classify_fixing_card(card=basic, colors="UBG") is FixingKind.NOT_FIXING
+
+
+def test_triad_fixing_ignores_prepared_spell_tokens_and_counts_nonland_fixers() -> None:
+    database = _triad_pool_database(fixing_count=2)
+    cards = dict(database.cards)
+    cards[500] = _card(
+        grp_id=500,
+        name="Token Maker",
+        colors=("G",),
+        types=("Creature // Sorcery",),
+        produced_mana=("B", "G"),
+        faces=(
+            CardFace(name="Token Maker", type_line="Creature", oracle_text="This creature enters prepared."),
+            CardFace(
+                name="Token Spell",
+                type_line="Sorcery",
+                oracle_text="Create a token. (It's an artifact with \"{T}: Add {B} or {G}.\")",
+            ),
+        ),
+    )
+    without_fixer = CardDatabase(cards=dict(cards))
+    cards[501] = _card(
+        grp_id=501,
+        name="Murmuring Volume",
+        colors=(),
+        types=("Artifact",),
+        produced_mana=("W", "U", "B", "R", "G"),
+        oracle_text="{T}: Add one mana of any color.",
+    )
+    with_fixer = CardDatabase(cards=cards)
+
+    selection, _ = build_deck_from_pool(
+        pool=_triad_pool(without_fixer),
+        card_database=without_fixer,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+    assert "UBG" not in {score.pair for score in selection.ranked_scores}
+
+    selection, _ = build_deck_from_pool(
+        pool=_triad_pool(with_fixer),
+        card_database=with_fixer,
+        ratings_data=_triad_ratings_data(share=0.17),
+    )
+    assert "UBG" in {score.pair for score in selection.ranked_scores}
 
 
 def test_mostly_two_color_pool_with_few_off_color_cards_builds_pair() -> None:

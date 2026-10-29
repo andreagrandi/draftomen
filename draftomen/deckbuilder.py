@@ -10,6 +10,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
@@ -70,6 +71,21 @@ BASIC_LANDS_BY_COLOR = {
 }
 MANA_SYMBOL_PATTERN = re.compile(r"\{([^}]+)\}")
 CURVE_BUCKET_LABELS = ("0", "1", "2", "3", "4", "5", "6+")
+PERMANENT_TYPE_MARKERS = ("Artifact", "Battle", "Creature", "Enchantment", "Planeswalker")
+REMINDER_TEXT_PATTERN = re.compile(r"\([^)]*\)")
+ANY_COLOR_TAP_PATTERN = re.compile(r"\{T\}[^:\n]*:\s*Add one mana of any color", re.IGNORECASE)
+TREASURE_MAKER_PATTERN = re.compile(r"\bcreates?\b[^.\n]*\bTreasure tokens?\b", re.IGNORECASE)
+BASIC_LANDCYCLING_PATTERN = re.compile(r"\bbasic landcycling\b", re.IGNORECASE)
+
+
+class FixingKind(str, Enum):
+    """How a pool card helps a deck cast spells of several colors.
+    Source minimums count land sources; fixing bonuses count both groups.
+    """
+
+    LAND_SOURCE = "land_source"
+    NONLAND_FIXER = "nonland_fixer"
+    NOT_FIXING = "not_fixing"
 
 
 class DeckBuilderError(RuntimeError):
@@ -1401,24 +1417,57 @@ def _triad_fixing_source_count(
     pool_grp_ids: tuple[int, ...],
     card_database: CardDatabase,
 ) -> int:
-    count = 0
-    for grp_id in pool_grp_ids:
-        card = card_database.lookup(grp_id=grp_id)
-        if card.unknown or _is_basic_land_card(card=card):
-            continue
+    return sum(
+        1
+        for grp_id in pool_grp_ids
+        if classify_fixing_card(card=card_database.lookup(grp_id=grp_id), colors=triad)
+        is not FixingKind.NOT_FIXING
+    )
 
+
+
+def classify_fixing_card(*, card: CardInfo, colors: str) -> FixingKind:
+    """Sort a card into land source, non-land fixer or not fixing for a deck.
+    Two-color mana on a token made by a spell, such as Soul Tether, is not fixing.
+    """
+
+    if card.unknown or _is_basic_land_card(card=card):
+        return FixingKind.NOT_FIXING
+
+    if _is_land_card(card=card):
         # Count only lands the mana base will play, so off-color lands do not count.
-        if _is_land_card(card=card) and not _is_selected_nonbasic_land(
-            card=card,
-            pair=triad,
-            splash_colors=(),
+        if _is_selected_nonbasic_land(card=card, pair=colors, splash_colors=()) and (
+            sum(1 for color in colors if color in _land_source_colors(card=card)) >= 2
         ):
-            continue
+            return FixingKind.LAND_SOURCE
 
-        if sum(1 for color in triad if color in card.produced_mana) >= 2:
-            count += 1
+        return FixingKind.NOT_FIXING
 
-    return count
+    if any(
+        BASIC_LANDCYCLING_PATTERN.search(text)
+        or TREASURE_MAKER_PATTERN.search(text)
+        or (is_permanent and ANY_COLOR_TAP_PATTERN.search(text))
+        for is_permanent, text in _card_rules_texts(card=card)
+    ):
+        return FixingKind.NONLAND_FIXER
+
+    return FixingKind.NOT_FIXING
+
+
+
+def _card_rules_texts(*, card: CardInfo) -> tuple[tuple[bool, str], ...]:
+    sides = (
+        tuple((face.type_line or "", face.oracle_text or "") for face in card.faces)
+        if card.faces
+        else ((card.type_line or " ".join(card.types), card.oracle_text or ""),)
+    )
+    return tuple(
+        (
+            any(marker in type_line for marker in PERMANENT_TYPE_MARKERS),
+            REMINDER_TEXT_PATTERN.sub("", text),
+        )
+        for type_line, text in sides
+    )
 
 
 
