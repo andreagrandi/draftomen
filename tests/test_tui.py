@@ -674,7 +674,7 @@ def test_tui_splash_details_use_plain_color_and_mana_language() -> None:
         grade="A",
         score_advantage=12.0,
         aggressive=False,
-        reasons=("elite card has sufficient mana support",),
+        reasons=("card has sufficient mana support",),
     )
     scored_card = cast(
         ScoredCard,

@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.config import SPLASH, SplashConfig
+from draftomen.config import DECK_BUILDER, SPLASH, SplashConfig
 from draftomen.seventeen import GRADE_LABELS, SeventeenLandsData
 
 COLOR_ORDER = ("W", "U", "B", "R", "G")
@@ -67,7 +67,7 @@ def infer_splash_state(
     config: SplashConfig = SPLASH,
 ) -> SplashState:
     """Infer the active splash color and deterministic fixing from the pool.
-    An isolated elite third-color card establishes the plan after pair commitment.
+    A third-color card that beats the weakest likely maindeck spell sets the plan.
     """
 
     fixing_sources = _fixing_counts(
@@ -89,20 +89,26 @@ def infer_splash_state(
         color: [] for color in COLOR_ORDER if color not in base_pair
     }
     required_by_color: dict[str, int] = {}
+    replaced_win_rate = _replaced_spell_win_rate(
+        pool_grp_ids=pool_grp_ids,
+        card_database=card_database,
+        ratings_data=ratings_data,
+        base_pair=base_pair,
+    )
     for index, grp_id in enumerate(pool_grp_ids):
         card = card_database.lookup(grp_id=grp_id)
         splash_color, off_color_pips = splash_requirement(card=card, base_pair=base_pair)
         if splash_color is None or off_color_pips > config.maximum_off_color_pips:
             continue
 
-        grade = _global_grade(ratings_data=ratings_data, grp_id=grp_id)
-        if not grade_at_least(grade=grade, minimum=config.supported_minimum_grade):
+        win_rate = _global_win_rate(ratings_data=ratings_data, grp_id=grp_id)
+        if win_rate is None:
             continue
 
-        win_rate = _global_win_rate(ratings_data=ratings_data, grp_id=grp_id)
-        eligible_by_color[splash_color].append(
-            (0.0 if win_rate is None else win_rate, -index)
-        )
+        if replaced_win_rate is not None and win_rate <= replaced_win_rate:
+            continue
+
+        eligible_by_color[splash_color].append((win_rate, -index))
         required_by_color[splash_color] = max(
             required_by_color.get(splash_color, 0),
             splash_required_sources(off_color_pips=off_color_pips, config=config),
@@ -275,7 +281,7 @@ def assess_splash_card(
     )
     if (
         score_advantage is not None
-        and score_advantage < config.minimum_score_advantage
+        and score_advantage <= config.minimum_score_advantage
     ):
         return _assessment(
             classification="off-color",
@@ -297,13 +303,15 @@ def assess_splash_card(
         fixing_sources=fixing_sources,
     )
     available_sources = fixing_sources + planned_basics
-    supported_grade = config.supported_minimum_grade
-    if state.aggressive:
-        supported_grade = config.speculative_minimum_grade
+    aggressive_grade_missing = state.aggressive and not grade_at_least(
+        grade=grade,
+        minimum=config.speculative_minimum_grade,
+    )
 
     if (
-        available_sources >= required_sources
-        and grade_at_least(grade=grade, minimum=supported_grade)
+        grade is not None
+        and available_sources >= required_sources
+        and not aggressive_grade_missing
     ):
         return _assessment(
             classification="splash-ready",
@@ -315,7 +323,7 @@ def assess_splash_card(
             fixing_sources=fixing_sources,
             planned_basic_sources=planned_basics,
             required_sources=required_sources,
-            reasons=("elite card has sufficient mana support",),
+            reasons=("card has sufficient mana support",),
         )
 
     if (
@@ -340,8 +348,10 @@ def assess_splash_card(
         )
 
     reasons: list[str] = []
-    if not grade_at_least(grade=grade, minimum=supported_grade):
-        reasons.append(f"grade is below {supported_grade}")
+    if grade is None:
+        reasons.append("card has no 17Lands rating")
+    elif aggressive_grade_missing:
+        reasons.append(f"grade is below {config.speculative_minimum_grade}")
     if available_sources < required_sources:
         reasons.append(
             f"needs {required_sources - available_sources} more deterministic sources"
@@ -555,6 +565,37 @@ def _pool_is_aggressive(
         average_mana_value <= config.aggressive_average_mana_value_max
         and two_drop_ratio >= config.aggressive_minimum_two_drop_ratio
     )
+
+
+def _replaced_spell_win_rate(
+    *,
+    pool_grp_ids: tuple[int, ...],
+    card_database: CardDatabase,
+    ratings_data: SeventeenLandsData | None,
+    base_pair: str,
+) -> float | None:
+    win_rates = sorted(
+        (
+            win_rate
+            for grp_id in pool_grp_ids
+            if _is_base_spell(
+                card=card_database.lookup(grp_id=grp_id),
+                base_pair=base_pair,
+            )
+            and (
+                win_rate := _global_win_rate(
+                    ratings_data=ratings_data,
+                    grp_id=grp_id,
+                )
+            )
+            is not None
+        ),
+        reverse=True,
+    )
+    if len(win_rates) < DECK_BUILDER.target_spell_count:
+        return None
+
+    return win_rates[DECK_BUILDER.target_spell_count - 1]
 
 
 def _is_base_spell(*, card: CardInfo, base_pair: str) -> bool:

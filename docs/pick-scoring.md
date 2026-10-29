@@ -466,11 +466,12 @@ The splash policy is deliberately narrower than general three-color drafting:
 - Keep exactly one inferred two-color primary pair and consider at most one additional color. When the engine has inferred a three-color deck, it plans no splash, and cards outside those three colors are off-color.
 - Take at most three splash cards.
 - Require each splash card to have one or two symbols of the splash color and no other color outside the primary pair.
-- Require at least an `A-` 17Lands grade and a base DO Score advantage of `5.0` over the best offered on-color card.
+- Require no minimum grade, only a 17Lands rating. The card must strictly beat the best offered on-color card on base DO Score. A tie is rejected.
+- A third-color card counts toward the splash plan only when its 17Lands win rate beats the weakest of the pool's best 23 on-pair spells. A pool with fewer rated on-pair spells than that counts any rated third-color card. A card with no win rate never counts.
 - Require three land sources of the splash color for a one-symbol card and four for a two-symbol card. Basics count fully, so a splash needs no drafted dual land. Drafted fixing lands castable in the primary pair replace basics one for one, and the card details show the split.
-- These limits come from `scripts/measure_deck_rules.py` on the 17Lands FRA PremierDraft dump retrieved 2026-10-29. Nearly all winning splash decks splashed one color and 1 to 3 cards, 14 to 22% had no dual land for the splash, and 70% of decks splashing a two-symbol card had 4 or more splash sources. The deck builder uses the same limits, so the pick overlay and the build sheet agree for the same pool.
+- These limits come from `scripts/measure_deck_rules.py` on the 17Lands FRA dump retrieved 2026-10-29. Of the cards winning decks splashed, only 17% (Premier) and 14% (Pick Two) were `A-` or better, 40% and 36% were `B` or better, and the most common grade was `C+` at 26%, so splash cards need no minimum grade. Nearly all winning splash decks splashed one color and 1 to 3 cards, 14 to 22% had no dual land for the splash, and 70% of decks splashing a two-symbol card had 4 or more splash sources. The deck builder uses the same limits, so the pick overlay and the build sheet agree for the same pool.
 - Before color lock, an unsupported `A` or `A+` card may be marked `Splash?` as a speculative pick. Because basics now cover every source target, no card is unsupported by sources, so this label no longer appears in practice. Speculative splashes are disabled after lock and in aggressive pools.
-- Aggressive pools require a supported `A` or better splash.
+- Aggressive pools still require a supported `A` or better splash. A separate measurement ticket will check this rule and the speculative `A` rule.
 
 The `Fit` column uses `Splash X` for a supported splash, `Splash? X` for a speculative one, and `Fix X` when a fixing land directly supports the active splash color. Focused card details show the source count and the exact acceptance or rejection reason. Once a splash color has been established, cards of any other third color remain ordinary off-color cards.
 

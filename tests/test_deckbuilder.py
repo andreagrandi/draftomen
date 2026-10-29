@@ -1516,6 +1516,126 @@ def test_fourth_eligible_splash_card_is_left_out() -> None:
     assert 14 not in selected_ids
 
 
+def _replacement_ratings_data(*, splash_win_rate: float) -> SeventeenLandsData:
+    return _ratings_data_from_entries(
+        entries=(
+            (1, "White Playable", "W", 0.50),
+            (2, "Blue Playable", "U", 0.50),
+            (3, "Second White Playable", "W", 0.49),
+            (4, "Second Blue Playable", "U", 0.49),
+            (5, "Red Bomb One", "R", splash_win_rate),
+            *tuple(
+                (
+                    grp_id,
+                    f"Distribution Card {grp_id}",
+                    "B",
+                    0.50 + ((grp_id - 100) * 0.002),
+                )
+                for grp_id in range(100, 120)
+            ),
+        )
+    )
+
+
+def test_b_graded_splash_card_that_beats_the_card_it_replaces_is_selected() -> None:
+    ratings_data = _replacement_ratings_data(splash_win_rate=0.53)
+    config = replace(_SPLASH_CONFIG, target_spell_count=3)
+
+    selection = select_deck_spells(
+        pool_grp_ids=(1, 2, 3, 4, 5),
+        card_database=_splash_card_database(fixing_count=0),
+        pair="WU",
+        ratings_data=ratings_data,
+        allow_splash=True,
+        config=config,
+    )
+
+    selected_ids = {card.card.grp_id for card in selection.spells}
+    assert ratings_data.rating_for(grp_id=5).letter_grade == "B"
+    assert selection.splash_color == "R"
+    assert selection.counts.splashes == 1
+    assert 5 in selected_ids
+    assert {3, 4} - selected_ids != set()
+
+
+def test_splash_card_below_the_card_it_replaces_is_not_selected() -> None:
+    ratings_data = _replacement_ratings_data(splash_win_rate=0.45)
+    config = replace(_SPLASH_CONFIG, target_spell_count=3)
+
+    selection = select_deck_spells(
+        pool_grp_ids=(1, 2, 3, 4, 5),
+        card_database=_splash_card_database(fixing_count=0),
+        pair="WU",
+        ratings_data=ratings_data,
+        allow_splash=True,
+        config=config,
+    )
+
+    assert selection.counts.splashes == 0
+    assert 5 not in {card.card.grp_id for card in selection.spells}
+
+
+def _plan_card_state(*, splash_win_rate: float | None, on_pair_count: int):
+    cards = {
+        grp_id: _card(grp_id=grp_id, name=f"White Card {grp_id}", colors=("W",))
+        for grp_id in range(200, 200 + on_pair_count)
+    }
+    cards[5] = _card(
+        grp_id=5,
+        name="Red Bomb One",
+        colors=("R",),
+        mana_cost="{4}{R}",
+    )
+    entries = [
+        (grp_id, f"White Card {grp_id}", "W", 0.50 + ((grp_id - 200) * 0.001))
+        for grp_id in cards
+        if grp_id != 5
+    ]
+    if splash_win_rate is not None:
+        entries.append((5, "Red Bomb One", "R", splash_win_rate))
+
+    return infer_splash_state(
+        pool_grp_ids=(*cards,),
+        card_database=CardDatabase(cards=cards),
+        ratings_data=_ratings_data_from_entries(entries=tuple(entries)),
+        base_pair="WU",
+        enabled=True,
+    )
+
+
+def test_third_color_card_below_the_weakest_top_spell_does_not_set_the_plan() -> None:
+    state = _plan_card_state(splash_win_rate=0.501, on_pair_count=25)
+
+    assert state.active_color is None
+    assert state.picked_card_count == 0
+
+
+def test_third_color_card_above_the_weakest_top_spell_sets_the_plan() -> None:
+    state = _plan_card_state(splash_win_rate=0.503, on_pair_count=25)
+
+    assert state.active_color == "R"
+    assert state.picked_card_count == 1
+
+
+def test_third_color_card_ties_the_weakest_top_spell_does_not_set_the_plan() -> None:
+    state = _plan_card_state(splash_win_rate=0.50 + (2 * 0.001), on_pair_count=25)
+
+    assert state.active_color is None
+
+
+def test_third_color_card_sets_the_plan_when_the_pool_has_few_spells() -> None:
+    state = _plan_card_state(splash_win_rate=0.40, on_pair_count=10)
+
+    assert state.active_color == "R"
+    assert state.picked_card_count == 1
+
+
+def test_third_color_card_without_a_win_rate_does_not_set_the_plan() -> None:
+    state = _plan_card_state(splash_win_rate=None, on_pair_count=10)
+
+    assert state.active_color is None
+
+
 @pytest.mark.parametrize(
     ("card_id", "required_sources"),
     [(5, 3), (7, 4)],
@@ -1839,9 +1959,9 @@ def test_format_build_result_reports_spell_selection_and_attribution(tmp_path: P
     assert "Deck size: 40 cards" in output
     assert "Selected spells:" in output
     assert "Structure checks:" in output
-    assert "Selected spells: 4/23" in output
+    assert "Selected spells: 5/24" in output
     assert "Lands:" in output
-    assert "Splash: enabled;" in output
+    assert "Splash: R enabled (" in output
     assert "Card data from 17Lands" in output
 
 

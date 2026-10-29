@@ -352,7 +352,10 @@ def _benchmark_card_database() -> CardDatabase:
         cards={
             1: _card(grp_id=1, name="White Bomb", colors=("W",)),
             2: _card(grp_id=2, name="Blue Good", colors=("U",)),
-            3: _card(grp_id=3, name="Red Temptation", colors=("R",)),
+            3: replace(
+                _card(grp_id=3, name="Red Temptation", colors=("R",)),
+                mana_cost="{R}{R}{R}",
+            ),
             4: _card(grp_id=4, name="White Roleplayer", colors=("W",)),
             5: _card(grp_id=5, name="Green Filler", colors=("G",)),
         }
