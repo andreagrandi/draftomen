@@ -18,6 +18,7 @@ from draftomen.deckbuilder import (
     ManaBase,
     SpellConstraints,
     SpellCounts,
+    _basic_land_counts,
     _basic_splits,
     _build_optimizer_context,
     _card_quantity_key,
@@ -2777,6 +2778,50 @@ def test_basic_splits_keep_two_color_results_and_enumerate_three_colors() -> Non
     assert len(splits) == 10
     assert all(sum(split.values()) == 3 for split in splits)
     assert {"U": 1, "B": 1, "G": 1} in splits
+
+
+def test_triad_basics_give_a_light_third_color_four_land_sources() -> None:
+    basics = _basic_land_counts(
+        pair="UBG",
+        slots=17,
+        pip_counts={"U": 20, "B": 10, "G": 1},
+        double_pip_counts={"U": 0, "B": 0, "G": 0},
+        source_counts={"U": 0, "B": 0, "G": 0},
+        config=DECK_BUILDER,
+    )
+
+    assert {basic.color: basic.count for basic in basics} == {"U": 7, "B": 6, "G": 4}
+
+
+def test_triad_source_minimum_counts_dual_lands_toward_each_color() -> None:
+    basics = _basic_land_counts(
+        pair="UBG",
+        slots=15,
+        pip_counts={"U": 20, "B": 10, "G": 1},
+        double_pip_counts={"U": 0, "B": 0, "G": 0},
+        source_counts={"U": 1, "B": 1, "G": 2},
+        config=replace(DECK_BUILDER, main_color_source_floor=0),
+    )
+
+    assert {basic.color: basic.count for basic in basics} == {"U": 9, "B": 4, "G": 2}
+
+
+def test_two_color_basics_ignore_the_triad_source_minimum() -> None:
+    def split(config: DeckBuilderConfig) -> dict[str, int]:
+        basics = _basic_land_counts(
+            pair="WU",
+            slots=17,
+            pip_counts={"W": 40, "U": 1},
+            double_pip_counts={"W": 0, "U": 0},
+            source_counts={"W": 0, "U": 0},
+            config=config,
+        )
+        return {basic.color: basic.count for basic in basics}
+
+    floorless = replace(DECK_BUILDER, main_color_source_floor=0)
+
+    assert split(config=floorless) == {"W": 17}
+    assert split(config=replace(floorless, triad_min_color_land_sources=0)) == {"W": 17}
 
 
 def _triad_scored_cards() -> tuple[ScoredCard, ...]:

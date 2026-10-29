@@ -3457,6 +3457,9 @@ def _basic_land_counts(
             desired_counts=desired_counts,
             source_counts=source_counts,
             source_floor=config.main_color_source_floor,
+            minimum_sources=(
+                config.triad_min_color_land_sources if len(colors) == 3 else 0
+            ),
             double_heavy_color=double_heavy_color,
             pip_heavy_color=pip_heavy_color,
         ),
@@ -3519,9 +3522,14 @@ def _basic_split_sort_key(
     desired_counts: dict[str, float],
     source_counts: dict[str, int],
     source_floor: int,
+    minimum_sources: int,
     double_heavy_color: str,
     pip_heavy_color: str,
 ) -> tuple[float, ...]:
+    minimum_shortage = sum(
+        max(0, minimum_sources - (source_counts[color] + counts[color]))
+        for color in colors
+    )
     shortage = sum(
         max(0, source_floor - (source_counts[color] + counts[color]))
         for color in colors
@@ -3531,6 +3539,7 @@ def _basic_split_sort_key(
         for color in colors
     )
     return (
+        minimum_shortage,
         shortage,
         proportion_error,
         -counts[double_heavy_color],
@@ -3986,6 +3995,9 @@ def _validate_deck_builder_config(*, config: DeckBuilderConfig) -> None:
 
     if config.main_color_source_floor < 0:
         raise DeckBuilderError("Deck-builder source floor must be non-negative.")
+
+    if config.triad_min_color_land_sources < 0:
+        raise DeckBuilderError("Deck-builder triad source minimum must be non-negative.")
 
     if config.creature_floor < 0 or config.creature_ceiling < 0:
         raise DeckBuilderError("Deck-builder creature constraints must be non-negative.")
