@@ -516,6 +516,7 @@ class PoolState:
     creature_count: int = 0
     removal_count: int = 0
     creature_pace: CreaturePace | None = None
+    count_pair: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4179,10 +4180,13 @@ class LiveSession:
             )
             for grp_id in dict.fromkeys(pool_grp_ids)
         )
+        # Between a pick and the next scored pack there is no fresh inference,
+        # so keep counting against the retained pair instead of every color.
+        count_pair = inferred_pair or "".join(current_colors) or None
         land_count, creature_count, removal_count = self._pool_card_counts(
             pool_grp_ids=pool_grp_ids,
             database=database,
-            pair=inferred_pair,
+            pair=count_pair,
         )
         recent_picks = self._prepare_recent_pick_images(
             pool_grp_ids=pool_grp_ids,
@@ -4232,6 +4236,7 @@ class LiveSession:
                 target_floor=DECK_BUILDER.creature_floor,
                 target_ceiling=DECK_BUILDER.creature_ceiling,
             ),
+            count_pair=count_pair,
         )
 
     def _select_recovered_state(self, *, state: DraftState) -> None:

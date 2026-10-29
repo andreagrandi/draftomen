@@ -56,6 +56,12 @@ Rectangle {
         return value === null || value === undefined ? "—" : String(value)
     }
 
+    // Creatures and removal only count cards castable in this pair.
+    function countPairText() {
+        const pair = root.pool ? root.pool.count_pair : null
+        return pair ? "(" + pair + ")" : "(any color)"
+    }
+
     readonly property var creaturePace: root.pool && root.pool.creature_pace
         ? root.pool.creature_pace : null
     readonly property bool hasCreaturePace: root.creaturePace !== null
@@ -377,7 +383,11 @@ Rectangle {
 
                         Row {
                             spacing: 5
-                            Label { text: "Creatures"; color: Theme.textMuted }
+                            Label {
+                                objectName: "poolCreatureCountLabel"
+                                text: "Creatures " + root.countPairText()
+                                color: Theme.textMuted
+                            }
                             Label {
                                 objectName: "poolCreatureCount"
                                 text: root.poolCountText(root.pool.creature_count)
@@ -389,7 +399,11 @@ Rectangle {
 
                         Row {
                             spacing: 5
-                            Label { text: "Removal"; color: Theme.textMuted }
+                            Label {
+                                objectName: "poolRemovalCountLabel"
+                                text: "Removal " + root.countPairText()
+                                color: Theme.textMuted
+                            }
                             Label {
                                 objectName: "poolRemovalCount"
                                 text: root.poolCountText(root.pool.removal_count)

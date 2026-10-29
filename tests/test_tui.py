@@ -4378,12 +4378,13 @@ async def _assert_pool_summary_composition_counts(tmp_path: Path) -> None:
                 target_floor=15,
                 target_ceiling=17,
             ),
+            count_pair="WG",
         )
         app._apply_session_snapshot(replace(snapshot, pool=pool))
         await pilot.pause()
 
         text = _pool_summary_text(app=app)
-        assert "Lands: 3; Creatures: 12; Removal: 6" in text
+        assert "Lands: 3; Creatures (WG): 12; Removal (WG): 6" in text
         assert "Creature pace: 21 (target 15-17)" in text
         assert "behind" not in text
 
@@ -4400,6 +4401,15 @@ async def _assert_pool_summary_composition_counts(tmp_path: Path) -> None:
 
         assert "Creature pace: 11 (target 15-17), behind" in _pool_summary_text(
             app=app
+        )
+
+        unpaired_pool = replace(pool, count_pair=None)
+        app._apply_session_snapshot(replace(snapshot, pool=unpaired_pool))
+        await pilot.pause()
+
+        assert (
+            "Creatures (any color): 12; Removal (any color): 6"
+            in _pool_summary_text(app=app)
         )
 
 

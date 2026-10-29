@@ -4056,10 +4056,12 @@ def _format_color_label(
 def _format_pool_composition_lines(*, pool: PoolState) -> list[str]:
     if pool.total_cards == 0:
         return []
+    count_pair = pool.count_pair or "any color"
     lines = [
         (
-            f"Lands: {pool.land_count}; Creatures: {pool.creature_count}; "
-            f"Removal: {pool.removal_count}"
+            f"Lands: {pool.land_count}; "
+            f"Creatures ({count_pair}): {pool.creature_count}; "
+            f"Removal ({count_pair}): {pool.removal_count}"
         )
     ]
     pace = pool.creature_pace
