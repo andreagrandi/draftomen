@@ -627,8 +627,6 @@ def _concise_reason(*, reason: PickReason) -> str:
 
     phrase = reason.phrase.casefold()
     if reason.kind == "splash":
-        if "speculative" in phrase:
-            return "Speculative splash is a consideration."
         if "fixer" in phrase:
             return "Splash fixing is available."
         if "ready" in phrase:
@@ -1373,7 +1371,6 @@ class PickEngine:
             grade=global_rating.letter_grade,
             base_score=base_score,
             best_on_color_score=best_on_color_score,
-            locked=commitment.locked,
             state=splash_state,
         )
         color_fit = splash.classification
@@ -2488,11 +2485,6 @@ def _color_factor(
         factor = 1.0 - (commitment.level * penalty)
         return max(0.0, factor)
 
-    if color_fit == "splash-speculative":
-        penalty = 1.0 - SPLASH.speculative_score_multiplier
-        factor = 1.0 - (commitment.level * penalty)
-        return max(0.0, factor)
-
     if color_fit == "splash-fixer":
         bonus = SPLASH.fixer_score_multiplier - 1.0
         factor = 1.0 + (commitment.level * bonus)
@@ -2770,7 +2762,7 @@ def _pick_rationale_for_card(
         card.splash.reasons
         and (
             card.splash.classification
-            in {"splash-ready", "splash-speculative", "splash-fixer"}
+            in {"splash-ready", "splash-fixer"}
             or (
                 card.splash.classification == "off-color"
                 and card.splash.splash_color is not None

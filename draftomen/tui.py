@@ -4392,8 +4392,6 @@ def _format_pick_card_name(*, scored_card: ScoredCard) -> str:
     color_name = COLOR_NAMES.get(splash_color, splash_color).upper()
     if scored_card.color_fit == "splash-ready":
         return f"SPLASH {color_name} — {card_name}"
-    if scored_card.color_fit == "splash-speculative":
-        return f"POSSIBLE SPLASH {color_name} — {card_name}"
     if scored_card.color_fit == "splash-fixer":
         return f"{color_name} SPLASH MANA — {card_name}"
 
@@ -4437,9 +4435,6 @@ def _format_color_fit(*, scored_card: ScoredCard) -> str:
     if scored_card.color_fit == "splash-ready":
         return f"Splash {scored_card.splash.splash_color}"
 
-    if scored_card.color_fit == "splash-speculative":
-        return f"Splash? {scored_card.splash.splash_color}"
-
     if scored_card.color_fit == "splash-fixer":
         return f"Fix {scored_card.splash.splash_color}"
 
@@ -4454,7 +4449,6 @@ def _format_splash_details(*, scored_card: ScoredCard) -> str:
     color_name = COLOR_NAMES.get(splash.splash_color, splash.splash_color)
     classification = {
         "splash-ready": "Recommended — mana is supported",
-        "splash-speculative": "Speculative — more fixing is needed",
         "splash-fixer": "Fixing pick for the active splash",
         "off-color": "Not recommended as a splash",
     }.get(splash.classification, splash.classification.replace("-", " ").title())

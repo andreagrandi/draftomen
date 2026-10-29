@@ -54,7 +54,7 @@ class SplashAssessment:
 
     @property
     def is_splash_candidate(self) -> bool:
-        return self.classification in {"splash-ready", "splash-speculative"}
+        return self.classification == "splash-ready"
 
 
 def infer_splash_state(
@@ -145,11 +145,10 @@ def assess_splash_card(
     grade: str | None,
     base_score: float,
     best_on_color_score: float | None,
-    locked: bool,
     state: SplashState,
     config: SplashConfig = SPLASH,
 ) -> SplashAssessment:
-    """Classify one card as ready, speculative, fixing, or ordinary off-color.
+    """Classify one card as ready, fixing, or ordinary off-color.
     Hard eligibility gates run before the smaller scoring multipliers.
     """
 
@@ -305,7 +304,7 @@ def assess_splash_card(
     available_sources = fixing_sources + planned_basics
     aggressive_grade_missing = state.aggressive and not grade_at_least(
         grade=grade,
-        minimum=config.speculative_minimum_grade,
+        minimum=config.aggressive_minimum_grade,
     )
 
     if (
@@ -326,40 +325,18 @@ def assess_splash_card(
             reasons=("card has sufficient mana support",),
         )
 
-    if (
-        not locked
-        and not state.aggressive
-        and grade_at_least(
-            grade=grade,
-            minimum=config.speculative_minimum_grade,
-        )
-    ):
-        return _assessment(
-            classification="splash-speculative",
-            state=state,
-            splash_color=splash_color,
-            off_color_pips=off_color_pips,
-            grade=grade,
-            score_advantage=score_advantage,
-            fixing_sources=fixing_sources,
-            planned_basic_sources=planned_basics,
-            required_sources=required_sources,
-            reasons=("exceptional card can be supported by future fixing",),
-        )
-
     reasons: list[str] = []
     if grade is None:
         reasons.append("card has no 17Lands rating")
     elif aggressive_grade_missing:
-        reasons.append(f"grade is below {config.speculative_minimum_grade}")
+        reasons.append(
+            f"aggressive pools need a grade of {config.aggressive_minimum_grade} "
+            "or better"
+        )
     if available_sources < required_sources:
         reasons.append(
             f"needs {required_sources - available_sources} more deterministic sources"
         )
-    if locked:
-        reasons.append("speculative splashes are disabled after color lock")
-    if state.aggressive:
-        reasons.append("aggressive pools require supported exceptional splashes")
     return _assessment(
         classification="off-color",
         state=state,
