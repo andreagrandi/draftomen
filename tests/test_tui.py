@@ -2473,7 +2473,11 @@ async def _assert_backtest_keybinding_opens_report(tmp_path: Path) -> None:
         before = state_path.read_text(encoding="utf-8")
 
         await pilot.press("t")
-        await pilot.pause()
+        # The backtest result arrives from the session after a later frame.
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.backtest_view_text.startswith("Draft Omen backtest\n"):
+                break
 
         title = app.query_one("#pack-title", Static)
         table = app.query_one("#pack-table", DataTable)
@@ -2527,9 +2531,15 @@ async def _assert_failed_backtest_refresh_replaces_stale_report(
                 and state_path.exists()
             ):
                 break
+        assert app.session.snapshot.status.phase == ApplicationPhase.DRAFT_COMPLETE
+        assert state_path.exists()
 
         await pilot.press("t")
-        await pilot.pause()
+        # The backtest result arrives from the session after a later frame.
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.backtest_view_text.startswith("Draft Omen backtest\n"):
+                break
         assert app.backtest_view_text.startswith("Draft Omen backtest\n")
 
         state_path.unlink()

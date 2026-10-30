@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- Two TUI backtest tests now wait for the backtest report to arrive after
+  `t` instead of checking one frame later, which failed on busy CI runners.
 - The deck builder now plays 17 lands in every deck. It no longer drops to 16
   lands for an aggressive curve or rises to 18 for a top-heavy one. Winning
   FRA 17Lands decks played 17 lands at every curve, 66% of aggressive decks
