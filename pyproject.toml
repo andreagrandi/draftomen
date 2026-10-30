@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Games/Entertainment",
 ]
 dependencies = [
-    "certifi>=2026.10.19",
+    "certifi>=2026.10.23",
     "packaging>=26.3",
     "pyside6>=6.12.0,<7",
     "python-socketio[client]>=5.17.0,<6",
