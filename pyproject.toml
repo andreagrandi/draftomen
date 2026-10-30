@@ -25,13 +25,13 @@ classifiers = [
     "Topic :: Games/Entertainment",
 ]
 dependencies = [
-    "certifi>=2026.7.22",
+    "certifi>=2026.10.19",
     "packaging>=26.3",
-    "pyside6>=6.9,<7",
+    "pyside6>=6.12.0,<7",
     "python-socketio[client]>=5.17.0,<6",
     "textual>=8.2.8",
-    "textual-image>=0.14.1",
-    "truststore>=0.10.0",
+    "textual-image>=0.14.2",
+    "truststore>=0.10.5",
     "winrt-runtime>=3.2.1; sys_platform == 'win32'",
     "winrt-Windows.ApplicationModel>=3.2.1; sys_platform == 'win32'",
     "winrt-Windows.Foundation>=3.2.1; sys_platform == 'win32'",
@@ -53,17 +53,17 @@ Issues = "https://github.com/andreagrandi/draftomen/issues"
 
 [dependency-groups]
 dev = [
-    "nox>=2026.4.10",
-    "numpy>=2.3,<3",
-    "polars>=1.34,<2",
-    "pre-commit>=4.6.2",
+    "nox>=2026.10.20",
+    "numpy>=2.5.4,<3",
+    "polars>=2.0.0,<3",
+    "pre-commit>=4.7.0",
     "pytest>=8.4.0",
     "pytest-xdist>=3.8.0",
-    "ruff>=0.16.10",
+    "ruff>=0.17.2",
 ]
 
 [build-system]
-requires = ["setuptools>=84.0.0"]
+requires = ["setuptools>=84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
