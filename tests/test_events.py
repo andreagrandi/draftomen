@@ -442,6 +442,112 @@ def test_parser_ignores_quick_draft_course_snapshot_outside_botdraft() -> None:
     assert list(parse_events(lines=[line])) == []
 
 
+def _unsupported_bot_draft_lines(event_name: str) -> list[str]:
+    course = json.dumps(
+        {
+            "Course": {
+                "CourseId": "00000000-0000-4000-8000-000000000099",
+                "InternalEventName": event_name,
+                "CurrentModule": "BotDraft",
+                "ModulePayload": "",
+                "CardPool": [],
+                "CardStyles": [],
+            },
+        }
+    )
+    status_request = (
+        "[UnityCrossThreadLogger]==> BotDraftDraftStatus "
+        + json.dumps({"id": "1", "request": json.dumps({"EventName": event_name})})
+    )
+    payload = json.dumps(
+        {
+            "CurrentModule": "BotDraft",
+            "Payload": json.dumps(
+                {
+                    "Result": "Success",
+                    "EventName": event_name,
+                    "DraftStatus": "PickNext",
+                    "PackNumber": 0,
+                    "PickNumber": 0,
+                    "NumCardsToPick": 1,
+                    "DraftPack": ["1", "2"],
+                    "PickedCards": [],
+                }
+            ),
+        }
+    )
+    pick_request = "[UnityCrossThreadLogger]==> BotDraftDraftPick " + json.dumps(
+        {
+            "id": "2",
+            "request": json.dumps(
+                {
+                    "EventName": event_name,
+                    "PickInfo": {
+                        "EventName": event_name,
+                        "CardIds": ["1"],
+                        "PackNumber": 0,
+                        "PickNumber": 0,
+                    },
+                }
+            ),
+        }
+    )
+    return [course, status_request, payload, pick_request]
+
+
+def test_parser_skips_bot_draft_events_with_unknown_prefix_and_warns_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    event_name = "MWM_ABC_BotDraft_20260702"
+    lines = _unsupported_bot_draft_lines(event_name) * 2
+
+    with caplog.at_level("WARNING", logger="draftomen.events"):
+        events = list(parse_events(lines=lines))
+
+    assert events == []
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if "unsupported bot draft event" in record.getMessage()
+    ]
+    assert warnings == [f"Skipping unsupported bot draft event {event_name}"]
+
+
+def test_parser_still_reads_quick_draft_after_skipped_bot_draft_event() -> None:
+    quick_payload = json.dumps(
+        {
+            "CurrentModule": "BotDraft",
+            "Payload": json.dumps(
+                {
+                    "Result": "Success",
+                    "EventName": "QuickDraft_ABC_20260702",
+                    "DraftStatus": "PickNext",
+                    "PackNumber": 0,
+                    "PickNumber": 0,
+                    "NumCardsToPick": 1,
+                    "DraftPack": ["3", "4"],
+                    "PickedCards": [],
+                }
+            ),
+        }
+    )
+    lines = [*_unsupported_bot_draft_lines("MWM_ABC_BotDraft_20260702"), quick_payload]
+
+    events = list(parse_events(lines=lines))
+
+    assert events == [
+        PackOfferedEvent(
+            event_name="QuickDraft_ABC_20260702",
+            set_code="ABC",
+            pack_number=0,
+            pick_number=0,
+            offered_grp_ids=(3, 4),
+            pool_grp_ids=(),
+            account_id=None,
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     "raw_line",
     [

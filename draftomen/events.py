@@ -231,6 +231,8 @@ class _ParserState:
     human_draft: _HumanDraftRecord | None = None
     seen_pick_request_ids: set[str] = field(default_factory=set)
     emitted_pick_requests: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # BotDraft events with an unknown prefix (e.g. Midweek Magic) are skipped once warned.
+    skipped_bot_draft_events: set[str] = field(default_factory=set)
     # Events produced while a line changes state, yielded before that line's own events.
     outbox: list[DraftEvent] = field(default_factory=list)
 
@@ -406,7 +408,7 @@ def _parse_request_line(
             field_name="request.EventName",
             raw_line=raw_line,
         )
-        _set_code(event_name=event_name, raw_line=raw_line)
+        _bot_draft_set_code(event_name=event_name, raw_line=raw_line, state=state)
         return ()
 
     if token == "BotDraftDraftPick":
@@ -421,7 +423,13 @@ def _parse_request_line(
             field_name="request.PickInfo.EventName",
             raw_line=raw_line,
         )
-        set_code = _set_code(event_name=event_name, raw_line=raw_line)
+        set_code = _bot_draft_set_code(
+            event_name=event_name,
+            raw_line=raw_line,
+            state=state,
+        )
+        if set_code is None:
+            return ()
         card_ids = _int_tuple(
             pick_info.get("CardIds"),
             field_name="request.PickInfo.CardIds",
@@ -1196,7 +1204,9 @@ def _parse_course(
         field_name="Course.InternalEventName",
         raw_line=raw_line,
     )
-    set_code = _set_code(event_name=event_name, raw_line=raw_line)
+    set_code = _bot_draft_set_code(event_name=event_name, raw_line=raw_line, state=state)
+    if set_code is None:
+        return None
     course_id = _required_str(
         course.get("CourseId"),
         field_name="Course.CourseId",
@@ -1247,7 +1257,9 @@ def _parse_module_payload(
         field_name="Payload.EventName",
         raw_line=raw_line,
     )
-    set_code = _set_code(event_name=event_name, raw_line=raw_line)
+    set_code = _bot_draft_set_code(event_name=event_name, raw_line=raw_line, state=state)
+    if set_code is None:
+        return ()
     pack_number = _required_int(
         payload.get("PackNumber"),
         field_name="Payload.PackNumber",
@@ -1407,6 +1419,25 @@ def _int_tuple(value: Any, *, field_name: str, raw_line: str) -> tuple[int, ...]
         _required_int(item, field_name=f"{field_name}[]", raw_line=raw_line)
         for item in value
     )
+
+
+def _bot_draft_set_code(
+    *,
+    event_name: str,
+    raw_line: str,
+    state: _ParserState,
+) -> str | None:
+    """Return the set code of a BotDraft event, or None to skip the line.
+    Only Quick Draft is supported; other bot drafts log a warning once per event.
+    """
+
+    if event_name.startswith(QUICK_DRAFT_PREFIX):
+        return _set_code(event_name=event_name, raw_line=raw_line)
+
+    if event_name not in state.skipped_bot_draft_events:
+        state.skipped_bot_draft_events.add(event_name)
+        logger.warning("Skipping unsupported bot draft event %s", event_name)
+    return None
 
 
 def _set_code(*, event_name: str, raw_line: str) -> str:

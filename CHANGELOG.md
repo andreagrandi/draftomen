@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+- Bot drafts that aren't Quick Draft, such as Midweek Magic
+  (`MWM_FRA_BotDraft_20261103`), no longer stop Draft Omen. Their log lines
+  are skipped with one warning per event, rather than raising "Unsupported
+  draft event". The startup scan and later Quick Drafts in the same
+  `Player.log` keep working. (#1058)
 - The deck builder now plays 17 lands in every deck. It no longer drops to 16
   lands for an aggressive curve or rises to 18 for a top-heavy one. Winning
   FRA 17Lands decks played 17 lands at every curve, 66% of aggressive decks
