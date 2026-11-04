@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- The native bundle build now passes `--no-install` to `pyside6-deploy`. PySide6
+  6.12 runs `pip freeze` during deployment, and the uv environment has no `pip`,
+  so every macOS and Windows bundle build failed.
+
 ## [0.6.6] - 2026-11-04
 
 - The deck builder now plays 17 lands in every deck. It no longer drops to 16
