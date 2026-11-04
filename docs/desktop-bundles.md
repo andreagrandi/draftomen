@@ -39,10 +39,11 @@ The checked-in platform specs are:
 
 Both specs pin `Nuitka==4.1.3` in their `[python] packages` field, and the
 workflow also installs that exact deployment dependency explicitly before
-invoking `pyside6-deploy`. That explicit install is load-bearing:
-`pyside6-deploy` fails when the pinned Nuitka is not importable, because its own
-`python -m pip install Nuitka` fallback cannot run in a uv-managed environment
-that ships no `pip`. An `uv run` never removes an already-installed package, so
+invoking `pyside6-deploy`. That explicit install is load-bearing: a uv-managed
+environment ships no `pip`, and `pyside6-deploy` runs `python -m pip freeze`
+before it installs anything. Every deployment command therefore passes
+`--no-install`, which skips pip and fails early if Nuitka is not importable.
+An `uv run` never removes an already-installed package, so
 only the workflow's own `uv sync --locked` step can prune it.
 The existing `uv.lock` continues to select the PySide6 version. Run deployment
 commands from the repository root because the specs use repository-relative paths.
@@ -122,11 +123,11 @@ Build the platform matching the host:
 ```bash
 # macOS
 mkdir -p dist-native/macos-unsigned
-uv run pyside6-deploy --config-file pysidedeploy.macos.spec --force
+uv run pyside6-deploy --config-file pysidedeploy.macos.spec --force --no-install
 
 # Windows PowerShell
 New-Item -ItemType Directory -Force dist-native/windows-unsigned | Out-Null
-uv run pyside6-deploy --config-file pysidedeploy.windows.spec --force
+uv run pyside6-deploy --config-file pysidedeploy.windows.spec --force --no-install
 ```
 
 The deployment output directory must exist before `pyside6-deploy` finalizes

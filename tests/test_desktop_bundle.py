@@ -1218,6 +1218,21 @@ def test_nuitka_cache_key_tracks_lock_nuitka_and_python_versions() -> None:
         assert spec_packages == f"Nuitka=={nuitka_version}"
 
 
+def test_every_workflow_deploy_command_skips_pip() -> None:
+    """The uv environment has no pip, so pyside6-deploy must never call it.
+
+    Each deployment command passes --no-install to use the pinned Nuitka.
+    """
+    workflow_text = (PROJECT_ROOT / ".github/workflows/native-bundles.yml").read_text(
+        encoding="utf-8"
+    )
+    deploy_lines = [
+        line for line in workflow_text.splitlines() if "uv run pyside6-deploy" in line
+    ]
+    assert len(deploy_lines) == 3
+    assert all("--no-install" in line for line in deploy_lines)
+
+
 def test_tag_release_builds_never_use_the_nuitka_cache() -> None:
     """Every cache step runs only for workflow_dispatch, so the push-triggered
     tag release neither restores nor saves compilation objects.

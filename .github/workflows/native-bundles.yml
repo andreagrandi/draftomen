@@ -227,7 +227,7 @@ jobs:
 
       - name: Build unsigned bundle
         if: env.MACOS_SIGNED != 'true'
-        run: uv run pyside6-deploy --config-file "${{ matrix.config }}" --force
+        run: uv run pyside6-deploy --config-file "${{ matrix.config }}" --force --no-install
 
       # pyside6-deploy copies Nuitka's app to exec_directory with
       # shutil.copytree, which drops the com.apple.cs.* extended attributes
@@ -248,7 +248,7 @@ jobs:
             echo "::error::Could not add the signing options to $spec."
             exit 1
           fi
-          uv run pyside6-deploy --config-file "$spec" --force --keep-deployment-files
+          uv run pyside6-deploy --config-file "$spec" --force --keep-deployment-files --no-install
 
           nuitka_app=draftomen/deployment/qt_gui.app
           codesign --verify --deep --strict --verbose=2 "$nuitka_app"
@@ -376,7 +376,7 @@ jobs:
       # The onefile executable stays the GitHub release asset.
       - name: Build standalone Windows folder for the MSIX
         if: matrix.platform == 'windows'
-        run: uv run pyside6-deploy --config-file "${{ matrix.config }}" --force --mode standalone
+        run: uv run pyside6-deploy --config-file "${{ matrix.config }}" --force --mode standalone --no-install
 
       # The runner image ships this Windows SDK. Naming the version keeps
       # MakeAppx and SignTool fixed until someone changes it here.
