@@ -622,12 +622,19 @@
     "pio": {
       "augmented": null,
       "card_data": {
-        "bytes": 72889,
-        "sha256": "5146ebce7ac80b56d738019029ed33a68605f8ef334816fe29ee2cea2e2c9f6d",
+        "bytes": 72896,
+        "sha256": "1068247d1e1099398393ae8311b7cf3916cb817ce1ed2931bfa231a094926e5f",
         "url": "https://www.draftomen.com/card-data/pio.json.gz"
       },
       "name": "Pioneer Masters",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "rix": {
       "augmented": null,
