@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+- CI now builds the website on every run. Dependabot pull requests with patch
+  or minor updates merge automatically once all CI jobs pass, and CI then runs
+  on `master`. Major and unknown updates stay open for review.
 - The scheduled data refresh no longer pushes generated website data to
   `master` untested, and a successful refresh no longer opens a pull request.
   The publisher dispatches CI on the data branch and waits up to 20 minutes.

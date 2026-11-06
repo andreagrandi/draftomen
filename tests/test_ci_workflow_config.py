@@ -49,3 +49,46 @@ def test_source_pull_requests_and_master_pushes_remain_configured() -> None:
     assert _list_value(pull_request, "branches") == ("master",)
     assert _list_value(push, "branches") == ("master",)
     assert "paths-ignore:" not in push
+
+
+def _job_block(text: str, job_name: str) -> str:
+    jobs = text[text.index("\njobs:\n") :]
+    marker = f"\n  {job_name}:\n"
+    start = jobs.index(marker) + len(marker)
+    next_job = re.search(r"\n  [A-Za-z0-9_-]+:\n", jobs[start:])
+    return jobs[start:] if next_job is None else jobs[start : start + next_job.start()]
+
+
+def test_website_job_builds_from_the_locked_dependencies() -> None:
+    website = _job_block(text=_text(), job_name="website")
+
+    assert "npm ci" in website
+    assert "npm run build" in website
+    assert "working-directory: website" in website
+
+
+def test_dependabot_merge_waits_for_every_check_job() -> None:
+    merge = _job_block(text=_text(), job_name="dependabot-merge")
+
+    assert _list_value(merge, "needs") == ("tests", "gui", "extension", "website")
+    assert "github.event.pull_request.user.login == 'dependabot[bot]'" in merge
+    assert "continue-on-error" not in merge
+    assert "always()" not in merge
+
+
+def test_dependabot_merge_leaves_major_and_unknown_updates_open() -> None:
+    merge = _job_block(text=_text(), job_name="dependabot-merge")
+
+    assert "version-update:semver-patch" in merge
+    assert "version-update:semver-minor" in merge
+    assert "semver-major" not in merge
+    assert "!=" not in merge
+
+
+def test_dependabot_merge_pins_the_tested_commit_and_runs_ci_on_master() -> None:
+    merge = _job_block(text=_text(), job_name="dependabot-merge")
+
+    assert '--match-head-commit "$HEAD_SHA"' in merge
+    assert "--auto" not in merge
+    assert "gh workflow run ci.yml" in merge
+    assert "--ref master" in merge
