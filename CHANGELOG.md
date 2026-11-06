@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- Fix TUI backtest tests that failed at random on a busy machine, because they
+  checked the result one frame after starting a command on a worker thread.
 - CI now builds the website on every run. Dependabot pull requests with patch
   or minor updates merge automatically once all CI jobs pass, and CI then runs
   on `master`. Major and unknown updates stay open for review.
