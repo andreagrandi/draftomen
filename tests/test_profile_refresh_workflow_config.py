@@ -7,6 +7,7 @@ import subprocess
 
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "profile-refresh.yml"
+CI_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
 
 
 def _text() -> str:
@@ -198,7 +199,7 @@ def test_workflow_permissions_and_ephemeral_bundle_policy() -> None:
     assert "permissions:" not in generate
     assert re.search(
         r"permissions:\n"
-        r"      actions: read\n"
+        r"      actions: write\n"
         r"      contents: write\n"
         r"      pull-requests: write\n",
         publish,
@@ -327,3 +328,9 @@ def test_failure_evidence_steps_are_always_attempted_and_status_is_propagated(
     assert _run_shell(final, env=final_env, cwd=tmp_path).returncode == 1
     final_env["GENERATION_OUTCOME"] = "success"
     assert _run_shell(final, env=final_env, cwd=tmp_path).returncode == 0
+
+
+def test_ci_workflow_supports_dispatch_and_always_reports_on_pull_requests() -> None:
+    ci = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert re.search(r"(?m)^  workflow_dispatch:\s*$", ci)
+    assert "paths-ignore" not in ci

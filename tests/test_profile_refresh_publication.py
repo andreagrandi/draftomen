@@ -562,124 +562,6 @@ def _configure_local_origin(root: Path, base_commit: str, origin: Path) -> None:
     )
 
 
-def test_publish_success_creates_snapshot_pr_and_master_cas(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
-    origin = tmp_path / "origin.git"
-    _configure_local_origin(candidate, report["base_commit"], origin)
-    unrelated = candidate / "unrelated-source.txt"
-    unrelated.write_text("retained source change\n", encoding="utf-8")
-    unrelated_commit = _git_commit_paths(candidate, "advance unrelated master source", ("unrelated-source.txt",))
-    subprocess.run(
-        ["git", "push", "origin", f"{unrelated_commit}:refs/heads/master"],
-        cwd=candidate,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    branch = "automation/profile-refresh-123-456"
-    state = {"created": False, "views": 0}
-    url = "https://github.com/example/repo/pull/7"
-
-    def fake_gh_json(_root: Path, arguments: list[str]) -> Any:
-        if arguments[:2] == ["pr", "list"]:
-            if not state["created"]:
-                return []
-            head = subprocess.run(
-                ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-                check=True,
-                stdout=subprocess.PIPE,
-                text=True,
-            ).stdout.split()[0]
-            return [
-                {
-                    "number": 7,
-                    "url": url,
-                    "state": "OPEN",
-                    "headRefOid": head,
-                    "mergedAt": None,
-                }
-            ]
-        state["views"] += 1
-        head = subprocess.run(
-            ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.split()[0]
-        return {
-            "url": url,
-            "state": "OPEN" if state["views"] == 1 else "MERGED",
-            "mergedAt": None if state["views"] == 1 else NOW.isoformat(),
-            "headRefOid": head,
-        }
-
-    def fake_gh(_root: Path, _arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        state["created"] = True
-        return subprocess.CompletedProcess(["gh"], 0, stdout=url + "\n", stderr="")
-
-    monkeypatch.setattr(publication, "_gh_json", fake_gh_json)
-    monkeypatch.setattr(publication, "_gh", fake_gh)
-    summary = tmp_path / "summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="123",
-        artifact_id="456",
-        run_url="https://github.com/example/repo/actions/runs/123",
-        summary_file=summary,
-    ) == 0
-    master = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", "refs/heads/master"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    branch_head = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", f"refs/heads/{branch}"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    assert master == branch_head
-    parent = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", f"{branch_head}^"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    assert parent == unrelated_commit
-    assert (
-        subprocess.run(
-            ["git", "--git-dir", str(origin), "show", f"{branch_head}:unrelated-source.txt"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout
-        == "retained source change\n"
-    )
-    sets_manifest = SetsManifest.from_bytes(
-        subprocess.run(
-            [
-                "git",
-                "--git-dir",
-                str(origin),
-                "show",
-                f"{branch_head}:website/public/sets/manifest.json",
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-        ).stdout
-    )
-    new_set = sets_manifest.select(set_code="new")
-    assert new_set is not None
-    assert new_set.name == "New Set"
-    assert new_set.profiles == {"premierdraft": "early"}
-    assert "Validated generated data was merged" in summary.read_text(encoding="utf-8")
 
 
 def test_publish_partial_keeps_master_unchanged_and_lists_every_failure(
@@ -716,7 +598,13 @@ def test_publish_partial_keeps_master_unchanged_and_lists_every_failure(
             }
         ]
 
+    dispatches: list[list[str]] = []
+
     def fake_gh(_root: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+        if arguments[:2] == ["workflow", "run"]:
+            assert not state["created"]
+            dispatches.append(arguments)
+            return subprocess.CompletedProcess(["gh"], 0, stdout="", stderr="")
         state["created"] = True
         state["creates"] += 1
         body_index = arguments.index("--body-file") + 1
@@ -744,6 +632,9 @@ def test_publish_partial_keeps_master_unchanged_and_lists_every_failure(
         summary_file=summary,
     ) == 1
     assert state["creates"] == 1
+    assert dispatches == [
+        ["workflow", "run", "ci.yml", "--repo", "example/repo", "--ref", branch],
+    ]
     assert workflow.render_summary(report) in state["body"]
     assert all(section in state["body"] for section in ("## Summary", "## Changes", "## Scope notes", "## Verification"))
     assert "Card data from 17Lands (17lands.com)" in state["body"]
@@ -768,6 +659,7 @@ def test_publish_partial_keeps_master_unchanged_and_lists_every_failure(
         summary_file=second_summary,
     ) == 1
     assert state["creates"] == 1
+    assert len(dispatches) == 1
     assert branch_pushes == [snapshot_head]
     assert "Partial generated data was published for review" in second_summary.read_text(encoding="utf-8")
     master = subprocess.run(
@@ -847,386 +739,14 @@ def test_publish_partial_keeps_master_unchanged_and_lists_every_failure(
     assert "snapshot tree does not match verified evidence" in conflict_summary.read_text(encoding="utf-8")
 
 
-def test_publish_recovers_orphan_snapshot_without_replacing_branch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
-    origin = tmp_path / "origin.git"
-    _configure_local_origin(candidate, report["base_commit"], origin)
-    branch = "automation/profile-refresh-132-465"
-    url = "https://github.com/example/repo/pull/12"
-    state = {"attempts": 0, "created": False, "views": 0}
-    branch_pushes: list[str] = []
-
-    def branch_head() -> str:
-        return subprocess.run(
-            ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.split()[0]
-
-    def fake_gh_json(_root: Path, arguments: list[str]) -> Any:
-        if arguments[:2] == ["pr", "list"]:
-            if not state["created"]:
-                return []
-            return [
-                {
-                    "number": 12,
-                    "url": url,
-                    "state": "OPEN",
-                    "headRefOid": branch_head(),
-                    "mergedAt": None,
-                }
-            ]
-        state["views"] += 1
-        return {
-            "url": url,
-            "state": "OPEN" if state["views"] == 1 else "MERGED",
-            "mergedAt": None if state["views"] == 1 else NOW.isoformat(),
-            "headRefOid": branch_head(),
-        }
-
-    def fake_gh(_root: Path, _arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        state["attempts"] += 1
-        if state["attempts"] == 1:
-            return subprocess.CompletedProcess(["gh"], 1, stdout="", stderr="temporary API failure")
-        state["created"] = True
-        return subprocess.CompletedProcess(["gh"], 0, stdout=url + "\n", stderr="")
-
-    real_push_branch = publication._push_branch
-
-    def track_push_branch(root: Path, branch_name: str, head: str) -> None:
-        branch_pushes.append(head)
-        real_push_branch(root, branch_name, head)
-
-    monkeypatch.setattr(publication, "_gh_json", fake_gh_json)
-    monkeypatch.setattr(publication, "_gh", fake_gh)
-    monkeypatch.setattr(publication, "_push_branch", track_push_branch)
-    first_summary = tmp_path / "orphan-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="132",
-        artifact_id="465",
-        run_url="https://github.com/example/repo/actions/runs/132",
-        summary_file=first_summary,
-    ) == 1
-    orphan_head = branch_head()
-    assert state["created"] is False
-    second_summary = tmp_path / "recovered-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="132",
-        artifact_id="465",
-        run_url="https://github.com/example/repo/actions/runs/132",
-        summary_file=second_summary,
-    ) == 0
-    assert branch_pushes == [orphan_head]
-    recovered_master = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", "refs/heads/master"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    assert recovered_master == orphan_head
-    assert "Validated generated data was merged" in second_summary.read_text(encoding="utf-8")
-
-
-def test_publish_post_cas_github_failure_reports_master_updated(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
-    origin = tmp_path / "origin.git"
-    _configure_local_origin(candidate, report["base_commit"], origin)
-    branch = "automation/profile-refresh-133-466"
-    url = "https://github.com/example/repo/pull/13"
-    state = {"created": False, "views": 0}
-
-    def branch_head() -> str:
-        return subprocess.run(
-            ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.split()[0]
-
-    def fake_gh_json(_root: Path, arguments: list[str]) -> Any:
-        if arguments[:2] == ["pr", "list"]:
-            if not state["created"]:
-                return []
-            return [
-                {
-                    "number": 13,
-                    "url": url,
-                    "state": "OPEN",
-                    "headRefOid": branch_head(),
-                    "mergedAt": None,
-                }
-            ]
-        state["views"] += 1
-        if state["views"] == 2:
-            publication._fail("GitHub API outage after CAS")
-        head = branch_head()
-        return {
-            "url": url,
-            "state": "OPEN",
-            "mergedAt": None,
-            "headRefOid": head,
-        }
-
-    def fake_gh(_root: Path, _arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        state["created"] = True
-        return subprocess.CompletedProcess(["gh"], 0, stdout=url + "\n", stderr="")
-
-    monkeypatch.setattr(publication, "_gh_json", fake_gh_json)
-    monkeypatch.setattr(publication, "_gh", fake_gh)
-    summary = tmp_path / "post-cas-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="133",
-        artifact_id="466",
-        run_url="https://github.com/example/repo/actions/runs/133",
-        summary_file=summary,
-    ) == 0
-    master = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", "refs/heads/master"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    branch_head_value = branch_head()
-    assert master == branch_head_value
-    subprocess.run(
-        ["git", "--git-dir", str(origin), "merge-base", "--is-ancestor", branch_head_value, master],
-        check=True,
-        stdout=subprocess.PIPE,
-    )
-    summary_text = summary.read_text(encoding="utf-8")
-    assert "master updated; merge confirmation unavailable" in summary_text
-    assert url in summary_text
-    assert "Publication failed" not in summary_text
 
 
 
-def test_publish_stale_open_metadata_after_cas_reports_success(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
-    origin = tmp_path / "origin.git"
-    _configure_local_origin(candidate, report["base_commit"], origin)
-    branch = "automation/profile-refresh-134-467"
-    url = "https://github.com/example/repo/pull/14"
-    state = {"created": False}
-
-    def branch_head() -> str:
-        return subprocess.run(
-            ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.split()[0]
-
-    def fake_gh_json(_root: Path, arguments: list[str]) -> Any:
-        if arguments[:2] == ["pr", "list"] and not state["created"]:
-            return []
-        head = branch_head()
-        pull = {
-            "number": 14,
-            "url": url,
-            "state": "OPEN",
-            "headRefOid": head,
-            "mergedAt": None,
-        }
-        if arguments[:2] == ["pr", "list"]:
-            return [pull]
-        return {key: value for key, value in pull.items() if key != "number"}
-
-    def fake_gh(_root: Path, _arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        state["created"] = True
-        return subprocess.CompletedProcess(["gh"], 0, stdout=url + "\n", stderr="")
-
-    monkeypatch.setattr(publication, "_gh_json", fake_gh_json)
-    monkeypatch.setattr(publication, "_gh", fake_gh)
-    summary = tmp_path / "stale-open-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="134",
-        artifact_id="467",
-        run_url="https://github.com/example/repo/actions/runs/134",
-        summary_file=summary,
-    ) == 0
-    master = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", "refs/heads/master"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    branch_head_value = branch_head()
-    assert master == branch_head_value
-    subprocess.run(
-        ["git", "--git-dir", str(origin), "merge-base", "--is-ancestor", branch_head_value, master],
-        check=True,
-        stdout=subprocess.PIPE,
-    )
-    summary_text = summary.read_text(encoding="utf-8")
-    assert "master updated; merge confirmation unavailable" in summary_text
-    assert "Validated generated data was merged into master." not in summary_text
 
 
-def test_publish_post_cas_master_fetch_failure_remains_hard_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
-    origin = tmp_path / "origin.git"
-    _configure_local_origin(candidate, report["base_commit"], origin)
-    branch = "automation/profile-refresh-135-468"
-    url = "https://github.com/example/repo/pull/15"
-    state = {"created": False, "fetches": 0}
-
-    def branch_head() -> str:
-        return subprocess.run(
-            ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.split()[0]
-
-    def fake_gh_json(_root: Path, arguments: list[str]) -> Any:
-        if arguments[:2] == ["pr", "list"] and not state["created"]:
-            return []
-        head = branch_head()
-        pull = {
-            "number": 15,
-            "url": url,
-            "state": "OPEN",
-            "headRefOid": head,
-            "mergedAt": None,
-        }
-        if arguments[:2] == ["pr", "list"]:
-            return [pull]
-        return {key: value for key, value in pull.items() if key != "number"}
-
-    def fake_gh(_root: Path, _arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        state["created"] = True
-        return subprocess.CompletedProcess(["gh"], 0, stdout=url + "\n", stderr="")
-
-    real_fetch_master = publication._fetch_master
-
-    def fail_after_cas(root: Path) -> str:
-        state["fetches"] += 1
-        if state["fetches"] == 2:
-            publication._fail("post-CAS master fetch failed")
-        return real_fetch_master(root)
-
-    monkeypatch.setattr(publication, "_gh_json", fake_gh_json)
-    monkeypatch.setattr(publication, "_gh", fake_gh)
-    monkeypatch.setattr(publication, "_fetch_master", fail_after_cas)
-    summary = tmp_path / "fetch-failure-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="135",
-        artifact_id="468",
-        run_url="https://github.com/example/repo/actions/runs/135",
-        summary_file=summary,
-    ) == 1
-    master = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", "refs/heads/master"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    branch_head_value = branch_head()
-    assert master == branch_head_value
-    assert "post-CAS master fetch failed" in summary.read_text(encoding="utf-8")
-    assert "master updated; merge confirmation unavailable" not in summary.read_text(encoding="utf-8")
 
 
-def test_publish_post_cas_master_ancestry_failure_remains_hard_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
-    origin = tmp_path / "origin.git"
-    _configure_local_origin(candidate, report["base_commit"], origin)
-    branch = "automation/profile-refresh-136-469"
-    url = "https://github.com/example/repo/pull/16"
-    state = {"created": False}
 
-    def branch_head() -> str:
-        return subprocess.run(
-            ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.split()[0]
-
-    def fake_gh_json(_root: Path, arguments: list[str]) -> Any:
-        if arguments[:2] == ["pr", "list"] and not state["created"]:
-            return []
-        head = branch_head()
-        pull = {
-            "number": 16,
-            "url": url,
-            "state": "OPEN",
-            "headRefOid": head,
-            "mergedAt": None,
-        }
-        if arguments[:2] == ["pr", "list"]:
-            return [pull]
-        return {key: value for key, value in pull.items() if key != "number"}
-
-    def fake_gh(_root: Path, _arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        state["created"] = True
-        return subprocess.CompletedProcess(["gh"], 0, stdout=url + "\n", stderr="")
-
-    real_is_ancestor = publication._is_ancestor
-
-    def fail_after_cas(root: Path, ancestor: str, descendant: str) -> bool:
-        assert real_is_ancestor(root, ancestor, descendant)
-        return False
-
-    monkeypatch.setattr(publication, "_gh_json", fake_gh_json)
-    monkeypatch.setattr(publication, "_gh", fake_gh)
-    monkeypatch.setattr(publication, "_is_ancestor", fail_after_cas)
-    summary = tmp_path / "ancestry-failure-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="136",
-        artifact_id="469",
-        run_url="https://github.com/example/repo/actions/runs/136",
-        summary_file=summary,
-    ) == 1
-    master = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", "refs/heads/master"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    assert master == branch_head()
-    assert "master publication could not be verified" in summary.read_text(encoding="utf-8")
-    assert "master updated; merge confirmation unavailable" not in summary.read_text(encoding="utf-8")
 
 
 def test_publish_genuine_no_work_does_not_query_github(
@@ -1278,111 +798,6 @@ def test_publish_genuine_no_work_does_not_query_github(
         summary_file=summary,
     ) == 0
     assert "no branch" in summary.read_text(encoding="utf-8")
-
-
-def test_publish_rerun_reuses_open_snapshot_when_merge_confirmation_is_pending(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
-    origin = tmp_path / "origin.git"
-    _configure_local_origin(candidate, report["base_commit"], origin)
-    branch = "automation/profile-refresh-126-459"
-    state = {"created": False, "creates": 0, "merged": False, "closed": False}
-    url = "https://github.com/example/repo/pull/9"
-
-    def branch_head() -> str:
-        return subprocess.run(
-            ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.split()[0]
-
-    def fake_gh_json(_root: Path, arguments: list[str]) -> Any:
-        if arguments[:2] == ["pr", "list"]:
-            if not state["created"]:
-                return []
-            return [
-                {
-                    "number": 9,
-                    "url": url,
-                    "state": "CLOSED" if state["closed"] else ("MERGED" if state["merged"] else "OPEN"),
-                    "headRefOid": branch_head(),
-                    "mergedAt": NOW.isoformat() if state["merged"] else None,
-                }
-            ]
-        return {
-            "url": url,
-            "state": "OPEN",
-            "mergedAt": None,
-            "headRefOid": branch_head(),
-        }
-    def fake_gh(_root: Path, _arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        state["created"] = True
-        state["creates"] += 1
-        return subprocess.CompletedProcess(["gh"], 0, stdout=url + "\n", stderr="")
-
-    monkeypatch.setattr(publication, "_gh_json", fake_gh_json)
-    monkeypatch.setattr(publication, "_gh", fake_gh)
-    first_summary = tmp_path / "first-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="126",
-        artifact_id="459",
-        run_url="https://github.com/example/repo/actions/runs/126",
-        summary_file=first_summary,
-    ) == 0
-    snapshot_head = branch_head()
-    subprocess.run(
-        ["git", "push", "origin", f"{snapshot_head}:refs/pull/9/head"],
-        cwd=candidate,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    second_summary = tmp_path / "second-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="126",
-        artifact_id="459",
-        run_url="https://github.com/example/repo/actions/runs/126",
-        summary_file=second_summary,
-    ) == 1
-    assert state["creates"] == 1
-    assert "master updated; merge confirmation unavailable" in second_summary.read_text(encoding="utf-8")
-    state["closed"] = True
-    closed_summary = tmp_path / "closed-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="126",
-        artifact_id="459",
-        run_url="https://github.com/example/repo/actions/runs/126",
-        summary_file=closed_summary,
-    ) == 1
-    assert "closed or merged" in closed_summary.read_text(encoding="utf-8")
-    state["closed"] = False
-    state["merged"] = True
-    merged_summary = tmp_path / "merged-summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="126",
-        artifact_id="459",
-        run_url="https://github.com/example/repo/actions/runs/126",
-        summary_file=merged_summary,
-    ) == 0
 
 
 
@@ -1453,99 +868,6 @@ def test_publish_all_failed_creates_no_snapshot_or_pull_request(
     }.issubset(rendered_failures)
 
 
-def test_publish_master_lease_rejects_late_advance_without_retry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
-    origin = tmp_path / "origin.git"
-    _configure_local_origin(candidate, report["base_commit"], origin)
-    branch = "automation/profile-refresh-128-461"
-    url = "https://github.com/example/repo/pull/10"
-    state = {"created": False}
-
-    def branch_head() -> str:
-        return subprocess.run(
-            ["git", "ls-remote", str(origin), f"refs/heads/{branch}"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.split()[0]
-
-    def fake_gh_json(_root: Path, arguments: list[str]) -> Any:
-        if arguments[:2] == ["pr", "list"] and not state["created"]:
-            return []
-        pull = {
-            "number": 10,
-            "url": url,
-            "state": "OPEN",
-            "headRefOid": branch_head(),
-            "mergedAt": None,
-        }
-        if arguments[:2] == ["pr", "list"]:
-            return [pull]
-        return {
-            "url": url,
-            "state": "OPEN",
-            "headRefOid": branch_head(),
-            "mergedAt": None,
-        }
-
-    def fake_gh(_root: Path, _arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        state["created"] = True
-        return subprocess.CompletedProcess(["gh"], 0, stdout=url + "\n", stderr="")
-
-    monkeypatch.setattr(publication, "_gh_json", fake_gh_json)
-    monkeypatch.setattr(publication, "_gh", fake_gh)
-    real_push_master = publication._push_master
-
-    def race(root: Path, master: str, head: str) -> None:
-        unrelated = root / "unrelated-source.txt"
-        unrelated.write_text("late master advance\n", encoding="utf-8")
-        subprocess.run(["git", "add", "--", unrelated.name], cwd=root, check=True, stdout=subprocess.PIPE)
-        environment = os.environ | {
-            "GIT_AUTHOR_NAME": "Race",
-            "GIT_AUTHOR_EMAIL": "race@example.invalid",
-            "GIT_COMMITTER_NAME": "Race",
-            "GIT_COMMITTER_EMAIL": "race@example.invalid",
-        }
-        subprocess.run(
-            ["git", "commit", "-m", "unrelated master change"],
-            cwd=root,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-        )
-        subprocess.run(
-            ["git", "push", "origin", "HEAD:refs/heads/master"],
-            cwd=root,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        real_push_master(root, master, head)
-
-    monkeypatch.setattr(publication, "_push_master", race)
-    summary = tmp_path / "summary.md"
-    assert publication.publish_website(
-        repo_root=candidate,
-        bundle_dir=bundle,
-        expected_base=report["base_commit"],
-        repository="example/repo",
-        run_id="128",
-        artifact_id="461",
-        run_url="https://github.com/example/repo/actions/runs/128",
-        summary_file=summary,
-    ) == 1
-    final_master = subprocess.run(
-        ["git", "--git-dir", str(origin), "rev-parse", "refs/heads/master"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    assert final_master != report["base_commit"]
-    assert "master changed before publication CAS" in summary.read_text(encoding="utf-8")
 
 
 def test_publish_rejects_mutated_pull_head_before_snapshot_recovery(
@@ -1684,3 +1006,562 @@ def test_prepare_rejects_malformed_card_metadata_fallbacks(
             expected_base=report["base_commit"],
             master_commit=report["base_commit"],
         )
+
+
+class _FakeGitHub:
+    """Stand-in for the gh calls the publisher makes, backed by a local origin."""
+
+    def __init__(self, *, origin: Path, branch: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.origin = origin
+        self.branch = branch
+        self.events: list[str] = []
+        self.pr: dict[str, Any] | None = None
+        self.pr_creates = 0
+        self.pr_body = ""
+        self.runs: list[dict[str, Any]] = []
+        self.ci_conclusion = "success"
+        self.pending_polls = 0
+        self.dispatch_ok = True
+        self.run_list_value: Any = None
+        self.view_failures: list[bool] = []
+        self.sleeps: list[float] = []
+        self._now = 0.0
+        self._pending: dict[str, Any] | None = None
+        monkeypatch.setattr(publication, "_gh_json", self.gh_json)
+        monkeypatch.setattr(publication, "_gh", self.gh)
+        monkeypatch.setattr(publication, "_ci_sleep", self._sleep)
+        monkeypatch.setattr(publication, "_ci_clock", lambda: self._now)
+        real_push_master = publication._push_master
+
+        def tracked_push_master(root: Path, master: str, head: str) -> None:
+            self.events.append("push-master")
+            real_push_master(root, master, head)
+
+        monkeypatch.setattr(publication, "_push_master", tracked_push_master)
+
+    def _sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self._now += seconds
+
+    def branch_head(self) -> str:
+        return subprocess.run(
+            ["git", "ls-remote", str(self.origin), f"refs/heads/{self.branch}"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.split()[0]
+
+    def branch_exists(self) -> bool:
+        return bool(
+            subprocess.run(
+                ["git", "ls-remote", str(self.origin), f"refs/heads/{self.branch}"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+        )
+
+    def master(self) -> str:
+        return subprocess.run(
+            ["git", "--git-dir", str(self.origin), "rev-parse", "refs/heads/master"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+
+    def open_pr(self, *, root: Path, number: int) -> None:
+        """Attach an open PR to the branch as it stands now."""
+        head = self.branch_head()
+        subprocess.run(
+            ["git", "push", "origin", f"{head}:refs/pull/{number}/head"],
+            cwd=root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.pr = {
+            "number": number,
+            "url": f"https://github.com/example/repo/pull/{number}",
+            "state": "OPEN",
+            "mergedAt": None,
+        }
+
+    def gh_json(self, _root: Path, arguments: list[str]) -> Any:
+        if arguments[:2] == ["pr", "list"]:
+            if self.pr is None:
+                return []
+            return [{**self.pr, "headRefOid": self.branch_head()}]
+        if arguments[:2] == ["pr", "view"]:
+            assert self.pr is not None
+            if self.view_failures and self.view_failures.pop(0):
+                publication._fail("GitHub API outage")
+            pull = {key: value for key, value in self.pr.items() if key != "number"}
+            return {**pull, "headRefOid": self.branch_head()}
+        assert arguments[:2] == ["run", "list"]
+        assert arguments[arguments.index("--workflow") + 1] == "ci.yml"
+        if self.run_list_value is not None:
+            return self.run_list_value
+        if self._pending is not None:
+            if self.pending_polls > 0:
+                self.pending_polls -= 1
+                return [*self.runs, {"databaseId": self._pending["databaseId"], "status": "in_progress", "conclusion": ""}]
+            self.runs.append(self._pending)
+            self._pending = None
+        if any(run["status"] == "completed" and run["conclusion"] == "success" for run in self.runs):
+            self.events.append("ci-success-seen")
+        return list(self.runs)
+
+    def gh(self, _root: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+        if arguments[:2] == ["workflow", "run"]:
+            self.events.append("dispatch")
+            assert arguments == ["workflow", "run", "ci.yml", "--repo", "example/repo", "--ref", self.branch]
+            if not self.dispatch_ok:
+                return subprocess.CompletedProcess(["gh"], 1, stdout="", stderr="dispatch refused")
+            self._pending = {
+                "databaseId": 900 + len(self.runs),
+                "status": "completed",
+                "conclusion": self.ci_conclusion,
+            }
+            return subprocess.CompletedProcess(["gh"], 0, stdout="", stderr="")
+        assert arguments[:2] == ["pr", "create"]
+        self.events.append("pr-create")
+        self.pr_creates += 1
+        self.pr_body = Path(arguments[arguments.index("--body-file") + 1]).read_text(encoding="utf-8")
+        self.pr = {
+            "number": 50,
+            "url": "https://github.com/example/repo/pull/50",
+            "state": "OPEN",
+            "mergedAt": None,
+        }
+        return subprocess.CompletedProcess(["gh"], 0, stdout=self.pr["url"] + "\n", stderr="")
+
+
+def _publish(
+    *,
+    candidate: Path,
+    bundle: Path,
+    base: str,
+    summary: Path,
+    run_id: str = "123",
+    artifact_id: str = "456",
+) -> int:
+    return publication.publish_website(
+        repo_root=candidate,
+        bundle_dir=bundle,
+        expected_base=base,
+        repository="example/repo",
+        run_id=run_id,
+        artifact_id=artifact_id,
+        run_url=f"https://github.com/example/repo/actions/runs/{run_id}",
+        summary_file=summary,
+    )
+
+
+def _setup_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, dict[str, Any], Path, _FakeGitHub]:
+    _generator, candidate, bundle, report = _producer_bundle(tmp_path, monkeypatch)
+    origin = tmp_path / "origin.git"
+    _configure_local_origin(candidate, report["base_commit"], origin)
+    github = _FakeGitHub(origin=origin, branch="automation/profile-refresh-123-456", monkeypatch=monkeypatch)
+    return candidate, bundle, report, origin, github
+
+
+def test_publish_success_pushes_master_after_ci_without_pull_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, origin, github = _setup_success(tmp_path, monkeypatch)
+    unrelated = candidate / "unrelated-source.txt"
+    unrelated.write_text("retained source change\n", encoding="utf-8")
+    unrelated_commit = _git_commit_paths(candidate, "advance unrelated master source", ("unrelated-source.txt",))
+    subprocess.run(
+        ["git", "push", "origin", f"{unrelated_commit}:refs/heads/master"],
+        cwd=candidate,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    github.pending_polls = 2
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 0
+    assert github.pr_creates == 0
+    assert github.events == ["dispatch", "ci-success-seen", "push-master"]
+    assert github.sleeps == [20, 20]
+    master = github.master()
+    parent = subprocess.run(
+        ["git", "--git-dir", str(origin), "rev-parse", f"{master}^"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    assert parent == unrelated_commit
+    assert (
+        subprocess.run(
+            ["git", "--git-dir", str(origin), "show", f"{master}:unrelated-source.txt"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout
+        == "retained source change\n"
+    )
+    sets_manifest = SetsManifest.from_bytes(
+        subprocess.run(
+            ["git", "--git-dir", str(origin), "show", f"{master}:website/public/sets/manifest.json"],
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+    )
+    new_set = sets_manifest.select(set_code="new")
+    assert new_set is not None
+    assert new_set.profiles == {"premierdraft": "early"}
+    assert not github.branch_exists()
+    assert "pushed to master after CI passed" in summary.read_text(encoding="utf-8")
+
+
+def test_publish_success_skips_dispatch_when_ci_already_passed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    github.runs = [
+        {"databaseId": 7, "status": "completed", "conclusion": "failure"},
+        {"databaseId": 8, "status": "completed", "conclusion": "success"},
+    ]
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 0
+    assert "dispatch" not in github.events
+    assert github.master() != report["base_commit"]
+
+
+def test_publish_ci_failure_keeps_master_untouched_and_branch_for_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    github.ci_conclusion = "failure"
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert github.events == ["dispatch"]
+    assert github.master() == report["base_commit"]
+    assert github.branch_exists()
+    assert github.pr_creates == 0
+    text = summary.read_text(encoding="utf-8")
+    assert "CI finished with conclusion failure" in text
+
+
+def test_publish_ci_timeout_keeps_master_untouched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    github.pending_polls = 10**6
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert sum(github.sleeps) == 20 * 60
+    assert "push-master" not in github.events
+    assert github.master() == report["base_commit"]
+    assert github.branch_exists()
+    assert "timed out waiting for CI" in summary.read_text(encoding="utf-8")
+
+
+def test_publish_dispatch_failure_on_success_blocks_master_push(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    github.dispatch_ok = False
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert github.master() == report["base_commit"]
+    assert "could not dispatch CI" in summary.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"databaseId": 1},
+        "not a list",
+        ["not an object"],
+        [{"databaseId": "1", "status": "completed", "conclusion": "success"}],
+        [{"databaseId": True, "status": "completed", "conclusion": "success"}],
+        [{"databaseId": 0, "status": "completed", "conclusion": "success"}],
+        [{"databaseId": 1, "status": "", "conclusion": "success"}],
+        [{"databaseId": 1, "status": "completed", "conclusion": 5}],
+        [{"status": "completed", "conclusion": "success"}],
+    ],
+)
+def test_publish_malformed_ci_run_list_is_not_treated_as_passed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: Any,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    github.run_list_value = value
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert "push-master" not in github.events
+    assert github.master() == report["base_commit"]
+    assert "Publication failed" in summary.read_text(encoding="utf-8")
+
+
+def test_publish_master_advancing_during_ci_wait_is_rejected_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    github.pending_polls = 1
+    real_sleep = github._sleep
+
+    def advance_master_while_waiting(seconds: float) -> None:
+        real_sleep(seconds)
+        unrelated = candidate / "unrelated-source.txt"
+        unrelated.write_text("master moved during CI\n", encoding="utf-8")
+        moved = _git_commit_paths(candidate, "unrelated master change", ("unrelated-source.txt",))
+        subprocess.run(
+            ["git", "push", "origin", f"{moved}:refs/heads/master"],
+            cwd=candidate,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    monkeypatch.setattr(publication, "_ci_sleep", advance_master_while_waiting)
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert github.events.count("push-master") == 1
+    assert github.master() != github.branch_head()
+    assert github.master() != report["base_commit"]
+    assert github.branch_exists()
+    assert "master changed before publication CAS" in summary.read_text(encoding="utf-8")
+
+
+def test_publish_branch_deletion_failure_keeps_success_and_notes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    monkeypatch.setattr(publication, "_delete_branch", lambda *_args, **_kwargs: publication._fail("delete refused"))
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 0
+    assert github.master() == github.branch_head()
+    text = summary.read_text(encoding="utf-8")
+    assert "pushed to master after CI passed" in text
+    assert "could not be deleted" in text
+
+
+def test_publish_rerun_after_failed_branch_deletion_notes_published_and_retries_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    real_delete = publication._delete_branch
+    monkeypatch.setattr(publication, "_delete_branch", lambda *_args, **_kwargs: publication._fail("delete refused"))
+    first = tmp_path / "first.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=first) == 0
+    published = github.master()
+    github.events.clear()
+    monkeypatch.setattr(publication, "_delete_branch", real_delete)
+    second = tmp_path / "second.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=second) == 0
+    assert github.events == []
+    assert github.master() == published
+    assert not github.branch_exists()
+    assert "already published to master" in second.read_text(encoding="utf-8")
+
+
+def test_publish_orphan_branch_after_ci_failure_dispatches_fresh_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    github.ci_conclusion = "failure"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=tmp_path / "a.md") == 1
+    orphan_head = github.branch_head()
+    branch_pushes: list[str] = []
+    real_push_branch = publication._push_branch
+
+    def track_push_branch(root: Path, branch_name: str, head: str) -> None:
+        branch_pushes.append(head)
+        real_push_branch(root, branch_name, head)
+
+    monkeypatch.setattr(publication, "_push_branch", track_push_branch)
+    github.ci_conclusion = "success"
+    github.events.clear()
+    second = tmp_path / "b.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=second) == 0
+    assert branch_pushes == []
+    assert github.events == ["dispatch", "ci-success-seen", "push-master"]
+    assert github.master() == orphan_head
+    assert not github.branch_exists()
+
+
+def test_publish_partial_dispatch_failure_still_opens_pull_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, candidate, bundle, published_base, _report = _partial_producer_bundle(tmp_path, monkeypatch)
+    origin = tmp_path / "origin.git"
+    _configure_local_origin(candidate, published_base, origin)
+    github = _FakeGitHub(origin=origin, branch="automation/profile-refresh-123-456", monkeypatch=monkeypatch)
+    github.dispatch_ok = False
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=published_base, summary=summary) == 1
+    assert github.events == ["dispatch", "pr-create"]
+    assert github.master() == published_base
+    text = summary.read_text(encoding="utf-8")
+    assert "CI dispatch failed" in text
+    assert "Partial generated data was published for review" in text
+
+
+def test_publish_partial_dispatches_ci_before_opening_pull_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, candidate, bundle, published_base, _report = _partial_producer_bundle(tmp_path, monkeypatch)
+    origin = tmp_path / "origin.git"
+    _configure_local_origin(candidate, published_base, origin)
+    github = _FakeGitHub(origin=origin, branch="automation/profile-refresh-123-456", monkeypatch=monkeypatch)
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=published_base, summary=summary) == 1
+    assert github.events == ["dispatch", "pr-create"]
+    assert github.sleeps == []
+    assert github.master() == published_base
+    assert github.branch_exists()
+
+
+def _existing_pr_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    number: int,
+) -> tuple[Path, Path, dict[str, Any], _FakeGitHub]:
+    """Leave a validated branch behind a failed CI run, then open a PR on it."""
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    github.ci_conclusion = "failure"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=tmp_path / "seed.md") == 1
+    github.open_pr(root=candidate, number=number)
+    github.ci_conclusion = "success"
+    github.events.clear()
+    return candidate, bundle, report, github
+
+
+def test_publish_existing_open_pr_waits_for_ci_before_master_push(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, github = _existing_pr_setup(tmp_path, monkeypatch, number=14)
+    github.view_failures = [False, True]
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 0
+    assert github.pr_creates == 0
+    assert github.events == ["dispatch", "ci-success-seen", "push-master"]
+    assert github.master() == github.branch_head()
+    text = summary.read_text(encoding="utf-8")
+    assert "master updated; merge confirmation unavailable" in text
+    assert "https://github.com/example/repo/pull/14" in text
+
+
+def test_publish_existing_open_pr_reports_merged_when_github_confirms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, github = _existing_pr_setup(tmp_path, monkeypatch, number=15)
+    real_view = github.gh_json
+    views = {"count": 0}
+
+    def merged_after_push(root: Path, arguments: list[str]) -> Any:
+        value = real_view(root, arguments)
+        if arguments[:2] == ["pr", "view"]:
+            views["count"] += 1
+            if views["count"] == 2:
+                value = {**value, "state": "MERGED", "mergedAt": NOW.isoformat()}
+        return value
+
+    monkeypatch.setattr(publication, "_gh_json", merged_after_push)
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 0
+    assert "Validated generated data was merged into master." in summary.read_text(encoding="utf-8")
+
+
+def test_publish_existing_open_pr_with_failed_ci_does_not_push_master(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, github = _existing_pr_setup(tmp_path, monkeypatch, number=16)
+    github.ci_conclusion = "cancelled"
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert "push-master" not in github.events
+    assert github.master() == report["base_commit"]
+    assert "CI finished with conclusion cancelled" in summary.read_text(encoding="utf-8")
+
+
+def test_publish_post_master_fetch_failure_remains_hard_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    real_fetch_master = publication._fetch_master
+    fetches = {"count": 0}
+
+    def fail_after_push(root: Path) -> str:
+        fetches["count"] += 1
+        if fetches["count"] == 2:
+            publication._fail("post-CAS master fetch failed")
+        return real_fetch_master(root)
+
+    monkeypatch.setattr(publication, "_fetch_master", fail_after_push)
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert github.master() == github.branch_head()
+    assert "post-CAS master fetch failed" in summary.read_text(encoding="utf-8")
+
+
+def test_publish_post_master_ancestry_failure_remains_hard_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    real_is_ancestor = publication._is_ancestor
+
+    def fail_after_push(root: Path, ancestor: str, descendant: str) -> bool:
+        assert real_is_ancestor(root, ancestor, descendant)
+        return False
+
+    monkeypatch.setattr(publication, "_is_ancestor", fail_after_push)
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert github.master() == github.branch_head()
+    assert "master publication could not be verified" in summary.read_text(encoding="utf-8")
+    assert github.branch_exists()
+
+
+def test_publish_master_lease_rejects_late_advance_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, bundle, report, _origin, github = _setup_success(tmp_path, monkeypatch)
+    real_push_master = publication._push_master
+
+    def race(root: Path, master: str, head: str) -> None:
+        unrelated = root / "unrelated-source.txt"
+        unrelated.write_text("late master advance\n", encoding="utf-8")
+        advanced = _git_commit_paths(root, "unrelated master change", ("unrelated-source.txt",))
+        subprocess.run(
+            ["git", "push", "origin", f"{advanced}:refs/heads/master"],
+            cwd=root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        real_push_master(root, master, head)
+
+    monkeypatch.setattr(publication, "_push_master", race)
+    summary = tmp_path / "summary.md"
+    assert _publish(candidate=candidate, bundle=bundle, base=report["base_commit"], summary=summary) == 1
+    assert github.master() != report["base_commit"]
+    assert github.master() != github.branch_head()
+    assert github.branch_exists()
+    assert "master changed before publication CAS" in summary.read_text(encoding="utf-8")

@@ -18,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 import scripts.profile_refresh_workflow as profile_refresh_workflow
@@ -49,6 +50,9 @@ _GENERATED_ROOT = Path("website/public")
 _CARD_ROOT = _GENERATED_ROOT / "card-data"
 _PROFILE_ROOT = _GENERATED_ROOT / "profiles"
 _MANIFEST_RELATIVE = (_PROFILE_ROOT / "manifest.json").as_posix()
+_CI_WORKFLOW = "ci.yml"
+_CI_POLL_SECONDS = 20
+_CI_TIMEOUT_SECONDS = 20 * 60
 
 
 class ProfileRefreshPublicationError(ValueError):
@@ -1172,6 +1176,84 @@ def _push_master(repo_root: Path, master: str, head: str) -> None:
         _fail("master changed before publication CAS")
 
 
+def _delete_branch(repo_root: Path, branch: str) -> None:
+    result = _git_network(repo_root, ["push", "origin", "--delete", f"refs/heads/{branch}"])
+    if result.returncode != 0:
+        _fail("could not delete publication branch")
+
+
+def _ci_sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _ci_clock() -> float:
+    return time.monotonic()
+
+
+def _ci_runs(repo_root: Path, repository: str, head: str) -> list[dict[str, Any]]:
+    # All events are listed so a pull request run for the same SHA also counts.
+    value = _gh_json(
+        repo_root,
+        [
+            "run",
+            "list",
+            "--repo",
+            repository,
+            "--workflow",
+            _CI_WORKFLOW,
+            "--commit",
+            head,
+            "--json",
+            "databaseId,status,conclusion",
+        ],
+    )
+    if not isinstance(value, list):
+        _fail("GitHub returned an invalid CI run list")
+    for item in value:
+        if not isinstance(item, dict):
+            _fail("GitHub returned an invalid CI run list")
+        run_id = item.get("databaseId")
+        status = item.get("status")
+        conclusion = item.get("conclusion")
+        if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+            _fail("GitHub returned a CI run with an invalid ID")
+        if not isinstance(status, str) or not status:
+            _fail("GitHub returned a CI run with an invalid status")
+        if conclusion is not None and not isinstance(conclusion, str):
+            _fail("GitHub returned a CI run with an invalid conclusion")
+    return value
+
+
+def _dispatch_ci(repo_root: Path, repository: str, branch: str) -> None:
+    # Pushes made with GITHUB_TOKEN start no workflows, but dispatch is allowed.
+    result = _gh(repo_root, ["workflow", "run", _CI_WORKFLOW, "--repo", repository, "--ref", branch])
+    if result.returncode != 0:
+        _fail("could not dispatch CI on the publication branch")
+
+
+def _ensure_ci_passed(repo_root: Path, repository: str, branch: str, head: str) -> None:
+    """Return once CI has passed for the commit, dispatching a run if needed."""
+    existing = _ci_runs(repo_root, repository, head)
+    if any(run["status"] == "completed" and run["conclusion"] == "success" for run in existing):
+        return
+    known = {run["databaseId"] for run in existing}
+    _dispatch_ci(repo_root, repository, branch)
+    deadline = _ci_clock() + _CI_TIMEOUT_SECONDS
+    tracked: int | None = None
+    while True:
+        for run in _ci_runs(repo_root, repository, head):
+            if tracked is None and run["databaseId"] not in known:
+                tracked = run["databaseId"]
+            if run["databaseId"] != tracked or run["status"] != "completed":
+                continue
+            if run["conclusion"] == "success":
+                return
+            _fail(f"CI finished with conclusion {run['conclusion'] or 'unknown'}")
+        if _ci_clock() >= deadline:
+            _fail("timed out waiting for CI on the publication commit")
+        _ci_sleep(_CI_POLL_SECONDS)
+
+
 def _pr_list(repo_root: Path, repository: str, branch: str) -> list[dict[str, Any]]:
     value = _gh_json(
         repo_root,
@@ -1281,6 +1363,17 @@ def _publication_body(
         "before publication.\n\n"
         + summary
     )
+
+
+def _delete_branch_noted(repo_root: Path, branch: str, summary_file: Path) -> None:
+    """Delete the publication branch, noting a failure without failing the run."""
+    try:
+        _delete_branch(repo_root, branch)
+    except ProfileRefreshPublicationError as error:
+        _publication_note(
+            summary_file,
+            f"Publication branch `{branch}` could not be deleted: {str(error)[:300]}",
+        )
 
 
 def publish_website(
@@ -1398,7 +1491,11 @@ def publish_website(
                     head=head,
                 )
                 if _is_ancestor(root, head, master_commit):
-                    _fail("orphan publication branch is already reachable from master")
+                    # Success publishes without a PR, so a failed branch deletion
+                    # on an earlier run leaves exactly this state.
+                    _publication_note(summary_path, "The validated snapshot is already published to master.")
+                    _delete_branch_noted(root, branch, summary_path)
+                    return status_code
                 if parent != master_commit:
                     _fail("orphan publication snapshot is stale; dispatch fresh generation")
 
@@ -1431,30 +1528,36 @@ def publish_website(
         assert head is not None and snapshot_paths is not None
         partial = report["status"] == "failed"
         title = "Refresh generated website data (partial)" if partial else "Refresh generated website data"
-        if existing is None:
-            body = _publication_body(
-                report=report,
-                run_url=run_url,
-                expected_base=expected_base,
-                master_commit=master_commit,
-                paths=snapshot_paths,
-                partial=partial,
-            )
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                prefix=".profile-refresh-pr-",
-                suffix=".md",
-                dir=root,
-                delete=False,
-            ) as body_handle:
-                body_handle.write(body)
-                body_path = Path(body_handle.name)
-            try:
-                pr_url = _pr_create(root, repository, branch, title, body_path)
-            finally:
-                body_path.unlink(missing_ok=True)
         if partial:
+            if existing is None:
+                # A later human merge needs these checks on the commit. A dispatch
+                # failure must not stop the PR, which is how the failure reaches a human.
+                try:
+                    _dispatch_ci(root, repository, branch)
+                except ProfileRefreshPublicationError as error:
+                    _publication_note(summary_path, f"CI dispatch failed: {str(error)[:300]}")
+                body = _publication_body(
+                    report=report,
+                    run_url=run_url,
+                    expected_base=expected_base,
+                    master_commit=master_commit,
+                    paths=snapshot_paths,
+                    partial=partial,
+                )
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    prefix=".profile-refresh-pr-",
+                    suffix=".md",
+                    dir=root,
+                    delete=False,
+                ) as body_handle:
+                    body_handle.write(body)
+                    body_path = Path(body_handle.name)
+                try:
+                    pr_url = _pr_create(root, repository, branch, title, body_path)
+                finally:
+                    body_path.unlink(missing_ok=True)
             _publication_note(
                 summary_path,
                 "Partial generated data was published for review; automatic merge is not eligible.",
@@ -1462,19 +1565,22 @@ def publish_website(
             )
             return 1
 
-        number: str | None = None
-        if existing is not None:
-            number = str(existing["number"])
-        else:
-            listed = _pr_list(root, repository, branch)
-            if len(listed) != 1:
-                _fail("created publication pull request could not be confirmed")
-            number_value = listed[0].get("number")
-            if isinstance(number_value, bool) or not isinstance(number_value, int) or number_value <= 0:
-                _fail("created publication pull request has an invalid number")
-            number = str(number_value)
-            pr_url = listed[0].get("url")
-        assert number is not None
+        _ensure_ci_passed(root, repository, branch, head)
+        if existing is None:
+            if _commit_parent(root, head) != master_commit:
+                _fail("publication commit parent does not equal checked master")
+            _push_master(root, master_commit, head)
+            verified_master = _fetch_master(root)
+            if not _is_ancestor(root, head, verified_master):
+                _fail("master publication could not be verified")
+            _publication_note(
+                summary_path,
+                "Validated generated data was pushed to master after CI passed.",
+            )
+            _delete_branch_noted(root, branch, summary_path)
+            return 0
+
+        number = str(existing["number"])
         current_pr = _pr_view(root, repository, number)
         current_state = str(current_pr.get("state", "")).upper()
         current_head = current_pr.get("headRefOid")

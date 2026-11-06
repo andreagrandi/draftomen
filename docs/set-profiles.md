@@ -1264,8 +1264,8 @@ latest-name match or rerun generation.
 
 Generation has only `contents: read` permission and checkout credential
 persistence is disabled. Publication uses the built-in `GITHUB_TOKEN` only, with
-job-scoped `actions: read`, `contents: write`, and `pull-requests: write`
-permissions. The workflow defaults remain read-only. No personal access token,
+job-scoped `actions: write`, `contents: write`, and `pull-requests: write`
+permissions. `actions: write` lets the publisher dispatch the CI workflow. The workflow defaults remain read-only. No personal access token,
 GitHub App credential, deployment credential, or stored login is used. The
 publisher validates the bundle in a disposable worktree based on the current
 master commit, then uses an exact master compare-and-swap (CAS); it does not
@@ -1277,25 +1277,27 @@ The report and the complete generated delta are validated before any branch,
 pull-request, or master write.
 A full-success report has no failures. Any changed successful static card data,
 including a static-only change, is eligible for the same automatic fast-forward
-as changed successful profile data. The publisher creates a ready snapshot PR
-whose body uses the required `## Summary`, `## Changes`, `## Scope notes`, and
+as changed successful profile data. The publisher pushes the validated snapshot
+to a branch and dispatches the `CI` workflow on it, because pushes made with
+`GITHUB_TOKEN` start no workflows. A full success opens no PR: the publisher
+waits up to 20 minutes for CI to pass on that exact commit, then fast-forwards
+`master` to it and deletes the branch. If CI fails or times out, nothing reaches
+`master` and the branch stays for inspection. A partial result still gets a
+ready snapshot PR whose body uses the required `## Summary`, `## Changes`, `## Scope notes`, and
 `## Verification` template sections; the generated producer summary may add
 subsections. It includes the workflow URL, generation and checked-master SHAs,
 validated asset paths, selected and successful work, provider attribution, and
-every failure. For a full success, it fast-forwards `master` to that PR's one
-validated commit. GitHub then records the PR as
-merged when the head becomes reachable from `master`; the publisher does not
-invoke `gh pr merge`.
+every failure. The publisher never invokes `gh pr merge`.
 
 
 | Generation result | Snapshot PR | `master` | Exit |
 | --- | --- | --- | --- |
-| Full success with changed static and/or profile data | Ready PR, then automatic fast-forward and indirect merge | Updated once by the exact CAS | `0` |
-| Partial success, including static success with failed profile work or profile success with failed static work | One immutable ready PR left open for review | Unchanged | `1` |
+| Full success with changed static and/or profile data | None; CI is dispatched on the branch and must pass first | Updated once by the exact CAS, after CI passes | `0` |
+| Partial success, including static success with failed profile work or profile success with failed static work | One immutable ready PR left open for review; CI is dispatched on its branch without waiting | Unchanged | `1` |
 | Valid success with no changed assets, including zero selected work and already-valid static data | None | Unchanged | `0` |
 | All-failed result: status `failed` with no successful static code or profile pair | None | Unchanged | `1` |
 | Invalid evidence or stale protected data | No branch, PR, or master write; any existing reviewed PR is left untouched | Unchanged | `1` |
-| Publication error or a rejected CAS | A snapshot branch or PR may already exist; no master write unless a prior CAS succeeded | Unchanged unless a prior CAS already succeeded | `1` |
+| CI failure or timeout, publication error, or a rejected CAS | A snapshot branch or partial PR may already exist; no master write unless a prior CAS succeeded | Unchanged unless a prior CAS already succeeded | `1` |
 
 An empty delta does not by itself mean all-failed: a valid `success` report with
 an empty delta is unchanged, while a `failed` report with an empty delta exits
@@ -1401,11 +1403,16 @@ git push \
 
 If `master` advances, even with an unrelated change, the lease rejects and the
 publisher does not retry against a new base. After a successful lease, it
-fetches master and checks reachability, then reads the PR state. If GitHub has
-not yet confirmed the indirect merge, the factual outcome is
-`master updated; merge confirmation unavailable` with the PR URL. No second
-merge operation is attempted. The uploaded artifact and its evidence are
-retained for seven days.
+fetches master and checks reachability, then deletes the branch. A deletion
+failure is noted in the Actions summary and does not fail the run. The CI wait
+happens before the push, so if `master` moves during the wait the lease rejects
+the push. The next scheduled run regenerates from the new `master`. The
+uploaded artifact and its evidence are retained for seven days.
+
+The `CI` workflow has a `workflow_dispatch` trigger for this. The job checks
+that the dispatched run attaches to the commit SHA are what a required-checks
+rule on `master` evaluates. The publisher first lists `CI` runs of any event for
+the SHA and skips the dispatch if one already passed.
 
 ### Re-runs, stale data, and source outages
 
@@ -1413,10 +1420,11 @@ Use the exact run and artifact as follows:
 
 * When generation succeeded but publication failed, `gh run rerun RUN_ID
   --failed` retries the failed publication with the same artifact ID and
-  immutable snapshot. It does not repeat the merge. If that snapshot is
-  already reachable from `master`, the retry only records the merged state or
-  reports `master updated; merge confirmation unavailable`; it never creates a
-  duplicate PR.
+  immutable snapshot. A snapshot left behind by a failed or timed-out CI run is
+  validated again and goes through CI again with a fresh dispatch. If the
+  snapshot is already reachable from `master`, for example because deleting its
+  branch failed, the retry records that it is published and tries the deletion
+  again. It never creates a duplicate PR.
 * A complete all-job rerun, or a fresh workflow dispatch, generates a new
   artifact ID and may create a new partial snapshot. If generation itself
   failed, a failed-job rerun regenerates it; use the fresh evidence rather than
@@ -1485,18 +1493,18 @@ report; they are not converted into successful empty profiles.
 Before enabling publication, an owner must enable **Settings → Actions →
 General → Allow GitHub Actions to create and approve pull requests**. Keep the
 default workflow token permissions read-only; the workflow grants write
-permissions only to the publication job. The publisher creates ready PRs but
-never approves them and does not need the repository `allow_auto_merge` setting:
+permissions only to the publication job. The publisher creates ready PRs only for partial results, never approves
+them, and does not need the repository `allow_auto_merge` setting:
 the validated single-parent commit is fast-forwarded with the master CAS.
 
-To roll back generated data, revert the generated PR's single commit through
+To roll back generated data, revert the generated commit through
 the normal reviewed PR process. Revert the manifest and its associated static
 card-data and profile-object changes together; never edit hosted files directly
 or remove only one content-addressed object.
 
-PR checks created with `GITHUB_TOKEN` may await maintainer approval, and pushes
-made with that token do not trigger another Actions run. This automation does
-not wait for those checks, bypass branch protections, or claim that an existing
+Pushes made with `GITHUB_TOKEN` do not trigger another Actions run, so the
+publisher dispatches `CI` explicitly and waits for it on a full success. This
+automation does not bypass branch protections or claim that an existing
 Cloudflare integration has deployed the website. Deployment and external-host
 recovery are outside this procedure.
 
