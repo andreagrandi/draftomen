@@ -5,10 +5,6 @@ import re
 
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
-GENERATED_ROOTS = (
-    "website/public/card-data/**",
-    "website/public/profiles/**",
-)
 
 
 def _text() -> str:
@@ -38,11 +34,11 @@ def _list_value(block: str, key: str) -> tuple[str, ...]:
     )
 
 
-def test_pull_request_ignores_only_generated_website_roots() -> None:
+def test_pull_requests_run_ci_for_every_changed_path() -> None:
     pull_request = _event_block(_text(), "pull_request")
 
     assert _list_value(pull_request, "branches") == ("master",)
-    assert _list_value(pull_request, "paths-ignore") == GENERATED_ROOTS
+    assert "paths-ignore:" not in pull_request
 
 
 def test_source_pull_requests_and_master_pushes_remain_configured() -> None:

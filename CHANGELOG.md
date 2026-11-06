@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+- The scheduled data refresh no longer pushes generated website data to
+  `master` untested, and a successful refresh no longer opens a pull request.
+  The publisher dispatches CI on the data branch and waits up to 20 minutes.
+  It pushes to `master` only after CI passes on that exact commit, then deletes
+  the branch. If CI fails or times out, `master` stays unchanged and the branch
+  stays for inspection. A partial refresh still opens a pull request, and CI is
+  dispatched on its branch too. The `CI` workflow can now be started by hand,
+  and it runs on every pull request, including data-only ones.
 - The native bundle build now passes `--no-install` to `pyside6-deploy`. PySide6
   6.12 runs `pip freeze` during deployment, and the uv environment has no `pip`,
   so every macOS and Windows bundle build failed.

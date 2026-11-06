@@ -178,7 +178,7 @@ jobs:
       group: profile-refresh-publish
       cancel-in-progress: false
     permissions:
-      actions: read
+      actions: write
       contents: write
       pull-requests: write
     steps:
