@@ -112,12 +112,12 @@ SCRYFALL_BULK_SAMPLE_PATH = (
 )
 
 
-async def _cycle_account(*, pilot: Pilot[None]) -> None:
-    """Press the account key and wait for the ChooseAccount worker to finish.
-    One pause is not enough on a busy runner because the command runs on a thread.
+async def _press_and_wait_for_session_commands(*, pilot: Pilot[None], key: str) -> None:
+    """Press a key and wait for the session commands it started to finish.
+    One pause is not enough on a busy runner because commands run on a thread.
     """
 
-    await pilot.press("a")
+    await pilot.press(key)
     workers = [
         worker
         for worker in pilot.app.workers
@@ -125,6 +125,10 @@ async def _cycle_account(*, pilot: Pilot[None]) -> None:
     ]
     await pilot.app.workers.wait_for_complete(workers)
     await pilot.pause()
+
+
+async def _cycle_account(*, pilot: Pilot[None]) -> None:
+    await _press_and_wait_for_session_commands(pilot=pilot, key="a")
 
 
 def test_tui_renders_shared_setup_guidance_before_draft(tmp_path: Path) -> None:
@@ -2472,8 +2476,7 @@ async def _assert_backtest_keybinding_opens_report(tmp_path: Path) -> None:
         )
         before = state_path.read_text(encoding="utf-8")
 
-        await pilot.press("t")
-        await pilot.pause()
+        await _press_and_wait_for_session_commands(pilot=pilot, key="t")
 
         title = app.query_one("#pack-title", Static)
         table = app.query_one("#pack-table", DataTable)
@@ -2519,29 +2522,20 @@ async def _assert_failed_backtest_refresh_replaces_stale_report(
             draft_id=FIXTURE_DRAFT_ID,
             app_dir=tmp_path / "app",
         )
-        # A busy runner can still be applying picks after one frame.
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if (
-                app.session.snapshot.status.phase == ApplicationPhase.DRAFT_COMPLETE
-                and state_path.exists()
-            ):
-                break
-
-        await pilot.press("t")
         await pilot.pause()
+        assert app.session.snapshot.status.phase == ApplicationPhase.DRAFT_COMPLETE
+        assert state_path.exists()
+
+        await _press_and_wait_for_session_commands(pilot=pilot, key="t")
         assert app.backtest_view_text.startswith("Draft Omen backtest\n")
 
         state_path.unlink()
-        await pilot.press("s")
-        for _ in range(20):
-            await pilot.pause(0.05)
-            if any(
-                error.operation == OperationKind.BACKTEST
-                for error in app.session.snapshot.errors
-            ):
-                break
+        await _press_and_wait_for_session_commands(pilot=pilot, key="s")
 
+        assert any(
+            error.operation == OperationKind.BACKTEST
+            for error in app.session.snapshot.errors
+        )
         assert app.session.snapshot.backtest is None
         assert app.backtest_view_text.startswith("Backtest view unavailable:")
         assert "Draft Omen backtest\n" not in app.backtest_view_text
@@ -2583,8 +2577,7 @@ async def _assert_backtest_missing_history_is_read_only(tmp_path: Path) -> None:
         app.process_lines(lines=_account_lines())
         await pilot.pause()
 
-        await pilot.press("t")
-        await pilot.pause()
+        await _press_and_wait_for_session_commands(pilot=pilot, key="t")
 
         assert "Picks: 1 chosen, 0 compared, 1 skipped" in app.backtest_view_text
         assert "skipped: missing offered-card history" in app.backtest_view_text
