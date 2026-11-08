@@ -419,12 +419,22 @@
     "ktk": {
       "augmented": null,
       "card_data": {
-        "bytes": 35286,
-        "sha256": "2c498cef820d10d369bce7d1274219c342a72d156efed31e8baed84e2ef89804",
+        "bytes": 39421,
+        "sha256": "98723978f9f803673d5f2e7367a6b9364787578a6c0799b902768615cdd871cd",
         "url": "https://www.draftomen.com/card-data/ktk.json.gz"
       },
       "name": "Khans of Tarkir",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "lci": {
       "augmented": null,
@@ -469,12 +479,19 @@
     "m19": {
       "augmented": null,
       "card_data": {
-        "bytes": 47783,
-        "sha256": "a958c991ec6edcc6e211f06f1096d54832da32824cb314848e788fb88c28b946",
+        "bytes": 47790,
+        "sha256": "e0be8747a634437e2ffafb36790f4f534b0810bd6a8b69ae51dabaf687771ead",
         "url": "https://www.draftomen.com/card-data/m19.json.gz"
       },
       "name": "Core Set 2019",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        }
+      }
     },
     "m20": {
       "augmented": null,
