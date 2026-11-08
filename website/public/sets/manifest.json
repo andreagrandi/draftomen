@@ -38,8 +38,8 @@
     "blb": {
       "augmented": null,
       "card_data": {
-        "bytes": 50069,
-        "sha256": "afb88c4fef7c2057c1273a7a35584c0d54fc4bfa1b639379ef03f767f5a90900",
+        "bytes": 51727,
+        "sha256": "fd736f8b69823415577a54284b23850026b368fa776f1e641a64fda8e6244b4b",
         "url": "https://www.draftomen.com/card-data/blb.json.gz"
       },
       "name": "Bloomburrow",
