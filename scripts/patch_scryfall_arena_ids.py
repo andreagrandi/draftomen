@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from draftomen.card_data_export import card_name_key
 from draftomen.carddb import iter_scryfall_default_cards
 
 
@@ -99,13 +100,14 @@ def patch_rows(
     by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for card in rows:
         if str(card.get("set", "")).casefold() == wanted:
-            by_name[_front_name(name=str(card.get("name", "")))].append(card)
+            name = _front_name(name=str(card.get("name", "")))
+            by_name[card_name_key(name)].append(card)
 
     matched = 0
     already_set = 0
     unmatched: list[str] = []
     for name, arena_id in ids.items():
-        prints = by_name.get(name)
+        prints = by_name.get(card_name_key(name))
         if not prints:
             unmatched.append(name)
         elif any(card.get("arena_id") is not None for card in prints):

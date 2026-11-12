@@ -514,6 +514,13 @@ def _missing_basic_land_cards(
     )
 
 
+def card_name_key(name: str) -> str:
+    """Return a card name key that ignores whitespace and case.
+    17Lands writes "All Good Things . . ." where Scryfall writes "All Good Things...".
+    """
+    return "".join(name.split()).casefold()
+
+
 def _front_face_name(card: Mapping[str, Any]) -> str | None:
     faces = card.get("card_faces")
     if isinstance(faces, list) and faces and isinstance(faces[0], Mapping):
@@ -551,7 +558,7 @@ def _bonus_sheet_cards(
         names = {card.get("name"), _front_face_name(card)}
         for name in names:
             if isinstance(name, str) and name:
-                by_name.setdefault(name, []).append(card)
+                by_name.setdefault(card_name_key(name), []).append(card)
 
     rows: dict[int, dict[str, Any]] = {}
     unmatched: list[str] = []
@@ -562,7 +569,7 @@ def _bonus_sheet_cards(
         if by_id:
             source = min(by_id, key=_source_card_rank)
         else:
-            candidates = by_name.get(rated.name)
+            candidates = by_name.get(card_name_key(rated.name))
             if not candidates:
                 unmatched.append(rated.name)
                 continue

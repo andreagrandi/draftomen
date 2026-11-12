@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- Add Star Trek (TRK) card data and early Premier, Traditional and Pick-Two
+  profiles. Scryfall has no Arena ids for TRK yet, so this one-time export
+  takes the 336 Arena ids from 17Lands ratings, as was done for FRA.
+- Card name matching between 17Lands and Scryfall now ignores spaces and case.
+  17Lands writes "All Good Things . . ." and Scryfall writes "All Good
+  Things...", so the TRK export failed on that card.
 - Fix TUI backtest tests that failed at random on a busy machine, because they
   checked the result one frame after starting a command on a worker thread.
 - CI now builds the website on every run. Dependabot pull requests with patch
