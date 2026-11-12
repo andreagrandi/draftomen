@@ -776,6 +776,26 @@
       "name": "Teenage Mutant Ninja Turtles",
       "profiles": {}
     },
+    "trk": {
+      "augmented": null,
+      "card_data": {
+        "bytes": 63248,
+        "sha256": "8d467894a42c5e90e229fe3312f623384dacc6b551f696c93301a9368c30a6c0",
+        "url": "https://www.draftomen.com/card-data/trk.json.gz"
+      },
+      "name": "Star Trek",
+      "profiles": {
+        "picktwodraft": {
+          "maturity": "early"
+        },
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
+    },
     "vow": {
       "augmented": null,
       "card_data": {

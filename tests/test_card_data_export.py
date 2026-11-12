@@ -1165,6 +1165,21 @@ def test_bonus_card_matches_adventure_by_front_face_name(tmp_path: Path) -> None
     assert _card_names_and_types(plan)[556][0] == "Front Knight // Back Spell"
 
 
+def test_bonus_card_matches_name_with_spaced_ellipsis(tmp_path: Path) -> None:
+    plan = _prepare(
+        tmp_path,
+        ["AAA"],
+        [
+            _card(1, "aaa", "Alpha Set"),
+            _card(None, "bon", "Bonus Set", name="All Good Things..."),
+        ],
+        selector="aaa",
+        rated_cards={"aaa": [_rated("All Good Things . . .", 557)]},
+    )
+
+    assert _card_names_and_types(plan)[557][0] == "All Good Things..."
+
+
 def test_unmatched_rated_card_fails_the_export(tmp_path: Path) -> None:
     with pytest.raises(SetDataExportError, match="Missing Card"):
         _prepare(

@@ -72,6 +72,17 @@ def test_double_faced_card_matches_front_face(tmp_path: Path) -> None:
     assert rows[0]["arena_id"] == 222
 
 
+def test_name_with_spaced_ellipsis_matches_scryfall_name(tmp_path: Path) -> None:
+    code, rows = _run(
+        tmp_path=tmp_path,
+        cards=[_card(name="All Good Things...", number="226")],
+        ratings=[{"name": "All Good Things . . .", "mtga_id": 333}],
+    )
+
+    assert code == 0
+    assert rows[0]["arena_id"] == 333
+
+
 def test_only_lowest_collector_number_gets_id(tmp_path: Path) -> None:
     cards = [
         _card(name="Bolt", number="10"),
