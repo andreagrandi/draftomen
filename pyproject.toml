@@ -32,7 +32,7 @@ dependencies = [
     "textual>=8.2.8",
     "textual-image>=0.14.2",
     "truststore>=0.10.5",
-    "winrt-runtime>=3.2.1; sys_platform == 'win32'",
+    "winrt-runtime>=4.0.3; sys_platform == 'win32'",
     "winrt-Windows.ApplicationModel>=3.2.1; sys_platform == 'win32'",
     "winrt-Windows.Foundation>=3.2.1; sys_platform == 'win32'",
     "winrt-Windows.Foundation.Collections>=3.2.1; sys_platform == 'win32'",
@@ -55,11 +55,11 @@ Issues = "https://github.com/andreagrandi/draftomen/issues"
 dev = [
     "nox>=2026.10.20",
     "numpy>=2.5.4,<3",
-    "polars>=2.0.0,<3",
+    "polars>=2.1.0,<3",
     "pre-commit>=4.7.0",
-    "pytest>=8.4.0",
+    "pytest>=9.2.0",
     "pytest-xdist>=3.8.0",
-    "ruff>=0.17.2",
+    "ruff>=0.17.3",
 ]
 
 [build-system]
