@@ -729,12 +729,22 @@
     "tdm": {
       "augmented": null,
       "card_data": {
-        "bytes": 49800,
-        "sha256": "7bf24fbd5e2a09b3065fca81237614d000229a9141a621b4efb70a2287aa1b6d",
+        "bytes": 50980,
+        "sha256": "0deea5f8fd7b3e8db87ed7b460dff332928caa12c3cc349bd8cf3e7ae08ed02b",
         "url": "https://www.draftomen.com/card-data/tdm.json.gz"
       },
       "name": "Tarkir: Dragonstorm",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "quickdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "thb": {
       "augmented": null,
