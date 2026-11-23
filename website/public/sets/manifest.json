@@ -713,12 +713,19 @@
     "sir": {
       "augmented": null,
       "card_data": {
-        "bytes": 51221,
-        "sha256": "9206e8d91c485cdc61799aa4a1115804f5465998cfb784c6b103ca4946763626",
+        "bytes": 64640,
+        "sha256": "c31ff5a7aa03943c3083f6a2dec58f72f525b0ab425f5dc707b5be6668048693",
         "url": "https://www.draftomen.com/card-data/sir.json.gz"
       },
       "name": "Shadows over Innistrad Remastered",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "snc": {
       "augmented": null,
