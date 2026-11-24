@@ -718,7 +718,14 @@
         "url": "https://www.draftomen.com/card-data/sir.json.gz"
       },
       "name": "Shadows over Innistrad Remastered",
-      "profiles": {}
+      "profiles": {
+        "premierdraft": {
+          "maturity": "early"
+        },
+        "traddraft": {
+          "maturity": "early"
+        }
+      }
     },
     "snc": {
       "augmented": null,
