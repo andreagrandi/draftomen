@@ -19,6 +19,7 @@ import io
 import json
 import math
 import re
+import statistics
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -69,13 +70,15 @@ from draftomen.set_profile import (
     SET_PROFILE_SCHEMA_VERSION,
     SourceMetadata,
     TriadProfile,
+    ALSA_ESTIMATE_RATE_SOURCE,
     REPRINT_RATE_SOURCE_PREFIX,
+    is_alsa_estimate_rate,
     is_reprint_rate,
     profile_card_key,
 )
 
 
-PROFILE_GENERATOR_VERSION = "4"
+PROFILE_GENERATOR_VERSION = "5"
 PROFILE_GENERATION_SCHEMA_VERSION = 1
 
 AGGREGATE_SUPPORT_MINIMUM = PICK_ENGINE.thin_sample_minimum
@@ -83,6 +86,11 @@ AGGREGATE_FALLBACK_CONFIDENCE_FACTOR = RELIABILITY_PREMIER_FACTOR
 # A reprint's rating from another set counts for half: the stored value sits
 # halfway between that rating and the card prior, and its confidence is halved.
 REPRINT_EVIDENCE_WEIGHT = 0.5
+# The ALSA fit needs enough rated cards to mean something. The estimate carries
+# one sample so readers treat the card as rated; its source marks it as an
+# estimate and not as games.
+ALSA_FIT_MINIMUM_CARDS = 20
+ALSA_ESTIMATE_SAMPLES = 1
 
 _CARD_RATE_SOURCE = "17lands:card-ratings"
 _PAIR_RATE_SOURCE = "17lands:color-ratings"
@@ -627,7 +635,11 @@ def reprint_card_ratings(
         for card_rating in profile.card_ratings:
             rate = card_rating.gih_win_rate
             evidence = rate.aggregate_evidence
-            if rate.samples <= 0 or is_reprint_rate(rate):
+            if (
+                rate.samples <= 0
+                or is_reprint_rate(rate)
+                or is_alsa_estimate_rate(rate)
+            ):
                 continue
             current = best.get(card_rating.card_key)
             if current is not None and current.gih_win_rate.samples >= rate.samples:
@@ -663,7 +675,8 @@ def generate_set_profile(
     represented in the report, while only a selected local draft source is
     consumed for deck targets.  The neutral reader performs all container,
     gzip, CSV, and checksum handling.  ``reprint_ratings`` (see
-    ``reprint_card_ratings``) fill cards that have no games in hand here.
+    ``reprint_card_ratings``) fill cards that have no games in hand here;
+    cards still without games get a rate estimated from their ALSA.
     """
 
     if not isinstance(card_database, CardDatabase):
@@ -1619,6 +1632,11 @@ def _card_ratings(
                 average_last_seen_at=chosen.average_last_seen_at,
             )
         )
+    result = _estimate_rates_from_alsa(
+        ratings=result,
+        requested_format=requested_format,
+        prior=config.card_prior,
+    )
     counts = CardRatingCounts(
         fetched=0 if exact_ratings is None else len(exact_ratings.card_ratings),
         accepted=accepted,
@@ -1630,6 +1648,60 @@ def _card_ratings(
         from_other_formats=from_other_formats,
     )
     return tuple(result), counts
+
+
+def _estimate_rates_from_alsa(
+    *,
+    ratings: list[CardRating],
+    requested_format: str,
+    prior: BetaPrior,
+) -> list[CardRating]:
+    points = [
+        (rating.average_last_seen_at, rating.gih_win_rate.value)
+        for rating in ratings
+        if rating.gih_win_rate.samples >= AGGREGATE_SUPPORT_MINIMUM
+        and rating.average_last_seen_at is not None
+        and not is_reprint_rate(rating.gih_win_rate)
+    ]
+    if len(points) < ALSA_FIT_MINIMUM_CARDS:
+        return ratings
+    alsas = [alsa for alsa, _ in points]
+    values = [value for _, value in points]
+    try:
+        slope, intercept = statistics.linear_regression(alsas, values)
+        r_squared = statistics.correlation(alsas, values) ** 2
+    except statistics.StatisticsError:
+        # Every ALSA or every rate is the same, so there is no line to fit.
+        return ratings
+    # Earlier picks should mean better cards. Otherwise ALSA says nothing here.
+    if slope >= 0:
+        return ratings
+    estimated: list[CardRating] = []
+    for rating in ratings:
+        alsa = rating.average_last_seen_at
+        if rating.gih_win_rate.samples != 0 or alsa is None:
+            estimated.append(rating)
+            continue
+        value = min(max(intercept + slope * alsa, min(values)), max(values))
+        estimated.append(
+            CardRating(
+                card_key=rating.card_key,
+                gih_win_rate=RateEstimate(
+                    raw_value=value,
+                    value=value,
+                    samples=ALSA_ESTIMATE_SAMPLES,
+                    prior_value=prior.mean,
+                    source=ALSA_ESTIMATE_RATE_SOURCE,
+                    aggregate_evidence=AggregateEvidence(
+                        source_format=requested_format,
+                        fallback_reason=None,
+                        confidence=r_squared,
+                    ),
+                ),
+                average_last_seen_at=alsa,
+            )
+        )
+    return estimated
 
 
 def _reprint_estimate(

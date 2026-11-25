@@ -39,11 +39,13 @@ from draftomen.pool_ledger import (
 from draftomen.profile_statistics import RATE_PRIOR_STRENGTH, shrink_mean
 from draftomen.semantic_roles import Role, RoleAssignment, resolve_card_roles
 from draftomen.set_profile import (
+    ALSA_ESTIMATE_REASON,
     REPRINT_EVIDENCE_REASON,
     CardRating,
     ProfileMaturity,
     SetProfile,
     empirical_card_ratings,
+    is_alsa_estimate_rate,
     is_reprint_rate,
 )
 from draftomen.seventeen import (
@@ -433,6 +435,8 @@ def _resolved_profile_rating(
         fallback_reason = "format-fallback"
     if is_reprint_rate(gih_rate):
         fallback_reason = REPRINT_EVIDENCE_REASON
+    if is_alsa_estimate_rate(gih_rate):
+        fallback_reason = ALSA_ESTIMATE_REASON
     return ResolvedCardRating(
         grp_id=card.grp_id,
         name=card.name,
@@ -490,13 +494,14 @@ def _profile_rating_lookup(
             distribution.append(card_rating.gih_win_rate.value)
             matched_keys.add(card_key)
     # Grades rank cards against this set's own evidence, so borrowed reprint
-    # ratings are graded but do not shape the distribution.
+    # ratings and ALSA estimates are graded but do not shape the distribution.
     grade_distribution = tuple(
         rating.gih_win_rate
         for rating in runtime_ratings.values()
         if rating.sample_counts.games_in_hand > 0
         and rating.gih_win_rate is not None
-        and rating.metadata.fallback_reason != REPRINT_EVIDENCE_REASON
+        and rating.metadata.fallback_reason
+        not in (REPRINT_EVIDENCE_REASON, ALSA_ESTIMATE_REASON)
     )
     runtime_ratings = {
         grp_id: replace(

@@ -35,6 +35,11 @@ SET_PROFILE_DIRECTORY_NAME = "set-profiles"
 REPRINT_RATE_SOURCE_PREFIX = "17lands:card-ratings:reprint:"
 # Runtime-only reason that pick-engine metadata reports for borrowed ratings.
 REPRINT_EVIDENCE_REASON = "reprint-evidence"
+# A card with no games in hand and no reprint rating gets a rate estimated from
+# its ALSA. It is marked the same way, through the rate source only.
+ALSA_ESTIMATE_RATE_SOURCE = "17lands:card-ratings:alsa-estimate"
+# Runtime-only reason that pick-engine metadata reports for ALSA estimates.
+ALSA_ESTIMATE_REASON = "alsa-estimate"
 GENERIC_PROFILE_GENERATED_AT = "1970-01-01T00:00:00+00:00"
 _RETIRED_SEMANTIC_KEYS = frozenset({"role_profile", "enhancement", "enhancement_status"})
 
@@ -321,6 +326,12 @@ def is_reprint_rate(rate: RateEstimate) -> bool:
     """Report whether a rate was borrowed from another set's reprint."""
 
     return rate.source.startswith(REPRINT_RATE_SOURCE_PREFIX)
+
+
+def is_alsa_estimate_rate(rate: RateEstimate) -> bool:
+    """Report whether a rate was estimated from the card's ALSA."""
+
+    return rate.source == ALSA_ESTIMATE_RATE_SOURCE
 
 
 @dataclass(frozen=True, slots=True)
