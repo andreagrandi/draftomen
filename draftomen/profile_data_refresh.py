@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import gzip
 import json
 import os
 from pathlib import Path
@@ -20,9 +21,12 @@ from draftomen.profile_generation import (
     ProfileGenerationConfig,
     ProfileGenerationError,
     ProfileGenerationStage,
+    ReprintCardRating,
     generate_set_profile,
+    reprint_card_ratings,
 )
 from draftomen.profile_manifest import (
+    ProfileManifest,
     ProfileManifestArtifact,
     ProfileManifestError,
     load_profile_manifest,
@@ -42,7 +46,7 @@ from draftomen.seventeen import (
     load_or_refresh_17lands_format_data,
 )
 from draftomen.set_card_data import SetCardData, SetCardDataError
-from draftomen.set_profile import SetProfileError
+from draftomen.set_profile import SetProfile, SetProfileError
 
 
 PathInput: TypeAlias = str | os.PathLike[str]
@@ -347,6 +351,10 @@ def execute_profile_data_refresh(
         raise ProfileDataRefreshError("profile manifest could not be loaded") from error
 
     command_now = _now(clock=clock)
+    published_profiles = _published_profiles(
+        manifest=existing_manifest,
+        objects_dir=profiles / "objects",
+    )
     failures: list[Failure] = []
     prepared: list[tuple[Pair, bytes, ProfileManifestArtifact, Path]] = []
     for pair in plan.pairs:
@@ -398,6 +406,10 @@ def execute_profile_data_refresh(
                 profile_version=profile_version,
                 ratings=ratings,
                 config=config,
+                reprint_ratings=_reprint_ratings_for(
+                    pair=pair,
+                    published_profiles=published_profiles,
+                ),
             )
         except (ProfileGenerationError, SetProfileError, RuntimeError):
             failures.append(Failure(pair=pair, category="profile-generation-failed"))
@@ -577,6 +589,48 @@ def _parse_filters(*, payload: Any) -> tuple[dict[str, frozenset[str]], dict[str
             mapping[code] = formats
         parsed.append(mapping)
     return parsed[0], parsed[1]
+
+
+def _published_profiles(
+    *,
+    manifest: ProfileManifest,
+    objects_dir: Path,
+) -> tuple[SetProfile, ...]:
+    """Load the profiles the manifest already publishes, skipping bad objects.
+    They only supply reprint ratings, so a missing object is not a failure.
+    """
+
+    profiles: list[SetProfile] = []
+    for artifact in manifest.artifacts:
+        path = objects_dir / f"{artifact.gzip_sha256}.json.gz"
+        try:
+            payload = json.loads(gzip.decompress(path.read_bytes()))
+            profiles.append(SetProfile.from_json(payload))
+        except (OSError, EOFError, ValueError, TypeError, KeyError, SetProfileError):
+            continue
+    return tuple(profiles)
+
+
+def _reprint_ratings_for(
+    *,
+    pair: Pair,
+    published_profiles: tuple[SetProfile, ...],
+) -> Mapping[str, ReprintCardRating]:
+    """Prefer reprint ratings from the same format, then from any format."""
+
+    same_format = reprint_card_ratings(
+        profiles=(
+            profile
+            for profile in published_profiles
+            if profile.event_format.casefold() == pair.event_format.casefold()
+        ),
+        exclude_set_code=pair.set_code,
+    )
+    any_format = reprint_card_ratings(
+        profiles=published_profiles,
+        exclude_set_code=pair.set_code,
+    )
+    return {**any_format, **same_format}
 
 
 def _profile_url(*, base_url: str, digest: str) -> str:

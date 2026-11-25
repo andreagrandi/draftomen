@@ -17,10 +17,13 @@ from draftomen.profile_generation import (
     ProfileGenerationConfig,
     ProfileGenerationError,
     ProfileGenerationStage,
+    ReprintCardRating,
     aggregate_evidence_needs_fallback,
     deterministic_profile_gzip,
     generate_set_profile,
+    reprint_card_ratings,
 )
+from draftomen.profile_data_refresh import Pair, _reprint_ratings_for
 from draftomen.profile_publication import validate_profile_generation
 from draftomen.public_dump import PublicDumpManifest, PublicDumpSource
 from draftomen.profile_statistics import BetaPrior
@@ -32,9 +35,14 @@ from draftomen.seventeen import (
     SeventeenLandsFormatData,
 )
 from draftomen.set_profile import (
+    REPRINT_EVIDENCE_REASON,
+    AggregateEvidence,
     ProfileMaturity,
+    RateEstimate,
     SetProfile,
+    SetProfileSchemaError,
     dump_set_profile,
+    is_reprint_rate,
     load_set_profile,
 )
 
@@ -1092,6 +1100,7 @@ def _generate_tst(
     event_format: str = "QuickDraft",
     card_database: CardDatabase | None = None,
     config: ProfileGenerationConfig | None = None,
+    reprint_ratings: dict[str, ReprintCardRating] | None = None,
 ):
     return generate_set_profile(
         set_code="TST",
@@ -1103,6 +1112,7 @@ def _generate_tst(
         ratings=ratings,
         fallback_ratings=fallback_ratings,
         config=_config() if config is None else config,
+        reprint_ratings=reprint_ratings,
     )
 
 
@@ -1984,3 +1994,170 @@ def test_card_rating_counts_reject_invalid_values(
 ) -> None:
     with pytest.raises(ProfileGenerationError):
         CardRatingCounts(fetched=fetched, accepted=accepted, rejected=rejected)
+
+
+def _reprint(*, set_code: str = "OLD", value: float = 0.68, samples: int = 4000) -> ReprintCardRating:
+    return ReprintCardRating(
+        set_code=set_code,
+        event_format="premierdraft",
+        gih_win_rate=RateEstimate(
+            raw_value=value,
+            value=value,
+            samples=samples,
+            prior_value=0.55,
+            source="17lands:card-ratings",
+            aggregate_evidence=AggregateEvidence(
+                source_format="premierdraft",
+                fallback_reason=None,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+
+def _card(result, key: str):
+    return next(card for card in result.profile.card_ratings if card.card_key == key)
+
+
+def test_reprint_rating_fills_card_whose_rate_is_withheld() -> None:
+    result = _generate_tst(
+        ratings=_withheld_rate_ratings("QuickDraft"),
+        reprint_ratings={"oracle_id:support-id": _reprint()},
+    )
+
+    card = _card(result, "oracle_id:support-id")
+    rate = card.gih_win_rate
+    evidence = rate.aggregate_evidence
+
+    # Halfway between the reprint's 68% and the 50% test prior.
+    assert rate.value == pytest.approx(0.59)
+    assert rate.raw_value == 0.68
+    assert rate.samples == 4000
+    assert rate.source == "17lands:card-ratings:reprint:old:premierdraft"
+    assert is_reprint_rate(rate)
+    assert evidence is not None
+    assert evidence.fallback_reason is None
+    assert evidence.source_format == result.profile.event_format
+    assert evidence.confidence == pytest.approx(0.5 * min(1.0, 4000 / _config().confidence_sample_scale))
+    assert card.average_last_seen_at == 7.65
+    restored = SetProfile.from_json(json.loads(json.dumps(result.profile.to_json())))
+    assert restored.card_ratings == result.profile.card_ratings
+
+
+def test_reprint_rating_adds_card_with_no_17lands_row() -> None:
+    result = _generate_tst(
+        ratings=_ratings(),
+        reprint_ratings={"oracle_id:removal-id": _reprint(value=0.62)},
+    )
+
+    card = _card(result, "oracle_id:removal-id")
+
+    assert card.gih_win_rate.value == pytest.approx(0.56)
+    assert is_reprint_rate(card.gih_win_rate)
+    assert card.average_last_seen_at is None
+
+
+def test_reprint_rating_uses_only_aggregate_evidence_that_released_clients_accept() -> None:
+    result = _generate_tst(
+        ratings=_withheld_rate_ratings("QuickDraft"),
+        reprint_ratings={"oracle_id:support-id": _reprint()},
+    )
+
+    payload = json.loads(json.dumps(result.profile.to_json()))
+    restored = SetProfile.from_json(payload)
+    card = next(item for item in restored.card_ratings if item.card_key == "oracle_id:support-id")
+    evidence = card.gih_win_rate.aggregate_evidence
+
+    assert evidence is not None
+    assert evidence.fallback_reason is None
+    assert evidence.source_format == "quickdraft"
+    assert evidence.source_format == restored.event_format
+    with pytest.raises(SetProfileSchemaError):
+        AggregateEvidence(source_format="QuickDraft", fallback_reason="reprint-evidence", confidence=0.5)
+
+
+def test_reprint_rating_never_replaces_this_sets_own_rate() -> None:
+    plain = _generate_tst(ratings=_ratings())
+    result = _generate_tst(
+        ratings=_ratings(),
+        reprint_ratings={"oracle_id:support-id": _reprint(value=0.30)},
+    )
+
+    assert _card(result, "oracle_id:support-id") == _card(plain, "oracle_id:support-id")
+
+
+def test_reprint_rated_card_gets_a_grade_without_shaping_the_scale() -> None:
+    result = _generate_tst(
+        ratings=_withheld_rate_ratings("QuickDraft"),
+        reprint_ratings={"oracle_id:support-id": _reprint()},
+    )
+
+    recommendation = PickEngine(set_profile=result.profile).score_pack(
+        offered_grp_ids=(1,),
+        card_database=_database(),
+    )
+    rating = recommendation.cards[0].rating
+
+    assert rating.gih_win_rate == pytest.approx(0.59)
+    assert rating.letter_grade is not None
+    assert rating.metadata.fallback_reason == REPRINT_EVIDENCE_REASON
+
+
+def test_reprint_card_ratings_skip_own_set_and_borrowed_rates() -> None:
+    own = _generate_tst(ratings=_ratings()).profile
+    borrowed = _generate_tst(
+        ratings=_ratings(),
+        reprint_ratings={"oracle_id:removal-id": _reprint()},
+    ).profile
+
+    index = reprint_card_ratings(profiles=(own, borrowed), exclude_set_code="NEW")
+
+    assert set(index) == {"oracle_id:support-id"}
+    assert index["oracle_id:support-id"].set_code == "tst"
+    assert reprint_card_ratings(profiles=(own,), exclude_set_code="tst") == {}
+
+
+def test_reprint_card_ratings_keep_the_rate_with_most_games() -> None:
+    profile = _generate_tst(ratings=_ratings()).profile
+    rating = profile.card_ratings[0]
+    bigger = replace(
+        profile,
+        set_code="big",
+        card_ratings=(
+            replace(
+                rating,
+                gih_win_rate=replace(rating.gih_win_rate, samples=rating.gih_win_rate.samples + 1),
+            ),
+        ),
+    )
+
+    index = reprint_card_ratings(profiles=(profile, bigger), exclude_set_code="NEW")
+
+    assert index[rating.card_key].set_code == "big"
+
+
+def test_refresh_prefers_reprint_rates_from_the_same_format() -> None:
+    quick = _generate_tst(ratings=_ratings()).profile
+    premier = _generate_tst(
+        ratings=_format_ratings("PremierDraft"),
+        event_format="PremierDraft",
+    ).profile
+    premier = replace(
+        premier,
+        card_ratings=tuple(
+            replace(item, gih_win_rate=replace(item.gih_win_rate, samples=item.gih_win_rate.samples + 10_000))
+            for item in premier.card_ratings
+        ),
+    )
+
+    index = _reprint_ratings_for(
+        pair=Pair(
+            set_code="new",
+            set_name="New Set",
+            event_format="QuickDraft",
+            static_path=Path("new.json.gz"),
+        ),
+        published_profiles=(premier, quick),
+    )
+
+    assert index["oracle_id:support-id"].gih_win_rate == quick.card_ratings[0].gih_win_rate

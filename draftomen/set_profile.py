@@ -29,6 +29,12 @@ if TYPE_CHECKING:
 SUPPORTED_SET_PROFILE_SCHEMA_VERSIONS = (1, 2, 3, 4)
 SET_PROFILE_SCHEMA_VERSION = 4
 SET_PROFILE_DIRECTORY_NAME = "set-profiles"
+# A card with no games in hand in its own set can borrow a reprint's rating
+# from another set. Published profiles mark it only through the rate source,
+# because released clients reject unknown aggregate fallback reasons.
+REPRINT_RATE_SOURCE_PREFIX = "17lands:card-ratings:reprint:"
+# Runtime-only reason that pick-engine metadata reports for borrowed ratings.
+REPRINT_EVIDENCE_REASON = "reprint-evidence"
 GENERIC_PROFILE_GENERATED_AT = "1970-01-01T00:00:00+00:00"
 _RETIRED_SEMANTIC_KEYS = frozenset({"role_profile", "enhancement", "enhancement_status"})
 
@@ -309,6 +315,12 @@ class RateEstimate:
             source=_required_string(value, "source", "rate.source"),
             aggregate_evidence=aggregate_evidence,
         )
+
+
+def is_reprint_rate(rate: RateEstimate) -> bool:
+    """Report whether a rate was borrowed from another set's reprint."""
+
+    return rate.source.startswith(REPRINT_RATE_SOURCE_PREFIX)
 
 
 @dataclass(frozen=True, slots=True)

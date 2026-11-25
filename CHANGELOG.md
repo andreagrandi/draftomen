@@ -23,6 +23,17 @@
   maker about 0.1. The highest single-set figure was about 0.3, for BLB's mana
   rocks. Even then it takes three or more fixers to replace one land, so the
   app keeps counting only lands as splash sources. (#1083)
+- A reprint with no games in hand in its own set now borrows its rating from
+  another set. 17Lands withholds win rates for thin samples, so TRK's
+  bonus-sheet reprints, such as Sheoldred, the Apocalypse, had no grade, scored
+  a flat DO 50, and could never be chosen as a splash card. Profile refresh now
+  fills such a card from the published profile with the most games for the
+  same card, preferring the same format. The borrowed rate counts for half: it
+  sits halfway between that rating and the card prior, with half the
+  confidence. Its rate source names the set and format it came from, so
+  profiles stay readable by released versions of the app. It is graded but
+  does not shift the set's grade scale, and the set's own rate replaces it as
+  soon as 17Lands publishes one. (#1082)
 
 ## [0.6.7] - 2026-11-20
 

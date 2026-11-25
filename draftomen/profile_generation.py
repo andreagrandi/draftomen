@@ -69,15 +69,20 @@ from draftomen.set_profile import (
     SET_PROFILE_SCHEMA_VERSION,
     SourceMetadata,
     TriadProfile,
+    REPRINT_RATE_SOURCE_PREFIX,
+    is_reprint_rate,
     profile_card_key,
 )
 
 
-PROFILE_GENERATOR_VERSION = "3"
+PROFILE_GENERATOR_VERSION = "4"
 PROFILE_GENERATION_SCHEMA_VERSION = 1
 
 AGGREGATE_SUPPORT_MINIMUM = PICK_ENGINE.thin_sample_minimum
 AGGREGATE_FALLBACK_CONFIDENCE_FACTOR = RELIABILITY_PREMIER_FACTOR
+# A reprint's rating from another set counts for half: the stored value sits
+# halfway between that rating and the card prior, and its confidence is halved.
+REPRINT_EVIDENCE_WEIGHT = 0.5
 
 _CARD_RATE_SOURCE = "17lands:card-ratings"
 _PAIR_RATE_SOURCE = "17lands:color-ratings"
@@ -588,6 +593,55 @@ def deterministic_profile_gzip(profile_bytes: bytes) -> bytes:
     return output.getvalue()
 
 
+@dataclass(frozen=True, slots=True)
+class ReprintCardRating:
+    """A card's rating from another set, borrowed by a reprint with no games.
+    17Lands withholds thin rates, so bonus-sheet reprints often have none.
+    """
+
+    set_code: str
+    event_format: str
+    gih_win_rate: RateEstimate
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "set_code", _component(self.set_code, "reprint set_code"))
+        object.__setattr__(self, "event_format", _component(self.event_format, "reprint event_format"))
+        if not isinstance(self.gih_win_rate, RateEstimate) or self.gih_win_rate.samples <= 0:
+            raise ProfileGenerationError("A reprint rating needs a rate with games in hand.")
+
+
+def reprint_card_ratings(
+    *,
+    profiles: Iterable[SetProfile],
+    exclude_set_code: str,
+) -> dict[str, ReprintCardRating]:
+    """Index other sets' supported card ratings by card key for reprints.
+    The rating with the most games in hand wins; borrowed ratings never chain.
+    """
+
+    excluded = exclude_set_code.casefold()
+    best: dict[str, ReprintCardRating] = {}
+    for profile in sorted(profiles, key=lambda item: (item.set_code, item.event_format)):
+        if profile.set_code.casefold() == excluded:
+            continue
+        for card_rating in profile.card_ratings:
+            rate = card_rating.gih_win_rate
+            evidence = rate.aggregate_evidence
+            if rate.samples <= 0 or is_reprint_rate(rate):
+                continue
+            current = best.get(card_rating.card_key)
+            if current is not None and current.gih_win_rate.samples >= rate.samples:
+                continue
+            best[card_rating.card_key] = ReprintCardRating(
+                set_code=profile.set_code,
+                event_format=(
+                    profile.event_format if evidence is None else evidence.source_format
+                ),
+                gih_win_rate=rate,
+            )
+    return best
+
+
 def generate_set_profile(
     *,
     set_code: str,
@@ -601,13 +655,15 @@ def generate_set_profile(
     fallback_ratings: Sequence[SeventeenLandsFormatData] = (),
     draft_source_name: str | None = None,
     config: ProfileGenerationConfig = DEFAULT_PROFILE_GENERATION_CONFIG,
+    reprint_ratings: Mapping[str, ReprintCardRating] | None = None,
 ) -> ProfileGenerationResult:
     """Generate one explicitly requested metadata, early, or mature profile.
 
     ``source_manifest`` is only read for empirical stages.  Every source is
     represented in the report, while only a selected local draft source is
     consumed for deck targets.  The neutral reader performs all container,
-    gzip, CSV, and checksum handling.
+    gzip, CSV, and checksum handling.  ``reprint_ratings`` (see
+    ``reprint_card_ratings``) fill cards that have no games in hand here.
     """
 
     if not isinstance(card_database, CardDatabase):
@@ -741,6 +797,7 @@ def generate_set_profile(
             set_code=normalized_set,
             config=config,
             skip_counts=skip_counts,
+            reprint_ratings={} if reprint_ratings is None else reprint_ratings,
         )
         pair_profiles = _pair_profiles(
             datasets=aggregate_datasets if aggregate_fallback_formats(event_format=normalized_format) else (
@@ -1427,6 +1484,7 @@ def _card_ratings(
     set_code: str,
     config: ProfileGenerationConfig,
     skip_counts: Counter[str],
+    reprint_ratings: Mapping[str, ReprintCardRating] | None = None,
 ) -> tuple[tuple[CardRating, ...], CardRatingCounts]:
     exact_ratings = next(
         (ratings for source_format, ratings in datasets if source_format == requested_format),
@@ -1490,6 +1548,29 @@ def _card_ratings(
         if chosen is None and exact_values:
             chosen = exact_values[0]
             chosen_format = requested_format
+        reprint = None if reprint_ratings is None else reprint_ratings.get(key)
+        if reprint is not None and (chosen is None or chosen.samples == 0):
+            result.append(
+                CardRating(
+                    card_key=key,
+                    gih_win_rate=_reprint_estimate(
+                        reprint=reprint,
+                        requested_format=requested_format,
+                        prior=config.card_prior,
+                        config=config,
+                    ),
+                    average_last_seen_at=(
+                        None if chosen is None else chosen.average_last_seen_at
+                    ),
+                )
+            )
+            if chosen is not None and chosen_format == requested_format:
+                accepted += 1
+                unused_rows["card_rating_duplicate_printing"] += len(exact_values) - 1
+            elif chosen is not None:
+                from_other_formats += 1
+                unused_rows["card_rating_replaced_by_other_format"] += len(exact_values)
+            continue
         if chosen is None:
             continue
         if chosen_format == requested_format:
@@ -1549,6 +1630,31 @@ def _card_ratings(
         from_other_formats=from_other_formats,
     )
     return tuple(result), counts
+
+
+def _reprint_estimate(
+    *,
+    reprint: ReprintCardRating,
+    requested_format: str,
+    prior: BetaPrior,
+    config: ProfileGenerationConfig,
+) -> RateEstimate:
+    rate = reprint.gih_win_rate
+    return RateEstimate(
+        raw_value=rate.raw_value,
+        value=prior.mean + REPRINT_EVIDENCE_WEIGHT * (rate.value - prior.mean),
+        samples=rate.samples,
+        prior_value=prior.mean,
+        source=f"{REPRINT_RATE_SOURCE_PREFIX}{reprint.set_code}:{reprint.event_format}",
+        aggregate_evidence=AggregateEvidence(
+            source_format=requested_format,
+            fallback_reason=None,
+            confidence=REPRINT_EVIDENCE_WEIGHT * min(
+                1.0,
+                rate.samples / config.confidence_sample_scale,
+            ),
+        ),
+    )
 
 
 def _rate_estimate(
