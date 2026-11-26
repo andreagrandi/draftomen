@@ -40,7 +40,6 @@ from draftomen.set_profile import SetProfile
 from draftomen.seventeen import SEVENTEEN_LANDS_ATTRIBUTION, SeventeenLandsData
 
 PathInput: TypeAlias = str | PathLike[str]
-RatingsLoader: TypeAlias = Callable[[str], SeventeenLandsData]
 ProfileLoader: TypeAlias = Callable[[str, DraftFormat | None], SetProfile | None]
 CardDatabaseLoader: TypeAlias = Callable[[str], CardDatabase]
 
@@ -71,13 +70,12 @@ def replay_log_file(
     card_database: CardDatabase | None = None,
     card_database_loader: CardDatabaseLoader | None = None,
     ratings_data: SeventeenLandsData | None = None,
-    ratings_loader: RatingsLoader | None = None,
     profile_loader: ProfileLoader | None = None,
     splash_enabled: bool = True,
     set_profile: SetProfile | None = None,
 ) -> str:
     """Replay one captured Player.log file into deterministic text.
-    Card data, ratings and profiles are caller-supplied or loaded once from the parsed set code.
+    Card data and profiles are caller-supplied or loaded once from the parsed set code.
     """
 
     path = Path(logfile)
@@ -92,7 +90,6 @@ def replay_log_file(
         card_database=card_database,
         card_database_loader=card_database_loader,
         ratings_data=ratings_data,
-        ratings_loader=ratings_loader,
         profile_loader=profile_loader,
         splash_enabled=splash_enabled,
         set_profile=set_profile,
@@ -105,13 +102,12 @@ def render_replay_events(
     card_database: CardDatabase | None = None,
     card_database_loader: CardDatabaseLoader | None = None,
     ratings_data: SeventeenLandsData | None = None,
-    ratings_loader: RatingsLoader | None = None,
     profile_loader: ProfileLoader | None = None,
     splash_enabled: bool = True,
     set_profile: SetProfile | None = None,
 ) -> str:
     """Render parsed events to stable plain-text replay output.
-    Pool validation is run first so conflicting streams fail before printing.
+    Without ratings_data, picks and the deck use the set profile like the live app.
     """
 
     event_tuple = tuple(events)
@@ -131,18 +127,13 @@ def render_replay_events(
         if card_database_loader is None or header.set_code is None:
             raise ReplayError("Replay needs card data for the draft's set.")
         card_database = card_database_loader(header.set_code)
-    loaded_ratings = _ratings_data_for_replay(
-        header=header,
-        ratings_data=ratings_data,
-        ratings_loader=ratings_loader,
-    )
     loaded_profile = _set_profile_for_replay(
         header=header,
         set_profile=set_profile,
         profile_loader=profile_loader,
     )
     pick_engine = PickEngine(
-        ratings_data=loaded_ratings,
+        ratings_data=ratings_data,
         splash_enabled=splash_enabled,
         set_profile=loaded_profile,
         requested_format=ratings_formats(
@@ -177,7 +168,7 @@ def render_replay_events(
                     event=event,
                     header=header,
                     card_database=card_database,
-                    ratings_data=loaded_ratings,
+                    ratings_data=ratings_data,
                     splash_enabled=splash_enabled,
                     set_profile=loaded_profile,
                 )
@@ -241,21 +232,6 @@ def _validate_events_with_pool(*, events: tuple[DraftEvent, ...]) -> None:
     with tempfile.TemporaryDirectory(prefix="draftomen-replay-") as temporary_dir:
         store = DraftPoolStore(app_dir=temporary_dir)
         store.consume_all(events=events)
-
-
-def _ratings_data_for_replay(
-    *,
-    header: _ReplayHeader,
-    ratings_data: SeventeenLandsData | None,
-    ratings_loader: RatingsLoader | None,
-) -> SeventeenLandsData | None:
-    if ratings_data is not None or ratings_loader is None:
-        return ratings_data
-
-    if header.set_code is None:
-        return None
-
-    return ratings_loader(header.set_code)
 
 
 def _set_profile_for_replay(

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- `draftomen-tui replay` scores picks and builds the suggested deck from the
+  set profile, as the live app does. It used to read the cached 17Lands data,
+  which is empty when nothing is cached, so it never chose a splash colour and
+  could suggest different picks and a different deck from the app. (#1093)
 - 17Lands moved its public data from the `17lands-public` S3 bucket, which now
   returns 403, to `data.17landscapes.com`. Draft and game dumps and `cards.csv`
   now download from the new host, so the scheduled profile refresh and set data
