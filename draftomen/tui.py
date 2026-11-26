@@ -83,6 +83,7 @@ from draftomen.ranking import (
     ranking_label,
 )
 from draftomen.replay import format_draft_format
+from draftomen.set_profile import REPRINT_EVIDENCE_REASON
 from draftomen.session import (
     ApplicationPhase,
     AugmentedModelRequest,
@@ -4509,6 +4510,10 @@ def _pack_progress_label(*, event: PackOfferedEvent) -> str:
 
 
 def _format_tui_source_label(*, scored_card: ScoredCard) -> str:
+    metadata = scored_card.rating.metadata
+    if metadata.fallback_reason == REPRINT_EVIDENCE_REASON and metadata.source_set:
+        return f"Borrowed from {metadata.source_set} reprint"
+
     labels = {
         "Quick": "Quick Draft",
         "Premier": "Premier Draft",

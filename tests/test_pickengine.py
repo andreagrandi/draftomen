@@ -5846,3 +5846,54 @@ def test_creature_pace_reason_reports_counts_and_renders() -> None:
     )
     other = _by_grp_id(scored_pack)[302]
     assert all(reason.kind != "creature_pace" for reason in other.rationale.reasons)
+
+
+def _scored_with_profile_source(*, source: str) -> ScoredCard:
+    profile = replace(
+        _contextual_profile(),
+        card_ratings=(
+            CardRating(
+                card_key="ARENA_ID:7",
+                gih_win_rate=replace(_profile_rate(0.61), source=source),
+            ),
+        ),
+    )
+    return _score_with_context(
+        database=_contextual_database(),
+        profile=profile,
+        offered_grp_ids=(7,),
+        pool_grp_ids=(1,),
+    ).cards[0]
+
+
+def test_reprint_profile_rating_names_the_set_it_was_borrowed_from() -> None:
+    card = _scored_with_profile_source(
+        source="17lands:card-ratings:reprint:dmu:premierdraft"
+    )
+    explanation = render_pick_rationale_detailed(scored_card=card)
+
+    assert card.rating.metadata.fallback_reason == "reprint-evidence"
+    assert card.rating.metadata.source_set == "DMU"
+    assert card.source_label == "From DMU*"
+    assert "DMU reprint GIH win rate 61.0%" in explanation
+    assert "profile estimate" not in explanation
+
+
+def test_non_reprint_profile_rating_keeps_its_plain_source_label() -> None:
+    card = _scored_with_profile_source(source="17lands")
+
+    assert card.rating.metadata.source_set is None
+    assert "From" not in card.source_label
+    assert "profile estimate GIH win rate 61.0%" in render_pick_rationale_detailed(
+        scored_card=card
+    )
+
+
+def test_alsa_estimate_rating_does_not_report_a_source_set() -> None:
+    card = _scored_with_profile_source(
+        source="17lands:card-ratings:alsa-estimate"
+    )
+
+    assert card.rating.metadata.fallback_reason == "alsa-estimate"
+    assert card.rating.metadata.source_set is None
+    assert "From" not in card.source_label

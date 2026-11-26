@@ -47,6 +47,7 @@ from draftomen.set_profile import (
     empirical_card_ratings,
     is_alsa_estimate_rate,
     is_reprint_rate,
+    reprint_source_set,
 )
 from draftomen.seventeen import (
     FORMAT_RATING_SOURCE,
@@ -437,6 +438,11 @@ def _resolved_profile_rating(
         fallback_reason = REPRINT_EVIDENCE_REASON
     if is_alsa_estimate_rate(gih_rate):
         fallback_reason = ALSA_ESTIMATE_REASON
+    source_set = (
+        reprint_source_set(gih_rate)
+        if fallback_reason == REPRINT_EVIDENCE_REASON
+        else None
+    )
     return ResolvedCardRating(
         grp_id=card.grp_id,
         name=card.name,
@@ -460,6 +466,7 @@ def _resolved_profile_rating(
             source=PROFILE_RATING_SOURCE,
             source_format=source_format,
             fallback_reason=fallback_reason,
+            source_set=source_set,
         ),
     )
 
@@ -2879,6 +2886,15 @@ def _rating_reason_phrase(*, card: ScoredCard) -> str:
             f"{profile_note}"
         )
 
+    if (
+        rating.metadata.fallback_reason == REPRINT_EVIDENCE_REASON
+        and rating.metadata.source_set
+    ):
+        return (
+            f"{rating.metadata.source_set} reprint GIH win rate "
+            f"{rating.gih_win_rate:.1%}{profile_note}"
+        )
+
     if rating.metadata.source == PROFILE_RATING_SOURCE:
         return (
             f"profile estimate GIH win rate {rating.gih_win_rate:.1%}"
@@ -3345,6 +3361,12 @@ def _source_label(*, rating: ResolvedCardRating) -> str:
     metadata = rating.metadata
     if metadata.source == NEUTRAL_PRIOR_SOURCE:
         return "Prior*"
+
+    if (
+        metadata.fallback_reason == REPRINT_EVIDENCE_REASON
+        and metadata.source_set
+    ):
+        return f"From {metadata.source_set}*"
 
     if metadata.source not in {PROFILE_RATING_SOURCE, FORMAT_RATING_SOURCE}:
         return "Unknown"
