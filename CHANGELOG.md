@@ -34,6 +34,12 @@
   profiles stay readable by released versions of the app. It is graded but
   does not shift the set's grade scale, and the set's own rate replaces it as
   soon as 17Lands publishes one. (#1082)
+- A card with no games in hand and no reprint rating now gets a rate estimated
+  from its ALSA, fitted against the set's own cards with at least 500 games.
+  The estimate is graded but does not shift the grade scale, and it can set
+  and fill a splash. Its rate source marks it, so released versions read the
+  profile, and the set's own rate replaces it once 17Lands publishes one.
+  (#1091)
 
 ## [0.6.7] - 2026-11-20
 

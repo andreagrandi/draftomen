@@ -67,6 +67,7 @@ from draftomen.set_profile import (
     SetProfile,
     SourceMetadata,
 )
+from draftomen.set_profile import ALSA_ESTIMATE_RATE_SOURCE
 
 FIXTURE_NOW = datetime(2026, 7, 3, 12, 0, tzinfo=UTC).isoformat()
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -1574,6 +1575,7 @@ def _profile_only_splash_inputs(
     *,
     maturity: ProfileMaturity = ProfileMaturity.EARLY,
     splash_samples: int = 1_000,
+    splash_source: str = "test",
 ) -> tuple[CardDatabase, SetProfile]:
     """Mirror the live app: card win rates come only from the set profile."""
 
@@ -1605,7 +1607,7 @@ def _profile_only_splash_inputs(
                     value=value,
                     samples=splash_samples if grp_id == 5 else 1_000,
                     prior_value=0.55,
-                    source="test",
+                    source=splash_source if grp_id == 5 else "test",
                 ),
             )
             for grp_id, value in win_rates.items()
@@ -1680,6 +1682,44 @@ def test_profile_does_not_fill_gaps_in_seventeen_lands_data() -> None:
     )
 
     assert state.active_color is None
+
+
+def test_alsa_estimated_rating_activates_the_splash_color() -> None:
+    database, profile = _profile_only_splash_inputs(
+        splash_samples=1,
+        splash_source=ALSA_ESTIMATE_RATE_SOURCE,
+    )
+
+    state = infer_splash_state(
+        pool_grp_ids=(1, 2, 3, 4, 5),
+        card_database=database,
+        ratings_data=None,
+        base_pair="WU",
+        enabled=True,
+        set_profile=profile,
+    )
+
+    assert state.active_color == "R"
+
+
+def test_alsa_estimated_card_can_be_chosen_as_the_splash_card() -> None:
+    database, profile = _profile_only_splash_inputs(
+        splash_samples=1,
+        splash_source=ALSA_ESTIMATE_RATE_SOURCE,
+    )
+
+    selection = select_deck_spells(
+        pool_grp_ids=(1, 2, 3, 4, 5),
+        card_database=database,
+        pair="WU",
+        ratings_data=None,
+        allow_splash=True,
+        config=_SPLASH_CONFIG,
+        set_profile=profile,
+    )
+
+    assert selection.splash_color == "R"
+    assert 5 in {card.card.grp_id for card in selection.spells}
 
 
 def test_profile_only_build_plays_the_splash_card_like_the_live_app() -> None:

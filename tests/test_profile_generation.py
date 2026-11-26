@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from dataclasses import replace
 import hashlib
 import json
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from draftomen.seventeen import (
     SeventeenLandsFormatData,
 )
 from draftomen.set_profile import (
+    ALSA_ESTIMATE_REASON,
     REPRINT_EVIDENCE_REASON,
     AggregateEvidence,
     ProfileMaturity,
@@ -42,6 +44,7 @@ from draftomen.set_profile import (
     SetProfile,
     SetProfileSchemaError,
     dump_set_profile,
+    is_alsa_estimate_rate,
     is_reprint_rate,
     load_set_profile,
 )
@@ -2161,3 +2164,191 @@ def test_refresh_prefers_reprint_rates_from_the_same_format() -> None:
     )
 
     assert index["oracle_id:support-id"].gih_win_rate == quick.card_ratings[0].gih_win_rate
+
+
+def _alsa_fit_inputs(
+    *,
+    withheld_alsa: float | None = 7.65,
+    withheld_games: int = 36,
+    supported_count: int = 22,
+    rising: bool = False,
+) -> tuple[CardDatabase, SeventeenLandsFormatData]:
+    """Build supported TST cards whose rate falls as ALSA rises, plus grp 1 withheld."""
+
+    template_card = _database().cards[1]
+    template_stats = _ratings().card_ratings[1]
+    cards = {1: template_card}
+    stats = {
+        1: replace(
+            template_stats,
+            gih_win_rate=None,
+            average_last_seen_at=withheld_alsa,
+            sample_counts=replace(template_stats.sample_counts, games_in_hand=withheld_games),
+        )
+    }
+    for index in range(supported_count):
+        grp_id = 101 + index
+        cards[grp_id] = replace(
+            template_card,
+            grp_id=grp_id,
+            name=f"Supported {index}",
+            oracle_id=f"supported-{index}",
+        )
+        step = index if rising else supported_count - index
+        stats[grp_id] = replace(
+            template_stats,
+            grp_id=grp_id,
+            name=f"Supported {index}",
+            average_last_seen_at=2.0 + 0.5 * index,
+            gih_win_rate=0.40 + 0.01 * step,
+            sample_counts=replace(template_stats.sample_counts, games_in_hand=1000),
+        )
+    ratings = replace(_ratings(), card_ratings=stats)
+    return CardDatabase(cards=cards), ratings
+
+
+def _generate_alsa_fit(**kwargs: Any):
+    database, ratings = _alsa_fit_inputs(**kwargs)
+    return _generate_tst(ratings=ratings, card_database=database)
+
+
+def _supported_points(result) -> tuple[list[float], list[float]]:
+    rated = [
+        card
+        for card in result.profile.card_ratings
+        if card.gih_win_rate.samples >= 500
+    ]
+    return (
+        [card.average_last_seen_at for card in rated],
+        [card.gih_win_rate.value for card in rated],
+    )
+
+
+def test_zero_game_card_gets_a_rate_estimated_from_its_alsa() -> None:
+    result = _generate_alsa_fit()
+
+    card = _card(result, "oracle_id:support-id")
+    rate = card.gih_win_rate
+    alsas, values = _supported_points(result)
+    slope, intercept = statistics.linear_regression(alsas, values)
+
+    assert slope < 0
+    assert rate.value == pytest.approx(intercept + slope * 7.65)
+    assert rate.raw_value == rate.value
+    assert rate.samples == 1
+    assert rate.source == "17lands:card-ratings:alsa-estimate"
+    assert is_alsa_estimate_rate(rate)
+    assert rate.prior_value == 0.50
+    assert rate.aggregate_evidence is not None
+    assert rate.aggregate_evidence.confidence == pytest.approx(
+        statistics.correlation(alsas, values) ** 2
+    )
+    assert card.average_last_seen_at == 7.65
+    counts = result.card_rating_counts
+    assert counts is not None
+    assert counts.reconciled is True
+
+
+@pytest.mark.parametrize("alsa", [0.5, 30.0])
+def test_alsa_estimate_stays_within_the_fitted_rates(alsa: float) -> None:
+    result = _generate_alsa_fit(withheld_alsa=alsa)
+
+    _, values = _supported_points(result)
+    rate = _card(result, "oracle_id:support-id").gih_win_rate
+
+    assert rate.value == pytest.approx(max(values) if alsa < 2 else min(values))
+
+
+def test_alsa_estimate_needs_enough_fit_cards() -> None:
+    result = _generate_alsa_fit(supported_count=19)
+
+    rate = _card(result, "oracle_id:support-id").gih_win_rate
+
+    assert rate.samples == 0
+    assert not is_alsa_estimate_rate(rate)
+
+
+def test_alsa_estimate_needs_earlier_picks_to_mean_better_cards() -> None:
+    result = _generate_alsa_fit(rising=True)
+
+    rate = _card(result, "oracle_id:support-id").gih_win_rate
+
+    assert rate.samples == 0
+    assert rate.aggregate_evidence is None
+
+
+def test_alsa_estimate_skips_cards_without_an_alsa() -> None:
+    result = _generate_alsa_fit(withheld_alsa=None)
+
+    rate = _card(result, "oracle_id:support-id").gih_win_rate
+
+    assert rate.samples == 0
+    assert not is_alsa_estimate_rate(rate)
+
+
+def test_reprint_rating_wins_over_the_alsa_estimate() -> None:
+    database, ratings = _alsa_fit_inputs()
+    result = _generate_tst(
+        ratings=ratings,
+        card_database=database,
+        reprint_ratings={"oracle_id:support-id": _reprint()},
+    )
+
+    rate = _card(result, "oracle_id:support-id").gih_win_rate
+
+    assert is_reprint_rate(rate)
+    assert not is_alsa_estimate_rate(rate)
+
+
+def test_alsa_estimate_uses_only_aggregate_evidence_that_released_clients_accept() -> None:
+    result = _generate_alsa_fit()
+
+    restored = SetProfile.from_json(json.loads(json.dumps(result.profile.to_json())))
+    card = next(item for item in restored.card_ratings if item.card_key == "oracle_id:support-id")
+    evidence = card.gih_win_rate.aggregate_evidence
+
+    assert restored.card_ratings == result.profile.card_ratings
+    assert evidence is not None
+    assert evidence.fallback_reason is None
+    assert evidence.source_format == restored.event_format == "quickdraft"
+
+
+def test_alsa_estimated_card_gets_a_grade_without_shaping_the_scale() -> None:
+    database, ratings = _alsa_fit_inputs()
+    with_estimate = _generate_tst(ratings=ratings, card_database=database).profile
+    without_estimate = _generate_tst(
+        ratings=_alsa_fit_inputs(withheld_alsa=None)[1],
+        card_database=database,
+    ).profile
+    offered = tuple(range(101, 123))
+
+    estimated = PickEngine(set_profile=with_estimate).score_pack(
+        offered_grp_ids=(1,),
+        card_database=database,
+    )
+    rating = estimated.cards[0].rating
+    grades_with = [
+        card.rating.letter_grade
+        for card in PickEngine(set_profile=with_estimate)
+        .score_pack(offered_grp_ids=offered, card_database=database)
+        .cards
+    ]
+    grades_without = [
+        card.rating.letter_grade
+        for card in PickEngine(set_profile=without_estimate)
+        .score_pack(offered_grp_ids=offered, card_database=database)
+        .cards
+    ]
+
+    assert rating.letter_grade is not None
+    assert rating.metadata.fallback_reason == ALSA_ESTIMATE_REASON
+    assert grades_with == grades_without
+
+
+def test_reprint_card_ratings_skip_alsa_estimates() -> None:
+    profile = _generate_alsa_fit().profile
+
+    index = reprint_card_ratings(profiles=(profile,), exclude_set_code="NEW")
+
+    assert "oracle_id:support-id" not in index
+    assert "oracle_id:supported-0" in index
