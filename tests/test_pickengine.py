@@ -1128,7 +1128,7 @@ def test_concise_splash_reasons_are_short_and_detailed_reasons_are_not_duplicate
         for card in engine.score_pack(
             offered_grp_ids=(105,),
             card_database=database,
-            pool_grp_ids=(101, 102, 101, 102),
+            pool_grp_ids=(101, 102, 101, 102, 140, 141),
             pick_index=10,
         ).cards
     )
@@ -2817,7 +2817,7 @@ def test_supported_single_pip_bomb_is_marked_as_a_splash_and_can_win_pick() -> N
     scored_pack = engine.score_pack(
         offered_grp_ids=(105, 108),
         card_database=database,
-        pool_grp_ids=(101, 102, 101, 102, 103, 104),
+        pool_grp_ids=(101, 102, 101, 102, 103, 104, 140, 141),
         pick_index=10,
     )
     by_id = {card.card.grp_id: card for card in scored_pack.cards}
@@ -2857,7 +2857,7 @@ def test_freely_available_basic_does_not_block_splash_candidate() -> None:
     scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
         offered_grp_ids=(121, 105),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102, 101, 102, 103, 104),
+        pool_grp_ids=(101, 102, 101, 102, 103, 104, 140, 141),
         pick_index=10,
     )
     by_id = {card.card.grp_id: card for card in scored_pack.cards}
@@ -2876,7 +2876,7 @@ def test_disabling_splash_treats_same_bomb_as_an_ordinary_off_color_card() -> No
     scored_pack = engine.score_pack(
         offered_grp_ids=(105, 108),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102, 101, 102, 103, 104),
+        pool_grp_ids=(101, 102, 101, 102, 103, 104, 140, 141),
         pick_index=10,
     )
     red_bomb = next(
@@ -2894,7 +2894,7 @@ def test_active_splash_rejects_a_second_third_color_and_three_symbols() -> None:
     scored_pack = engine.score_pack(
         offered_grp_ids=(106, 107, 109, 130),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102, 101, 102, 103, 104, 110, 105),
+        pool_grp_ids=(101, 102, 101, 102, 103, 104, 110, 105, 140, 141),
         pick_index=12,
     )
     by_id = {card.card.grp_id: card for card in scored_pack.cards}
@@ -2910,9 +2910,9 @@ def test_active_splash_rejects_a_second_third_color_and_three_symbols() -> None:
     assert by_id[130].splash.reasons == ("card has too many off-color mana pips",)
 
 
-def test_single_symbol_splash_is_ready_with_basics_and_no_dual_land() -> None:
+def test_single_symbol_splash_is_ready_with_basics_when_base_duals_leave_room() -> None:
     engine = PickEngine(ratings_data=_splash_ratings_data())
-    pool = (101, 102, 101, 102)
+    pool = (101, 102, 101, 102, 140, 141)
 
     building = engine.score_pack(
         offered_grp_ids=(105, 108),
@@ -2936,11 +2936,67 @@ def test_single_symbol_splash_is_ready_with_basics_and_no_dual_land() -> None:
         assert red_card.splash.required_sources == 3
 
 
+def test_splash_without_a_splash_land_is_off_color_when_basics_cannot_fit() -> None:
+    scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
+        offered_grp_ids=(105, 108),
+        card_database=_splash_card_database(),
+        pool_grp_ids=(101, 102, 101, 102),
+        pick_index=10,
+    )
+    red_card = next(card for card in scored_pack.cards if card.card.grp_id == 105)
+
+    assert red_card.color_fit == "off-color"
+    assert red_card.splash.planned_basic_sources == 2
+    assert red_card.splash.available_sources == 2
+    assert red_card.splash.reasons == (
+        "needs 1 more splash land: 17 lands keep 8 white and 7 blue sources",
+    )
+
+
+def test_splash_with_one_splash_dual_keeps_capped_basics_and_is_ready() -> None:
+    database = _splash_card_database()
+    database.cards[142] = _card(
+        grp_id=142,
+        name="White Red Dual",
+        colors=(),
+        types=("Land",),
+        mana_cost=None,
+        produced_mana=("W", "R"),
+    )
+    scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
+        offered_grp_ids=(105, 108),
+        card_database=database,
+        pool_grp_ids=(101, 102, 101, 102, 142),
+        pick_index=10,
+    )
+    red_card = next(card for card in scored_pack.cards if card.card.grp_id == 105)
+
+    assert red_card.color_fit == "splash-ready"
+    assert red_card.splash.fixing_sources == 1
+    assert red_card.splash.planned_basic_sources == 2
+    assert red_card.splash.available_sources == 3
+
+
+def test_splash_fixer_land_shows_the_capped_basics() -> None:
+    database = _splash_card_database()
+    scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
+        offered_grp_ids=(103, 108),
+        card_database=database,
+        pool_grp_ids=(101, 102, 101, 102, 105),
+        pick_index=12,
+    )
+    fixer = next(card for card in scored_pack.cards if card.card.grp_id == 103)
+
+    assert fixer.color_fit == "splash-fixer"
+    assert fixer.splash.planned_basic_sources == 2
+    assert fixer.splash.fixing_sources == 1
+
+
 def test_two_symbol_splash_card_is_ready_and_needs_four_sources() -> None:
     scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
         offered_grp_ids=(109, 108),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102, 101, 102, 103),
+        pool_grp_ids=(101, 102, 101, 102, 103, 140, 141),
         pick_index=10,
     )
     double_card = next(card for card in scored_pack.cards if card.card.grp_id == 109)
@@ -2957,7 +3013,7 @@ def test_picked_two_symbol_card_raises_the_plan_requirement() -> None:
     scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
         offered_grp_ids=(106, 103),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102, 101, 102, 109),
+        pool_grp_ids=(101, 102, 101, 102, 109, 140, 141),
         pick_index=10,
     )
     by_id = {card.card.grp_id: card for card in scored_pack.cards}
@@ -2974,7 +3030,7 @@ def test_fourth_splash_card_is_refused_after_three_are_picked() -> None:
     scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
         offered_grp_ids=(131, 108),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102) * 6 + (105, 106, 109),
+        pool_grp_ids=(101, 102) * 6 + (140, 141, 105, 106, 109),
         pick_index=12,
     )
     fourth_card = next(card for card in scored_pack.cards if card.card.grp_id == 131)
@@ -2991,13 +3047,13 @@ def test_dual_land_stays_a_splash_fixer_while_fixing_is_below_the_requirement() 
     below = engine.score_pack(
         offered_grp_ids=(103,),
         card_database=database,
-        pool_grp_ids=(101, 102, 101, 102, 104, 110, 105),
+        pool_grp_ids=(101, 102, 101, 102, 104, 110, 105, 140, 141),
         pick_index=12,
     )
     complete = engine.score_pack(
         offered_grp_ids=(103,),
         card_database=database,
-        pool_grp_ids=(101, 102, 101, 102, 104, 110, 130, 105),
+        pool_grp_ids=(101, 102, 101, 102, 104, 110, 130, 105, 140, 141),
         pick_index=12,
     )
 
@@ -3014,13 +3070,13 @@ def test_splash_color_with_more_cards_beats_a_stronger_single_card_color() -> No
     single_cards = engine.score_pack(
         offered_grp_ids=(108,),
         card_database=database,
-        pool_grp_ids=(101, 102, 101, 102, 103, 104, 105, 107),
+        pool_grp_ids=(101, 102, 101, 102, 103, 104, 105, 107, 140, 141),
         pick_index=12,
     )
     more_cards = engine.score_pack(
         offered_grp_ids=(108,),
         card_database=database,
-        pool_grp_ids=(101, 102, 101, 102, 101, 102, 101, 102, 103, 104, 105, 106, 107),
+        pool_grp_ids=(101, 102, 101, 102, 101, 102, 101, 102, 103, 104, 105, 106, 107, 140, 141),
         pick_index=12,
     )
 
@@ -3032,7 +3088,7 @@ def test_fixing_land_is_marked_when_it_completes_active_splash_sources() -> None
     scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
         offered_grp_ids=(103, 108),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102, 101, 102, 104, 105),
+        pool_grp_ids=(101, 102, 101, 102, 104, 105, 140, 141),
         pick_index=12,
     )
     fixing_land = next(card for card in scored_pack.cards if card.card.grp_id == 103)
@@ -3056,7 +3112,7 @@ def test_drafted_basic_is_not_counted_as_extra_splash_fixing() -> None:
     scored_pack = PickEngine(ratings_data=_splash_ratings_data()).score_pack(
         offered_grp_ids=(105, 108),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102, 101, 102, 103, 121),
+        pool_grp_ids=(101, 102, 101, 102, 103, 121, 140, 141),
         pick_index=10,
     )
     red_bomb = next(card for card in scored_pack.cards if card.card.grp_id == 105)
@@ -3070,7 +3126,7 @@ def test_drafted_basic_is_not_counted_as_extra_splash_fixing() -> None:
 def test_aggressive_pool_accepts_b_and_c_grade_splash() -> None:
     database = _splash_card_database()
     state = infer_splash_state(
-        pool_grp_ids=(101, 102, 101, 102, 101, 102, 101, 102),
+        pool_grp_ids=(101, 102, 101, 102, 101, 102, 101, 102, 140, 141),
         card_database=database,
         ratings_data=_splash_ratings_data(),
         base_pair="WU",
@@ -3591,6 +3647,23 @@ def _splash_card_database() -> CardDatabase:
         cards={
             101: _card(grp_id=101, name="White Base Card", colors=("W",)),
             102: _card(grp_id=102, name="Blue Base Card", colors=("U",)),
+            # Two base-color duals give the base colors enough sources to leave room for basics.
+            140: _card(
+                grp_id=140,
+                name="White Blue Dual One",
+                colors=(),
+                types=("Land",),
+                mana_cost=None,
+                produced_mana=("W", "U"),
+            ),
+            141: _card(
+                grp_id=141,
+                name="White Blue Dual Two",
+                colors=(),
+                types=("Land",),
+                mana_cost=None,
+                produced_mana=("W", "U"),
+            ),
             103: _card(
                 grp_id=103,
                 name="Red Fixing Land One",
@@ -4765,7 +4838,7 @@ def test_disabled_contextual_adjustments_preserve_locked_splash_behavior() -> No
     score_kwargs = {
         "offered_grp_ids": (106, 107, 109),
         "card_database": database,
-        "pool_grp_ids": (101, 102, 101, 102, 103, 104, 110, 105),
+        "pool_grp_ids": (101, 102, 101, 102, 103, 104, 110, 105, 140, 141),
         "pick_index": 16,
     }
     ratings_data = _splash_ratings_data()
@@ -5397,7 +5470,7 @@ def test_b_graded_single_symbol_card_is_splash_ready_when_sources_allow_it() -> 
     scored_pack = PickEngine(ratings_data=ratings_data).score_pack(
         offered_grp_ids=(105,),
         card_database=_splash_card_database(),
-        pool_grp_ids=(101, 102, 101, 102),
+        pool_grp_ids=(101, 102, 101, 102, 140, 141),
         pick_index=10,
     )
     red_card = scored_pack.cards[0]
@@ -5412,7 +5485,7 @@ def test_splash_card_that_only_ties_the_best_on_color_option_is_rejected() -> No
     database = _splash_card_database()
     ratings_data = _splash_ratings_data()
     state = infer_splash_state(
-        pool_grp_ids=(101, 102, 101, 102),
+        pool_grp_ids=(101, 102, 101, 102, 140, 141),
         card_database=database,
         ratings_data=ratings_data,
         base_pair="WU",
@@ -5440,7 +5513,7 @@ def test_splash_card_that_only_ties_the_best_on_color_option_is_rejected() -> No
 def test_unrated_splash_card_is_not_splash_ready() -> None:
     database = _splash_card_database()
     state = infer_splash_state(
-        pool_grp_ids=(101, 102, 101, 102),
+        pool_grp_ids=(101, 102, 101, 102, 140, 141),
         card_database=database,
         ratings_data=_splash_ratings_data(),
         base_pair="WU",

@@ -36,6 +36,9 @@ PERCENTILES = (10, 25, 50, 75, 90)
 KIND_LABELS = ("2 colors", "2 + splash", "3 colors", "other")
 FIXER_KINDS = ("land search", "mana creature", "mana rock", "Treasure")
 CONFIDENCE_Z = 1.96
+MIN_MAIN_SPELLS = 10
+GAP_PERCENTILES = (5, 10, 15, 20, 25, 50)
+SPLASH_GAP_FLOOR = -0.015
 
 _SYMBOL = re.compile(r"\{([^}]+)\}")
 # Two-color or any-color mana, Treasure, and basic land search, which also
@@ -624,6 +627,127 @@ def _print_winning_grades(*, winning: list[DeckRecord], ratings: Any) -> None:
     )
 
 
+def _main_spell_win_rates(*, record: DeckRecord, ratings: Any) -> list[float]:
+    splash_color = record.deck.splash_colors
+    rates = []
+    for card in record.spells:
+        if pips(card=card)[splash_color] != 0:
+            continue
+        rate = ratings.rating_for(grp_id=card.grp_id).gih_win_rate
+        if rate is not None:
+            rates.append(rate)
+    return rates
+
+
+def splash_quality_gaps(
+    *, records: Sequence[DeckRecord], ratings: Any, weakest: bool = False
+) -> list[float]:
+    """Return each splashed card's GIH win rate minus its deck's main-colour baseline.
+    The baseline is the median main-colour spell, or the weakest one when asked.
+    """
+
+    gaps: list[float] = []
+    for record in records:
+        main_rates = _main_spell_win_rates(record=record, ratings=ratings)
+        if len(main_rates) < MIN_MAIN_SPELLS:
+            continue
+        baseline = min(main_rates) if weakest else statistics.median(main_rates)
+        for card, _ in record.splash_cards:
+            rate = ratings.rating_for(grp_id=card.grp_id).gih_win_rate
+            if rate is not None:
+                gaps.append(rate - baseline)
+    return gaps
+
+
+def gap_percentile_line(*, gaps: Sequence[float]) -> str:
+    """Format the gap percentiles in win rate points, or n<10 for small groups."""
+
+    if len(gaps) < 10:
+        return "n<10"
+    cuts = statistics.quantiles(gaps, n=100)
+    return " ".join(f"p{p}={cuts[p - 1]:+.3f}" for p in GAP_PERCENTILES)
+
+
+def main_color_sources(*, record: DeckRecord) -> tuple[int, int]:
+    """Return land sources of the primary and secondary main colour.
+    The colour with more cards is primary, and a tie keeps the pair order.
+    """
+
+    first, second = record.deck.main_colors
+    cards = record.color_cards
+    if cards.get(second, 0) > cards.get(first, 0):
+        first, second = second, first
+    return record.sources[first], record.sources[second]
+
+
+def _print_splash_quality(*, winning: list[DeckRecord], ratings: Any) -> None:
+    one = single_splash(records=winning)
+    gaps = splash_quality_gaps(records=one, ratings=ratings)
+    print(f"\n== Splash card quality (winning decks, n={len(gaps)} splashed cards)")
+    print("  GIH minus median main-colour spell:", gap_percentile_line(gaps=gaps))
+    print(
+        f"  at least {SPLASH_GAP_FLOOR:+.3f}:",
+        percent(part=sum(gap >= SPLASH_GAP_FLOOR for gap in gaps), whole=len(gaps)),
+    )
+    print(
+        "  GIH minus weakest main-colour spell:",
+        gap_percentile_line(
+            gaps=splash_quality_gaps(records=one, ratings=ratings, weakest=True)
+        ),
+    )
+
+
+def split_by_splash_dual(
+    *, records: Sequence[DeckRecord]
+) -> tuple[list[DeckRecord], list[DeckRecord]]:
+    """Split one-splash decks into those with no splash dual and those with one or more.
+    A splash dual is a land in the deck that makes the splash color.
+    """
+
+    without: list[DeckRecord] = []
+    with_dual: list[DeckRecord] = []
+    for record in records:
+        has_dual = any(record.deck.splash_colors in land for land in record.duals)
+        (with_dual if has_dual else without).append(record)
+    return without, with_dual
+
+
+def _print_splash_dual_group(
+    *, label: str, group: list[DeckRecord], total: int
+) -> None:
+    combos = [
+        (*main_color_sources(record=r), splash_source_count(record=r)) for r in group
+    ]
+    both = sum(p >= 8 and s >= 7 for p, s, _ in combos)
+    print(
+        f"  {label}: n={len(group)} ({percent(part=len(group), whole=total)} of decks),"
+        f" primary >= 8 and secondary >= 7: {percent(part=both, whole=len(group))}"
+    )
+    for (primary, secondary, splash), count in Counter(combos).most_common(6):
+        print(
+            f"    primary {primary}, secondary {secondary}, splash {splash}:"
+            f" {percent(part=count, whole=len(group))}"
+        )
+
+
+def _print_main_color_sources(*, winning: list[DeckRecord]) -> None:
+    decks = [r for r in single_splash(records=winning) if len(r.deck.main_colors) == 2]
+    pairs = [main_color_sources(record=r) for r in decks]
+    print(f"\n== Base-colour sources in one-splash decks (winning, n={len(pairs)})")
+    print("  primary:", distribution(values=[p for p, _ in pairs]))
+    print("  secondary:", distribution(values=[s for _, s in pairs]))
+    print(
+        "  primary >= 8:",
+        percent(part=sum(p >= 8 for p, _ in pairs), whole=len(pairs)),
+        " secondary >= 7:",
+        percent(part=sum(s >= 7 for _, s in pairs), whole=len(pairs)),
+    )
+    without, with_dual = split_by_splash_dual(records=decks)
+    print("  by splash dual lands:")
+    _print_splash_dual_group(label="no splash dual", group=without, total=len(decks))
+    _print_splash_dual_group(label="1+ splash dual", group=with_dual, total=len(decks))
+
+
 def _print_win_rates(*, pool: list[DeckRecord]) -> None:
     three = [r for r in pool if r.kind == "3 colors"]
     print(
@@ -667,6 +791,8 @@ def print_report(*, event: str, records: list[DeckRecord], ratings: Any) -> None
     for label, group in (("winning", winning), ("all", records)):
         _print_fixer_weights(label=label, group=group)
     _print_winning_grades(winning=winning, ratings=ratings)
+    _print_splash_quality(winning=winning, ratings=ratings)
+    _print_main_color_sources(winning=winning)
     _print_win_rates(pool=records)
 
 

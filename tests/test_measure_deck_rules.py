@@ -263,7 +263,8 @@ def _stub_ratings() -> SimpleNamespace:
     return SimpleNamespace(
         primary=SimpleNamespace(card_ratings={1: object()}),
         rating_for=lambda *, grp_id: SimpleNamespace(
-            letter_grade={9: "A", 6: "C", 7: "B"}.get(grp_id)
+            letter_grade={9: "A", 6: "C", 7: "B"}.get(grp_id),
+            gih_win_rate=None,
         ),
     )
 
@@ -616,3 +617,144 @@ def test_fixer_weights_leave_out_a_kind_no_deck_has() -> None:
         "mana creature",
         "mana rock",
     ]
+
+
+def _rated_record(
+    *, main_rates: list[float | None], splash_rate: float | None, cards: Counter[str]
+) -> tuple[measure_deck_rules.DeckRecord, SimpleNamespace]:
+    splash = _card(grp_id=900, name="Splash", types=("Creature",), mana_cost="{1}{B}")
+    mains = [
+        _card(grp_id=100 + n, name=f"Main {n}", types=("Creature",), mana_cost="{1}{W}")
+        for n in range(len(main_rates))
+    ]
+    rates = {900: splash_rate, **{100 + n: r for n, r in enumerate(main_rates)}}
+    ratings = SimpleNamespace(
+        rating_for=lambda *, grp_id: SimpleNamespace(
+            gih_win_rate=rates[grp_id], letter_grade=None
+        )
+    )
+    record = measure_deck_rules.DeckRecord(
+        deck=measure_deck_rules.Deck(
+            event="PremierDraft",
+            build=0,
+            main_colors="WU",
+            splash_colors="B",
+            cards={},
+            games=7,
+            wins=7,
+        ),
+        lands=17,
+        basics=Counter(),
+        duals=[],
+        sources={**dict.fromkeys("WUBRG", 0), "W": 9, "U": 7},
+        color_cards=cards,
+        spells=[*mains, splash],
+        double_symbol=[],
+        splash_cards=[(splash, 1)],
+        nonland_fixers=0,
+    )
+    return record, ratings
+
+
+def test_splash_quality_gap_uses_median_and_weakest_main_spell() -> None:
+    rates: list[float | None] = [0.50 + 0.01 * n for n in range(11)]
+    record, ratings = _rated_record(main_rates=rates, splash_rate=0.52, cards=Counter())
+
+    median_gaps = measure_deck_rules.splash_quality_gaps(
+        records=[record], ratings=ratings
+    )
+    weakest_gaps = measure_deck_rules.splash_quality_gaps(
+        records=[record], ratings=ratings, weakest=True
+    )
+
+    assert median_gaps == [pytest.approx(-0.03)]
+    assert weakest_gaps == [pytest.approx(0.02)]
+
+
+def test_splash_quality_gap_skips_unrated_cards_and_thin_decks() -> None:
+    unrated_main: list[float | None] = [None, *([0.55] * 10)]
+    rated, ratings = _rated_record(
+        main_rates=unrated_main, splash_rate=0.55, cards=Counter()
+    )
+    thin, thin_ratings = _rated_record(
+        main_rates=[0.55] * 9, splash_rate=0.55, cards=Counter()
+    )
+    unrated_splash, splash_ratings = _rated_record(
+        main_rates=[0.55] * 10, splash_rate=None, cards=Counter()
+    )
+
+    assert measure_deck_rules.splash_quality_gaps(records=[rated], ratings=ratings) == [
+        pytest.approx(0.0)
+    ]
+    assert (
+        measure_deck_rules.splash_quality_gaps(records=[thin], ratings=thin_ratings)
+        == []
+    )
+    assert (
+        measure_deck_rules.splash_quality_gaps(
+            records=[unrated_splash], ratings=splash_ratings
+        )
+        == []
+    )
+
+
+def test_main_color_sources_ranks_colors_by_card_count() -> None:
+    record, _ = _rated_record(
+        main_rates=[], splash_rate=None, cards=Counter({"W": 8, "U": 12})
+    )
+    tied, _ = _rated_record(
+        main_rates=[], splash_rate=None, cards=Counter({"W": 9, "U": 9})
+    )
+
+    assert measure_deck_rules.main_color_sources(record=record) == (7, 9)
+    assert measure_deck_rules.main_color_sources(record=tied) == (9, 7)
+
+
+def test_report_prints_splash_quality_and_base_color_sources(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    record, ratings = _rated_record(
+        main_rates=[0.55] * 10, splash_rate=0.54, cards=Counter({"W": 12, "U": 9})
+    )
+
+    measure_deck_rules.print_report(
+        event="PremierDraft", records=[record], ratings=ratings
+    )
+
+    output = capsys.readouterr().out
+    assert "== Splash card quality (winning decks, n=1 splashed cards)" in output
+    assert "== Base-colour sources in one-splash decks (winning, n=1)" in output
+    assert "primary >= 8: 100%  secondary >= 7: 100%" in output
+
+
+def test_split_by_splash_dual_groups_decks_by_splash_color_lands() -> None:
+    plain, _ = _rated_record(main_rates=[], splash_rate=None, cards=Counter())
+    dual, _ = _rated_record(main_rates=[], splash_rate=None, cards=Counter())
+    other, _ = _rated_record(main_rates=[], splash_rate=None, cards=Counter())
+    dual.duals = [("W", "U"), ("U", "B")]
+    other.duals = [("W", "U")]
+
+    without, with_dual = measure_deck_rules.split_by_splash_dual(
+        records=[plain, dual, other]
+    )
+
+    assert without == [plain, other]
+    assert with_dual == [dual]
+
+
+def test_report_prints_splash_dual_groups(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    record, ratings = _rated_record(
+        main_rates=[0.55] * 10, splash_rate=0.54, cards=Counter({"W": 12, "U": 9})
+    )
+    record.duals = [("U", "B")]
+
+    measure_deck_rules.print_report(
+        event="PremierDraft", records=[record], ratings=ratings
+    )
+
+    output = capsys.readouterr().out
+    assert "no splash dual: n=0 (0% of decks)" in output
+    assert "1+ splash dual: n=1 (100% of decks)" in output
+    assert "primary 9, secondary 7, splash 0: 100%" in output
