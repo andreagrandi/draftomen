@@ -5,14 +5,22 @@ Keep third-color decisions separate from primary-pair commitment.
 from __future__ import annotations
 
 import re
+import statistics
 from dataclasses import dataclass
 
 from draftomen.carddb import CardDatabase, CardInfo
-from draftomen.config import DECK_BUILDER, SPLASH, SplashConfig
+from draftomen.config import DECK_BUILDER, SPLASH, DeckBuilderConfig, SplashConfig
 from draftomen.set_profile import SetProfile, empirical_card_ratings
 from draftomen.seventeen import SeventeenLandsData
 
 COLOR_ORDER = ("W", "U", "B", "R", "G")
+BASIC_LANDS_BY_COLOR = {
+    "W": "Plains",
+    "U": "Island",
+    "B": "Swamp",
+    "R": "Mountain",
+    "G": "Forest",
+}
 MANA_SYMBOL_PATTERN = re.compile(r"\{([^}]+)\}")
 
 
@@ -29,9 +37,18 @@ class SplashState:
     fixing_sources: tuple[tuple[str, int], ...]
     aggressive: bool
     required_sources: int = 0
+    splash_grp_ids: tuple[int, ...] = ()
+    splash_basic_limits: tuple[tuple[str, int], ...] = ()
+    base_source_minimums: tuple[tuple[str, int], ...] = ()
 
     def fixing_for(self, *, color: str) -> int:
         return dict(self.fixing_sources).get(color, 0)
+
+    def basic_limit_for(self, *, color: str | None) -> int | None:
+        if color is None:
+            return None
+
+        return dict(self.splash_basic_limits).get(color)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +86,8 @@ def infer_splash_state(
     set_profile: SetProfile | None = None,
 ) -> SplashState:
     """Infer the active splash color and deterministic fixing from the pool.
-    A third-color card that beats the weakest likely maindeck spell sets the plan.
+    A third-color card within the margin of the median maindeck spell sets the plan.
+    Active-color cards that clear that floor are listed in splash_grp_ids.
     """
 
     fixing_sources = _fixing_counts(
@@ -96,13 +114,15 @@ def infer_splash_state(
         card_database=card_database,
         set_profile=set_profile,
     )
-    replaced_win_rate = _replaced_spell_win_rate(
+    win_rate_floor = _splash_win_rate_floor(
         pool_grp_ids=pool_grp_ids,
         card_database=card_database,
         ratings_data=ratings_data,
         base_pair=base_pair,
         profile_win_rates=profile_win_rates,
+        config=config,
     )
+    passed_grp_ids: dict[str, list[int]] = {color: [] for color in eligible_by_color}
     for index, grp_id in enumerate(pool_grp_ids):
         card = card_database.lookup(grp_id=grp_id)
         splash_color, off_color_pips = splash_requirement(card=card, base_pair=base_pair)
@@ -117,10 +137,11 @@ def infer_splash_state(
         if win_rate is None:
             continue
 
-        if replaced_win_rate is not None and win_rate <= replaced_win_rate:
+        if win_rate_floor is not None and win_rate < win_rate_floor:
             continue
 
         eligible_by_color[splash_color].append((win_rate, -index))
+        passed_grp_ids[splash_color].append(grp_id)
         required_by_color[splash_color] = max(
             required_by_color.get(splash_color, 0),
             splash_required_sources(off_color_pips=off_color_pips, config=config),
@@ -130,6 +151,33 @@ def infer_splash_state(
         eligible_by_color=eligible_by_color,
         fixing_sources=fixing_sources,
     )
+    base_minimums: dict[str, int] = {}
+    basic_limits: dict[str, int] = {}
+    if len(base_pair) == 2:
+        base_minimums = base_color_minimums(
+            cards=_pool_base_spells(
+                pool_grp_ids=pool_grp_ids,
+                card_database=card_database,
+                base_pair=base_pair,
+            ),
+            pair=base_pair,
+            has_splash=True,
+        )
+        for color in eligible_by_color:
+            basic_limits[color] = splash_basic_slots(
+                land_count=DECK_BUILDER.default_land_count,
+                nonbasic_lands=tuple(
+                    land_source_colors(card=card)
+                    for card in _pool_nonbasic_lands(
+                        pool_grp_ids=pool_grp_ids,
+                        card_database=card_database,
+                        pair=base_pair,
+                        splash_color=color,
+                    )
+                ),
+                pair=base_pair,
+                minimums=base_minimums,
+            )
     picked_card_count = (
         0 if active_color is None else len(eligible_by_color[active_color])
     )
@@ -148,6 +196,11 @@ def infer_splash_state(
         required_sources=(
             0 if active_color is None else required_by_color[active_color]
         ),
+        splash_grp_ids=(
+            () if active_color is None else tuple(passed_grp_ids[active_color])
+        ),
+        splash_basic_limits=tuple(basic_limits.items()),
+        base_source_minimums=tuple(base_minimums.items()),
     )
 
 
@@ -199,10 +252,12 @@ def assess_splash_card(
             splash_color=active_color,
             grade=grade,
             fixing_sources=fixing_sources,
-            planned_basic_sources=splash_basic_sources(
+            planned_basic_sources=_capped_basic_sources(
+                state=state,
+                color=active_color,
                 required_sources=required_sources,
                 fixing_sources=fixing_sources,
-            ),
+            )[0],
             required_sources=required_sources,
             reasons=("produces the active splash color",),
         )
@@ -309,7 +364,9 @@ def assess_splash_card(
         state.required_sources,
     )
     fixing_sources = state.fixing_for(color=splash_color)
-    planned_basics = splash_basic_sources(
+    planned_basics, basics_capped = _capped_basic_sources(
+        state=state,
+        color=splash_color,
         required_sources=required_sources,
         fixing_sources=fixing_sources,
     )
@@ -333,9 +390,15 @@ def assess_splash_card(
     if grade is None:
         reasons.append("card has no 17Lands rating")
     if available_sources < required_sources:
-        reasons.append(
-            f"needs {required_sources - available_sources} more deterministic sources"
-        )
+        missing = required_sources - available_sources
+        if basics_capped:
+            reasons.append(
+                f"needs {missing} more splash {'land' if missing == 1 else 'lands'}: "
+                f"{DECK_BUILDER.default_land_count} lands keep "
+                f"{_format_base_minimums(state=state)} sources"
+            )
+        else:
+            reasons.append(f"needs {missing} more deterministic sources")
     return _assessment(
         classification="off-color",
         state=state,
@@ -363,6 +426,186 @@ def splash_required_sources(
         return config.double_symbol_sources
 
     return config.single_symbol_sources
+
+
+def splash_basic_slots(
+    *,
+    land_count: int,
+    nonbasic_lands: tuple[tuple[str, ...], ...],
+    pair: str,
+    minimums: dict[str, int],
+) -> int:
+    """Return how many basics a splash can take after the base-color minimums.
+    Each entry of nonbasic_lands lists the colors one drafted nonbasic land makes.
+    """
+
+    shortage = sum(
+        max(
+            0,
+            minimums[color]
+            - sum(color in source_colors for source_colors in nonbasic_lands),
+        )
+        for color in pair
+    )
+    return max(0, land_count - len(nonbasic_lands) - shortage)
+
+
+def base_color_minimums(
+    *,
+    cards: tuple[CardInfo, ...],
+    pair: str,
+    has_splash: bool,
+    config: DeckBuilderConfig = DECK_BUILDER,
+) -> dict[str, int]:
+    """Return the land-source minimum for each main color of the deck.
+    A splash raises the minimum of the primary color, the one with more spells.
+    """
+
+    if not has_splash or len(pair) != 2:
+        return {color: config.main_color_source_floor for color in pair}
+
+    spell_counts = {color: 0 for color in pair}
+    pip_totals = {color: 0 for color in pair}
+    for card in cards:
+        card_pips = card_pip_counts(card=card, pair=pair)
+        for color in pair:
+            spell_counts[color] += int(card_pips[color] > 0)
+            pip_totals[color] += card_pips[color]
+
+    primary = max(
+        pair,
+        key=lambda color: (spell_counts[color], pip_totals[color], -pair.index(color)),
+    )
+    return {
+        color: (
+            config.splash_primary_min_sources
+            if color == primary
+            else config.splash_secondary_min_sources
+        )
+        for color in pair
+    }
+
+
+def card_pip_counts(*, card: CardInfo, pair: str) -> dict[str, int]:
+    """Count the mana symbols of each color in pair on one card.
+    A card with no mana cost counts one symbol per card color.
+    """
+
+    counts = {color: 0 for color in pair}
+    if card.mana_cost:
+        for symbol in MANA_SYMBOL_PATTERN.findall(card.mana_cost):
+            for color in pair:
+                if color in symbol:
+                    counts[color] += 1
+
+        return counts
+
+    for color in card.colors:
+        if color in counts:
+            counts[color] += 1
+
+    return counts
+
+
+def is_land_card(*, card: CardInfo) -> bool:
+    return any("Land" in type_line for type_line in card.types)
+
+
+def is_basic_land_card(*, card: CardInfo) -> bool:
+    if card.name in set(BASIC_LANDS_BY_COLOR.values()):
+        return True
+
+    return any(
+        "Basic" in type_line and "Land" in type_line
+        for type_line in card.types
+    )
+
+
+def land_source_colors(*, card: CardInfo) -> tuple[str, ...]:
+    """Return the basic colors a land makes, falling back to its card colors.
+    Colors come back in WUBRG order.
+    """
+
+    source_colors = land_mana_colors(card=card) or card.colors
+    source_set = set(source_colors)
+    return tuple(color for color in BASIC_LANDS_BY_COLOR if color in source_set)
+
+
+def is_selected_nonbasic_land(
+    *,
+    card: CardInfo,
+    pair: str,
+    splash_colors: tuple[str, ...],
+) -> bool:
+    """Return whether the deck builder would play this drafted nonbasic land.
+    The land must make only pair colors, or one of the splash colors.
+    """
+
+    if not is_land_card(card=card) or is_basic_land_card(card=card):
+        return False
+
+    source_colors = land_source_colors(card=card)
+    if not source_colors:
+        return False
+
+    if all(color in pair for color in source_colors):
+        return True
+
+    return bool(splash_colors) and any(color in splash_colors for color in source_colors)
+
+
+def _pool_base_spells(
+    *,
+    pool_grp_ids: tuple[int, ...],
+    card_database: CardDatabase,
+    base_pair: str,
+) -> tuple[CardInfo, ...]:
+    cards = (card_database.lookup(grp_id=grp_id) for grp_id in pool_grp_ids)
+    return tuple(card for card in cards if _is_base_spell(card=card, base_pair=base_pair))
+
+
+def _pool_nonbasic_lands(
+    *,
+    pool_grp_ids: tuple[int, ...],
+    card_database: CardDatabase,
+    pair: str,
+    splash_color: str,
+) -> tuple[CardInfo, ...]:
+    cards = (card_database.lookup(grp_id=grp_id) for grp_id in pool_grp_ids)
+    return tuple(
+        card
+        for card in cards
+        if is_selected_nonbasic_land(
+            card=card,
+            pair=pair,
+            splash_colors=(splash_color,),
+        )
+    )
+
+
+def _capped_basic_sources(
+    *,
+    state: SplashState,
+    color: str | None,
+    required_sources: int,
+    fixing_sources: int,
+) -> tuple[int, bool]:
+    wanted = splash_basic_sources(
+        required_sources=required_sources,
+        fixing_sources=fixing_sources,
+    )
+    limit = state.basic_limit_for(color=color)
+    if limit is None or wanted <= limit:
+        return wanted, False
+
+    return limit, True
+
+
+def _format_base_minimums(*, state: SplashState) -> str:
+    names = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
+    minimums = dict(state.base_source_minimums)
+    ordered = sorted(minimums, key=lambda color: -minimums[color])
+    return " and ".join(f"{minimums[color]} {names[color]}" for color in ordered)
 
 
 def splash_basic_sources(*, required_sources: int, fixing_sources: int) -> int:
@@ -586,13 +829,14 @@ def _pool_is_aggressive(
     )
 
 
-def _replaced_spell_win_rate(
+def _splash_win_rate_floor(
     *,
     pool_grp_ids: tuple[int, ...],
     card_database: CardDatabase,
     ratings_data: SeventeenLandsData | None,
     base_pair: str,
     profile_win_rates: dict[int, float],
+    config: SplashConfig,
 ) -> float | None:
     win_rates = sorted(
         (
@@ -616,7 +860,8 @@ def _replaced_spell_win_rate(
     if len(win_rates) < DECK_BUILDER.target_spell_count:
         return None
 
-    return win_rates[DECK_BUILDER.target_spell_count - 1]
+    best = win_rates[: DECK_BUILDER.target_spell_count]
+    return statistics.median(best) - config.splash_median_margin
 
 
 def _is_base_spell(*, card: CardInfo, base_pair: str) -> bool:

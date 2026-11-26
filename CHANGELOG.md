@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+- A splash card needs a win rate no more than 1.5 points below the median of
+  the pool's best 23 on-pair spells, both in picks and in the deck builder. A
+  strong card such as Sheoldred no longer brings weaker cards of its color,
+  such as Tenacious Drone, into the splash. A splash deck keeps at least 8
+  land sources of its main color with more spells and 7 of the other. If the
+  lands left cannot give the splash its 3 or 4 sources, the builder cuts the
+  splash and says so in a mana note. Picks apply the same land check, so a
+  card is only splash-ready when the deck could still play it.
+  `scripts/measure_deck_rules.py` derives
+  both rules from winning 17Lands FRA decks, and
+  `experiments/splash-quality/findings.md` has the figures. (#1094)
 - `draftomen-tui replay` scores picks and builds the suggested deck from the
   set profile, as the live app does. It used to read the cached 17Lands data,
   which is empty when nothing is cached, so it never chose a splash colour and

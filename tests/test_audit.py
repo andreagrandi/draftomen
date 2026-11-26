@@ -150,6 +150,7 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
         "active_color": None,
         "aggressive": False,
         "base_pair": None,
+        "base_source_minimums": [],
         "enabled": True,
         "fixing_sources": [
             ["W", 0],
@@ -160,6 +161,8 @@ def test_audit_records_complete_decision_and_choice_without_duplicates(
         ],
         "picked_card_count": 0,
         "required_sources": 0,
+        "splash_basic_limits": [],
+        "splash_grp_ids": [],
     }
     scored_cards = {card.card.grp_id: card for card in scored_pack.cards}
     for candidate in decision["candidates"]:

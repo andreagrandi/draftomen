@@ -1202,6 +1202,18 @@ def _profile_splash_inputs() -> tuple[CardDatabase, SetProfile, tuple[int, ...]]
             for value in (0.70 if grp_id == _SPLASH_BOMB_GRP_ID else 0.55,)
         ),
     )
+    # Two duals keep the base colors at their splash minimums and give the splash 3 sources.
+    for grp_id, produced in ((9_100, ("W", "R")), (9_101, ("U", "R"))):
+        cards[grp_id] = CardInfo(
+            grp_id=grp_id,
+            name=f"Synthetic {''.join(produced)} Dual",
+            colors=(),
+            mana_value=0.0,
+            rarity="common",
+            types=("Land",),
+            produced_mana=produced,
+            set_code="tst",
+        )
     return CardDatabase(cards=cards), profile, tuple(cards)
 
 

@@ -26,9 +26,11 @@ class SplashConfig:
     # 14 to 22% had no dual for the splash. Basics fill the gap, so the deck always has them.
     single_symbol_sources: int = 3
     double_symbol_sources: int = 4
-    # No minimum grade for splash cards. Of the cards winning FRA decks splashed in the same
-    # dump, only 17% (Premier) and 14% (Pick Two) were A- or better, and C+ was the most common
-    # grade at 26%. A splash card only has to beat the card it replaces.
+    # A splash card needs a GIH win rate no more than 1.5 points below the median of the pool's
+    # best 23 on-pair spells. See experiments/splash-quality/findings.md: 90% of cards splashed by
+    # winning decks met it (scripts/measure_deck_rules.py, 17Lands FRA PremierDraft and
+    # PickTwoDraft dumps, retrieved 2026-11-26).
+    splash_median_margin: float = 0.015
     minimum_score_advantage: float = 0.0
     ready_score_multiplier: float = 0.95
     fixer_score_multiplier: float = 1.05
@@ -106,6 +108,11 @@ class DeckBuilderConfig:
     # 93 to 96% of winning two-color decks had 7 or more sources of the lighter main color,
     # from experiments/mana-defaults on the 17Lands FRA dumps, retrieved 2026-10-29.
     main_color_source_floor: int = 7
+    # With a one-color splash, 92% (Premier) and 84% (Pick Two) of winning FRA decks had 8 or more
+    # sources of the primary main color, and 92% and 88% had 7 or more of the secondary one. See
+    # experiments/splash-quality/findings.md. The primary color has more selected spells.
+    splash_primary_min_sources: int = 8
+    splash_secondary_min_sources: int = 7
     # The lightest color of a winning three-color deck had 4 or more land sources in about
     # 90% of decks, from scripts/measure_deck_rules.py on the 17Lands FRA PremierDraft dump.
     triad_min_color_land_sources: int = 4

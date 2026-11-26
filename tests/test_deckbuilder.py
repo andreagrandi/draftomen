@@ -24,6 +24,8 @@ from draftomen.deckbuilder import (
     _build_optimizer_context,
     _card_quantity_key,
     _double_symbol_colors,
+    BuildSheet,
+    _format_player_build_sheet,
     _format_splash_note,
     _greedy_feasible_package,
     _is_splash_card,
@@ -1400,6 +1402,10 @@ def test_allow_splash_with_one_dual_fills_the_rest_with_basics() -> None:
     assert selection.eligible_count == 5
 
 
+# Room for the 8 and 7 base-color sources of a splash deck plus the splash sources.
+_SPLASH_ROOMY_LAND_COUNT = 20
+
+
 def _splash_mana_base_with_second_land(*, second_land: CardInfo) -> ManaBase:
     config = replace(
         DECK_BUILDER,
@@ -1426,6 +1432,7 @@ def _splash_mana_base_with_second_land(*, second_land: CardInfo) -> ManaBase:
         card_database=database,
         pair="WU",
         spell_selection=selection,
+        land_count=_SPLASH_ROOMY_LAND_COUNT,
         config=config,
     )
 
@@ -1493,6 +1500,7 @@ def test_single_splash_card_uses_two_fixing_lands_and_one_basic() -> None:
         card_database=database,
         pair="WU",
         spell_selection=selection,
+        land_count=_SPLASH_ROOMY_LAND_COUNT,
         config=config,
     )
 
@@ -1519,8 +1527,13 @@ def _splash_build(
     pool_ids: tuple[int, ...],
     fixing_count: int,
     config: DeckBuilderConfig = _SPLASH_CONFIG,
+    land_count: int | None = _SPLASH_ROOMY_LAND_COUNT,
+    base_dual_count: int = 0,
 ) -> tuple[SpellSelection, ManaBase]:
-    database = _splash_card_database(fixing_count=fixing_count)
+    database = _splash_card_database(
+        fixing_count=fixing_count,
+        base_dual_count=base_dual_count,
+    )
     selection = select_deck_spells(
         pool_grp_ids=pool_ids,
         card_database=database,
@@ -1534,12 +1547,13 @@ def _splash_build(
         card_database=database,
         pair="WU",
         spell_selection=selection,
+        land_count=land_count,
         config=config,
     )
     return selection, mana_base
 
 
-def test_single_symbol_splash_without_dual_uses_three_basics() -> None:
+def test_single_symbol_splash_without_dual_gets_three_basics_when_lands_cover_base_minimums() -> None:
     selection, mana_base = _splash_build(pool_ids=(1, 2, 3, 4, 5), fixing_count=0)
 
     assert 5 in {card.card.grp_id for card in selection.spells}
@@ -1555,7 +1569,7 @@ def test_single_symbol_splash_without_dual_uses_three_basics() -> None:
     ("pool_ids", "fixing_count", "mountains"),
     [((1, 2, 3, 4, 7), 0, 4), ((1, 2, 3, 4, 7, 8), 1, 3)],
 )
-def test_two_symbol_splash_card_gets_four_sources(
+def test_two_symbol_splash_card_gets_four_sources_when_lands_cover_base_minimums(
     pool_ids: tuple[int, ...],
     fixing_count: int,
     mountains: int,
@@ -1754,63 +1768,277 @@ def test_fourth_eligible_splash_card_is_left_out() -> None:
     assert 14 not in selected_ids
 
 
-def _replacement_ratings_data(*, splash_win_rate: float) -> SeventeenLandsData:
-    return _ratings_data_from_entries(
-        entries=(
-            (1, "White Playable", "W", 0.50),
-            (2, "Blue Playable", "U", 0.50),
-            (3, "Second White Playable", "W", 0.49),
-            (4, "Second Blue Playable", "U", 0.49),
-            (5, "Red Bomb One", "R", splash_win_rate),
-            *tuple(
-                (
-                    grp_id,
-                    f"Distribution Card {grp_id}",
-                    "B",
-                    0.50 + ((grp_id - 100) * 0.002),
-                )
-                for grp_id in range(100, 120)
-            ),
+_FLOOR_BASE_COUNT = 23
+
+
+def _floor_pool_cards() -> dict[int, CardInfo]:
+    return {
+        grp_id: _card(
+            grp_id=grp_id,
+            name=f"Pair Card {grp_id}",
+            colors=("WU"[grp_id % 2],),
         )
-    )
+        for grp_id in range(200, 200 + _FLOOR_BASE_COUNT)
+    }
 
 
-def test_b_graded_splash_card_that_beats_the_card_it_replaces_is_selected() -> None:
-    ratings_data = _replacement_ratings_data(splash_win_rate=0.53)
-    config = replace(_SPLASH_CONFIG, target_spell_count=3)
+def _floor_pool_entries() -> list[tuple[int, str, str, float]]:
+    # 23 spells spread evenly over 56% to 60% GIH, so the median is 58%.
+    return [
+        (
+            grp_id,
+            f"Pair Card {grp_id}",
+            "WU"[grp_id % 2],
+            0.56 + ((grp_id - 200) * 0.04 / (_FLOOR_BASE_COUNT - 1)),
+        )
+        for grp_id in range(200, 200 + _FLOOR_BASE_COUNT)
+    ]
 
-    selection = select_deck_spells(
-        pool_grp_ids=(1, 2, 3, 4, 5),
-        card_database=_splash_card_database(fixing_count=0),
+
+def _floor_selection(
+    *,
+    splash_cards: dict[int, tuple[str, str, float]],
+) -> SpellSelection:
+    cards = _floor_pool_cards()
+    entries = _floor_pool_entries()
+    for grp_id, (name, mana_cost, win_rate) in splash_cards.items():
+        cards[grp_id] = _card(
+            grp_id=grp_id,
+            name=name,
+            colors=("R",),
+            mana_cost=mana_cost,
+        )
+        entries.append((grp_id, name, "R", win_rate))
+
+    return select_deck_spells(
+        pool_grp_ids=(*cards,),
+        card_database=CardDatabase(cards=cards),
         pair="WU",
-        ratings_data=ratings_data,
+        ratings_data=_ratings_data_from_entries(entries=tuple(entries)),
         allow_splash=True,
-        config=config,
+        config=replace(
+            DECK_BUILDER,
+            creature_floor=0,
+            creature_ceiling=40,
+            minimum_two_drops=0,
+            maximum_expensive_spells=40,
+            bench_card_count=0,
+        ),
     )
 
-    selected_ids = {card.card.grp_id for card in selection.spells}
-    assert ratings_data.rating_for(grp_id=5).letter_grade == "B"
+
+def test_splash_card_at_the_win_rate_floor_is_selected() -> None:
+    selection = _floor_selection(
+        splash_cards={5: ("Floor Splash", "{3}{R}", 0.58 - 0.015 + 0.0005)},
+    )
+
     assert selection.splash_color == "R"
-    assert selection.counts.splashes == 1
-    assert 5 in selected_ids
-    assert {3, 4} - selected_ids != set()
+    assert 5 in {card.card.grp_id for card in selection.spells}
 
 
-def test_splash_card_below_the_card_it_replaces_is_not_selected() -> None:
-    ratings_data = _replacement_ratings_data(splash_win_rate=0.45)
-    config = replace(_SPLASH_CONFIG, target_spell_count=3)
-
-    selection = select_deck_spells(
-        pool_grp_ids=(1, 2, 3, 4, 5),
-        card_database=_splash_card_database(fixing_count=0),
-        pair="WU",
-        ratings_data=ratings_data,
-        allow_splash=True,
-        config=config,
+def test_splash_card_below_the_win_rate_floor_is_not_selected() -> None:
+    selection = _floor_selection(
+        splash_cards={5: ("Weak Splash", "{3}{R}", 0.58 - 0.015 - 0.0005)},
     )
 
+    assert selection.splash_color is None
     assert selection.counts.splashes == 0
     assert 5 not in {card.card.grp_id for card in selection.spells}
+
+
+def _land_card(*, grp_id: int, name: str, produced: tuple[str, ...]) -> CardInfo:
+    return _card(
+        grp_id=grp_id,
+        name=name,
+        colors=(),
+        mana_value=0.0,
+        types=("Land",),
+        produced_mana=produced,
+    )
+
+
+def _splash_build_sheet(
+    *,
+    pair: str,
+    base_cards: dict[int, tuple[str, str, float]],
+    splash_cards: dict[int, tuple[str, str, float]],
+    splash_color: str,
+    lands: tuple[CardInfo, ...] = (),
+) -> BuildSheet:
+    cards: dict[int, CardInfo] = {}
+    entries: list[tuple[int, str, str, float]] = []
+    for grp_id, (name, mana_cost, win_rate) in base_cards.items():
+        color = next(symbol for symbol in mana_cost if symbol in pair)
+        cards[grp_id] = _card(grp_id=grp_id, name=name, colors=(color,), mana_cost=mana_cost)
+        entries.append((grp_id, name, color, win_rate))
+
+    for grp_id, (name, mana_cost, win_rate) in splash_cards.items():
+        cards[grp_id] = _card(
+            grp_id=grp_id,
+            name=name,
+            colors=(splash_color,),
+            mana_cost=mana_cost,
+        )
+        entries.append((grp_id, name, splash_color, win_rate))
+
+    for land in lands:
+        cards[land.grp_id] = land
+
+    return select_build_sheet(
+        pool_grp_ids=(*cards,),
+        card_database=CardDatabase(cards=cards),
+        pair=pair,
+        ratings_data=_ratings_data_from_entries(entries=tuple(entries)),
+        allow_splash=True,
+        config=replace(
+            DECK_BUILDER,
+            creature_floor=0,
+            creature_ceiling=40,
+            minimum_two_drops=0,
+            maximum_expensive_spells=40,
+            bench_card_count=0,
+        ),
+    )
+
+
+def _spread_base_cards(
+    *,
+    symbols: tuple[str, ...],
+) -> dict[int, tuple[str, str, float]]:
+    # Win rates spread evenly from 56% to 60%, so the median is 58%.
+    return {
+        200 + index: (
+            f"Pair Card {200 + index}",
+            symbol,
+            0.56 + (index * 0.04 / (len(symbols) - 1)),
+        )
+        for index, symbol in enumerate(symbols)
+    }
+
+
+def _trk_like_build_sheet() -> BuildSheet:
+    return _splash_build_sheet(
+        pair="RG",
+        base_cards=_spread_base_cards(
+            symbols=tuple("{1}{R}" if index % 2 == 0 else "{1}{G}" for index in range(23)),
+        ),
+        splash_cards={
+            5: ("Sheoldred, the Apocalypse", "{2}{B}{B}", 0.68),
+            6: ("Tenacious Drone", "{1}{B}", 0.549),
+            7: ("Cha'DIch Investigator", "{2}{B}", 0.50),
+        },
+        splash_color="B",
+        lands=(
+            _land_card(grp_id=8, name="Black Green Dual One", produced=("B", "G")),
+            _land_card(grp_id=9, name="Black Green Dual Two", produced=("B", "G")),
+        ),
+    )
+
+
+def _spell_names(*, sheet: BuildSheet) -> set[str]:
+    return {card.card.name for card in sheet.spell_selection.spells}
+
+
+def test_only_the_strong_splash_card_is_built_into_a_trk_like_pool() -> None:
+    sheet = _trk_like_build_sheet()
+
+    names = _spell_names(sheet=sheet)
+    assert "Sheoldred, the Apocalypse" in names
+    assert "Tenacious Drone" not in names
+    assert "Cha'DIch Investigator" not in names
+    assert sheet.spell_selection.counts.splashes == 1
+
+
+def test_trk_like_splash_deck_keeps_eight_primary_and_seven_secondary_sources() -> None:
+    sheet = _trk_like_build_sheet()
+
+    sources = dict(sheet.mana_base.source_counts)
+    assert sheet.mana_base.land_count == 17
+    assert sources["R"] >= 8
+    assert sources["G"] >= 7
+    assert sources["B"] >= 4
+    assert sheet.mana_base.caveats == ()
+
+
+def test_splash_deck_without_a_splash_dual_cuts_the_splash_when_basics_do_not_fit() -> None:
+    sheet = _splash_build_sheet(
+        pair="WU",
+        base_cards=_spread_base_cards(
+            symbols=tuple("{1}{W}" if index % 2 == 0 else "{1}{U}" for index in range(23)),
+        ),
+        splash_cards={5: ("Lonely Bomb", "{3}{R}", 0.70)},
+        splash_color="R",
+    )
+
+    sources = dict(sheet.mana_base.source_counts)
+    assert sheet.spell_selection.counts.splashes == 0
+    assert "Lonely Bomb" not in _spell_names(sheet=sheet)
+    assert sheet.mana_base.caveats == (
+        "Cut Lonely Bomb: the splash needs 3 red land sources and the lands give 2 "
+        "after keeping 8 white and 7 blue sources.",
+    )
+    assert "R" not in sources
+    assert sources["W"] >= 7
+    assert sources["U"] >= 7
+    assert all(basic.color != "R" for basic in sheet.mana_base.basic_lands)
+
+
+def test_splash_deck_keeps_primary_color_at_eight_sources_against_pip_proportions() -> None:
+    # Blue has more spells but white has more symbols, so proportions alone favor white.
+    symbols = tuple("{U}" if index < 13 else "{W}{W}" for index in range(23))
+    cards: dict[int, CardInfo] = {}
+    entries: list[tuple[int, str, str, float]] = []
+    for grp_id, (name, mana_cost, win_rate) in _spread_base_cards(symbols=symbols).items():
+        color = "U" if mana_cost == "{U}" else "W"
+        cards[grp_id] = _card(grp_id=grp_id, name=name, colors=(color,), mana_cost=mana_cost)
+        entries.append((grp_id, name, color, win_rate))
+
+    cards[5] = _card(grp_id=5, name="Red Bomb", colors=("R",), mana_cost="{3}{R}")
+    entries.append((5, "Red Bomb", "R", 0.68))
+    cards[8] = _land_card(grp_id=8, name="Red Dual", produced=("R",))
+    config = replace(
+        DECK_BUILDER,
+        creature_floor=0,
+        creature_ceiling=40,
+        minimum_two_drops=0,
+        maximum_expensive_spells=40,
+        bench_card_count=0,
+    )
+    database = CardDatabase(cards=cards)
+    selection = select_deck_spells(
+        pool_grp_ids=(*cards,),
+        card_database=database,
+        pair="WU",
+        ratings_data=_ratings_data_from_entries(entries=tuple(entries)),
+        allow_splash=True,
+        config=config,
+    )
+    mana_base = select_mana_base(
+        pool_grp_ids=(*cards,),
+        card_database=database,
+        pair="WU",
+        spell_selection=selection,
+        land_count=18,
+        config=config,
+    )
+
+    sources = dict(mana_base.source_counts)
+    assert selection.counts.splashes == 1
+    assert sources["U"] >= 8
+    assert sources["W"] >= 7
+    assert sources["R"] >= selection.splash_required_sources
+
+
+def test_source_line_shows_the_splash_minimums() -> None:
+    sheet = _trk_like_build_sheet()
+
+    lines = _format_player_build_sheet(
+        spell_selection=sheet.spell_selection,
+        mana_base=sheet.mana_base,
+        config=DECK_BUILDER,
+    )
+
+    assert any(line.endswith("(floor 8 red, 7 green)") for line in lines)
 
 
 def _plan_card_state(*, splash_win_rate: float | None, on_pair_count: int):
@@ -1841,24 +2069,21 @@ def _plan_card_state(*, splash_win_rate: float | None, on_pair_count: int):
     )
 
 
-def test_third_color_card_below_the_weakest_top_spell_does_not_set_the_plan() -> None:
-    state = _plan_card_state(splash_win_rate=0.501, on_pair_count=25)
+def test_third_color_card_just_below_the_median_margin_does_not_set_the_plan() -> None:
+    # The best 23 of 25 spells run from 50.2% to 52.4%, so the median is 51.3%.
+    state = _plan_card_state(splash_win_rate=0.513 - 0.015 - 0.0005, on_pair_count=25)
 
     assert state.active_color is None
     assert state.picked_card_count == 0
+    assert state.splash_grp_ids == ()
 
 
-def test_third_color_card_above_the_weakest_top_spell_sets_the_plan() -> None:
-    state = _plan_card_state(splash_win_rate=0.503, on_pair_count=25)
+def test_third_color_card_at_the_median_margin_sets_the_plan() -> None:
+    state = _plan_card_state(splash_win_rate=0.513 - 0.015 + 0.0005, on_pair_count=25)
 
     assert state.active_color == "R"
     assert state.picked_card_count == 1
-
-
-def test_third_color_card_ties_the_weakest_top_spell_does_not_set_the_plan() -> None:
-    state = _plan_card_state(splash_win_rate=0.50 + (2 * 0.001), on_pair_count=25)
-
-    assert state.active_color is None
+    assert state.splash_grp_ids == (5,)
 
 
 def test_third_color_card_sets_the_plan_when_the_pool_has_few_spells() -> None:
@@ -1878,13 +2103,13 @@ def test_third_color_card_without_a_win_rate_does_not_set_the_plan() -> None:
     ("card_id", "required_sources"),
     [(5, 3), (7, 4)],
 )
-def test_pick_assessment_and_build_sheet_agree_on_splash_sources(
+def test_pick_assessment_and_build_sheet_agree_on_splash_sources_at_seventeen_lands(
     card_id: int,
     required_sources: int,
 ) -> None:
-    database = _splash_card_database(fixing_count=1)
+    database = _splash_card_database(fixing_count=1, base_dual_count=2)
     ratings_data = _splash_ratings_data()
-    base_pool = (1, 2, 3, 4, 8)
+    base_pool = (1, 2, 3, 4, 8, 15, 16)
     state = infer_splash_state(
         pool_grp_ids=base_pool,
         card_database=database,
@@ -1903,6 +2128,8 @@ def test_pick_assessment_and_build_sheet_agree_on_splash_sources(
     selection, mana_base = _splash_build(
         pool_ids=base_pool + (card_id,),
         fixing_count=1,
+        base_dual_count=2,
+        land_count=17,
     )
 
     assert assessment.classification == "splash-ready"
@@ -1910,12 +2137,40 @@ def test_pick_assessment_and_build_sheet_agree_on_splash_sources(
     assert assessment.splash_color == selection.splash_color == "R"
     assert assessment.required_sources == selection.splash_required_sources
     assert assessment.fixing_sources == selection.splash_fixing_sources == 1
-    assert (
-        assessment.planned_basic_sources
-        == selection.splash_planned_basic_sources
-        == _basic_count(mana_base=mana_base, name="Mountain")
-    )
     assert dict(mana_base.source_counts)["R"] == assessment.available_sources
+    assert dict(mana_base.source_counts)["W"] >= 7
+    assert dict(mana_base.source_counts)["U"] >= 7
+
+
+def test_pick_assessment_and_mana_base_agree_a_splash_without_a_splash_land_lacks_sources() -> None:
+    database = _splash_card_database(fixing_count=0)
+    ratings_data = _splash_ratings_data()
+    base_pool = (1, 2, 3, 4)
+    state = infer_splash_state(
+        pool_grp_ids=base_pool + (5,),
+        card_database=database,
+        ratings_data=ratings_data,
+        base_pair="WU",
+        enabled=True,
+    )
+
+    assessment = assess_splash_card(
+        card=database.lookup(grp_id=5),
+        grade=ratings_data.rating_for(grp_id=5).letter_grade,
+        base_score=80.0,
+        best_on_color_score=None,
+        state=state,
+    )
+    selection, mana_base = _splash_build(
+        pool_ids=base_pool + (5,),
+        fixing_count=0,
+        land_count=17,
+    )
+
+    assert assessment.classification == "off-color"
+    assert assessment.available_sources < assessment.required_sources
+    assert selection.splash_color == "R"
+    assert dict(mana_base.source_counts)["R"] < selection.splash_required_sources
 
 
 def test_hybrid_card_castable_in_pair_is_selected_without_splash() -> None:
@@ -2396,7 +2651,7 @@ def _creature_band_ratings_data(*, database: CardDatabase) -> SeventeenLandsData
 
 
 
-def _splash_card_database(*, fixing_count: int) -> CardDatabase:
+def _splash_card_database(*, fixing_count: int, base_dual_count: int = 0) -> CardDatabase:
     cards = {
         1: _card(grp_id=1, name="White Playable", colors=("W",)),
         2: _card(grp_id=2, name="Blue Playable", colors=("U",)),
@@ -2427,6 +2682,13 @@ def _splash_card_database(*, fixing_count: int) -> CardDatabase:
             mana_cost="{2}{R}",
         ),
     }
+    for index in range(base_dual_count):
+        cards[15 + index] = _land_card(
+            grp_id=15 + index,
+            name=f"White Blue Dual {index}",
+            produced=("W", "U"),
+        )
+
     if fixing_count >= 1:
         cards[8] = _card(
             grp_id=8,

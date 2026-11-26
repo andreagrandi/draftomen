@@ -48,10 +48,17 @@ from draftomen.seventeen import (
     StructuralTargets,
 )
 from draftomen.splash import (
+    BASIC_LANDS_BY_COLOR,
     SplashState,
+    base_color_minimums,
     card_is_castable_in_pair,
+    card_pip_counts,
     infer_splash_state,
-    land_mana_colors,
+    is_basic_land_card,
+    is_land_card,
+    is_selected_nonbasic_land,
+    land_source_colors,
+    splash_basic_slots,
     splash_basic_sources,
     splash_required_sources,
     splash_requirement,
@@ -69,13 +76,6 @@ SPELL_TYPE_MARKERS = (
     "Instant",
     "Sorcery",
 )
-BASIC_LANDS_BY_COLOR = {
-    "W": "Plains",
-    "U": "Island",
-    "B": "Swamp",
-    "R": "Mountain",
-    "G": "Forest",
-}
 MANA_SYMBOL_PATTERN = re.compile(r"\{([^}]+)\}")
 CURVE_BUCKET_LABELS = ("0", "1", "2", "3", "4", "5", "6+")
 PERMANENT_TYPE_MARKERS = ("Artifact", "Battle", "Creature", "Enchantment", "Planeswalker")
@@ -638,6 +638,7 @@ def select_deck_spells(
                 allow_splash=allow_splash,
                 splash_color=splash_color,
                 splash_limit=splash_limit,
+                splash_grp_ids=splash_state.splash_grp_ids,
                 config=effective_config,
             )
         ),
@@ -766,6 +767,20 @@ def select_build_sheet(
             config=effective_config,
             set_profile=set_profile,
         )
+        splash_cut = _splash_cut(
+            spell_selection=spell_selection,
+            mana_base=mana_base,
+            config=effective_config,
+        )
+        if splash_cut is not None:
+            cut_cards, splash_notes = splash_cut
+            cut_grp_ids = {card.card.grp_id for card in cut_cards}
+            spell_pool = tuple(
+                grp_id for grp_id in spell_pool if grp_id not in cut_grp_ids
+            )
+            cut_notes.extend(splash_notes)
+            continue
+
         short_cards = _double_symbol_short_cards(
             spell_selection=spell_selection,
             mana_base=mana_base,
@@ -905,6 +920,62 @@ def _double_symbol_short_cards(
     return tuple(short_cards)
 
 
+def _splash_cut(
+    *,
+    spell_selection: SpellSelection,
+    mana_base: ManaBase,
+    config: DeckBuilderConfig,
+) -> tuple[tuple[ScoredCard, ...], tuple[str, ...]] | None:
+    pair = mana_base.pair
+    splash_colors = _selected_splash_colors(cards=spell_selection.spells, pair=pair)
+    if not splash_colors or len(pair) != 2:
+        return None
+
+    color = splash_colors[0]
+    required = _selected_splash_required_sources(
+        cards=spell_selection.spells,
+        pair=pair,
+    )
+    sources = dict(mana_base.source_counts)
+    if sources.get(color, 0) >= required:
+        return None
+
+    floors = _base_color_floors(
+        cards=spell_selection.spells,
+        pair=pair,
+        has_splash=True,
+        config=config,
+    )
+    primary, secondary = _primary_and_secondary(floors=floors, pair=pair)
+    cut_cards = tuple(
+        scored_card
+        for scored_card in spell_selection.spells
+        if _is_splash_card(card=scored_card.card, pair=pair)
+    )
+
+    notes = tuple(
+        f"Cut {card.card.name}: the splash needs {required} "
+        f"{COLOR_LOWERCASE_NAMES[color]} land sources and the lands give "
+        f"{sources.get(color, 0)} after keeping {floors[primary]} "
+        f"{COLOR_LOWERCASE_NAMES[primary]} and {floors[secondary]} "
+        f"{COLOR_LOWERCASE_NAMES[secondary]} sources."
+        for card in cut_cards
+    )
+    return cut_cards, notes
+
+
+def _primary_and_secondary(
+    *,
+    floors: dict[str, int],
+    pair: str,
+) -> tuple[str, str]:
+    first, second = pair
+    if floors[second] > floors[first]:
+        return second, first
+
+    return first, second
+
+
 def _double_symbol_cut_note(
     *,
     card: ScoredCard,
@@ -996,11 +1067,25 @@ def select_mana_base(
         pair=resolved_pair,
     )
     mana_colors = resolved_pair + "".join(splash_colors)
-    splash_basics = _splash_basic_land_counts(
-        splash_colors=splash_colors,
-        selected_spells=spell_selection.spells,
+    base_floors = _base_color_floors(
+        cards=spell_selection.spells,
         pair=resolved_pair,
-        nonbasic_lands=nonbasic_lands,
+        has_splash=bool(splash_colors),
+        config=config,
+    )
+    splash_basics = _limit_splash_basics(
+        basics=_splash_basic_land_counts(
+            splash_colors=splash_colors,
+            selected_spells=spell_selection.spells,
+            pair=resolved_pair,
+            nonbasic_lands=nonbasic_lands,
+        ),
+        slots=splash_basic_slots(
+            land_count=resolved_land_count,
+            nonbasic_lands=tuple(land.source_colors for land in nonbasic_lands),
+            pair=resolved_pair,
+            minimums=base_floors,
+        ),
     )
     basic_slots = max(
         0,
@@ -1032,6 +1117,7 @@ def select_mana_base(
         source_counts=source_counts,
         config=config,
         double_symbol_colors=double_symbol_colors,
+        color_floors=base_floors,
     )
     added_notes = _double_symbol_added_notes(
         spell_selection=spell_selection,
@@ -1619,13 +1705,13 @@ def classify_fixing_card(*, card: CardInfo, colors: str) -> FixingKind:
     Two-color mana on a token made by a spell, such as Soul Tether, is not fixing.
     """
 
-    if card.unknown or _is_basic_land_card(card=card):
+    if card.unknown or is_basic_land_card(card=card):
         return FixingKind.NOT_FIXING
 
-    if _is_land_card(card=card):
+    if is_land_card(card=card):
         # Count only lands the mana base will play, so off-color lands do not count.
-        if _is_selected_nonbasic_land(card=card, pair=colors, splash_colors=()) and (
-            sum(1 for color in colors if color in _land_source_colors(card=card)) >= 2
+        if is_selected_nonbasic_land(card=card, pair=colors, splash_colors=()) and (
+            sum(1 for color in colors if color in land_source_colors(card=card)) >= 2
         ):
             return FixingKind.LAND_SOURCE
 
@@ -1671,6 +1757,7 @@ def _is_eligible_spell_for_pair(
     allow_splash: bool,
     splash_color: str | None,
     splash_limit: int,
+    splash_grp_ids: tuple[int, ...],
     config: DeckBuilderConfig,
 ) -> bool:
     if _is_base_eligible_spell_for_pair(card=card, pair=pair):
@@ -1692,7 +1779,7 @@ def _is_eligible_spell_for_pair(
     if off_color_pips > SPLASH.maximum_off_color_pips:
         return False
 
-    return card.rating.letter_grade is not None
+    return card.card.grp_id in splash_grp_ids
 
 
 
@@ -3397,7 +3484,7 @@ def _selected_nonbasic_lands(
     lands: list[LandCard] = []
     for index, grp_id in enumerate(pool_grp_ids):
         card = card_database.lookup(grp_id=grp_id)
-        if not _is_selected_nonbasic_land(
+        if not is_selected_nonbasic_land(
             card=card,
             pair=pair,
             splash_colors=splash_colors,
@@ -3408,7 +3495,7 @@ def _selected_nonbasic_lands(
             LandCard(
                 card=card,
                 original_index=index,
-                source_colors=_land_source_colors(card=card),
+                source_colors=land_source_colors(card=card),
             )
         )
 
@@ -3417,25 +3504,6 @@ def _selected_nonbasic_lands(
         pair=pair,
         splash_colors=splash_colors,
     ))[:land_count])
-
-
-def _is_selected_nonbasic_land(
-    *,
-    card: CardInfo,
-    pair: str,
-    splash_colors: tuple[str, ...],
-) -> bool:
-    if not _is_land_card(card=card) or _is_basic_land_card(card=card):
-        return False
-
-    source_colors = _land_source_colors(card=card)
-    if not source_colors:
-        return False
-
-    if all(color in pair for color in source_colors):
-        return True
-
-    return bool(splash_colors) and any(color in splash_colors for color in source_colors)
 
 
 def _nonbasic_land_sort_key(
@@ -3457,27 +3525,7 @@ def _nonbasic_land_sort_key(
 
 
 def _is_in_pair_nonbasic_land(*, card: CardInfo, pair: str) -> bool:
-    return _is_selected_nonbasic_land(card=card, pair=pair, splash_colors=())
-
-
-def _is_land_card(*, card: CardInfo) -> bool:
-    return any("Land" in type_line for type_line in card.types)
-
-
-def _is_basic_land_card(*, card: CardInfo) -> bool:
-    if card.name in set(BASIC_LANDS_BY_COLOR.values()):
-        return True
-
-    return any(
-        "Basic" in type_line and "Land" in type_line
-        for type_line in card.types
-    )
-
-
-def _land_source_colors(*, card: CardInfo) -> tuple[str, ...]:
-    source_colors = land_mana_colors(card=card) or card.colors
-    source_set = set(source_colors)
-    return tuple(color for color in BASIC_LANDS_BY_COLOR if color in source_set)
+    return is_selected_nonbasic_land(card=card, pair=pair, splash_colors=())
 
 
 def _splash_basic_land_counts(
@@ -3513,6 +3561,37 @@ def _splash_basic_land_counts(
     )
 
 
+def _base_color_floors(
+    *,
+    cards: tuple[ScoredCard, ...],
+    pair: str,
+    has_splash: bool,
+    config: DeckBuilderConfig,
+) -> dict[str, int]:
+    return base_color_minimums(
+        cards=tuple(scored_card.card for scored_card in cards),
+        pair=pair,
+        has_splash=has_splash,
+        config=config,
+    )
+
+
+def _limit_splash_basics(
+    *,
+    basics: tuple[BasicLandCount, ...],
+    slots: int,
+) -> tuple[BasicLandCount, ...]:
+    limited: list[BasicLandCount] = []
+    remaining = slots
+    for basic in basics:
+        count = min(basic.count, remaining)
+        remaining -= count
+        if count > 0:
+            limited.append(replace(basic, count=count))
+
+    return tuple(limited)
+
+
 def _spell_pip_counts(
     *,
     cards: tuple[ScoredCard, ...],
@@ -3521,30 +3600,13 @@ def _spell_pip_counts(
     pip_counts = {color: 0 for color in pair}
     double_pip_counts = {color: 0 for color in pair}
     for scored_card in cards:
-        card_counts = _card_pip_counts(card=scored_card.card, pair=pair)
+        card_counts = card_pip_counts(card=scored_card.card, pair=pair)
         for color in pair:
             pips = card_counts[color]
             pip_counts[color] += pips
             double_pip_counts[color] += max(0, pips - 1)
 
     return pip_counts, double_pip_counts
-
-
-def _card_pip_counts(*, card: CardInfo, pair: str) -> dict[str, int]:
-    counts = {color: 0 for color in pair}
-    if card.mana_cost:
-        for symbol in MANA_SYMBOL_PATTERN.findall(card.mana_cost):
-            for color in pair:
-                if color in symbol:
-                    counts[color] += 1
-
-        return counts
-
-    for color in card.colors:
-        if color in counts:
-            counts[color] += 1
-
-    return counts
 
 
 def _source_counts(
@@ -3583,6 +3645,7 @@ def _basic_land_counts(
     source_counts: dict[str, int],
     config: DeckBuilderConfig,
     double_symbol_colors: tuple[str, ...] = (),
+    color_floors: dict[str, int] | None = None,
 ) -> tuple[BasicLandCount, ...]:
     if slots <= 0:
         return ()
@@ -3608,7 +3671,11 @@ def _basic_land_counts(
             colors=colors,
             desired_counts=desired_counts,
             source_counts=source_counts,
-            source_floor=config.main_color_source_floor,
+            source_floors=(
+                color_floors
+                if color_floors is not None
+                else {color: config.main_color_source_floor for color in colors}
+            ),
             minimum_sources=(
                 config.triad_min_color_land_sources if len(colors) == 3 else 0
             ),
@@ -3675,7 +3742,7 @@ def _basic_split_sort_key(
     colors: tuple[str, ...],
     desired_counts: dict[str, float],
     source_counts: dict[str, int],
-    source_floor: int,
+    source_floors: dict[str, int],
     minimum_sources: int,
     double_symbol_colors: tuple[str, ...],
     double_symbol_minimum: int,
@@ -3691,7 +3758,7 @@ def _basic_split_sort_key(
         for color in double_symbol_colors
     )
     shortage = sum(
-        max(0, source_floor - (source_counts[color] + counts[color]))
+        max(0, source_floors[color] - (source_counts[color] + counts[color]))
         for color in colors
     )
     proportion_error = sum(
@@ -3720,6 +3787,31 @@ def _average_mana_value(*, cards: tuple[ScoredCard, ...]) -> float:
     return sum(card.card.mana_value or 0.0 for card in cards) / len(cards)
 
 
+def _format_source_floor(
+    *,
+    spell_selection: SpellSelection,
+    mana_base: ManaBase,
+    config: DeckBuilderConfig,
+) -> str:
+    has_splash = bool(
+        _selected_splash_colors(cards=spell_selection.spells, pair=mana_base.pair)
+    )
+    if not has_splash or len(mana_base.pair) != 2:
+        return f"floor {config.main_color_source_floor}"
+
+    floors = _base_color_floors(
+        cards=spell_selection.spells,
+        pair=mana_base.pair,
+        has_splash=True,
+        config=config,
+    )
+    primary, secondary = _primary_and_secondary(floors=floors, pair=mana_base.pair)
+    return (
+        f"floor {floors[primary]} {COLOR_LOWERCASE_NAMES[primary]}, "
+        f"{floors[secondary]} {COLOR_LOWERCASE_NAMES[secondary]}"
+    )
+
+
 def _format_player_build_sheet(
     *,
     spell_selection: SpellSelection,
@@ -3743,7 +3835,7 @@ def _format_player_build_sheet(
         "Mana pips: " f"{_format_color_counts(mana_base.pip_counts)}",
         "Sources: "
         f"{_format_color_counts(mana_base.source_counts)} "
-        f"(floor {config.main_color_source_floor})",
+        f"({_format_source_floor(spell_selection=spell_selection, mana_base=mana_base, config=config)})",
     ]
     similarity_line = _format_similarity_line(
         spell_selection=spell_selection,
@@ -4133,6 +4225,9 @@ def _validate_deck_builder_config(*, config: DeckBuilderConfig) -> None:
 
     if config.main_color_source_floor < 0:
         raise DeckBuilderError("Deck-builder source floor must be non-negative.")
+
+    if config.splash_primary_min_sources < 0 or config.splash_secondary_min_sources < 0:
+        raise DeckBuilderError("Deck-builder splash source minimums must be non-negative.")
 
     if config.triad_min_color_land_sources < 0:
         raise DeckBuilderError("Deck-builder triad source minimum must be non-negative.")
