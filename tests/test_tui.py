@@ -4422,3 +4422,58 @@ async def _assert_pool_summary_no_composition_counts(tmp_path: Path) -> None:
         text = _pool_summary_text(app=app)
         assert "Removal:" not in text
         assert "Creature pace" not in text
+
+
+def test_tui_marks_a_rating_borrowed_from_another_set_reprint(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_assert_borrowed_rating_is_marked(tmp_path=tmp_path))
+
+
+async def _assert_borrowed_rating_is_marked(*, tmp_path: Path) -> None:
+    app = _tui_app(tmp_path=tmp_path)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.process_lines(lines=_first_pack_lines())
+        await pilot.pause()
+        pack = app._current_pack
+        assert pack is not None
+        first_grp_id = app._sorted_cards()[0].card.grp_id
+        app._current_pack = replace(
+            pack,
+            cards=tuple(
+                (
+                    replace(
+                        card,
+                        rating=replace(
+                            card.rating,
+                            metadata=replace(
+                                card.rating.metadata,
+                                fallback_reason="reprint-evidence",
+                                source_set="DMU",
+                            ),
+                        ),
+                        source_label="From DMU*",
+                    )
+                    if card.card.grp_id == first_grp_id
+                    else card
+                )
+                for card in pack.cards
+            ),
+        )
+        app._render_pack_table()
+        app._move_pack_cursor_to(row=0)
+        await pilot.pause()
+
+        table = app.query_one("#pack-table", DataTable)
+        source_index = app.visible_column_keys.index("source")
+        card_index = app.visible_column_keys.index("card")
+        borrowed_rows = [
+            table.get_row_at(index)
+            for index in range(table.row_count)
+            if str(table.get_row_at(index)[source_index]) == "From DMU*"
+        ]
+
+        assert len(borrowed_rows) == 1
+        assert str(borrowed_rows[0][card_index])
+        assert "Data source: Borrowed from DMU reprint" in _focused_card_text(app=app)

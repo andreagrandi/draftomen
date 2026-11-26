@@ -927,3 +927,31 @@ def test_triad_rate_with_samples_requires_aggregate_authority() -> None:
 
     with pytest.raises(SetProfileSchemaError, match="require aggregate authority"):
         SetProfile.from_json(payload)
+
+
+def _rate_with_source(source: str) -> RateEstimate:
+    return RateEstimate(
+        raw_value=0.6,
+        value=0.6,
+        samples=100,
+        prior_value=0.5,
+        source=source,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("17lands:card-ratings:reprint:dmu:premierdraft", "DMU"),
+        ("17lands:card-ratings:reprint:Dmu", "DMU"),
+        ("17lands:card-ratings:reprint::premierdraft", None),
+        ("17lands:card-ratings:reprint:", None),
+        ("17lands:card-ratings:alsa-estimate", None),
+        ("17lands", None),
+    ],
+)
+def test_reprint_source_set_reads_the_set_code_from_the_rate_source(
+    source: str,
+    expected: str | None,
+) -> None:
+    assert set_profile_module.reprint_source_set(_rate_with_source(source)) == expected

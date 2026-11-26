@@ -328,6 +328,19 @@ def is_reprint_rate(rate: RateEstimate) -> bool:
     return rate.source.startswith(REPRINT_RATE_SOURCE_PREFIX)
 
 
+def reprint_source_set(rate: RateEstimate) -> str | None:
+    """Return the set code a borrowed reprint rate came from.
+    The code is None when the rate is not a reprint rate or names no set.
+    """
+
+    if not is_reprint_rate(rate):
+        return None
+
+    remainder = rate.source[len(REPRINT_RATE_SOURCE_PREFIX) :]
+    set_code = remainder.split(":", maxsplit=1)[0].strip()
+    return set_code.upper() or None
+
+
 def is_alsa_estimate_rate(rate: RateEstimate) -> bool:
     """Report whether a rate was estimated from the card's ALSA."""
 

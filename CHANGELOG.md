@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+- A card whose grade is borrowed from a reprint in another set now says so. The
+  pick table shows "From DMU*" in the Source column, the app and the TUI name
+  the set in the card details, and the explanation reads "DMU reprint GIH win
+  rate" instead of "profile estimate". (#1092)
 - A splash card needs a win rate no more than 1.5 points below the median of
   the pool's best 23 on-pair spells, both in picks and in the deck builder. A
   strong card such as Sheoldred no longer brings weaker cards of its color,

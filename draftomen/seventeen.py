@@ -907,12 +907,14 @@ class SeventeenLandsFormatData:
 class RatingSourceMetadata:
     """Explain where a resolved card rating came from.
     Fallback metadata is explicit so UI callers can flag Premier or neutral data.
+    source_set names the other set a borrowed reprint rating came from.
     """
 
     requested_format: str
     source: str
     source_format: str | None
     fallback_reason: str | None
+    source_set: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

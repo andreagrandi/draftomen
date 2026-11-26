@@ -5879,6 +5879,8 @@ for index, recommendation in enumerate(recommendations_state["cards"]):
         updated_recommendation["color_fit"] = None
         updated_recommendation["average_last_seen_at"] = None
         updated_recommendation["source_label"] = None
+    if index == 1:
+        updated_recommendation["source_label"] = "From DMU*"
     recommendation_cards.append(updated_recommendation)
 selected_grp_id_before_missing_alsa = recommendations_state["selected_grp_id"]
 missing_alsa_grp_id = recommendation_cards[2]["card"]["grp_id"]
@@ -5903,6 +5905,9 @@ third_metadata = third_row.findChild(QObject, "recommendationMetadata")
 assert third_metadata is not None
 assert third_metadata.property("text").startswith("ALSA —")
 assert any("ALSA —" in text for text in visible_texts(third_row))
+second_metadata = second_row.findChild(QObject, "recommendationMetadata")
+assert second_metadata is not None
+assert "From DMU*" in second_metadata.property("text")
 assert wide_preview.property("alsaText") == "—"
 assert "—" in visible_texts(wide_preview)
 
