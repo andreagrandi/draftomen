@@ -1710,10 +1710,6 @@ def handle_replay(args: argparse.Namespace) -> int:
                 args=args,
                 set_code=set_code,
             ),
-            ratings_loader=lambda set_code: load_cached_17lands_data(
-                set_code=set_code,
-                app_dir=args.app_dir,
-            ),
             profile_loader=lambda set_code, draft_format: _load_replay_profile(
                 args=args,
                 set_code=set_code,

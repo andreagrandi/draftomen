@@ -20,11 +20,13 @@ from draftomen.carddb import (
 )
 from draftomen.card_data_client import CardDataClientError
 from draftomen.cli import main
+from draftomen.deckbuilder import BuildPool, build_deck_from_pool, format_build_result
 from draftomen.draft_format import DraftFormat
 from draftomen.events import (
     AccountEvent,
     EXPECTED_PICKS_PER_PACK,
     EXPECTED_TOTAL_PICKS,
+    DraftCompletedEvent,
     DraftStartedEvent,
     PackOfferedEvent,
     PickMadeEvent,
@@ -46,9 +48,12 @@ from draftomen.replay import (
 from draftomen.set_card_data import SetCardData
 from draftomen.semantic_roles import Role
 from draftomen.set_profile import (
+    CardRating,
     PairProfile,
     ProfileMaturity,
+    RateEstimate,
     RoleTarget,
+    SampleSummary,
     SetProfile,
     SourceMetadata,
     dump_set_profile,
@@ -495,10 +500,11 @@ def test_replay_with_incomplete_scryfall_card_does_not_augment_metadata(
 
     captured = capsys.readouterr()
 
+    # Replay scores picks like the live app, so the cached 17Lands rate is unused.
     assert exit_code == 0
-    assert "Data source: QuickDraft" in captured.out
+    assert "Data source: QuickDraft" not in captured.out
     assert "Fixture Spider (grpId 105097)" in captured.out
-    assert "60.0%" in captured.out
+    assert "60.0%" not in captured.out
     assert captured.err == ""
 
 
@@ -1135,6 +1141,150 @@ def _replay_context_events() -> tuple[
             account_id=account_id,
         ),
     )
+
+
+_SPLASH_BOMB_GRP_ID = 9_023
+
+
+def _profile_splash_inputs() -> tuple[CardDatabase, SetProfile, tuple[int, ...]]:
+    """Build a W/U pool with one red bomb rated only in the set profile.
+    The 17Lands cache stays empty, as it is for a new set.
+    """
+
+    cards = {
+        grp_id: CardInfo(
+            grp_id=grp_id,
+            name=f"Synthetic {color} Creature {grp_id}",
+            colors=(color,),
+            mana_value=float(2 + grp_id % 4),
+            rarity="common",
+            types=("Creature",),
+            mana_cost="{" + str(1 + grp_id % 4) + "}{" + color + "}",
+            set_code="tst",
+        )
+        for grp_id, color in (
+            *((9_000 + index, "W") for index in range(12)),
+            *((9_012 + index, "U") for index in range(11)),
+        )
+    }
+    cards[_SPLASH_BOMB_GRP_ID] = CardInfo(
+        grp_id=_SPLASH_BOMB_GRP_ID,
+        name="Synthetic Red Bomb",
+        colors=("R",),
+        mana_value=4.0,
+        rarity="mythic",
+        types=("Creature",),
+        mana_cost="{3}{R}",
+        set_code="tst",
+    )
+    profile = SetProfile(
+        set_code="TST",
+        event_format="quickdraft",
+        profile_version="replay-splash-test",
+        generated_at="2026-11-26T00:00:00+00:00",
+        source=SourceMetadata(provider="replay-test"),
+        maturity=ProfileMaturity.EARLY,
+        samples=SampleSummary(total=100, by_pair=(("WU", 100),)),
+        confidence=1.0,
+        pairs=(PairProfile(pair="WU"),),
+        card_ratings=tuple(
+            CardRating(
+                card_key=f"grp_id:{grp_id}",
+                gih_win_rate=RateEstimate(
+                    raw_value=value,
+                    value=value,
+                    samples=1_000,
+                    prior_value=0.55,
+                    source="test",
+                ),
+            )
+            for grp_id in cards
+            for value in (0.70 if grp_id == _SPLASH_BOMB_GRP_ID else 0.55,)
+        ),
+    )
+    return CardDatabase(cards=cards), profile, tuple(cards)
+
+
+def _completed_draft_events(
+    *, pool_grp_ids: tuple[int, ...]
+) -> tuple[DraftStartedEvent | PickMadeEvent | DraftCompletedEvent, ...]:
+    event_name = "QuickDraft_TST_replay-splash"
+    account_id = "REPLAYSPLASHACCOUNT"
+    picks = tuple(
+        PickMadeEvent(
+            event_name=event_name,
+            set_code="TST",
+            pack_number=index // EXPECTED_PICKS_PER_PACK,
+            pick_number=index % EXPECTED_PICKS_PER_PACK,
+            selected_grp_ids=(grp_id,),
+            account_id=account_id,
+        )
+        for index, grp_id in enumerate(pool_grp_ids)
+    )
+    return (
+        DraftStartedEvent(
+            event_name=event_name,
+            set_code="TST",
+            course_id="REPLAYSPLASHDRAFT",
+            account_id=account_id,
+        ),
+        *picks,
+        DraftCompletedEvent(
+            event_name=event_name,
+            set_code="TST",
+            pack_number=picks[-1].pack_number,
+            pick_number=picks[-1].pick_number,
+            picked_grp_ids=pool_grp_ids,
+            inferred=False,
+            account_id=account_id,
+        ),
+    )
+
+
+def _replay_with_profile_only() -> tuple[
+    str, CardDatabase, SetProfile, tuple[int, ...]
+]:
+    database, profile, pool_grp_ids = _profile_splash_inputs()
+    output = render_replay_events(
+        events=_completed_draft_events(pool_grp_ids=pool_grp_ids),
+        card_database=database,
+        profile_loader=lambda set_code, draft_format: profile,
+    )
+    return output, database, profile, pool_grp_ids
+
+
+def test_replay_splashes_a_card_rated_only_by_the_set_profile() -> None:
+    output, _, _, _ = _replay_with_profile_only()
+
+    assert "Splash: R enabled" in output
+    assert "- MV 4 | score 100 | Synthetic Red Bomb (R)" in output
+
+
+def test_replay_build_sheet_matches_the_live_session_build() -> None:
+    output, database, profile, pool_grp_ids = _replay_with_profile_only()
+    pool = BuildPool(
+        set_code="TST",
+        pool_grp_ids=pool_grp_ids,
+        source_label="replay REPLAYSPLASHDRAFT",
+        account_id="REPLAYSPLASHACCOUNT",
+        draft_id="REPLAYSPLASHDRAFT",
+    )
+    selection, build_sheet = build_deck_from_pool(
+        pool=pool,
+        card_database=database,
+        ratings_data=None,
+        allow_splash=True,
+        set_profile=profile,
+    )
+    live_build = format_build_result(
+        pool=pool,
+        selection=selection,
+        spell_selection=build_sheet.spell_selection,
+        mana_base=build_sheet.mana_base,
+    ).rstrip("\n")
+
+    assert output.rstrip("\n").endswith(live_build)
+    assert build_sheet.spell_selection.splash_color == "R"
 
 
 def _replay_profile() -> SetProfile:
